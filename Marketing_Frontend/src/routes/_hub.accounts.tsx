@@ -261,7 +261,7 @@ function AccountsPage() {
         />
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {PLATFORMS.map((platform) => {
-            const existing = accounts.find((a) => a.platform === platform.id);
+            const existing = accounts.find((a) => a.platform.toLowerCase() === platform.id.toLowerCase());
             if (existing) return null;
             return (
               <div key={platform.id} className="surface-card p-5">
