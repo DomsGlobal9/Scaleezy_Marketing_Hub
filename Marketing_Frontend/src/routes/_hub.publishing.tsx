@@ -125,12 +125,34 @@ function PublishingPage() {
       })
       .catch(console.error);
 
-    // In a real app, you'd fetch both publishing history and media assets
-    // fetch(import.meta.env.VITE_API_URL + '/api/marketing/publishing/history/')
-    //   .then(res => res.json())
-    //   .then(data => setPublishingHistory(data))
-    //   .catch(console.error);
-    setPublishingHistory([]);
+    fetch(import.meta.env.VITE_API_URL + '/api/marketing/publishing/jobs/')
+        .then(res => res.json())
+        .then(data => {
+            if (Array.isArray(data)) {
+                const historyRows: any[] = [];
+                data.forEach((job: any) => {
+                    if (job.items && Array.isArray(job.items)) {
+                        job.items.forEach((item: any) => {
+                            historyRows.push({
+                                id: item.id,
+                                content: "Generated Marketing Post", // No text on asset currently, fallback
+                                platform: item.social_connection.platform,
+                                account: item.social_connection.account_name || item.social_connection.username,
+                                date: new Date(item.queued_at).toLocaleString(),
+                                status: item.status.charAt(0).toUpperCase() + item.status.slice(1).toLowerCase(),
+                                postId: item.external_post_id,
+                                error: item.error_message
+                            });
+                        });
+                    }
+                });
+                setPublishingHistory(historyRows);
+            }
+        })
+        .catch(err => {
+            console.error("Failed to load history:", err);
+            setPublishingHistory([]);
+        });
   }, []);
 
   const toggle = (id: string) =>
