@@ -107,7 +107,7 @@ function AccountsPage() {
         a.status,
       ),
     ).length;
-    const paused = accounts.filter((a) => a.settings.paused).length;
+    const paused = accounts.filter((a) => a.settings?.paused).length;
     return { connected, enabled, attention, paused };
   }, [accounts]);
 
@@ -231,13 +231,13 @@ function AccountsPage() {
                   size="sm"
                   variant="outline"
                   onClick={() => {
-                    const paused = !account.settings.paused;
+                    const paused = !account.settings?.paused;
                     update(account.id, { settings: { ...account.settings, paused } });
                     toast(paused ? "Publishing paused." : "Publishing resumed.");
                   }}
                 >
                   <PauseCircle className="size-4" />
-                  {account.settings.paused ? "Resume" : "Pause"} Publishing
+                  {account.settings?.paused ? "Resume" : "Pause"} Publishing
                 </Button>
                 <Button
                   size="sm"
