@@ -138,7 +138,7 @@ class XAdapter:
         headers = {"Authorization": f"Bearer {access_token}"}
         
         files = {
-            'media': ('poster.jpg', img_response.content, 'image/jpeg')
+            'media': ('poster.jpg', img_content, 'image/jpeg')
         }
         
         response = requests.post(self.UPLOAD_URL, headers=headers, files=files)
