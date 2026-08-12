@@ -1,7 +1,7 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny
 from .models import MarketingAsset
 from apps.workspaces.models import MarketingWorkspace
 from .serializers import MarketingAssetSerializer, UploadAssetSerializer
@@ -11,7 +11,7 @@ from apps.common.responses import APIResponse
 class MarketingAssetViewSet(viewsets.ModelViewSet):
     queryset = MarketingAsset.objects.all()
     serializer_class = MarketingAssetSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser])
     def upload(self, request):
