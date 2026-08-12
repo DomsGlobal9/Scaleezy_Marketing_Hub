@@ -191,7 +191,7 @@ function AccountsPage() {
               </dl>
 
               <div className="mt-4 flex flex-wrap gap-1.5">
-                {account.permissions.map((p) => (
+                {(account.permissions || []).map((p) => (
                   <span
                     key={p}
                     className="inline-flex items-center gap-1 rounded-full border border-border bg-secondary/60 px-2 py-0.5 text-xs text-muted-foreground"
@@ -701,7 +701,7 @@ function ManageSheet({
           <div className="rounded-xl border border-border p-4">
             <p className="label-eyebrow">Platform details</p>
             <dl className="mt-3 space-y-2 text-xs">
-              {account.platformDetails.map((d) => (
+              {(account.platformDetails || []).map((d) => (
                 <div key={d.label} className="grid grid-cols-2 gap-2">
                   <dt className="text-muted-foreground">{d.label}</dt>
                   <dd className="truncate text-right text-foreground">{d.value}</dd>
