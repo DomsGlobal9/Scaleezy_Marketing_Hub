@@ -116,7 +116,7 @@ function PublishingPage() {
 
   useEffect(() => {
     // Fetch connected accounts for publishing
-    fetch('http://127.0.0.1:8000/api/marketing/social-accounts/')
+    fetch(import.meta.env.VITE_API_URL + '/api/marketing/social-accounts/')
       .then(res => res.json())
       .then(data => {
         if (Array.isArray(data)) {
@@ -126,7 +126,7 @@ function PublishingPage() {
       .catch(console.error);
 
     // In a real app, you'd fetch both publishing history and media assets
-    // fetch('http://127.0.0.1:8000/api/marketing/publishing/history/')
+    // fetch(import.meta.env.VITE_API_URL + '/api/marketing/publishing/history/')
     //   .then(res => res.json())
     //   .then(data => setPublishingHistory(data))
     //   .catch(console.error);
@@ -143,12 +143,12 @@ function PublishingPage() {
     
     try {
         // Fetch workspaces
-        const wsRes = await fetch("http://127.0.0.1:8000/api/marketing/workspaces/");
+        const wsRes = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/workspaces/");
         const wsData = await wsRes.json();
         const wsId = Array.isArray(wsData) && wsData.length > 0 ? wsData[0].id : null;
         
         // Fetch first asset (hack for MVP, ideally we'd create one or pick from state)
-        const asRes = await fetch("http://127.0.0.1:8000/api/marketing/assets/");
+        const asRes = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/assets/");
         const asData = await asRes.json();
         const assetId = Array.isArray(asData) && asData.length > 0 ? asData[0].id : null;
         
@@ -156,7 +156,7 @@ function PublishingPage() {
             throw new Error("Missing workspace or asset in database.");
         }
 
-        const res = await fetch("http://127.0.0.1:8000/api/marketing/publishing/jobs/", {
+        const res = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/publishing/jobs/", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -186,7 +186,7 @@ function PublishingPage() {
   const handleGenerate = async () => {
     setStep("gemini_generating");
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/marketing/gemini/generate/", {
+      const res = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/gemini/generate/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -241,7 +241,7 @@ function PublishingPage() {
         setStep("gemini_form");
         setIsAnalyzing(true);
         try {
-          const res = await fetch("http://127.0.0.1:8000/api/marketing/gemini/analyze-image/", {
+          const res = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/gemini/analyze-image/", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ referenceImageBase64: base64String }),
@@ -264,7 +264,7 @@ function PublishingPage() {
         setIsGeneratingCaptions(true);
         setStep("gemini_generating"); // Re-use the loading step
         try {
-          const res = await fetch("http://127.0.0.1:8000/api/marketing/gemini/generate-captions/", {
+          const res = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/gemini/generate-captions/", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ referenceImageBase64: base64String }),

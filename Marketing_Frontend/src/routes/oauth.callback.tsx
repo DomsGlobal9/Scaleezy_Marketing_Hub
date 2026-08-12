@@ -19,7 +19,7 @@ function OAuthCallbackPage() {
     }
 
     // Call the backend to exchange code for token
-    fetch("http://127.0.0.1:8000/api/marketing/social-accounts/oauth_callback/", {
+    fetch(import.meta.env.VITE_API_URL + "/api/marketing/social-accounts/oauth_callback/", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

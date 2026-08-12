@@ -89,7 +89,7 @@ function AccountsPage() {
   const [disconnectTarget, setDisconnectTarget] = useState<SocialAccount | null>(null);
 
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/marketing/social-accounts/')
+    fetch(import.meta.env.VITE_API_URL + '/api/marketing/social-accounts/')
       .then(res => res.json())
       .then(data => {
         if (Array.isArray(data)) {
@@ -559,11 +559,11 @@ function ConnectDialog({
                   setStep("authorizing");
 
                   // Let's implement this properly:
-                  fetch("http://127.0.0.1:8000/api/marketing/workspaces/")
+                  fetch(import.meta.env.VITE_API_URL + "/api/marketing/workspaces/")
                     .then(res => res.json())
                     .then(data => {
                         const wsId = Array.isArray(data) && data.length > 0 ? data[0].id : null;
-                        return fetch("http://127.0.0.1:8000/api/marketing/social-accounts/connect/", {
+                        return fetch(import.meta.env.VITE_API_URL + "/api/marketing/social-accounts/connect/", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
