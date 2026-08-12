@@ -160,7 +160,7 @@ function PublishingPage() {
                 const formData = new FormData();
                 formData.append("file", blob, "poster.jpg");
                 formData.append("workspace_id", wsId);
-                formData.append("source", asset?.source === "gemini" ? "GENERATED" : "UPLOADED");
+                formData.append("source", asset?.source === "gemini" ? "GEMINI_GENERATED" : "MANUAL_UPLOAD");
                 
                 const uploadRes = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/assets/upload/", {
                     method: "POST",
