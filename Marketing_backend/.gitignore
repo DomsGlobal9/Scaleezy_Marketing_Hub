@@ -23,6 +23,7 @@ venv.bak/
 .env
 *.env
 
+
 # Editor / IDE
 .vscode/
 .idea/
