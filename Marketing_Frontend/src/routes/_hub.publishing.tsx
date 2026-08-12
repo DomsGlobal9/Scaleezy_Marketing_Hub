@@ -147,13 +147,43 @@ function PublishingPage() {
         const wsData = await wsRes.json();
         const wsId = Array.isArray(wsData) && wsData.length > 0 ? wsData[0].id : null;
         
-        // Fetch first asset (hack for MVP, ideally we'd create one or pick from state)
-        const asRes = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/assets/");
-        const asData = await asRes.json();
-        const assetId = Array.isArray(asData) && asData.length > 0 ? asData[0].id : null;
+        let assetId = null;
+        const b64Data = asset?.previewUrl || referenceImageBase64;
+        
+        if (b64Data && b64Data.startsWith("data:") && wsId) {
+            try {
+                // Convert base64 data URI to Blob
+                const r = await fetch(b64Data);
+                const blob = await r.blob();
+                
+                // Upload as file
+                const formData = new FormData();
+                formData.append("file", blob, "poster.jpg");
+                formData.append("workspace_id", wsId);
+                formData.append("source", asset?.source === "gemini" ? "GENERATED" : "UPLOADED");
+                
+                const uploadRes = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/assets/upload/", {
+                    method: "POST",
+                    body: formData
+                });
+                const uploadData = await uploadRes.json();
+                if (uploadData.success) {
+                    assetId = uploadData.data.id;
+                }
+            } catch(e) {
+                console.error("Asset upload failed:", e);
+            }
+        }
+        
+        if (!assetId) {
+            // Fallback for MVP if no image is available
+            const asRes = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/assets/");
+            const asData = await asRes.json();
+            assetId = Array.isArray(asData) && asData.length > 0 ? asData[0].id : null;
+        }
         
         if (!wsId || !assetId) {
-            throw new Error("Missing workspace or asset in database.");
+            throw new Error("Missing workspace or failed to upload asset.");
         }
 
         const res = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/publishing/jobs/", {
