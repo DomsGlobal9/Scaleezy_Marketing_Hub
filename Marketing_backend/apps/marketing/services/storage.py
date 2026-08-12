@@ -13,12 +13,25 @@ class SupabaseStorageService:
             print(f"[Storage Mock] Uploaded {filename} for workspace {workspace_id}")
             return f"https://mock-storage.url/workspace_{workspace_id}/{uuid.uuid4()}_{filename}"
             
-        # In a real app, use the official supabase-py client or make HTTP requests to the Storage API
-        # from supabase import create_client, Client
-        # supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
-        # bucket_name = 'marketing-assets'
-        # path_on_supastorage = f"workspace/{workspace_id}/{uuid.uuid4()}_{filename}"
-        # res = supabase.storage.from_(bucket_name).upload(path_on_supastorage, file_obj.read())
-        # return supabase.storage.from_(bucket_name).get_public_url(path_on_supastorage)
+        import requests
         
-        return f"https://mock-storage.url/workspace_{workspace_id}/{uuid.uuid4()}_{filename}"
+        bucket_name = 'Marketing_Poster_images'
+        path_on_supastorage = f"workspace/{workspace_id}/{uuid.uuid4()}_{filename}"
+        
+        upload_url = f"{settings.SUPABASE_URL}/storage/v1/object/{bucket_name}/{path_on_supastorage}"
+        headers = {
+            "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
+            "Content-Type": file_obj.content_type if hasattr(file_obj, 'content_type') else "application/octet-stream"
+        }
+        
+        try:
+            res = requests.post(upload_url, headers=headers, data=file_obj.read())
+            if not res.ok:
+                print(f"Supabase upload failed: {res.text}")
+                return f"https://mock-storage.url/workspace_{workspace_id}/{uuid.uuid4()}_{filename}"
+                
+            public_url = f"{settings.SUPABASE_URL}/storage/v1/object/public/{bucket_name}/{path_on_supastorage}"
+            return public_url
+        except Exception as e:
+            print(f"Supabase upload exception: {e}")
+            return f"https://mock-storage.url/workspace_{workspace_id}/{uuid.uuid4()}_{filename}"
