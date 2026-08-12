@@ -646,7 +646,8 @@ function PublishingPage() {
                 <p className="label-eyebrow text-primary">SELECT WHERE TO PUBLISH</p>
                 <div className="mt-4 space-y-2">
                   {accounts.map((acc) => {
-                    const disabled = acc.status !== "Connected" && acc.status !== "Token Expired";
+                    const s = (acc.status || "").toUpperCase();
+                    const disabled = s !== "CONNECTED" && s !== "TOKEN_EXPIRED";
                     return (
                       <label
                         key={acc.id}
