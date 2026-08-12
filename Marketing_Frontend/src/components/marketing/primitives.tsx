@@ -17,8 +17,9 @@ const PLATFORM_ICONS: Record<Platform, LucideIcon> = {
   "google-business": MapPin,
 };
 
-export function PlatformIcon({ platform, className }: { platform: Platform; className?: string }) {
-  const Icon = PLATFORM_ICONS[platform];
+export function PlatformIcon({ platform, className }: { platform: Platform | string; className?: string }) {
+  const Icon = PLATFORM_ICONS[platform as Platform] ?? PLATFORM_ICONS[platform.toLowerCase() as Platform];
+  if (!Icon) return null;
   return (
     <span
       className={cn(
