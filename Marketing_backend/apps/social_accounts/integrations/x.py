@@ -133,19 +133,10 @@ class XAdapter:
                 raise Exception("Failed to fetch media from URL")
             img_content = img_response.content
 
-        # X media upload v1.1 requires OAuth 1.0a OR OAuth 2.0 User Context?
-        # Actually, X allows OAuth 2.0 for media upload on v1.1 endpoint now.
-        headers = {"Authorization": f"Bearer {access_token}"}
-        
-        files = {
-            'media': ('poster.jpg', img_content, 'image/jpeg')
-        }
-        
-        response = requests.post(self.UPLOAD_URL, headers=headers, files=files)
-        if not response.ok:
-            raise Exception(f"Media upload failed: {response.text}")
-            
-        return response.json().get("media_id_string")
+        # X API v1.1 media upload DOES NOT support OAuth 2.0 User Context (Bearer tokens)
+        # It only supports OAuth 1.0a. Since we use OAuth 2.0, media upload will fail with 401.
+        # As a workaround, we return the URL itself, and we will append it to the tweet text.
+        return f"url:{media_url}"
 
     def publish_post(self, access_token: str, text: str, media_id: str = None):
         headers = {
@@ -155,7 +146,12 @@ class XAdapter:
         
         payload = {"text": text}
         if media_id:
-            payload["media"] = {"media_ids": [media_id]}
+            if media_id.startswith("url:"):
+                # Append the image URL to the tweet text
+                url = media_id.split("url:")[1]
+                payload["text"] = f"{text}\n\n{url}"
+            else:
+                payload["media"] = {"media_ids": [media_id]}
             
         response = requests.post(f"{self.API_BASE}/tweets", headers=headers, json=payload)
         
