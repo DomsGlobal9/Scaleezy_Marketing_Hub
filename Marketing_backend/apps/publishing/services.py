@@ -73,7 +73,8 @@ def execute_publishing_job(job_id: str):
                     workspace=job.workspace,
                     platform=platform,
                     action="Published Post",
-                    result=f"Failed: {str(e)}"
+                    result="Failed",
+                    error=str(e)
                 )
         else:
             item.status = PublishingJobItem.Status.FAILED
