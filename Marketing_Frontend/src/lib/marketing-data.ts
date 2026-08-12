@@ -82,15 +82,6 @@ export const PLATFORMS: PlatformMeta[] = [
     fields: ["User ID", "Username", "Display name", "API plan", "Rate-limit status"],
   },
   {
-    id: "tiktok",
-    name: "TikTok",
-    accountType: "Business Account",
-    accountTypeOptions: ["Business Account", "Creator Account"],
-    requiredPermissions: ["Video upload", "Video publishing", "Check publishing status"],
-    optionalPermissions: ["Read analytics"],
-    fields: ["TikTok User ID", "Username", "Publishing mode", "API approval status"],
-  },
-  {
     id: "youtube",
     name: "YouTube",
     accountType: "Channel",
