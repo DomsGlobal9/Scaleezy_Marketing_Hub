@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Check, ShieldCheck, X } from "lucide-react";
+import { Check, ImagePlus, Phone, ShieldCheck, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import { PageHeader, SectionTitle, StatusBadge } from "@/components/marketing/primitives";
 import { PERMISSION_MATRIX } from "@/lib/marketing-data";
+import { useBrandSettings } from "@/lib/brand-settings";
 
 export const Route = createFileRoute("/_hub/settings")({
   head: () => ({
@@ -64,14 +65,164 @@ function Panel({
   );
 }
 
+const MAX_LOGO_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Brand logo + contact details reused by the poster generator.
+ *
+ * The logo is held as a data URL client-side; `logoUrl` stays empty until the
+ * backend upload endpoint exists to put it in the Supabase bucket.
+ */
+function BrandKitPanel() {
+  const { settings, update } = useBrandSettings();
+  const logoInputRef = useRef<HTMLInputElement>(null);
+
+  const handleLogoPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // let the same file be re-picked after a remove
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      toast.error("Logo must be an image (PNG, JPG or SVG).");
+      return;
+    }
+    if (file.size > MAX_LOGO_BYTES) {
+      toast.error("Logo must be 2 MB or smaller.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      update({
+        logoDataUrl: event.target?.result as string,
+        logoFileName: file.name,
+        showLogoOnPosters: true,
+      });
+      toast.success("Logo added. It will be stored in the bucket on save.");
+    };
+    reader.onerror = () => toast.error("Could not read that file.");
+    reader.readAsDataURL(file);
+  };
+
+  const removeLogo = () =>
+    update({ logoDataUrl: "", logoUrl: "", logoFileName: "", showLogoOnPosters: false });
+
+  const hasLogo = !!(settings.logoDataUrl || settings.logoUrl);
+
+  return (
+    <Panel label="Brand Kit" title="Logo & contact details">
+      <div className="grid gap-5">
+        <div>
+          <Label className="text-xs tracking-wide uppercase">Brand logo</Label>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Used on AI-generated posters. PNG with a transparent background works best.
+          </p>
+
+          <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-4">
+            <div className="grid size-20 shrink-0 place-items-center overflow-hidden rounded-xl border border-border bg-secondary/40">
+              {hasLogo ? (
+                <img
+                  src={settings.logoDataUrl || settings.logoUrl}
+                  alt="Brand logo"
+                  className="size-full object-contain p-2"
+                />
+              ) : (
+                <ImagePlus className="size-6 text-muted-foreground" />
+              )}
+            </div>
+
+            <div className="min-w-0">
+              {hasLogo ? (
+                <p className="truncate text-sm font-medium text-foreground">
+                  {settings.logoFileName || "Brand logo"}
+                </p>
+              ) : (
+                <p className="text-sm text-muted-foreground">No logo uploaded yet.</p>
+              )}
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={() => logoInputRef.current?.click()}>
+                  <ImagePlus className="size-4" /> {hasLogo ? "Replace" : "Upload logo"}
+                </Button>
+                {hasLogo ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    onClick={removeLogo}
+                  >
+                    <Trash2 className="size-4" /> Remove
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+
+          <input
+            ref={logoInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleLogoPick}
+          />
+        </div>
+
+        <div className="flex items-center justify-between gap-4 rounded-xl border border-border px-4 py-3">
+          <div className="min-w-0">
+            <Label className="text-sm font-normal">Show logo on generated posters</Label>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Can be overridden per poster in Publishing.
+            </p>
+          </div>
+          <Switch
+            checked={settings.showLogoOnPosters}
+            disabled={!hasLogo}
+            onCheckedChange={(v) => update({ showLogoOnPosters: v })}
+          />
+        </div>
+
+        <div>
+          <Label className="text-xs tracking-wide uppercase">Contact phone number</Label>
+          <div className="relative mt-1.5">
+            <Phone className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="tel"
+              className="pl-9"
+              placeholder="+91 98765 43210"
+              value={settings.phoneNumber}
+              onChange={(e) => update({ phoneNumber: e.target.value })}
+            />
+          </div>
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Optionally printed at the bottom of a poster after it is generated.
+          </p>
+        </div>
+
+        <div className="flex items-center justify-between gap-4 rounded-xl border border-border px-4 py-3">
+          <div className="min-w-0">
+            <Label className="text-sm font-normal">Show phone number on posters</Label>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Can be overridden per poster in Publishing.
+            </p>
+          </div>
+          <Switch
+            checked={settings.showPhoneOnPosters}
+            disabled={!settings.phoneNumber.trim()}
+            onCheckedChange={(v) => update({ showPhoneOnPosters: v })}
+          />
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
 function SettingsPage() {
   const [workspace, setWorkspace] = useState<any>(null);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/marketing/settings/')
-      .then(res => res.json())
-      .then(data => {
+    fetch("http://localhost:8000/api/marketing/settings/")
+      .then((res) => res.json())
+      .then((data) => {
         if (data.workspace) setWorkspace(data.workspace);
         if (data.audit_logs) setAuditLogs(data.audit_logs);
       })
@@ -79,10 +230,10 @@ function SettingsPage() {
   }, []);
 
   const handleSave = () => {
-    fetch('http://localhost:8000/api/marketing/settings/', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspace })
+    fetch("http://localhost:8000/api/marketing/settings/", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspace }),
     })
       .then(() => toast.success("Settings saved."))
       .catch(() => toast.error("Failed to save settings."));
@@ -192,6 +343,10 @@ function SettingsPage() {
             </div>
           </div>
         </Panel>
+      </div>
+
+      <div className="mt-6 grid gap-6 xl:grid-cols-2">
+        <BrandKitPanel />
       </div>
 
       <div className="mt-6">

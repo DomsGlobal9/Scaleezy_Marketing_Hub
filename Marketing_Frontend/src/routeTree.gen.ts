@@ -10,6 +10,8 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as HubRouteImport } from './routes/_hub'
+import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as TermsRouteImport } from './routes/terms'
 import { Route as HubIndexRouteImport } from './routes/_hub.index'
 import { Route as HubAccountsRouteImport } from './routes/_hub.accounts'
 import { Route as HubAnalyticsRouteImport } from './routes/_hub.analytics'
@@ -19,6 +21,16 @@ import { Route as OauthCallbackRouteImport } from './routes/oauth.callback'
 
 const HubRoute = HubRouteImport.update({
   id: '/_hub',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PrivacyRoute = PrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TermsRoute = TermsRouteImport.update({
+  id: '/terms',
+  path: '/terms',
   getParentRoute: () => rootRouteImport,
 } as any)
 const HubIndexRoute = HubIndexRouteImport.update({
@@ -54,6 +66,8 @@ const OauthCallbackRoute = OauthCallbackRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof HubIndexRoute
+  '/privacy': typeof PrivacyRoute
+  '/terms': typeof TermsRoute
   '/accounts': typeof HubAccountsRoute
   '/analytics': typeof HubAnalyticsRoute
   '/publishing': typeof HubPublishingRoute
@@ -61,6 +75,8 @@ export interface FileRoutesByFullPath {
   '/oauth/callback': typeof OauthCallbackRoute
 }
 export interface FileRoutesByTo {
+  '/privacy': typeof PrivacyRoute
+  '/terms': typeof TermsRoute
   '/accounts': typeof HubAccountsRoute
   '/analytics': typeof HubAnalyticsRoute
   '/publishing': typeof HubPublishingRoute
@@ -71,6 +87,8 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_hub': typeof HubRouteWithChildren
+  '/privacy': typeof PrivacyRoute
+  '/terms': typeof TermsRoute
   '/_hub/accounts': typeof HubAccountsRoute
   '/_hub/analytics': typeof HubAnalyticsRoute
   '/_hub/publishing': typeof HubPublishingRoute
@@ -82,6 +100,8 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/privacy'
+    | '/terms'
     | '/accounts'
     | '/analytics'
     | '/publishing'
@@ -89,6 +109,8 @@ export interface FileRouteTypes {
     | '/oauth/callback'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/privacy'
+    | '/terms'
     | '/accounts'
     | '/analytics'
     | '/publishing'
@@ -98,6 +120,8 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/_hub'
+    | '/privacy'
+    | '/terms'
     | '/_hub/accounts'
     | '/_hub/analytics'
     | '/_hub/publishing'
@@ -108,6 +132,8 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   HubRoute: typeof HubRouteWithChildren
+  PrivacyRoute: typeof PrivacyRoute
+  TermsRoute: typeof TermsRoute
   OauthCallbackRoute: typeof OauthCallbackRoute
 }
 
@@ -118,6 +144,20 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof HubRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/terms': {
+      id: '/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof TermsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_hub/': {
@@ -185,6 +225,8 @@ const HubRouteWithChildren = HubRoute._addFileChildren(HubRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   HubRoute: HubRouteWithChildren,
+  PrivacyRoute: PrivacyRoute,
+  TermsRoute: TermsRoute,
   OauthCallbackRoute: OauthCallbackRoute,
 }
 export const routeTree = rootRouteImport

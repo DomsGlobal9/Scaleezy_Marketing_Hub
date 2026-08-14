@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
+import { SiteFooter } from "@/components/marketing/site-footer";
 
 export const Route = createFileRoute("/_hub")({
   component: HubLayout,
@@ -97,10 +98,11 @@ function HubLayout() {
         <Brand />
       </header>
 
-      <main className="lg:pl-[270px]">
-        <div className="mx-auto w-full max-w-[1400px] px-4 py-8 sm:px-6 lg:px-10 lg:py-12">
+      <main className="flex min-h-screen flex-col lg:pl-[270px]">
+        <div className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-8 sm:px-6 lg:px-10 lg:py-12">
           <Outlet />
         </div>
+        <SiteFooter />
       </main>
     </div>
   );
