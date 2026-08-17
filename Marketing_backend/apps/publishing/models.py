@@ -28,6 +28,8 @@ class PublishingJob(models.Model):
     
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_publishing_jobs')
 
+    caption = models.TextField(blank=True, default='', help_text='Post caption/text to publish')
+
     status = models.CharField(max_length=50, choices=Status.choices, default=Status.DRAFT)
     publish_mode = models.CharField(max_length=50, choices=PublishMode.choices, default=PublishMode.NOW)
 

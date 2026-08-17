@@ -24,6 +24,7 @@ class CreatePublishingJobSerializer(serializers.Serializer):
     publish_mode = serializers.ChoiceField(choices=PublishingJob.PublishMode.choices)
     scheduled_at = serializers.DateTimeField(required=False, allow_null=True)
     timezone = serializers.CharField(required=False, default="UTC")
+    caption = serializers.CharField(required=False, default="", allow_blank=True)
     social_connection_ids = serializers.ListField(
         child=serializers.UUIDField(),
         allow_empty=False

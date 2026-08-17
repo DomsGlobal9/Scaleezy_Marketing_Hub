@@ -18,6 +18,7 @@ import { Route as HubAnalyticsRouteImport } from './routes/_hub.analytics'
 import { Route as HubPublishingRouteImport } from './routes/_hub.publishing'
 import { Route as HubSettingsRouteImport } from './routes/_hub.settings'
 import { Route as OauthCallbackRouteImport } from './routes/oauth.callback'
+import { Route as SocialLinkedinCallbackRouteImport } from './routes/social.linkedin.callback'
 
 const HubRoute = HubRouteImport.update({
   id: '/_hub',
@@ -63,6 +64,11 @@ const OauthCallbackRoute = OauthCallbackRouteImport.update({
   path: '/oauth/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SocialLinkedinCallbackRoute = SocialLinkedinCallbackRouteImport.update({
+  id: '/social/linkedin/callback',
+  path: '/social/linkedin/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof HubIndexRoute
@@ -73,6 +79,7 @@ export interface FileRoutesByFullPath {
   '/publishing': typeof HubPublishingRoute
   '/settings': typeof HubSettingsRoute
   '/oauth/callback': typeof OauthCallbackRoute
+  '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
 }
 export interface FileRoutesByTo {
   '/privacy': typeof PrivacyRoute
@@ -83,6 +90,7 @@ export interface FileRoutesByTo {
   '/settings': typeof HubSettingsRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/': typeof HubIndexRoute
+  '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -95,6 +103,7 @@ export interface FileRoutesById {
   '/_hub/settings': typeof HubSettingsRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/_hub/': typeof HubIndexRoute
+  '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -107,6 +116,7 @@ export interface FileRouteTypes {
     | '/publishing'
     | '/settings'
     | '/oauth/callback'
+    | '/social/linkedin/callback'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/privacy'
@@ -117,6 +127,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/oauth/callback'
     | '/'
+    | '/social/linkedin/callback'
   id:
     | '__root__'
     | '/_hub'
@@ -128,6 +139,7 @@ export interface FileRouteTypes {
     | '/_hub/settings'
     | '/oauth/callback'
     | '/_hub/'
+    | '/social/linkedin/callback'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -135,6 +147,7 @@ export interface RootRouteChildren {
   PrivacyRoute: typeof PrivacyRoute
   TermsRoute: typeof TermsRoute
   OauthCallbackRoute: typeof OauthCallbackRoute
+  SocialLinkedinCallbackRoute: typeof SocialLinkedinCallbackRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -202,6 +215,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OauthCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/social/linkedin/callback': {
+      id: '/social/linkedin/callback'
+      path: '/social/linkedin/callback'
+      fullPath: '/social/linkedin/callback'
+      preLoaderRoute: typeof SocialLinkedinCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -228,6 +248,7 @@ const rootRouteChildren: RootRouteChildren = {
   PrivacyRoute: PrivacyRoute,
   TermsRoute: TermsRoute,
   OauthCallbackRoute: OauthCallbackRoute,
+  SocialLinkedinCallbackRoute: SocialLinkedinCallbackRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

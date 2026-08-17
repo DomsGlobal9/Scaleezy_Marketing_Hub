@@ -35,6 +35,7 @@ class PublishingJobViewSet(viewsets.ModelViewSet):
                     publish_mode=data['publish_mode'],
                     scheduled_at=data.get('scheduled_at'),
                     timezone=data.get('timezone', 'UTC'),
+                    caption=data.get('caption', ''),
                     status=PublishingJob.Status.QUEUED if data['publish_mode'] == PublishingJob.PublishMode.NOW else PublishingJob.Status.SCHEDULED,
                     created_by=request.user if request.user.is_authenticated else None
                 )

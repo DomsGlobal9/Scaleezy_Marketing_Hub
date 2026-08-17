@@ -1,7 +1,11 @@
+import logging
+
 from rest_framework import viewsets, status
-from rest_framework.decorators import action, permission_classes
-from rest_framework.permissions import IsAuthenticated, AllowAny
-from .models import SocialConnection
+from rest_framework.decorators import action
+from rest_framework.permissions import AllowAny
+from django.utils import timezone
+
+from .models import SocialConnection, SocialAccountAuditLog
 from apps.workspaces.models import MarketingWorkspace
 from .serializers import SocialConnectionSerializer, ConnectPlatformSerializer
 from apps.common.responses import APIResponse
@@ -9,14 +13,22 @@ from .integrations.meta.facebook import FacebookAdapter
 from .integrations.meta.instagram import InstagramAdapter
 from .integrations.linkedin import LinkedInAdapter
 from .integrations.x import XAdapter
+from .integrations.exceptions import (
+    SocialPlatformError,
+    LinkedInAPIError,
+    LinkedInConfigurationError,
+    LinkedInOAuthError,
+    LinkedInStateValidationError,
+)
 from .utils.encryption import encrypt_token, decrypt_token
-from .models import SocialAccountAuditLog
-from django.utils import timezone
+
+logger = logging.getLogger(__name__)
+
 
 class SocialConnectionViewSet(viewsets.ModelViewSet):
     queryset = SocialConnection.objects.all()
     serializer_class = SocialConnectionSerializer
-    permission_classes = [AllowAny] # Changed to AllowAny for MVP since frontend auth is mocked
+    permission_classes = [AllowAny]  # Changed to AllowAny for MVP since frontend auth is mocked
 
     def get_adapter(self, platform):
         adapters = {
@@ -32,49 +44,87 @@ class SocialConnectionViewSet(viewsets.ModelViewSet):
         serializer = ConnectPlatformSerializer(data=request.data)
         if not serializer.is_valid():
             return APIResponse(success=False, error=serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
+
         workspace_id = serializer.validated_data['workspace_id']
         platform = serializer.validated_data['platform']
-        
+
         adapter = self.get_adapter(platform)
         if not adapter:
             return APIResponse(success=False, message="Platform not supported yet.", status=status.HTTP_400_BAD_REQUEST)
 
         try:
             auth_url = adapter.get_authorization_url(workspace_id=str(workspace_id))
+            logger.info(f"OAuth connect initiated for platform={platform}")
             return APIResponse(success=True, data={"authorization_url": auth_url})
+        except LinkedInConfigurationError as e:
+            return APIResponse(
+                success=False,
+                error={"code": "NOT_CONFIGURED", "message": e.safe_message},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except SocialPlatformError as e:
+            return APIResponse(
+                success=False,
+                error={"code": e.error_code, "message": e.safe_message},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except Exception as e:
             if str(e) == "NOT_CONFIGURED":
-                return APIResponse(success=False, error={"code": "NOT_CONFIGURED", "message": f"{platform} integration is not configured yet."})
-            import traceback
-            traceback.print_exc()
-            return APIResponse(success=False, message=str(e), status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                return APIResponse(
+                    success=False,
+                    error={"code": "NOT_CONFIGURED", "message": f"{platform} integration is not configured yet."},
+                )
+            logger.exception(f"Unexpected error during OAuth connect for {platform}")
+            return APIResponse(success=False, message="An unexpected error occurred.", status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['post'])
     def oauth_callback(self, request):
-        # In a real app, you would exchange the code for a token and save the SocialConnection.
-        # This is a stub for the MVP callback handler.
+        """
+        Handle OAuth callback — exchange code for token, fetch account info,
+        save connection.
+        """
         platform = request.data.get('platform')
         code = request.data.get('code')
         state = request.data.get('state')
+        error = request.data.get('error')
+
+        # Handle OAuth errors from the platform
+        if error:
+            logger.warning(f"OAuth callback received error from {platform}: {error}")
+            error_desc = request.data.get('error_description', 'Authorization was not granted.')
+            return APIResponse(
+                success=False,
+                message=error_desc,
+                error={"code": "OAUTH_DENIED", "message": error_desc},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not code:
+            return APIResponse(
+                success=False,
+                message="No authorization code received.",
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         adapter = self.get_adapter(platform)
         if not adapter:
             return APIResponse(success=False, message="Platform not supported", status=400)
-            
+
         try:
-            # Exchange code for token. The state handles getting the workspace_id for us if PKCE.
-            if platform == 'X':
+            # ── Platform-specific token exchange ──────────────────────────
+            if platform == 'LINKEDIN':
+                return self._handle_linkedin_callback(adapter, code, state, request)
+            elif platform == 'X':
                 token_data = adapter.exchange_code_for_token(code, state)
                 workspace_id = token_data.get('workspace_id')
             else:
                 workspace_id = request.data.get('workspace_id')
                 token_data = adapter.exchange_code_for_token(code, "http://localhost:8000")
-                
+
             account_info = adapter.get_account_info(token_data['access_token'])
-            
+
             workspace = MarketingWorkspace.objects.get(id=workspace_id)
-            
+
             # Create or update connection
             connection, created = SocialConnection.objects.update_or_create(
                 workspace=workspace,
@@ -88,10 +138,10 @@ class SocialConnectionViewSet(viewsets.ModelViewSet):
                     'access_token_encrypted': encrypt_token(token_data.get('access_token')),
                     'refresh_token_encrypted': encrypt_token(token_data.get('refresh_token')),
                     'scopes': token_data.get('scopes', ''),
-                    'last_verified_at': timezone.now()
+                    'last_verified_at': timezone.now(),
                 }
             )
-            
+
             # Audit Log
             SocialAccountAuditLog.objects.create(
                 workspace=workspace,
@@ -99,26 +149,149 @@ class SocialConnectionViewSet(viewsets.ModelViewSet):
                 user=request.user if request.user.is_authenticated else None,
                 action=SocialAccountAuditLog.Action.ACCOUNT_CONNECTION if created else SocialAccountAuditLog.Action.ACCOUNT_RECONNECTION
             )
-            
+
+            logger.info(f"OAuth callback completed for {platform} — connection {'created' if created else 'updated'}")
             return APIResponse(success=True, data=SocialConnectionSerializer(connection).data)
+
+        except SocialPlatformError as e:
+            logger.warning(f"OAuth callback failed for {platform}: {e}")
+            return APIResponse(
+                success=False,
+                message=e.safe_message,
+                error={"code": e.error_code, "message": e.safe_message},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except MarketingWorkspace.DoesNotExist:
+            logger.error(f"OAuth callback — workspace not found")
+            return APIResponse(
+                success=False,
+                message="Workspace not found.",
+                status=status.HTTP_404_NOT_FOUND,
+            )
         except Exception as e:
             if str(e) == "NOT_CONFIGURED":
-                return APIResponse(success=False, error={"code": "NOT_CONFIGURED", "message": f"{platform} integration is not configured yet."})
-            return APIResponse(success=False, message=str(e), status=500)
+                return APIResponse(
+                    success=False,
+                    error={"code": "NOT_CONFIGURED", "message": f"{platform} integration is not configured yet."},
+                )
+            logger.exception(f"Unexpected error during OAuth callback for {platform}")
+            return APIResponse(
+                success=False,
+                message="An unexpected error occurred during the connection process.",
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    def _handle_linkedin_callback(self, adapter, code, state, request):
+        """Handle LinkedIn-specific OAuth callback with state-based workspace resolution."""
+        # Validate state and get workspace_id
+        workspace_id = adapter.validate_state(state)
+        logger.info("LinkedIn OAuth callback — state validated")
+
+        # Exchange code for token
+        token_data = adapter.exchange_code_for_token(code)
+        access_token = token_data.get('access_token')
+
+        if not access_token:
+            raise LinkedInOAuthError("No access token received from LinkedIn")
+
+        # Fetch account info
+        account_info = adapter.get_account_info(access_token)
+        logger.info("LinkedIn account info retrieved")
+
+        # Get publishable destinations
+        member_sub = account_info.get('id')
+        destinations = adapter.get_publishable_destinations(access_token, member_sub)
+
+        workspace = MarketingWorkspace.objects.get(id=workspace_id)
+
+        # Compute token expiration
+        expires_in = token_data.get('expires_in')
+        token_expires_at = None
+        if expires_in:
+            token_expires_at = timezone.now() + timezone.timedelta(seconds=int(expires_in))
+
+        # Determine account type
+        account_type = 'member'
+        if destinations and len(destinations) > 1:
+            # Has organization pages available
+            account_type = 'member+organization'
+
+        # Create or update connection
+        connection, created = SocialConnection.objects.update_or_create(
+            workspace=workspace,
+            platform=SocialConnection.Platform.LINKEDIN,
+            external_account_id=member_sub,
+            defaults={
+                'account_name': account_info.get('name', 'LinkedIn User'),
+                'username': account_info.get('email', ''),
+                'profile_url': f"https://www.linkedin.com/in/{member_sub}",
+                'profile_image_url': account_info.get('profile_image_url'),
+                'account_type': account_type,
+                'oauth_provider': 'linkedin',
+                'oauth_user_id': member_sub,
+                'connected_user_name': account_info.get('name'),
+                'connected_user_email': account_info.get('email'),
+                'status': SocialConnection.Status.CONNECTED,
+                'access_token_encrypted': encrypt_token(access_token),
+                'refresh_token_encrypted': encrypt_token(token_data.get('refresh_token')),
+                'token_created_at': timezone.now(),
+                'token_expires_at': token_expires_at,
+                'scopes': token_data.get('scopes', ''),
+                'last_verified_at': timezone.now(),
+                'publishing_enabled': True,
+                'reauthorization_required': False,
+                'last_error': None,
+                'disconnected_at': None,
+            }
+        )
+
+        # Audit Log
+        SocialAccountAuditLog.objects.create(
+            workspace=workspace,
+            social_connection=connection,
+            user=request.user if request.user.is_authenticated else None,
+            action=(
+                SocialAccountAuditLog.Action.ACCOUNT_CONNECTION
+                if created
+                else SocialAccountAuditLog.Action.ACCOUNT_RECONNECTION
+            ),
+        )
+
+        logger.info(
+            f"LinkedIn connection {'created' if created else 'updated'} "
+            f"for workspace — account_type={account_type}"
+        )
+        return APIResponse(success=True, data=SocialConnectionSerializer(connection).data)
 
     @action(detail=True, methods=['post'])
     def disconnect(self, request, pk=None):
         connection = self.get_object()
+
+        # Attempt platform-side disconnect
+        adapter = self.get_adapter(connection.platform)
+        if adapter and connection.access_token_encrypted:
+            try:
+                access_token = decrypt_token(connection.access_token_encrypted)
+                adapter.disconnect(access_token)
+            except Exception:
+                pass  # Best-effort — we still disconnect on our side
+
+        # Clear credentials and mark disconnected
         connection.status = SocialConnection.Status.DISCONNECTED
         connection.disconnected_at = timezone.now()
+        connection.access_token_encrypted = None
+        connection.refresh_token_encrypted = None
+        connection.publishing_enabled = False
         connection.save()
-        
+
         SocialAccountAuditLog.objects.create(
             workspace=connection.workspace,
             social_connection=connection,
             user=request.user if request.user.is_authenticated else None,
             action=SocialAccountAuditLog.Action.ACCOUNT_DISCONNECTION
         )
+
+        logger.info(f"Social connection disconnected: platform={connection.platform}")
         return APIResponse(success=True, message="Account disconnected")
 
     @action(detail=True, methods=['post'])
@@ -127,16 +300,80 @@ class SocialConnectionViewSet(viewsets.ModelViewSet):
         adapter = self.get_adapter(connection.platform)
         if not adapter:
             return APIResponse(success=False, message="Adapter missing", status=400)
-            
+
         try:
             access_token = decrypt_token(connection.access_token_encrypted)
             account_info = adapter.get_account_info(access_token)
             connection.status = SocialConnection.Status.CONNECTED
             connection.last_verified_at = timezone.now()
+            connection.last_error = None
+            connection.reauthorization_required = False
             connection.save()
             return APIResponse(success=True, message="Connection verified")
         except Exception as e:
             connection.status = SocialConnection.Status.TOKEN_EXPIRED
-            connection.last_error = str(e)
+            connection.last_error = str(getattr(e, 'safe_message', str(e)))
+            connection.reauthorization_required = True
             connection.save()
             return APIResponse(success=False, message="Verification failed, reauthorization required", status=401)
+
+    @action(detail=False, methods=['get'])
+    def linkedin_status(self, request):
+        """Check LinkedIn connection status for a workspace."""
+        workspace_id = request.query_params.get('workspace_id')
+        if not workspace_id:
+            return APIResponse(success=False, message="workspace_id is required", status=400)
+
+        try:
+            connection = SocialConnection.objects.filter(
+                workspace_id=workspace_id,
+                platform=SocialConnection.Platform.LINKEDIN,
+            ).exclude(status=SocialConnection.Status.DISCONNECTED).first()
+
+            if not connection:
+                return APIResponse(success=True, data={
+                    "connected": False,
+                    "status": "NOT_CONNECTED",
+                })
+
+            return APIResponse(success=True, data={
+                "connected": connection.status == SocialConnection.Status.CONNECTED,
+                "status": connection.status,
+                "account_name": connection.account_name,
+                "account_type": connection.account_type,
+                "connected_at": connection.connected_at.isoformat() if connection.connected_at else None,
+            })
+        except Exception as e:
+            logger.exception("Error checking LinkedIn status")
+            return APIResponse(success=False, message="Could not check connection status.", status=500)
+
+    @action(detail=False, methods=['get'])
+    def linkedin_destinations(self, request):
+        """Retrieve publishable destinations for a LinkedIn connection."""
+        workspace_id = request.query_params.get('workspace_id')
+        if not workspace_id:
+            return APIResponse(success=False, message="workspace_id is required", status=400)
+
+        try:
+            connection = SocialConnection.objects.get(
+                workspace_id=workspace_id,
+                platform=SocialConnection.Platform.LINKEDIN,
+                status=SocialConnection.Status.CONNECTED,
+            )
+        except SocialConnection.DoesNotExist:
+            return APIResponse(
+                success=False,
+                message="No connected LinkedIn account found.",
+                status=404,
+            )
+
+        try:
+            adapter = LinkedInAdapter()
+            access_token = decrypt_token(connection.access_token_encrypted)
+            destinations = adapter.get_publishable_destinations(access_token, connection.external_account_id)
+            return APIResponse(success=True, data={"destinations": destinations})
+        except SocialPlatformError as e:
+            return APIResponse(success=False, message=e.safe_message, status=400)
+        except Exception:
+            logger.exception("Error fetching LinkedIn destinations")
+            return APIResponse(success=False, message="Could not fetch publishing destinations.", status=500)

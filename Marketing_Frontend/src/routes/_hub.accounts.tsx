@@ -131,8 +131,8 @@ function AccountsPage() {
       <div className="mb-4 flex items-start gap-2 rounded-xl border border-gold/30 bg-gold/8 px-4 py-3 text-sm text-foreground">
         <ShieldCheck className="mt-0.5 size-4 shrink-0 text-gold" />
         <p>
-          Demo workspace — connections shown here are mock states. Scaleezy never asks for social
-          passwords or tokens; authorization always happens on the official platform.
+          Scaleezy never asks for social passwords or tokens — authorization always happens on the
+          official platform via secure OAuth.
         </p>
       </div>
 
@@ -342,12 +342,23 @@ function AccountsPage() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {
                 if (disconnectTarget) {
-                  update(disconnectTarget.id, {
-                    status: "Disconnected",
-                    publishingEnabled: false,
-                    tokenStatus: "Revoked",
-                  });
-                  toast("Account disconnected.");
+                  fetch(
+                    import.meta.env.VITE_API_URL +
+                      `/api/marketing/social-accounts/${disconnectTarget.id}/disconnect/`,
+                    { method: "POST", headers: { "Content-Type": "application/json" } },
+                  )
+                    .then((res) => res.json())
+                    .then((data) => {
+                      if (data.success) {
+                        setAccounts((prev) =>
+                          prev.filter((a) => a.id !== disconnectTarget.id),
+                        );
+                        toast.success("Account disconnected.");
+                      } else {
+                        toast.error(data.message || "Failed to disconnect.");
+                      }
+                    })
+                    .catch(() => toast.error("Network error while disconnecting."));
                 }
                 setDisconnectTarget(null);
               }}
@@ -569,7 +580,7 @@ function ConnectDialog({
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
                                 workspace_id: wsId,
-                                platform: platform.name
+                                platform: platform.id.toUpperCase()
                             })
                         });
                     })

@@ -317,6 +317,14 @@ function PublishingPage() {
         throw new Error("Missing workspace or failed to upload asset.");
       }
 
+      // Build the caption from the asset's generated/manual content
+      const captionParts = [
+        asset?.postTitle,
+        asset?.postDescription,
+        asset?.postHashtags,
+      ].filter(Boolean);
+      const caption = captionParts.join("\n\n") || "";
+
       const res = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/publishing/jobs/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -324,6 +332,7 @@ function PublishingPage() {
           workspace_id: wsId,
           asset_id: assetId,
           publish_mode: mode === "now" ? "NOW" : "SCHEDULED",
+          caption,
           social_connection_ids: ids,
         }),
       });
