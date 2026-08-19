@@ -69,9 +69,10 @@ class SocialPlatformAdapter(ABC):
         return self.publish(access_token, {"text": text, "author_urn": author_urn})
 
     def publish_image(self, access_token: str, author_urn: str, text: str,
-                      image_data: bytes, filename: str = "image.jpg") -> Dict[str, Any]:
+                      image_data: bytes = None, filename: str = "image.jpg", image_url: str = None) -> Dict[str, Any]:
         """
         Publish an image post.
+        Provides both raw image_data (bytes) and a public image_url (if available).
         Default delegates to publish() — platforms can override for native support.
         """
         return self.publish(access_token, {
@@ -79,4 +80,5 @@ class SocialPlatformAdapter(ABC):
             "author_urn": author_urn,
             "image_data": image_data,
             "filename": filename,
+            "image_url": image_url,
         })

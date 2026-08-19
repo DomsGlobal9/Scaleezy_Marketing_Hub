@@ -130,6 +130,8 @@ SUPABASE_SERVICE_ROLE_KEY = env('SUPABASE_SERVICE_ROLE_KEY', default='')
 META_CLIENT_ID = env('META_CLIENT_ID', default='')
 META_CLIENT_SECRET = env('META_CLIENT_SECRET', default='')
 META_REDIRECT_URI = env('META_REDIRECT_URI', default='')
+META_API_VERSION = env('META_API_VERSION', default='v20.0')
+META_SCOPES = env('META_SCOPES', default='pages_show_list,pages_read_engagement,pages_manage_posts,instagram_basic,instagram_content_publish')
 
 # LinkedIn OAuth
 LINKEDIN_CLIENT_ID = env('LINKEDIN_CLIENT_ID', default='')
@@ -137,3 +139,9 @@ LINKEDIN_CLIENT_SECRET = env('LINKEDIN_CLIENT_SECRET', default='')
 LINKEDIN_REDIRECT_URI = env('LINKEDIN_REDIRECT_URI', default='')
 LINKEDIN_API_VERSION = env('LINKEDIN_API_VERSION', default='202408')
 LINKEDIN_SCOPES = env('LINKEDIN_SCOPES', default='openid profile email w_member_social')
+
+# YouTube OAuth
+YOUTUBE_CLIENT_ID = env('YOUTUBE_CLIENT_ID', default='')
+YOUTUBE_CLIENT_SECRET = env('YOUTUBE_CLIENT_SECRET', default='')
+YOUTUBE_REDIRECT_URI = env('YOUTUBE_REDIRECT_URI', default='')
+YOUTUBE_SCOPES = env('YOUTUBE_SCOPES', default='https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly')

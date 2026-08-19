@@ -1214,15 +1214,20 @@ function PublishingPage() {
                   <div className="mt-4 space-y-2">
                     {accounts.map((acc) => {
                       const s = (acc.status || "").toUpperCase();
-                      const disabled = s !== "CONNECTED" && s !== "TOKEN_EXPIRED";
+                      const isYoutube = acc.platform === "YOUTUBE";
+                      const isVideo = asset?.contentType === "video";
+                      const isFormatMismatch = isYoutube && !isVideo;
+                      
+                      const disabled = (s !== "CONNECTED" && s !== "TOKEN_EXPIRED") || isFormatMismatch;
                       return (
                         <label
                           key={acc.id}
                           className={cn(
                             "grid grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-border px-3 py-3",
                             selected.includes(acc.id) && "border-primary bg-primary/5",
-                            disabled && "opacity-60",
+                            disabled && "opacity-60 cursor-not-allowed",
                           )}
+                          title={isFormatMismatch ? "YouTube only supports video uploads" : ""}
                         >
                           <Checkbox
                             checked={selected.includes(acc.id)}
@@ -1236,6 +1241,11 @@ function PublishingPage() {
                             </span>
                             <span className="block truncate text-xs text-muted-foreground">
                               {acc.username}
+                              {isFormatMismatch && (
+                                <span className="ml-2 text-destructive text-[10px] font-semibold uppercase">
+                                  Video Only
+                                </span>
+                              )}
                             </span>
                           </span>
                           <StatusBadge status={acc.status} className="justify-self-end" />

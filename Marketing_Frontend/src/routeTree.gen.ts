@@ -19,6 +19,8 @@ import { Route as HubPublishingRouteImport } from './routes/_hub.publishing'
 import { Route as HubSettingsRouteImport } from './routes/_hub.settings'
 import { Route as OauthCallbackRouteImport } from './routes/oauth.callback'
 import { Route as SocialLinkedinCallbackRouteImport } from './routes/social.linkedin.callback'
+import { Route as SocialMetaCallbackRouteImport } from './routes/social.meta.callback'
+import { Route as SocialYoutubeCallbackRouteImport } from './routes/social.youtube.callback'
 
 const HubRoute = HubRouteImport.update({
   id: '/_hub',
@@ -69,6 +71,16 @@ const SocialLinkedinCallbackRoute = SocialLinkedinCallbackRouteImport.update({
   path: '/social/linkedin/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SocialMetaCallbackRoute = SocialMetaCallbackRouteImport.update({
+  id: '/social/meta/callback',
+  path: '/social/meta/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SocialYoutubeCallbackRoute = SocialYoutubeCallbackRouteImport.update({
+  id: '/social/youtube/callback',
+  path: '/social/youtube/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof HubIndexRoute
@@ -80,6 +92,8 @@ export interface FileRoutesByFullPath {
   '/settings': typeof HubSettingsRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
+  '/social/meta/callback': typeof SocialMetaCallbackRoute
+  '/social/youtube/callback': typeof SocialYoutubeCallbackRoute
 }
 export interface FileRoutesByTo {
   '/privacy': typeof PrivacyRoute
@@ -91,6 +105,8 @@ export interface FileRoutesByTo {
   '/oauth/callback': typeof OauthCallbackRoute
   '/': typeof HubIndexRoute
   '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
+  '/social/meta/callback': typeof SocialMetaCallbackRoute
+  '/social/youtube/callback': typeof SocialYoutubeCallbackRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -104,6 +120,8 @@ export interface FileRoutesById {
   '/oauth/callback': typeof OauthCallbackRoute
   '/_hub/': typeof HubIndexRoute
   '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
+  '/social/meta/callback': typeof SocialMetaCallbackRoute
+  '/social/youtube/callback': typeof SocialYoutubeCallbackRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -117,6 +135,8 @@ export interface FileRouteTypes {
     | '/settings'
     | '/oauth/callback'
     | '/social/linkedin/callback'
+    | '/social/meta/callback'
+    | '/social/youtube/callback'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/privacy'
@@ -128,6 +148,8 @@ export interface FileRouteTypes {
     | '/oauth/callback'
     | '/'
     | '/social/linkedin/callback'
+    | '/social/meta/callback'
+    | '/social/youtube/callback'
   id:
     | '__root__'
     | '/_hub'
@@ -140,6 +162,8 @@ export interface FileRouteTypes {
     | '/oauth/callback'
     | '/_hub/'
     | '/social/linkedin/callback'
+    | '/social/meta/callback'
+    | '/social/youtube/callback'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -148,6 +172,8 @@ export interface RootRouteChildren {
   TermsRoute: typeof TermsRoute
   OauthCallbackRoute: typeof OauthCallbackRoute
   SocialLinkedinCallbackRoute: typeof SocialLinkedinCallbackRoute
+  SocialMetaCallbackRoute: typeof SocialMetaCallbackRoute
+  SocialYoutubeCallbackRoute: typeof SocialYoutubeCallbackRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -222,6 +248,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SocialLinkedinCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/social/meta/callback': {
+      id: '/social/meta/callback'
+      path: '/social/meta/callback'
+      fullPath: '/social/meta/callback'
+      preLoaderRoute: typeof SocialMetaCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/social/youtube/callback': {
+      id: '/social/youtube/callback'
+      path: '/social/youtube/callback'
+      fullPath: '/social/youtube/callback'
+      preLoaderRoute: typeof SocialYoutubeCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -249,6 +289,8 @@ const rootRouteChildren: RootRouteChildren = {
   TermsRoute: TermsRoute,
   OauthCallbackRoute: OauthCallbackRoute,
   SocialLinkedinCallbackRoute: SocialLinkedinCallbackRoute,
+  SocialMetaCallbackRoute: SocialMetaCallbackRoute,
+  SocialYoutubeCallbackRoute: SocialYoutubeCallbackRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

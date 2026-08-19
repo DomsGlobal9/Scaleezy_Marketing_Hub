@@ -1,51 +1,63 @@
-from django.conf import settings
+import logging
+import requests
+import time
 from typing import Dict, Any
-from ..base import SocialPlatformAdapter
+from django.conf import settings
 
-class InstagramAdapter(SocialPlatformAdapter):
-    """
-    Adapter for Instagram Graph API.
-    """
-    
-    def get_authorization_url(self, workspace_id: str) -> str:
-        client_id = settings.META_CLIENT_ID
-        redirect_uri = settings.META_REDIRECT_URI
-        scopes = "instagram_basic,instagram_content_publish"
-        state = f"workspace_id={workspace_id}"
-        
-        return f"https://www.facebook.com/v19.0/dialog/oauth?client_id={client_id}&redirect_uri={redirect_uri}&state={state}&scope={scopes}"
+from .facebook import FacebookAdapter
+from .exceptions import MetaMediaUploadError, MetaPublishingError
 
-    def exchange_code_for_token(self, code: str, redirect_uri: str) -> Dict[str, Any]:
-        if not settings.META_CLIENT_ID:
-            raise Exception("NOT_CONFIGURED")
-            
-        return {
-            "access_token": "mock_ig_access_token",
-            "expires_in": 5183999
+logger = logging.getLogger(__name__)
+
+
+class InstagramAdapter(FacebookAdapter):
+    """
+    Adapter for Instagram Professional Accounts.
+    Inherits unified OAuth and account fetching logic from FacebookAdapter.
+    Overrides publishing to use Instagram Graph API's 2-step media container flow.
+    """
+
+    def publish_text(self, access_token: str, author_urn: str, text: str) -> Dict[str, Any]:
+        """Instagram Graph API does not support text-only posts."""
+        raise MetaPublishingError("Instagram does not support text-only posts. An image or video is required.")
+
+    def publish_image(self, access_token: str, author_urn: str, text: str, image_data: bytes = None, filename: str = "image.jpg", image_url: str = None) -> Dict[str, Any]:
+        """
+        Publish image post to Instagram.
+        Uses a 2-step process:
+        1. Create a media container using a public image_url.
+        2. Publish the container.
+        """
+        if not image_url:
+            # Instagram Graph API requires a public URL. Raw bytes upload is not supported.
+            raise MetaMediaUploadError("Instagram requires a public image URL for publishing. Local bytes upload is not supported.")
+
+        # Step 1: Create Media Container
+        container_url = f"https://graph.facebook.com/{settings.META_API_VERSION}/{author_urn}/media"
+        container_data = {
+            "image_url": image_url,
+            "caption": text,
+            "access_token": access_token
         }
         
-    def get_account_info(self, access_token: str) -> Dict[str, Any]:
-        if not settings.META_CLIENT_ID:
-            raise Exception("NOT_CONFIGURED")
-            
-        return {
-            "id": "mock_ig_id",
-            "name": "Mock Instagram",
-            "username": "mock_ig",
-            "picture": {"data": {"url": "https://mock.url/ig.jpg"}}
+        container_res = requests.post(container_url, data=container_data, timeout=15)
+        self._handle_api_errors(container_res)
+        
+        creation_id = container_res.json().get("id")
+        if not creation_id:
+            raise MetaMediaUploadError("Failed to retrieve creation_id from Instagram media container.")
+
+        # Wait briefly for Meta to process the container before publishing
+        time.sleep(2)
+
+        # Step 2: Publish Media Container
+        publish_url = f"https://graph.facebook.com/{settings.META_API_VERSION}/{author_urn}/media_publish"
+        publish_data = {
+            "creation_id": creation_id,
+            "access_token": access_token
         }
         
-    def refresh_token(self, refresh_token: str) -> Dict[str, Any]:
-        return {"access_token": "mock_ig_access_token"}
+        publish_res = requests.post(publish_url, data=publish_data, timeout=15)
+        self._handle_api_errors(publish_res)
         
-    def validate_permissions(self, access_token: str) -> bool:
-        return True
-        
-    def publish(self, access_token: str, content: Dict[str, Any]) -> Dict[str, Any]:
-        return {"id": "mock_ig_post_id"}
-        
-    def get_publish_status(self, access_token: str, post_id: str) -> Dict[str, Any]:
-        return {"status": "PUBLISHED"}
-
-    def disconnect(self, access_token: str) -> bool:
-        return True
+        return {"id": publish_res.json().get("id")}

@@ -22,6 +22,23 @@ from apps.social_accounts.integrations.exceptions import (
     LinkedInRateLimitError,
     LinkedInAPIError,
 )
+from apps.social_accounts.integrations.meta.facebook import FacebookAdapter
+from apps.social_accounts.integrations.meta.instagram import InstagramAdapter
+from apps.social_accounts.integrations.meta.exceptions import (
+    MetaAuthenticationError,
+    MetaPermissionError,
+    MetaRateLimitError,
+    MetaPublishingError,
+    MetaMediaUploadError,
+)
+from apps.social_accounts.integrations.youtube.youtube import YouTubeAdapter
+from apps.social_accounts.integrations.youtube.exceptions import (
+    YouTubeAuthenticationError,
+    YouTubePermissionError,
+    YouTubeRateLimitError,
+    YouTubePublishingError,
+    YouTubeMediaUploadError,
+)
 from apps.social_accounts.utils.encryption import decrypt_token
 from apps.audit.models import AuditLog
 
@@ -54,6 +71,12 @@ def execute_publishing_job(job_id: str):
             _publish_to_x(item, job)
         elif platform == 'LINKEDIN':
             _publish_to_linkedin(item, job)
+        elif platform == 'FACEBOOK':
+            _publish_to_facebook(item, job)
+        elif platform == 'INSTAGRAM':
+            _publish_to_instagram(item, job)
+        elif platform == 'YOUTUBE':
+            _publish_to_youtube(item, job)
         else:
             item.status = PublishingJobItem.Status.FAILED
             item.error_message = "Platform not supported yet"
@@ -256,6 +279,243 @@ def _fail_linkedin_item(item: PublishingJobItem, job: PublishingJob, error, erro
         workspace=job.workspace,
         platform='LINKEDIN',
         action="Published Post",
+        result="Failed",
+        error=safe_msg,
+    )
+
+
+def _publish_to_facebook(item: PublishingJobItem, job: PublishingJob):
+    """Publish to Facebook Page."""
+    adapter = FacebookAdapter()
+
+    try:
+        access_token = decrypt_token(item.social_connection.access_token_encrypted)
+        if not access_token:
+            raise MetaAuthenticationError("Access token missing — please reconnect Facebook.")
+
+        author_urn = item.social_connection.external_account_id
+        caption = job.caption or "New post from Scaleezy Marketing Hub"
+        media_url = job.asset.file_url if job.asset else None
+
+        if media_url and not media_url.startswith("https://mock-storage.url"):
+            logger.info(f"Facebook image publishing started for job {job.id}")
+            # Facebook supports uploading via image_url directly
+            post_result = adapter.publish_image(
+                access_token=access_token,
+                author_urn=author_urn,
+                text=caption,
+                image_url=media_url
+            )
+        else:
+            logger.info(f"Facebook text publishing started for job {job.id}")
+            post_result = adapter.publish_text(
+                access_token=access_token,
+                author_urn=author_urn,
+                text=caption
+            )
+
+        item.status = PublishingJobItem.Status.PUBLISHED
+        item.external_post_id = post_result.get("id", "")
+        item.external_post_url = f"https://facebook.com/{post_result.get('id')}"
+        item.published_at = timezone.now()
+        item.save()
+
+        item.social_connection.last_published_at = timezone.now()
+        item.social_connection.save(update_fields=['last_published_at'])
+
+        AuditLog.objects.create(
+            workspace=job.workspace,
+            platform='FACEBOOK',
+            action="Published Post",
+            result="Success",
+        )
+
+    except MetaAuthenticationError as e:
+        _fail_meta_item(item, job, e, "META_AUTH_FAILED")
+        item.social_connection.status = 'TOKEN_EXPIRED'
+        item.social_connection.reauthorization_required = True
+        item.social_connection.last_error = e.safe_message
+        item.social_connection.save(update_fields=['status', 'reauthorization_required', 'last_error'])
+    except MetaPermissionError as e:
+        _fail_meta_item(item, job, e, "META_PERMISSION_DENIED")
+    except MetaRateLimitError as e:
+        _fail_meta_item(item, job, e, "META_RATE_LIMITED")
+    except MetaPublishingError as e:
+        _fail_meta_item(item, job, e, "META_PUBLISHING_FAILED")
+    except Exception as e:
+        logger.exception(f"Unexpected error publishing to Facebook for job {job.id}")
+        _fail_meta_item(item, job, Exception("Unexpected error occurred while publishing to Facebook."), "UNEXPECTED_ERROR")
+
+
+def _publish_to_instagram(item: PublishingJobItem, job: PublishingJob):
+    """Publish to Instagram Professional Account."""
+    adapter = InstagramAdapter()
+
+    try:
+        access_token = decrypt_token(item.social_connection.access_token_encrypted)
+        if not access_token:
+            raise MetaAuthenticationError("Access token missing — please reconnect Instagram.")
+
+        author_urn = item.social_connection.external_account_id
+        caption = job.caption or "New post from Scaleezy Marketing Hub"
+        media_url = job.asset.file_url if job.asset else None
+
+        if not media_url or media_url.startswith("https://mock-storage.url"):
+            # IG requires an image/video
+            raise MetaPublishingError("Instagram requires an image or video to publish. Text-only posts are not supported.")
+
+        logger.info(f"Instagram image publishing started for job {job.id}")
+        post_result = adapter.publish_image(
+            access_token=access_token,
+            author_urn=author_urn,
+            text=caption,
+            image_url=media_url
+        )
+
+        item.status = PublishingJobItem.Status.PUBLISHED
+        item.external_post_id = post_result.get("id", "")
+        # IG post URLs are typically not directly predictable via ID alone without fetching the permalink
+        item.external_post_url = ""
+        item.published_at = timezone.now()
+        item.save()
+
+        item.social_connection.last_published_at = timezone.now()
+        item.social_connection.save(update_fields=['last_published_at'])
+
+        AuditLog.objects.create(
+            workspace=job.workspace,
+            platform='INSTAGRAM',
+            action="Published Post",
+            result="Success",
+        )
+
+    except MetaAuthenticationError as e:
+        _fail_meta_item(item, job, e, "META_AUTH_FAILED")
+        item.social_connection.status = 'TOKEN_EXPIRED'
+        item.social_connection.reauthorization_required = True
+        item.social_connection.last_error = e.safe_message
+        item.social_connection.save(update_fields=['status', 'reauthorization_required', 'last_error'])
+    except MetaPermissionError as e:
+        _fail_meta_item(item, job, e, "META_PERMISSION_DENIED")
+    except MetaRateLimitError as e:
+        _fail_meta_item(item, job, e, "META_RATE_LIMITED")
+    except MetaMediaUploadError as e:
+        _fail_meta_item(item, job, e, "META_MEDIA_UPLOAD_FAILED")
+    except MetaPublishingError as e:
+        _fail_meta_item(item, job, e, "META_PUBLISHING_FAILED")
+    except Exception as e:
+        logger.exception(f"Unexpected error publishing to Instagram for job {job.id}")
+        _fail_meta_item(item, job, Exception("Unexpected error occurred while publishing to Instagram."), "UNEXPECTED_ERROR")
+
+
+def _fail_meta_item(item: PublishingJobItem, job: PublishingJob, error, error_code: str):
+    """Mark a Meta publishing item as failed with a safe error message."""
+    safe_msg = getattr(error, 'safe_message', str(error))
+    logger.warning(f"Meta publishing failed for job {job.id}: {error}")
+
+    item.status = PublishingJobItem.Status.FAILED
+    item.error_code = error_code
+    item.error_message = safe_msg
+    item.failed_at = timezone.now()
+    item.save()
+
+    AuditLog.objects.create(
+        workspace=job.workspace,
+        platform=item.social_connection.platform,
+        action="Published Post",
+        result="Failed",
+        error=safe_msg,
+    )
+
+
+def _publish_to_youtube(item: PublishingJobItem, job: PublishingJob):
+    """Publish video to YouTube Channel."""
+    adapter = YouTubeAdapter()
+
+    try:
+        access_token = decrypt_token(item.social_connection.access_token_encrypted)
+        if not access_token:
+            raise YouTubeAuthenticationError("Access token missing — please reconnect YouTube.")
+
+        title = job.caption or "New video from Scaleezy Marketing Hub"
+        description = job.caption or ""
+        media_url = job.asset.file_url if job.asset else None
+
+        if not media_url:
+            raise YouTubePublishingError("YouTube requires a video to publish. Text-only posts are not supported.")
+            
+        # We need to stream the video data to YouTube API
+        # Let's use requests to fetch it and stream
+        import requests as req
+        video_response = req.get(media_url, stream=True, timeout=10)
+        
+        if not video_response.ok:
+            raise YouTubeMediaUploadError("Failed to fetch video asset for uploading.")
+            
+        content_length = video_response.headers.get('content-length')
+            
+        logger.info(f"YouTube video publishing started for job {job.id}")
+        
+        # publish_video takes a stream (video_response.raw)
+        # Note: requests.get with stream=True exposes .raw
+        post_result = adapter.publish_video(
+            access_token=access_token,
+            title=title,
+            description=description,
+            video_stream=video_response.raw,
+            content_length=int(content_length) if content_length else None
+        )
+
+        item.status = PublishingJobItem.Status.PUBLISHED
+        item.external_post_id = post_result.get("id", "")
+        item.external_post_url = f"https://www.youtube.com/watch?v={post_result.get('id')}"
+        item.published_at = timezone.now()
+        item.save()
+
+        item.social_connection.last_published_at = timezone.now()
+        item.social_connection.save(update_fields=['last_published_at'])
+
+        AuditLog.objects.create(
+            workspace=job.workspace,
+            platform='YOUTUBE',
+            action="Published Video",
+            result="Success",
+        )
+
+    except YouTubeAuthenticationError as e:
+        _fail_youtube_item(item, job, e, "YOUTUBE_AUTH_FAILED")
+        item.social_connection.status = 'TOKEN_EXPIRED'
+        item.social_connection.reauthorization_required = True
+        item.social_connection.last_error = e.safe_message
+        item.social_connection.save(update_fields=['status', 'reauthorization_required', 'last_error'])
+    except YouTubePermissionError as e:
+        _fail_youtube_item(item, job, e, "YOUTUBE_PERMISSION_DENIED")
+    except YouTubeRateLimitError as e:
+        _fail_youtube_item(item, job, e, "YOUTUBE_QUOTA_EXCEEDED")
+    except YouTubeMediaUploadError as e:
+        _fail_youtube_item(item, job, e, "YOUTUBE_MEDIA_UPLOAD_FAILED")
+    except YouTubePublishingError as e:
+        _fail_youtube_item(item, job, e, "YOUTUBE_PUBLISHING_FAILED")
+    except Exception as e:
+        logger.exception(f"Unexpected error publishing to YouTube for job {job.id}")
+        _fail_youtube_item(item, job, Exception("Unexpected error occurred while publishing to YouTube."), "UNEXPECTED_ERROR")
+
+
+def _fail_youtube_item(item: PublishingJobItem, job: PublishingJob, error, error_code: str):
+    """Mark a YouTube publishing item as failed with a safe error message."""
+    safe_msg = getattr(error, 'safe_message', str(error))
+    logger.warning(f"YouTube publishing failed for job {job.id}: {error}")
+
+    item.status = PublishingJobItem.Status.FAILED
+    item.error_code = error_code
+    item.error_message = safe_msg
+    item.failed_at = timezone.now()
+    item.save()
+
+    AuditLog.objects.create(
+        workspace=job.workspace,
+        platform=item.social_connection.platform,
+        action="Published Video",
         result="Failed",
         error=safe_msg,
     )
