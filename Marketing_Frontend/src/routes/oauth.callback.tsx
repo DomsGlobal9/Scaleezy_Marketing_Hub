@@ -25,7 +25,9 @@ function OAuthCallbackPage() {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        platform: "X", // Hardcoded for this specific integration logic, or extract from state if needed
+        // X is the only platform using this generic callback; YouTube, Meta and
+        // LinkedIn each have their own /social/<platform>/callback route.
+        platform: "X",
         code: search.code,
         state: search.state,
       }),
@@ -51,7 +53,9 @@ function OAuthCallbackPage() {
       <div className="text-center">
         <Loader2 className="mx-auto size-8 animate-spin text-primary" />
         <h2 className="mt-4 text-lg font-medium text-foreground">Completing connection...</h2>
-        <p className="mt-2 text-sm text-muted-foreground">Please wait while we verify your account.</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Please wait while we verify your account.
+        </p>
       </div>
     </div>
   );

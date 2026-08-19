@@ -1,17 +1,19 @@
 """
 Custom exceptions for YouTube API interactions.
 """
+from apps.social_accounts.integrations.exceptions import SocialPlatformError
 
-class YouTubeAPIError(Exception):
+
+class YouTubeAPIError(SocialPlatformError):
     """Base exception for all YouTube API errors."""
+
     def __init__(self, message: str, error_code: str = "YOUTUBE_API_ERROR"):
         self.message = message
-        self.error_code = error_code
-        super().__init__(self.message)
-
-    @property
-    def safe_message(self) -> str:
-        return self.message
+        # `safe_message` is a plain attribute set by SocialPlatformError. It must
+        # NOT be redeclared as a read-only property here — the base assigns to it,
+        # so a property without a setter makes every YouTube error raise
+        # AttributeError while being constructed, masking the real failure.
+        super().__init__(message, safe_message=message, error_code=error_code)
 
 
 class YouTubeAuthenticationError(YouTubeAPIError):

@@ -484,30 +484,38 @@ class SocialConnectionViewSet(viewsets.ModelViewSet):
         if expires_in:
             token_expires_at = timezone.now() + timezone.timedelta(seconds=int(expires_in))
 
+        defaults = {
+            'account_name': account_info.get('name', 'YouTube Channel'),
+            'username': account_info.get('username', ''),
+            'profile_image_url': account_info.get('profile_image_url'),
+            'account_type': account_info.get('account_type', 'organization'),
+            'oauth_provider': 'google',
+            'oauth_user_id': account_info['id'],
+            'status': SocialConnection.Status.CONNECTED,
+            'access_token_encrypted': encrypt_token(access_token),
+            'token_created_at': timezone.now(),
+            'token_expires_at': token_expires_at,
+            'scopes': token_data.get('scopes', ''),
+            'last_verified_at': timezone.now(),
+            'publishing_enabled': True,
+            'reauthorization_required': False,
+            'last_error': None,
+            'disconnected_at': None,
+        }
+
+        # Google returns a refresh token only on the first authorization. Only
+        # overwrite the stored one when a new one actually came back, otherwise
+        # reconnecting would wipe our ability to refresh offline.
+        refresh_token = token_data.get('refresh_token')
+        if refresh_token:
+            defaults['refresh_token_encrypted'] = encrypt_token(refresh_token)
+
         # Create or update connection
         connection, created = SocialConnection.objects.update_or_create(
             workspace=workspace,
             platform=SocialConnection.Platform.YOUTUBE,
             external_account_id=account_info['id'],
-            defaults={
-                'account_name': account_info.get('name', 'YouTube Channel'),
-                'username': account_info.get('username', ''),
-                'profile_image_url': account_info.get('profile_image_url'),
-                'account_type': account_info.get('account_type', 'organization'),
-                'oauth_provider': 'google',
-                'oauth_user_id': account_info['id'],
-                'status': SocialConnection.Status.CONNECTED,
-                'access_token_encrypted': encrypt_token(access_token),
-                'refresh_token_encrypted': encrypt_token(token_data.get('refresh_token')),
-                'token_created_at': timezone.now(),
-                'token_expires_at': token_expires_at,
-                'scopes': token_data.get('scopes', ''),
-                'last_verified_at': timezone.now(),
-                'publishing_enabled': True,
-                'reauthorization_required': False,
-                'last_error': None,
-                'disconnected_at': None,
-            }
+            defaults=defaults,
         )
 
         # Audit Log

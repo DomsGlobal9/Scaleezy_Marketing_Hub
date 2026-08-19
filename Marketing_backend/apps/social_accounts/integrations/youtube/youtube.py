@@ -1,7 +1,9 @@
+import json
 import logging
 import requests
 import uuid
-from typing import Dict, Any, List
+from typing import Dict, Any
+from urllib.parse import urlencode
 from django.conf import settings
 from django.core.cache import cache
 
@@ -24,7 +26,17 @@ class YouTubeAdapter(SocialPlatformAdapter):
     """
     Adapter for Google/YouTube Data API v3.
     Handles OAuth, channel fetching, and video publishing.
+
+    OAuth follows Google's web-server flow:
+    https://developers.google.com/identity/protocols/oauth2/web-server
     """
+
+    AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+    TOKEN_URL = "https://oauth2.googleapis.com/token"
+    REVOKE_URL = "https://oauth2.googleapis.com/revoke"
+    TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
+    API_BASE = "https://www.googleapis.com/youtube/v3"
+    UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 
     def _ensure_configured(self):
         if not settings.YOUTUBE_CLIENT_ID or not settings.YOUTUBE_CLIENT_SECRET:
@@ -32,27 +44,34 @@ class YouTubeAdapter(SocialPlatformAdapter):
 
     def get_authorization_url(self, workspace_id: str) -> str:
         self._ensure_configured()
-        
+
+        # Opaque, unguessable value returned verbatim by Google and checked on
+        # the way back in — this is the CSRF defence for the callback.
         state = str(uuid.uuid4())
-        
+
         # Cache state for 15 minutes mapped to workspace
         cache.set(f"yt_state_{state}", state, timeout=900)
         cache.set(f"yt_ws_{state}", workspace_id, timeout=900)
-        
-        scopes = settings.YOUTUBE_SCOPES
-        
-        # Google OAuth URL
-        url = (
-            f"https://accounts.google.com/o/oauth2/v2/auth"
-            f"?client_id={settings.YOUTUBE_CLIENT_ID}"
-            f"&redirect_uri={settings.YOUTUBE_REDIRECT_URI}"
-            f"&response_type=code"
-            f"&scope={scopes}"
-            f"&access_type=offline"
-            f"&prompt=consent"
-            f"&state={state}"
-        )
-        return url
+
+        params = {
+            "client_id": settings.YOUTUBE_CLIENT_ID,
+            "redirect_uri": settings.YOUTUBE_REDIRECT_URI,
+            "response_type": "code",
+            # Space-delimited per the spec; urlencode escapes the spaces and the
+            # ":" and "/" in each scope URL. Hand-built query strings break here.
+            "scope": settings.YOUTUBE_SCOPES,
+            # Required to receive a refresh token for publishing while the user
+            # is not at the browser.
+            "access_type": "offline",
+            # Google only returns a refresh token on the *first* authorization,
+            # so force the consent screen to guarantee we always get one back.
+            "prompt": "consent",
+            # Keeps any scopes the user already granted this project.
+            "include_granted_scopes": "true",
+            "state": state,
+        }
+
+        return f"{self.AUTH_URL}?{urlencode(params)}"
 
     def validate_state(self, state: str) -> str:
         """Validates the OAuth state and returns the workspace_id."""
@@ -70,50 +89,61 @@ class YouTubeAdapter(SocialPlatformAdapter):
     def exchange_code_for_token(self, code: str, redirect_uri: str = None) -> Dict[str, Any]:
         self._ensure_configured()
         
-        token_url = "https://oauth2.googleapis.com/token"
         data = {
             "client_id": settings.YOUTUBE_CLIENT_ID,
             "client_secret": settings.YOUTUBE_CLIENT_SECRET,
             "code": code,
             "grant_type": "authorization_code",
-            "redirect_uri": redirect_uri or settings.YOUTUBE_REDIRECT_URI
+            # Must exactly match the redirect_uri sent on the authorization request.
+            "redirect_uri": redirect_uri or settings.YOUTUBE_REDIRECT_URI,
         }
-        
-        response = requests.post(token_url, data=data, timeout=10)
-        
+
+        response = requests.post(self.TOKEN_URL, data=data, timeout=10)
+
         if not response.ok:
-            error_data = response.json()
-            logger.error(f"YouTube OAuth Error: {error_data}")
-            raise YouTubeOAuthError(message=error_data.get("error_description", "Failed to exchange code for access token."))
-            
-        data = response.json()
+            try:
+                error_data = response.json()
+            except ValueError:
+                error_data = {"error_description": response.text[:200]}
+            logger.error("YouTube OAuth token exchange failed: %s", error_data)
+            raise YouTubeOAuthError(
+                message=error_data.get("error_description", "Failed to exchange code for access token.")
+            )
+
+        payload = response.json()
         return {
-            "access_token": data.get("access_token"),
-            "refresh_token": data.get("refresh_token"),
-            "expires_in": data.get("expires_in", 3599),
-            "scopes": settings.YOUTUBE_SCOPES
+            "access_token": payload.get("access_token"),
+            "refresh_token": payload.get("refresh_token"),
+            "expires_in": payload.get("expires_in", 3599),
+            # Report what Google actually granted, which can be narrower than
+            # what we requested if the user unticked a permission.
+            "scopes": payload.get("scope", ""),
         }
 
     def refresh_token(self, refresh_token: str) -> Dict[str, Any]:
         self._ensure_configured()
         
-        token_url = "https://oauth2.googleapis.com/token"
         data = {
             "client_id": settings.YOUTUBE_CLIENT_ID,
             "client_secret": settings.YOUTUBE_CLIENT_SECRET,
             "refresh_token": refresh_token,
-            "grant_type": "refresh_token"
+            "grant_type": "refresh_token",
         }
-        
-        response = requests.post(token_url, data=data, timeout=10)
-        
+
+        response = requests.post(self.TOKEN_URL, data=data, timeout=10)
+
         if not response.ok:
+            logger.error("YouTube token refresh failed: %s", response.text[:200])
             raise YouTubeAuthenticationError("Failed to refresh YouTube token.")
-            
-        data = response.json()
+
+        payload = response.json()
         return {
-            "access_token": data.get("access_token"),
-            "expires_in": data.get("expires_in", 3599)
+            "access_token": payload.get("access_token"),
+            # A refresh response normally omits refresh_token; pass through the
+            # existing one so callers never persist an empty value.
+            "refresh_token": payload.get("refresh_token") or refresh_token,
+            "expires_in": payload.get("expires_in", 3599),
+            "scopes": payload.get("scope", ""),
         }
 
     def get_account_info(self, access_token: str) -> Dict[str, Any]:
@@ -180,14 +210,14 @@ class YouTubeAdapter(SocialPlatformAdapter):
             raise YouTubePublishingError(message)
 
     def validate_permissions(self, access_token: str) -> bool:
-        # Check tokeninfo endpoint
-        url = f"https://oauth2.googleapis.com/tokeninfo?access_token={access_token}"
-        response = requests.get(url, timeout=10)
-        if response.ok:
-            data = response.json()
-            scopes = data.get("scope", "")
-            return "youtube.upload" in scopes
-        return False
+        """True when the token is still live and carries the upload scope."""
+        response = requests.get(
+            self.TOKENINFO_URL, params={"access_token": access_token}, timeout=10
+        )
+        if not response.ok:
+            return False
+        granted = response.json().get("scope", "").split()
+        return "https://www.googleapis.com/auth/youtube.upload" in granted
 
     def publish_text(self, access_token: str, author_urn: str, text: str) -> Dict[str, Any]:
         raise YouTubePublishingError("YouTube API only supports video uploads. Text-only posts are not allowed.")
@@ -203,21 +233,13 @@ class YouTubeAdapter(SocialPlatformAdapter):
         """
         Uploads a video to YouTube using a stream (e.g. from requests.get(url, stream=True).raw).
         """
-        url = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=media&part=snippet,status"
-        
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "video/*",
-        }
-        
-        # Meta info is sent as part of the query params or we could do multipart.
-        # But wait, Google's media upload needs metadata.
-        # The easiest way using requests without google-api-python-client is multipart upload.
-        
-        # Multipart/related requires specific formatting.
-        # Let's use the standard json metadata followed by video bytes.
-        import json
-        
+        # uploadType MUST be `multipart` to send metadata + bytes in one request.
+        # `media` would tell Google the body is raw video and the JSON part would
+        # be treated as video data.
+        url = f"{self.UPLOAD_URL}?{urlencode({'uploadType': 'multipart', 'part': 'snippet,status'})}"
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+
         metadata = {
             "snippet": {
                 "title": title,
@@ -264,6 +286,24 @@ class YouTubeAdapter(SocialPlatformAdapter):
         return {"status": "PUBLISHED"}
 
     def disconnect(self, access_token: str) -> bool:
-        url = "https://oauth2.googleapis.com/revoke"
-        requests.post(url, params={"token": access_token}, timeout=10)
+        """
+        Revokes the token at Google. Revoking a refresh token also invalidates
+        every access token derived from it.
+        """
+        try:
+            response = requests.post(
+                self.REVOKE_URL,
+                data={"token": access_token},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            logger.warning("YouTube token revocation call failed: %s", exc)
+            return False
+
+        # 400 means the token was already expired or revoked — the desired end
+        # state either way, so don't fail the disconnect over it.
+        if not response.ok and response.status_code != 400:
+            logger.warning("YouTube token revocation returned %s", response.status_code)
+            return False
         return True
