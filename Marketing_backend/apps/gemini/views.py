@@ -20,6 +20,8 @@ class GeminiGenerationViewSet(viewsets.ModelViewSet):
         returns everything the frontend needs for the preview screen.
         """
         # Extract the frontend's payload directly (not via model serializer)
+
+        
         data = request.data
         campaign_name = data.get('campaignName', data.get('campaign_name', ''))
         product = data.get('product', '')
