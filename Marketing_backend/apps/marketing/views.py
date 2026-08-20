@@ -6,12 +6,12 @@ from .models import MarketingAsset
 from apps.workspaces.models import MarketingWorkspace
 from .serializers import MarketingAssetSerializer, UploadAssetSerializer
 from .services.storage import SupabaseStorageService
+from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.responses import APIResponse
 
-class MarketingAssetViewSet(viewsets.ModelViewSet):
+class MarketingAssetViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     queryset = MarketingAsset.objects.all()
     serializer_class = MarketingAssetSerializer
-    permission_classes = [AllowAny]
 
     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser])
     def upload(self, request):

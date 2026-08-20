@@ -134,11 +134,11 @@ REST_FRAMEWORK = {
         'rest_framework_simplejwt.authentication.JWTAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
-    # Still AllowAny: individual viewsets are being migrated to
-    # IsAuthenticated + IsWorkspaceMember. This default flips once the frontend
-    # sign-in flow ships, so the app is never left unusable between commits.
+    # Authenticated by default. Endpoints that must stay open (auth login and
+    # refresh, the OAuth callback) opt out explicitly, so a newly added view is
+    # closed unless someone deliberately opens it.
     'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.AllowAny',
+        'rest_framework.permissions.IsAuthenticated',
     ],
 }
 

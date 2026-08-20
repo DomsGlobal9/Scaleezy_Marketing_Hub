@@ -3,15 +3,15 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
 from .models import GeminiGenerationRequest, GeminiGenerationResult
 from .serializers import GeminiGenerationRequestSerializer, GeminiGenerationResultSerializer
+from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.responses import APIResponse
 from .services.generator import GeminiGeneratorService
 from django.utils import timezone
 
 
-class GeminiGenerationViewSet(viewsets.ModelViewSet):
+class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     queryset = GeminiGenerationRequest.objects.all()
     serializer_class = GeminiGenerationRequestSerializer
-    permission_classes = [AllowAny]  # MVP: allow frontend access without auth
 
     @action(detail=False, methods=['post'])
     def generate(self, request):

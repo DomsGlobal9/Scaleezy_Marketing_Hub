@@ -39,7 +39,7 @@ from apps.social_accounts.integrations.youtube.exceptions import (
     YouTubePublishingError,
     YouTubeMediaUploadError,
 )
-from apps.social_accounts.utils.encryption import decrypt_token
+from apps.social_accounts.utils.encryption import decrypt_token, encrypt_token
 from apps.audit.models import AuditLog
 
 logger = logging.getLogger(__name__)
@@ -433,11 +433,39 @@ def _publish_to_youtube(item: PublishingJobItem, job: PublishingJob):
     adapter = YouTubeAdapter()
 
     try:
-        access_token = decrypt_token(item.social_connection.access_token_encrypted)
+        connection = item.social_connection
+        
+        # Check if token is expired or expires in the next 5 minutes
+        from datetime import timedelta
+        if connection.token_expires_at and timezone.now() >= (connection.token_expires_at - timedelta(minutes=5)):
+            refresh_token = decrypt_token(connection.refresh_token_encrypted)
+            if refresh_token:
+                logger.info(f"Refreshing YouTube token for connection {connection.id}")
+                new_token_data = adapter.refresh_token(refresh_token)
+                
+                connection.access_token_encrypted = encrypt_token(new_token_data["access_token"])
+                if new_token_data.get("refresh_token"):
+                    connection.refresh_token_encrypted = encrypt_token(new_token_data["refresh_token"])
+                
+                expires_in = new_token_data.get("expires_in", 3599)
+                connection.token_expires_at = timezone.now() + timedelta(seconds=expires_in)
+                connection.last_token_refresh_at = timezone.now()
+                connection.save()
+        
+        access_token = decrypt_token(connection.access_token_encrypted)
         if not access_token:
             raise YouTubeAuthenticationError("Access token missing — please reconnect YouTube.")
 
-        title = job.caption or "New video from Scaleezy Marketing Hub"
+        raw_title = job.caption or "New video from Scaleezy Marketing Hub"
+        
+        # YouTube titles must be <= 100 chars and cannot contain < or >
+        title_cleaned = raw_title.split('\n')[0].replace('<', '').replace('>', '').strip()
+        if not title_cleaned:
+            title_cleaned = "New video from Scaleezy"
+        if len(title_cleaned) > 95:
+            title_cleaned = title_cleaned[:95] + "..."
+            
+        title = title_cleaned
         description = job.caption or ""
         media_url = job.asset.file_url if job.asset else None
 

@@ -2,12 +2,14 @@ import logging
 
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.utils import timezone
 
 from .models import SocialConnection, SocialAccountAuditLog
 from apps.workspaces.models import MarketingWorkspace
 from .serializers import SocialConnectionSerializer, ConnectPlatformSerializer
+from apps.common.mixins import WorkspaceScopedMixin
+from apps.common.permissions import IsWorkspaceMember
 from apps.common.responses import APIResponse
 from .integrations.meta.facebook import FacebookAdapter
 from .integrations.meta.instagram import InstagramAdapter
@@ -28,10 +30,17 @@ from .utils.encryption import encrypt_token, decrypt_token
 logger = logging.getLogger(__name__)
 
 
-class SocialConnectionViewSet(viewsets.ModelViewSet):
+class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     queryset = SocialConnection.objects.all()
     serializer_class = SocialConnectionSerializer
-    permission_classes = [AllowAny]  # Changed to AllowAny for MVP since frontend auth is mocked
+
+    def get_permissions(self):
+        # The OAuth callback is reached straight after an external redirect and
+        # must not 401 — it carries a single-use authorization code that cannot
+        # be replayed. Everything else requires an authenticated member.
+        if self.action == 'oauth_callback':
+            return [AllowAny()]
+        return [IsAuthenticated(), IsWorkspaceMember()]
 
     def get_adapter(self, platform):
         adapters = {

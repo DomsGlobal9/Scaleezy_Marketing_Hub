@@ -7,6 +7,7 @@ workspace they are an active member of, and only if their role is high enough.
 """
 import logging
 
+from django.core.exceptions import ValidationError
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 from apps.workspaces.models import WorkspaceMember
@@ -132,6 +133,54 @@ class HasWorkspaceRole(BasePermission):
                 request.user.pk, membership.role, required,
             )
         return allowed
+
+
+def get_request_workspace(request):
+    """
+    Resolves the workspace for a plain APIView and verifies membership.
+
+    Returns (workspace, None) on success or (None, error_response) so the view
+    can `return error` directly. Replaces `MarketingWorkspace.objects.first()`,
+    which handed whichever workspace the database returned first to whoever
+    asked — across tenants.
+    """
+    from rest_framework import status
+
+    from apps.common.responses import APIResponse
+    from apps.workspaces.models import MarketingWorkspace
+
+    workspace_id = resolve_workspace_id(request)
+    if not workspace_id:
+        return None, APIResponse(
+            success=False,
+            message="No workspace selected. Send an X-Workspace-Id header.",
+            error={"code": "NO_WORKSPACE", "message": "No workspace selected."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if get_membership(request.user, workspace_id) is None:
+        # 404 rather than 403: revealing that a workspace exists but is barred
+        # tells an attacker their guessed id was real.
+        logger.warning(
+            "Workspace access denied: user=%s workspace=%s",
+            getattr(request.user, 'pk', None), workspace_id,
+        )
+        return None, APIResponse(
+            success=False,
+            message="Workspace not found.",
+            error={"code": "WORKSPACE_NOT_FOUND", "message": "Workspace not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    try:
+        return MarketingWorkspace.objects.get(id=workspace_id), None
+    except (MarketingWorkspace.DoesNotExist, ValueError, ValidationError):
+        return None, APIResponse(
+            success=False,
+            message="Workspace not found.",
+            error={"code": "WORKSPACE_NOT_FOUND", "message": "Workspace not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
 
 def _workspace_id_of(obj):

@@ -1,37 +1,55 @@
-from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from apps.workspaces.models import MarketingWorkspace
-from .models import DailyMetric, PlatformPerformance, CampaignROI
-from .serializers import DailyMetricSerializer, PlatformPerformanceSerializer, CampaignROISerializer
+from rest_framework.views import APIView
+
+from apps.common.permissions import IsWorkspaceMember, get_request_workspace
+from apps.common.responses import APIResponse
+
+from .models import CampaignROI, DailyMetric, PlatformPerformance
+from .serializers import (
+    CampaignROISerializer,
+    DailyMetricSerializer,
+    PlatformPerformanceSerializer,
+)
+
 
 class AnalyticsDashboardView(APIView):
-    # permission_classes = [IsAuthenticated] # Temporarily removed for easier dev
+    permission_classes = [IsWorkspaceMember]
 
     def get(self, request):
-        workspace = MarketingWorkspace.objects.first()
-        if not workspace:
-            return Response({"error": "No workspace found"}, status=404)
-            
+        # Was MarketingWorkspace.objects.first(), which served whichever
+        # workspace the database returned first to any caller.
+        workspace, error = get_request_workspace(request)
+        if error:
+            return error
+
         metrics = DailyMetric.objects.filter(workspace=workspace).order_by('date')
-        performance = PlatformPerformance.objects.filter(workspace=workspace).order_by('-conversions')
+        performance = PlatformPerformance.objects.filter(workspace=workspace).order_by(
+            '-conversions'
+        )
         roi = CampaignROI.objects.filter(workspace=workspace).order_by('-roi_multiplier')
-        
-        return Response({
-            "trend": DailyMetricSerializer(metrics, many=True).data,
-            "platform_perf": PlatformPerformanceSerializer(performance, many=True).data,
-            "roi": CampaignROISerializer(roi, many=True).data
-        })
+
+        # Deliberately NOT the APIResponse envelope: the frontend reads
+        # data.trend / data.platform_perf / data.roi at the top level.
+        # Reshaping this is a separate change with matching frontend edits.
+        return Response(
+            {
+                "trend": DailyMetricSerializer(metrics, many=True).data,
+                "platform_perf": PlatformPerformanceSerializer(performance, many=True).data,
+                "roi": CampaignROISerializer(roi, many=True).data,
+            }
+        )
+
 
 class AnalyticsKPIView(APIView):
+    permission_classes = [IsWorkspaceMember]
+
     def get(self, request):
-        workspace = MarketingWorkspace.objects.first()
-        if not workspace:
-            return Response({"error": "No workspace found"}, status=404)
-        
-        # Calculate aggregations or just return mock format for now
-        # so frontend Overview tab has real API data structure
-        
+        workspace, error = get_request_workspace(request)
+        if error:
+            return error
+
+        # TODO: derive these from DailyMetric / PublishingJob rather than
+        # returning fixed values. The shape is what the Overview tab consumes.
         kpis = [
             {"label": "Active Campaigns", "value": "2", "icon": "Megaphone", "hint": "This month"},
             {"label": "Scheduled Posts", "value": "8", "icon": "CalendarClock", "accent": "gold"},
@@ -42,5 +60,5 @@ class AnalyticsKPIView(APIView):
             {"label": "Repeat Purchase Rate", "value": "40%", "icon": "Repeat"},
             {"label": "Marketing ROI", "value": "3.8x", "icon": "CircleDollarSign", "accent": "gold"},
         ]
-        
+        # Top-level shape preserved for the same reason as the dashboard.
         return Response({"kpis": kpis})

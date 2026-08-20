@@ -7,14 +7,15 @@ from apps.workspaces.models import MarketingWorkspace
 from apps.marketing.models import MarketingAsset
 from apps.social_accounts.models import SocialConnection
 from .serializers import PublishingJobSerializer, CreatePublishingJobSerializer
+from apps.common.mixins import WorkspaceScopedMixin
+from apps.common.permissions import IsWorkspaceMember
 from apps.common.responses import APIResponse
 from .services import execute_publishing_job
 from django.utils import timezone
 
-class PublishingJobViewSet(viewsets.ModelViewSet):
+class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     queryset = PublishingJob.objects.all().prefetch_related('items')
     serializer_class = PublishingJobSerializer
-    permission_classes = [AllowAny] # MVP
 
     def create(self, request, *args, **kwargs):
         serializer = CreatePublishingJobSerializer(data=request.data)
@@ -95,7 +96,12 @@ class PublishingJobViewSet(viewsets.ModelViewSet):
         Retries a specific failed item.
         """
         try:
-            item = PublishingJobItem.objects.get(id=item_id)
+            # IDOR fix: previously any caller with an item id could retry it,
+            # publishing to a social account in someone else's workspace.
+            item = PublishingJobItem.objects.select_related('publishing_job').get(
+                id=item_id,
+                publishing_job__workspace__in=self.accessible_workspace_ids(),
+            )
             if item.status != PublishingJobItem.Status.FAILED:
                 return APIResponse(success=False, message="Item is not in FAILED state.", status=400)
                 
