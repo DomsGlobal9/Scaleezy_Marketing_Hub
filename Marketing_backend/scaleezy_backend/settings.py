@@ -3,8 +3,12 @@ Django settings for scaleezy_backend project.
 """
 
 import os
+import sys
 import environ
+from datetime import timedelta
 from pathlib import Path
+
+from corsheaders.defaults import default_headers as default_cors_headers
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -81,6 +85,16 @@ DATABASES = {
     'default': env.db('DATABASE_URL', default=f'sqlite:///{BASE_DIR}/db.sqlite3')
 }
 
+# Run the suite against a disposable in-memory SQLite database.
+# Without this, `manage.py test` creates and drops a real database on the shared
+# Supabase instance — slow, and the connection pooler holds sessions open which
+# makes the teardown DROP fail.
+if 'test' in sys.argv:
+    DATABASES['default'] = {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': ':memory:',
+    }
+
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
@@ -104,18 +118,37 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 # CORS Settings
-CORS_ALLOW_ALL_ORIGINS = True # Restrict in production
+# Wide open in local development only. Production must supply an explicit
+# allowlist via CORS_ALLOWED_ORIGINS (comma-separated) — an open CORS policy in
+# front of encrypted OAuth tokens is not acceptable once deployed.
+CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[])
+CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = list(default_cors_headers) + ['x-workspace-id']
 
 
 # DRF Settings
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
         'rest_framework.authentication.SessionAuthentication',
-        'rest_framework.authentication.BasicAuthentication',
     ],
+    # Still AllowAny: individual viewsets are being migrated to
+    # IsAuthenticated + IsWorkspaceMember. This default flips once the frontend
+    # sign-in flow ships, so the app is never left unusable between commits.
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
-    ]
+    ],
+}
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=env.int('JWT_ACCESS_MINUTES', default=60)),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=env.int('JWT_REFRESH_DAYS', default=7)),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': False,  # requires the token_blacklist app
+    'UPDATE_LAST_LOGIN': True,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'SIGNING_KEY': SECRET_KEY,
 }
 
 

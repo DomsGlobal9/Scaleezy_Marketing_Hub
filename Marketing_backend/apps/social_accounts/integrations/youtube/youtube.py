@@ -195,19 +195,40 @@ class YouTubeAdapter(SocialPlatformAdapter):
 
         code = error.get("code")
         message = error.get("message", "Unknown YouTube error")
-        
-        if code in (401, 403):
-            # Differentiate between Auth and Quota/Permissions
-            if "quota" in message.lower():
+
+        # Google's machine-readable reason is more reliable than the prose
+        # message, which is localised and reworded over time.
+        reasons = {
+            item.get("reason", "").lower()
+            for item in error.get("errors", [])
+            if isinstance(item, dict)
+        }
+        QUOTA_REASONS = {
+            "quotaexceeded",
+            "dailylimitexceeded",
+            "ratelimitexceeded",
+            "userratelimitexceeded",
+        }
+
+        def _is_quota() -> bool:
+            if reasons & QUOTA_REASONS:
+                return True
+            lowered = message.lower()
+            return "quota" in lowered or "rate limit" in lowered
+
+        # Route on the status code first. Matching on message text alone
+        # misclassifies the most common case of all — a 401 "Invalid
+        # Credentials" — as a permission problem, which sends the user to fix
+        # scopes when the real fix is to reconnect the account.
+        if code == 401:
+            raise YouTubeAuthenticationError(message)
+        if code == 403:
+            if _is_quota():
                 raise YouTubeRateLimitError(message)
-            elif "permission" in message.lower() or "auth" in message.lower():
-                raise YouTubeAuthenticationError(message)
-            else:
-                raise YouTubePermissionError(message)
-        elif code == 429:
+            raise YouTubePermissionError(message)
+        if code == 429:
             raise YouTubeRateLimitError(message)
-        else:
-            raise YouTubePublishingError(message)
+        raise YouTubePublishingError(message)
 
     def validate_permissions(self, access_token: str) -> bool:
         """True when the token is still live and carries the upload scope."""
