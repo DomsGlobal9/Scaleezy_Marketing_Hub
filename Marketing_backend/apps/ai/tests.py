@@ -1,0 +1,268 @@
+"""Phase 5 — capability routing, per-customer switches, strategies."""
+from unittest.mock import patch
+
+from django.contrib.auth import get_user_model
+from rest_framework import status
+from rest_framework.test import APITestCase
+
+from apps.ai.adapters.base import AIProviderAdapter
+from apps.ai.models import (
+    AIProvider,
+    AIUsageLog,
+    Capability,
+    Strategy,
+    WorkspaceAIProvider,
+    WorkspaceAIRoute,
+)
+from apps.ai.router import AIRouter, NoProviderAvailable
+from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
+
+User = get_user_model()
+
+
+class FakeAdapter(AIProviderAdapter):
+    key = 'fake'
+    display_name = 'Fake'
+    capabilities = (Capability.TEXT, Capability.IMAGE)
+    unit_cost = 0.01
+
+    def generate_text(self, brief):
+        return {'headline': 'from-fake', 'quality_score': 0.5}
+
+    def generate_image(self, brief):
+        return {'image_url': 'https://fake/img.png'}
+
+    def health_check(self):
+        return {'ok': True, 'detail': 'fake ready'}
+
+
+class BetterAdapter(FakeAdapter):
+    key = 'better'
+    display_name = 'Better'
+    unit_cost = 0.01
+
+    def generate_text(self, brief):
+        return {'headline': 'from-better', 'quality_score': 0.99}
+
+
+class BrokenAdapter(FakeAdapter):
+    key = 'broken'
+    display_name = 'Broken'
+
+    def generate_text(self, brief):
+        raise RuntimeError("provider exploded")
+
+
+def _install(monkey_registry):
+    """Point the registry at the test adapters."""
+    return patch('apps.ai.registry.get_adapter_class', side_effect=monkey_registry.get)
+
+
+class RouterTests(APITestCase):
+    def setUp(self):
+        self.ws = MarketingWorkspace.objects.create(customer_id='a', workspace_name='Alpha')
+        self.adapters = {'fake': FakeAdapter, 'better': BetterAdapter, 'broken': BrokenAdapter}
+
+        # update_or_create, not create: the seed migration discovers every
+        # AIProviderAdapter subclass, and these test adapters are subclasses
+        # too, so the catalogue rows may already exist.
+        self.providers = {}
+        for key, cls in self.adapters.items():
+            self.providers[key], _ = AIProvider.objects.update_or_create(
+                key=key,
+                defaults={
+                    'display_name': cls.display_name,
+                    'capabilities': [Capability.TEXT, Capability.IMAGE],
+                    'unit_cost': cls.unit_cost,
+                    'is_available': True,
+                },
+            )
+
+    def enable(self, key, capability=Capability.TEXT, priority=10,
+               strategy=Strategy.FAILOVER, enabled=True):
+        WorkspaceAIProvider.objects.get_or_create(
+            workspace=self.ws, provider=self.providers[key], defaults={'enabled': enabled}
+        )
+        WorkspaceAIRoute.objects.create(
+            workspace=self.ws, capability=capability, provider=self.providers[key],
+            priority=priority, strategy=strategy,
+        )
+
+    def route(self, capability=Capability.TEXT, brief=None):
+        with _install(self.adapters):
+            return AIRouter(self.ws).dispatch(capability, brief or {})
+
+    # ── resolution ───────────────────────────────────────────────────────
+    def test_no_route_configured_raises(self):
+        with self.assertRaises(NoProviderAvailable):
+            self.route()
+
+    def test_routes_to_the_configured_provider(self):
+        self.enable('fake')
+        result = self.route()
+        self.assertEqual(result['headline'], 'from-fake')
+        self.assertEqual(result['provider'], 'fake')
+
+    def test_a_disabled_provider_is_not_used_even_when_routed(self):
+        """The on/off switch overrides routing."""
+        self.enable('fake')
+        WorkspaceAIProvider.objects.filter(workspace=self.ws).update(enabled=False)
+        with self.assertRaises(NoProviderAvailable):
+            self.route()
+
+    def test_operator_kill_switch_disables_it_for_everyone(self):
+        self.enable('fake')
+        AIProvider.objects.filter(key='fake').update(is_available=False)
+        with self.assertRaises(NoProviderAvailable):
+            self.route()
+
+    def test_capabilities_route_independently(self):
+        """The headline requirement: one AI for copy, another for images."""
+        self.enable('fake', capability=Capability.TEXT)
+        self.enable('better', capability=Capability.IMAGE)
+
+        self.assertEqual(self.route(Capability.TEXT)['provider'], 'fake')
+        self.assertEqual(self.route(Capability.IMAGE)['provider'], 'better')
+
+    def test_provider_that_cannot_serve_a_capability_is_skipped(self):
+        AIProvider.objects.filter(key='fake').update(capabilities=[Capability.IMAGE])
+        self.enable('fake', capability=Capability.TEXT)
+        with self.assertRaises(NoProviderAvailable):
+            self.route(Capability.TEXT)
+
+    # ── strategies ───────────────────────────────────────────────────────
+    def test_failover_skips_a_broken_provider(self):
+        self.enable('broken', priority=1)
+        self.enable('fake', priority=2)
+        self.assertEqual(self.route()['provider'], 'fake')
+
+    def test_failover_raises_when_every_provider_fails(self):
+        self.enable('broken', priority=1)
+        with self.assertRaises(NoProviderAvailable):
+            self.route()
+
+    def test_best_of_keeps_the_highest_scoring_result(self):
+        self.enable('fake', priority=1, strategy=Strategy.BEST_OF)
+        self.enable('better', priority=2, strategy=Strategy.BEST_OF)
+        result = self.route()
+        self.assertEqual(result['headline'], 'from-better')
+        self.assertEqual(result['considered'], 2)
+
+    def test_best_of_marks_only_the_winner_as_selected(self):
+        """Cost reporting must distinguish the kept result from the discarded."""
+        self.enable('fake', priority=1, strategy=Strategy.BEST_OF)
+        self.enable('better', priority=2, strategy=Strategy.BEST_OF)
+        self.route()
+        logs = AIUsageLog.objects.filter(workspace=self.ws, success=True)
+        self.assertEqual(logs.count(), 2)
+        self.assertEqual(logs.filter(selected=True).count(), 1)
+        self.assertEqual(logs.get(selected=True).provider.key, 'better')
+
+    # ── usage logging ────────────────────────────────────────────────────
+    def test_a_successful_call_is_logged(self):
+        self.enable('fake')
+        self.route()
+        log = AIUsageLog.objects.get(workspace=self.ws)
+        self.assertTrue(log.success)
+        self.assertEqual(log.capability, Capability.TEXT)
+
+    def test_a_failure_is_logged_too(self):
+        self.enable('broken', priority=1)
+        self.enable('fake', priority=2)
+        self.route()
+        self.assertTrue(
+            AIUsageLog.objects.filter(workspace=self.ws, success=False).exists()
+        )
+
+
+class AIConsoleAPITests(APITestCase):
+    def setUp(self):
+        self.ws = MarketingWorkspace.objects.create(customer_id='a', workspace_name='Alpha')
+        self.other = MarketingWorkspace.objects.create(customer_id='b', workspace_name='Beta')
+        self.provider, _ = AIProvider.objects.update_or_create(
+            key='fake',
+            defaults={'display_name': 'Fake', 'capabilities': [Capability.TEXT],
+                      'is_available': True},
+        )
+
+        self.admin = User.objects.create_user(username='admin2', password='pw')
+        WorkspaceMember.objects.create(
+            workspace=self.ws, user=self.admin, role=WorkspaceMember.Role.ADMIN
+        )
+        self.editor = User.objects.create_user(username='ed', password='pw')
+        WorkspaceMember.objects.create(
+            workspace=self.ws, user=self.editor, role=WorkspaceMember.Role.EDITOR
+        )
+
+    def as_(self, user, ws=None):
+        self.client.force_authenticate(user=user)
+        self.client.credentials(HTTP_X_WORKSPACE_ID=str((ws or self.ws).id))
+
+    def test_catalogue_requires_auth(self):
+        self.assertEqual(
+            self.client.get('/api/marketing/ai/catalogue/').status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_catalogue_lists_providers_and_vocabularies(self):
+        self.as_(self.admin)
+        res = self.client.get('/api/marketing/ai/catalogue/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.data['data']
+        self.assertTrue(any(p['key'] == 'fake' for p in data['providers']))
+        self.assertTrue(data['capabilities'])
+        self.assertTrue(data['strategies'])
+
+    def test_admin_can_enable_a_provider(self):
+        self.as_(self.admin)
+        res = self.client.post(
+            '/api/marketing/ai/providers/',
+            {'provider': str(self.provider.id), 'enabled': True, 'credentials': 'sk-secret'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        wp = WorkspaceAIProvider.objects.get(workspace=self.ws)
+        self.assertTrue(wp.enabled)
+        self.assertTrue(wp.has_credentials)
+
+    def test_credentials_are_encrypted_and_never_returned(self):
+        self.as_(self.admin)
+        res = self.client.post(
+            '/api/marketing/ai/providers/',
+            {'provider': str(self.provider.id), 'enabled': True, 'credentials': 'sk-secret'},
+            format='json',
+        )
+        self.assertNotIn('credentials', res.data)
+        wp = WorkspaceAIProvider.objects.get(workspace=self.ws)
+        self.assertNotIn('sk-secret', wp.credentials_encrypted)
+        self.assertTrue(res.data['has_credentials'])
+
+    def test_editor_cannot_change_providers(self):
+        self.as_(self.editor)
+        res = self.client.post(
+            '/api/marketing/ai/providers/',
+            {'provider': str(self.provider.id), 'enabled': True},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_provider_config_is_workspace_scoped(self):
+        WorkspaceAIProvider.objects.create(workspace=self.other, provider=self.provider)
+        self.as_(self.admin)
+        res = self.client.get('/api/marketing/ai/providers/')
+        self.assertEqual(len(res.data), 0)
+
+    def test_route_rejects_a_provider_that_cannot_serve_the_capability(self):
+        self.as_(self.admin)
+        res = self.client.post(
+            '/api/marketing/ai/routes/',
+            {'capability': Capability.VIDEO, 'provider': str(self.provider.id)},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_resolved_shows_what_the_router_would_do(self):
+        self.as_(self.admin)
+        res = self.client.get('/api/marketing/ai/routes/resolved/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn(Capability.TEXT, res.data['data'])

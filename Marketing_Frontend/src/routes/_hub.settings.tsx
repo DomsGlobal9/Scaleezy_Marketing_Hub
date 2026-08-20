@@ -17,6 +17,7 @@ import {
 import { PageHeader, SectionTitle, StatusBadge } from "@/components/marketing/primitives";
 import { PERMISSION_MATRIX } from "@/lib/marketing-data";
 import { useBrandSettings } from "@/lib/brand-settings";
+import { AIProvidersPanel } from "@/components/marketing/ai-providers-panel";
 import { apiFetch } from "@/lib/api";
 
 export const Route = createFileRoute("/_hub/settings")({
@@ -366,6 +367,9 @@ function SettingsPage() {
 
       <div className="mt-6 grid gap-6 xl:grid-cols-2">
         <BrandKitPanel />
+        <Panel label="AI" title="Providers & routing">
+          <AIProvidersPanel />
+        </Panel>
       </div>
 
       <div className="mt-6">
