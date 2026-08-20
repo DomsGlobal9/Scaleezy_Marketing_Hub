@@ -9,6 +9,7 @@ urlpatterns = [
     path('api/marketing/', include('apps.marketing.urls')),
     path('api/marketing/', include('apps.brands.urls')),
     path('api/marketing/', include('apps.content.urls')),
+    path('api/marketing/', include('apps.feedback.urls')),
     path('api/marketing/', include('apps.ai.urls')),
     path('api/marketing/', include('apps.gemini.urls')),
     path('api/marketing/publishing/', include('apps.publishing.urls')),

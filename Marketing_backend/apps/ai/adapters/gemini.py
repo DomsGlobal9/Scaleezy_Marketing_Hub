@@ -20,7 +20,12 @@ logger = logging.getLogger(__name__)
 class GeminiAdapter(AIProviderAdapter):
     key = 'gemini'
     display_name = 'Google Gemini'
-    capabilities = (Capability.TEXT, Capability.IMAGE, Capability.IMAGE_ANALYSIS)
+    capabilities = (
+        Capability.TEXT,
+        Capability.IMAGE,
+        Capability.IMAGE_ANALYSIS,
+        Capability.EMBEDDING,
+    )
     default_model = 'gemini-1.5-pro'
     unit_cost = 0.02
 
@@ -52,6 +57,29 @@ class GeminiAdapter(AIProviderAdapter):
         if not b64:
             raise AIProviderError("No image supplied for analysis.")
         return {'analysis': self._service().analyze_reference_image(b64)}
+
+    #: Embedding model, separate from the generation model.
+    embedding_model = 'text-embedding-004'
+
+    def generate_embedding(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        text = (brief.get('text') or '').strip()
+        if not text:
+            raise AIProviderError("No text supplied to embed.")
+
+        model = self.config.get('embedding_model') or self.embedding_model
+        try:
+            response = self._service()._get_client().models.embed_content(
+                model=model, contents=text
+            )
+            vector = list(response.embeddings[0].values)
+        except AIProviderError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - surfaced as provider failure
+            raise AIProviderError(f"Gemini embedding failed: {exc}") from exc
+
+        if not vector:
+            raise AIProviderError("Gemini returned an empty embedding.")
+        return {'embedding': vector, 'model': model}
 
     def health_check(self) -> Dict[str, Any]:
         # The key is read from settings today; a per-workspace credential

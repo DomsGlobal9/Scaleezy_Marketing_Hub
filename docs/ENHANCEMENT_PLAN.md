@@ -180,24 +180,54 @@ copy untouched, without a deploy.
 
 ---
 
-### Phase 6 — Feedback capture & training engine
+### Phase 6 — Feedback capture & training engine ✅
 
-The spec's stated reason for existing, and currently 0% present.
+The spec's stated reason for existing. Shipped as `apps/feedback`.
 
 **Models**
-- `Feedback` — `content_item`, `user`, `verdict` (`approve`/`needs_edits`/`reject`),
-  `element_tags` array, `feedback_text`, `fix_request`, `sentiment`, `urgency`,
-  `before_asset` / `after_asset`, `pattern_extracted` JSON, `rules_updated` JSON.
-- `embedding` — `pgvector` `VectorField` on `Feedback`, with an IVFFlat index.
+- `FeedbackElement` — the tag vocabulary, as a table. See the deviation below.
+- `Feedback` — `workspace`, `content_item`, `brand`, `user`, `verdict`
+  (`APPROVE`/`NEEDS_EDITS`/`REJECT`), `element_keys`, `feedback_text`, `fix_request`,
+  `sentiment`, `urgency`, `before_asset`/`after_asset`, `embedding`, `embedding_model`,
+  `pattern_extracted` JSON, `rules_updated` JSON. Append-only: feedback is the evidence
+  the rules cite.
 
-**Work**
-- Enable the `vector` extension on Supabase; add `pgvector`.
-- Tag-picker UI on the review card, driven by the element vocabulary (**blocked — see below**).
-- `TrainingEngine`: embed → find similar past feedback → extract pattern → append rule to
-  `Brand.creative_brain` → surface a training report.
-- Learned rules feed back into the next generation's prompt.
+**Delivered**
+- `apps/feedback/embeddings.py` — routes to the AI layer's new `EMBEDDING` capability,
+  with a deterministic local fallback.
+- `apps/feedback/training.py` — `TrainingEngine`: embed → find similar past feedback
+  (cosine, or a shared element tag) → extract pattern → write the rule onto
+  `Brand.creative_brain`, keyed by element so a third rejection sharpens the existing
+  rule instead of duplicating it.
+- Every approve / reject / request-edits records a `Feedback` row; `submit` does not,
+  because it is not a verdict. Capture and training are best-effort — a failure there
+  never costs a reviewer their decision.
+- `GET /feedback/elements/` (vocabulary), `GET /feedback/training-report/`,
+  `POST /feedback/`.
+- Review card gains a grouped tag picker and a "how should this be fixed" field; the
+  review page shows what the generator has learned.
+- `GeminiGeneratorService._rules_block()` injects the learned rules into the prompt as
+  hard constraints. The prompt is byte-for-byte unchanged until something is learned.
 
-**Done when** rejecting a poster for the same reason twice measurably changes the next prompt.
+**Done when** rejecting a poster for the same reason twice measurably changes the next
+prompt — covered end to end by `ReviewIntegrationTests.test_rejecting_twice_changes_the_next_prompt`.
+
+**Two deviations from the plan above, both deliberate:**
+
+1. **JSON embeddings, not pgvector.** The test suite runs on in-memory SQLite (see
+   `settings.py`), which has no vector type, so a `VectorField` would have taken the
+   whole suite down. Vectors are stored as a JSON list and compared in-process over a
+   bounded scan of the workspace's recent feedback. `apps/feedback/embeddings.py` is the
+   only module that knows the representation, so moving to pgvector later is a one-file
+   change plus a migration — nothing above it changes.
+
+2. **A provisional vocabulary, seeded and flagged.** The real 52-element list is still
+   missing (see *Blocked* below), so Phase 6 would otherwise have stalled entirely.
+   `FeedbackElement` is a table, not an enum: 56 placeholder rows matching the documented
+   per-group counts are seeded with `is_provisional=True`, editable in Django admin, and
+   read from the database by both the UI and the engine. Swapping in the real list is a
+   data change, and rules already learned keep working — they key on element rows, not on
+   any constant in the codebase.
 
 ---
 
@@ -251,9 +281,12 @@ element names anywhere in the package.
 
 Those counts also **sum to 56, not 52**.
 
-This taxonomy is the input to the whole training engine, so it can't be guessed. Phase 6 needs the
-actual list before the tag picker or pattern extraction can be built. Phases 1–5 and 7 are
-unaffected.
+This taxonomy is the input to the whole training engine, so it can't be guessed.
+
+**No longer blocking.** Phase 6 shipped against a provisional vocabulary held in the
+`feedback_elements` table and flagged `is_provisional`. Hand over the real list and it
+replaces those rows — no deploy, and nothing already learned is lost. Until then the tag
+labels in the review UI are a stand-in, and the UI says so.
 
 ---
 

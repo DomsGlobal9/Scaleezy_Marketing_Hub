@@ -43,6 +43,9 @@ class AIProviderAdapter(ABC):
     def generate_video(self, brief: Dict[str, Any]) -> Dict[str, Any]:
         raise AIProviderError(f"{self.key} does not support video generation.")
 
+    def generate_embedding(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        raise AIProviderError(f"{self.key} does not support embeddings.")
+
     @abstractmethod
     def health_check(self) -> Dict[str, Any]:
         """{'ok': bool, 'detail': str}. Must never raise."""
@@ -68,4 +71,5 @@ class AIProviderAdapter(ABC):
             Capability.IMAGE: self.generate_image,
             Capability.IMAGE_ANALYSIS: self.analyze_image,
             Capability.VIDEO: self.generate_video,
+            Capability.EMBEDDING: self.generate_embedding,
         }[capability](brief)

@@ -221,6 +221,26 @@ Return ONLY a valid JSON object with these exact keys:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+    @staticmethod
+    def _rules_block(rules: list) -> str:
+        """
+        Renders the brand's learned rules as prompt instructions.
+
+        Empty when nothing has been learned yet, so the prompt is byte-for-byte
+        what it was before Phase 6 until a reviewer has actually rejected the
+        same thing twice.
+        """
+        lines = [str(r).strip() for r in (rules or []) if str(r).strip()]
+        if not lines:
+            return ""
+        body = "\n".join(f"- {line}" for line in lines)
+        return (
+            "\n\nLEARNED BRAND RULES — these come from this brand's own reviewers "
+            "rejecting past work for the same reason more than once. Treat them as "
+            "hard constraints and do not repeat those mistakes:\n"
+            f"{body}\n"
+        )
+
     @classmethod
     def generate_text_and_image_prompt(cls, request_data: dict) -> dict:
         """
@@ -237,6 +257,10 @@ Return ONLY a valid JSON object with these exact keys:
         offer = request_data.get('offer', '')
         brand_tone = request_data.get('brand_tone', '')
         b64_img = request_data.get('reference_image_base64', '')
+        # Rules the training engine has learned from repeated reviewer
+        # rejections. Placed near the end of the prompt, where the model
+        # weights instructions most heavily.
+        brand_rules = request_data.get('brand_rules') or []
 
         prompt_text = f"""You are an elite, award-winning creative director and social media marketing expert.
 
@@ -263,6 +287,7 @@ For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just 
 - **Mood & Emotion**: (e.g., luxurious and mysterious, vibrant and energetic).
 - Make it suitable for Instagram (1080x1350 portrait).
 
+{cls._rules_block(brand_rules)}
 Respond ONLY with a valid JSON object (no markdown, no code fences, no extra text):
 {{
   "postTitle": "A catchy, short title (max 10 words)",

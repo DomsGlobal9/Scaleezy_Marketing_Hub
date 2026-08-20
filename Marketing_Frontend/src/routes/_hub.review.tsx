@@ -1,10 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { CheckCircle2, Edit3, FileImage, Loader2, XCircle } from "lucide-react";
+import { Brain, CheckCircle2, Edit3, FileImage, Loader2, XCircle } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { FeedbackTagPicker, useFeedbackElements } from "@/components/marketing/feedback-tags";
 import { EmptyState, PageHeader, StatusBadge } from "@/components/marketing/primitives";
 import { api, apiPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -43,6 +44,22 @@ const TABS = [
   { key: "DRAFT", label: "Drafts" },
 ] as const;
 
+interface LearnedRule {
+  element: string;
+  label: string;
+  group: string;
+  text: string;
+  occurrences: number;
+}
+
+interface TrainingReport {
+  total_feedback: number;
+  by_verdict: Record<string, number>;
+  top_elements: { key: string; label: string; group: string; count: number }[];
+  brand_name: string;
+  rules: LearnedRule[];
+}
+
 const TONE: Record<string, "success" | "warning" | "danger" | "neutral"> = {
   APPROVED: "success",
   PENDING_REVIEW: "warning",
@@ -59,6 +76,10 @@ function ReviewPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [fixes, setFixes] = useState<Record<string, string>>({});
+  const [tags, setTags] = useState<Record<string, string[]>>({});
+  const [report, setReport] = useState<TrainingReport | null>(null);
+  const { groups, provisional } = useFeedbackElements();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -79,14 +100,40 @@ function ReviewPage() {
     }
   }, [tab]);
 
+  const loadReport = useCallback(async () => {
+    try {
+      setReport(await api<TrainingReport>("/api/marketing/feedback/training-report/"));
+    } catch {
+      // The report is a read-out, not a dependency of reviewing.
+      setReport(null);
+    }
+  }, []);
+
   useEffect(() => {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    void loadReport();
+  }, [loadReport]);
+
+  const toggleTag = (id: string, key: string) =>
+    setTags((prev) => {
+      const current = prev[id] ?? [];
+      return {
+        ...prev,
+        [id]: current.includes(key) ? current.filter((k) => k !== key) : [...current, key],
+      };
+    });
+
   const act = async (id: string, verb: "approve" | "reject" | "request-edits") => {
     setBusy(id);
     try {
-      await apiPost(`/api/marketing/content/${id}/${verb}/`, { note: notes[id] ?? "" });
+      await apiPost(`/api/marketing/content/${id}/${verb}/`, {
+        note: notes[id] ?? "",
+        elements: tags[id] ?? [],
+        fix_request: fixes[id] ?? "",
+      });
       toast.success(
         verb === "approve"
           ? "Approved — ready to publish."
@@ -94,7 +141,7 @@ function ReviewPage() {
             ? "Rejected."
             : "Sent back for edits. A new version was opened.",
       );
-      await load();
+      await Promise.all([load(), loadReport()]);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Action failed.");
     } finally {
@@ -109,6 +156,42 @@ function ReviewPage() {
         title="Review"
         subtitle="Nothing is published until it is approved here."
       />
+
+      {report && (report.rules.length > 0 || report.total_feedback > 0) ? (
+        <div className="surface-card mb-6 p-5">
+          <div className="flex items-center gap-2">
+            <Brain className="size-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold text-foreground">
+              What the generator has learned
+              {report.brand_name ? ` about ${report.brand_name}` : ""}
+            </h2>
+          </div>
+
+          {report.rules.length > 0 ? (
+            <ul className="mt-3 space-y-1.5">
+              {report.rules.slice(0, 5).map((rule) => (
+                <li key={rule.element} className="flex gap-2 text-xs text-muted-foreground">
+                  <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[0.625rem] font-medium text-foreground">
+                    ×{rule.occurrences}
+                  </span>
+                  <span>{rule.text}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {report.total_feedback} review{report.total_feedback === 1 ? "" : "s"} recorded.
+              Nothing is learned until the same problem is raised twice.
+            </p>
+          )}
+
+          {provisional ? (
+            <p className="mt-3 text-[0.6875rem] text-muted-foreground">
+              Feedback tags are a provisional vocabulary, pending the final element list.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="mb-6 flex flex-wrap gap-2">
         {TABS.map((t) => (
@@ -189,6 +272,26 @@ function ReviewPage() {
                       value={notes[item.id] ?? ""}
                       onChange={(e) => setNotes((prev) => ({ ...prev, [item.id]: e.target.value }))}
                     />
+
+                    <FeedbackTagPicker
+                      groups={groups}
+                      selected={tags[item.id] ?? []}
+                      onToggle={(key) => toggleTag(item.id, key)}
+                      disabled={busy === item.id}
+                    />
+
+                    {(tags[item.id] ?? []).length > 0 ? (
+                      <Textarea
+                        rows={2}
+                        className="mt-2"
+                        placeholder="How should it be fixed next time? This becomes the rule."
+                        value={fixes[item.id] ?? ""}
+                        onChange={(e) =>
+                          setFixes((prev) => ({ ...prev, [item.id]: e.target.value }))
+                        }
+                      />
+                    ) : null}
+
                     <div className="mt-3 flex flex-wrap gap-2">
                       <Button
                         size="sm"

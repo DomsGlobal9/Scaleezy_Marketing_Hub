@@ -69,9 +69,10 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        note_serializer = ReviewActionSerializer(data=request.data)
-        note_serializer.is_valid(raise_exception=False)
-        note = (note_serializer.validated_data or {}).get('note', '')
+        payload_serializer = ReviewActionSerializer(data=request.data)
+        payload_serializer.is_valid(raise_exception=True)
+        payload = payload_serializer.validated_data
+        note = payload.get('note', '')
 
         item.status = new_status
         item.review_note = note
@@ -81,7 +82,33 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             update_fields=['status', 'review_note', 'reviewed_by', 'reviewed_at', 'updated_at']
         )
         logger.info("Content %s -> %s by user %s", item.pk, new_status, request.user.pk)
+        self._capture_feedback(request, item, new_status, payload)
         return item, None
+
+    @staticmethod
+    def _capture_feedback(request, item, new_status, payload):
+        """
+        Records the verdict for the training engine.
+
+        Submitting for review is not a verdict, so it is skipped. Everything
+        else is best-effort inside `capture()` — a training failure must not
+        cost the reviewer their decision.
+        """
+        from apps.feedback.services import VERDICT_FOR_STATUS, capture
+
+        verdict = VERDICT_FOR_STATUS.get(new_status)
+        if verdict is None:
+            return
+
+        capture(
+            content_item=item,
+            user=request.user,
+            verdict=verdict,
+            element_keys=payload.get('elements'),
+            feedback_text=payload.get('note', ''),
+            fix_request=payload.get('fix_request', ''),
+            urgency=payload.get('urgency', 'NORMAL'),
+        )
 
     @action(detail=True, methods=['post'])
     def submit(self, request, pk=None):

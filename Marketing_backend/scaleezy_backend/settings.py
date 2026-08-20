@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'apps.marketing',
     'apps.brands',
     'apps.content',
+    'apps.feedback',
     'apps.ai',
     'apps.social_accounts',
     'apps.publishing',

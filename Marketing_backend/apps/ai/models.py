@@ -18,6 +18,7 @@ class Capability(models.TextChoices):
     IMAGE = 'IMAGE', 'Image generation'
     IMAGE_ANALYSIS = 'IMAGE_ANALYSIS', 'Image analysis'
     VIDEO = 'VIDEO', 'Video generation'
+    EMBEDDING = 'EMBEDDING', 'Text embedding (feedback similarity)'
 
 
 class Strategy(models.TextChoices):

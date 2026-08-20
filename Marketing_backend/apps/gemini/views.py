@@ -36,6 +36,26 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             raise PermissionDenied("No accessible workspace for this request.")
         serializer.save(workspace=workspace, user=self.request.user)
 
+    def _brand_rules(self, request):
+        """
+        The learned rules for this workspace's default brand.
+
+        Best-effort: a brand with nothing learned yet, or no brand at all,
+        simply yields no rules and the prompt is unchanged.
+        """
+        from apps.brands.models import Brand
+        from apps.feedback.training import rules_for_prompt
+
+        try:
+            workspace, error = get_request_workspace(request)
+            if error:
+                return []
+            brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
+            return rules_for_prompt(brand)
+        except Exception:
+            logger.exception("Could not load learned brand rules")
+            return []
+
     def _persist_content(self, request, brief, result):
         """
         Saves a generation as a DRAFT ContentItem.
@@ -106,6 +126,9 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'offer': offer,
             'brand_tone': brand_tone,
             'reference_image_base64': reference_image_base64,
+            # Closes the training loop: what reviewers have repeatedly
+            # rejected becomes a constraint on the next generation.
+            'brand_rules': self._brand_rules(request),
         }
 
         try:
