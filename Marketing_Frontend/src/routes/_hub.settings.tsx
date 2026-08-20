@@ -71,14 +71,15 @@ const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 /**
  * Brand logo + contact details reused by the poster generator.
  *
- * The logo is held as a data URL client-side; `logoUrl` stays empty until the
- * backend upload endpoint exists to put it in the Supabase bucket.
+ * Backed by the Brand record. The logo is uploaded straight to the Supabase
+ * bucket, so `logoUrl` is only ever set once storage genuinely accepted it.
  */
 function BrandKitPanel() {
-  const { settings, update } = useBrandSettings();
+  const { settings, update, uploadLogo, removeLogo, loading, error } = useBrandSettings();
   const logoInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
 
-  const handleLogoPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = ""; // let the same file be re-picked after a remove
     if (!file) return;
@@ -92,26 +93,37 @@ function BrandKitPanel() {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      update({
-        logoDataUrl: event.target?.result as string,
-        logoFileName: file.name,
-        showLogoOnPosters: true,
-      });
-      toast.success("Logo added. It will be stored in the bucket on save.");
-    };
-    reader.onerror = () => toast.error("Could not read that file.");
-    reader.readAsDataURL(file);
+    setUploading(true);
+    try {
+      // Uploaded straight to the bucket — the URL is only stored once the
+      // upload genuinely succeeded.
+      await uploadLogo(file);
+      toast.success("Logo uploaded.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Logo upload failed.");
+    } finally {
+      setUploading(false);
+    }
   };
 
-  const removeLogo = () =>
-    update({ logoDataUrl: "", logoUrl: "", logoFileName: "", showLogoOnPosters: false });
+  const handleRemoveLogo = async () => {
+    try {
+      await removeLogo();
+      toast("Logo removed.");
+    } catch {
+      toast.error("Could not remove the logo.");
+    }
+  };
 
-  const hasLogo = !!(settings.logoDataUrl || settings.logoUrl);
+  const hasLogo = !!settings.logoUrl;
 
   return (
     <Panel label="Brand Kit" title="Logo & contact details">
+      {error ? (
+        <p className="mb-4 rounded-xl border border-destructive/30 bg-destructive/8 px-3 py-2 text-sm text-destructive">
+          {error}
+        </p>
+      ) : null}
       <div className="grid gap-5">
         <div>
           <Label className="text-xs tracking-wide uppercase">Brand logo</Label>
@@ -123,7 +135,7 @@ function BrandKitPanel() {
             <div className="grid size-20 shrink-0 place-items-center overflow-hidden rounded-xl border border-border bg-secondary/40">
               {hasLogo ? (
                 <img
-                  src={settings.logoDataUrl || settings.logoUrl}
+                  src={settings.logoUrl}
                   alt="Brand logo"
                   className="size-full object-contain p-2"
                 />
@@ -141,15 +153,21 @@ function BrandKitPanel() {
                 <p className="text-sm text-muted-foreground">No logo uploaded yet.</p>
               )}
               <div className="mt-2 flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => logoInputRef.current?.click()}>
-                  <ImagePlus className="size-4" /> {hasLogo ? "Replace" : "Upload logo"}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={loading || uploading}
+                  onClick={() => logoInputRef.current?.click()}
+                >
+                  <ImagePlus className="size-4" />
+                  {uploading ? "Uploading…" : hasLogo ? "Replace" : "Upload logo"}
                 </Button>
                 {hasLogo ? (
                   <Button
                     variant="ghost"
                     size="sm"
                     className="text-destructive hover:text-destructive"
-                    onClick={removeLogo}
+                    onClick={handleRemoveLogo}
                   >
                     <Trash2 className="size-4" /> Remove
                   </Button>
@@ -177,7 +195,7 @@ function BrandKitPanel() {
           <Switch
             checked={settings.showLogoOnPosters}
             disabled={!hasLogo}
-            onCheckedChange={(v) => update({ showLogoOnPosters: v })}
+            onCheckedChange={(v) => update({ showLogoOnPosters: v }, { immediate: true })}
           />
         </div>
 
@@ -208,7 +226,7 @@ function BrandKitPanel() {
           <Switch
             checked={settings.showPhoneOnPosters}
             disabled={!settings.phoneNumber.trim()}
-            onCheckedChange={(v) => update({ showPhoneOnPosters: v })}
+            onCheckedChange={(v) => update({ showPhoneOnPosters: v }, { immediate: true })}
           />
         </div>
       </div>

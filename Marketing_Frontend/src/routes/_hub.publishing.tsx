@@ -194,7 +194,7 @@ function PublishingPage() {
     setPhoneOverride(brand.phoneNumber);
   }, [brand.showLogoOnPosters, brand.showPhoneOnPosters, brand.phoneNumber]);
 
-  const hasLogo = !!(brand.logoDataUrl || brand.logoUrl);
+  const hasLogo = !!brand.logoUrl;
 
   const addSlide = () => setSlides((prev) => [...prev, newSlide()]);
   const removeSlide = (id: string) =>
@@ -292,12 +292,10 @@ function PublishingPage() {
             asset?.source === "gemini" ? "GEMINI_GENERATED" : "MANUAL_UPLOAD",
           );
 
-          const uploadRes = await apiFetch("/api/marketing/assets/upload/",
-            {
-              method: "POST",
-              body: formData,
-            },
-          );
+          const uploadRes = await apiFetch("/api/marketing/assets/upload/", {
+            method: "POST",
+            body: formData,
+          });
           const uploadData = await uploadRes.json();
           if (uploadData.success) {
             assetId = uploadData.data.id;
@@ -319,11 +317,9 @@ function PublishingPage() {
       }
 
       // Build the caption from the asset's generated/manual content
-      const captionParts = [
-        asset?.postTitle,
-        asset?.postDescription,
-        asset?.postHashtags,
-      ].filter(Boolean);
+      const captionParts = [asset?.postTitle, asset?.postDescription, asset?.postHashtags].filter(
+        Boolean,
+      );
       const caption = captionParts.join("\n\n") || "";
 
       const res = await apiFetch("/api/marketing/publishing/jobs/", {
@@ -390,7 +386,7 @@ function PublishingPage() {
             : {}),
           // Poster overlays
           includeLogo: includeLogo && hasLogo,
-          logoUrl: includeLogo && hasLogo ? brand.logoUrl || brand.logoDataUrl : "",
+          logoUrl: includeLogo && hasLogo ? brand.logoUrl : "",
           includePhoneNumber: includePhone && !!phoneOverride.trim(),
           phoneNumber: includePhone ? phoneOverride.trim() : "",
         }),
@@ -459,7 +455,7 @@ function PublishingPage() {
         toast.error("Video cannot be used as a reference for AI generation.");
         return;
       }
-      
+
       setIsGeneratingCaptions(true);
       setStep("gemini_generating");
       try {
@@ -474,9 +470,10 @@ function PublishingPage() {
         formData.append("workspace_id", wsId);
         formData.append("source", "MANUAL_UPLOAD");
 
-        const uploadRes = await apiFetch("/api/marketing/assets/upload/",
-            { method: "POST", body: formData }
-        );
+        const uploadRes = await apiFetch("/api/marketing/assets/upload/", {
+          method: "POST",
+          body: formData,
+        });
         const uploadData = await uploadRes.json();
         if (!uploadData.success) throw new Error("Upload failed.");
 
@@ -484,13 +481,11 @@ function PublishingPage() {
         const fileUrl = uploadData.data.file_url;
 
         // Analyze video
-        const analyzeRes = await apiFetch("/api/marketing/gemini/analyze-video/",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ asset_id: assetId }),
-            }
-        );
+        const analyzeRes = await apiFetch("/api/marketing/gemini/analyze-video/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ asset_id: assetId }),
+        });
         const analyzeData = await analyzeRes.json();
         if (!analyzeData.success) throw new Error(analyzeData.message);
 
@@ -518,11 +513,11 @@ function PublishingPage() {
         toast.success("Video analyzed successfully!");
         setStep("preview");
       } catch (e) {
-          console.error("Failed to process video", e);
-          toast.error("Failed to process video.");
-          setStep("create_or_upload");
+        console.error("Failed to process video", e);
+        toast.error("Failed to process video.");
+        setStep("create_or_upload");
       } finally {
-          setIsGeneratingCaptions(false);
+        setIsGeneratingCaptions(false);
       }
       return;
     }
@@ -537,13 +532,11 @@ function PublishingPage() {
         setStep("gemini_form");
         setIsAnalyzing(true);
         try {
-          const res = await apiFetch("/api/marketing/gemini/analyze-image/",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ referenceImageBase64: base64String }),
-            },
-          );
+          const res = await apiFetch("/api/marketing/gemini/analyze-image/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ referenceImageBase64: base64String }),
+          });
           const json = await res.json();
           if (json.success && json.data) {
             const d = json.data;
@@ -562,13 +555,11 @@ function PublishingPage() {
         setIsGeneratingCaptions(true);
         setStep("gemini_generating"); // Re-use the loading step
         try {
-          const res = await apiFetch("/api/marketing/gemini/generate-captions/",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ referenceImageBase64: base64String }),
-            },
-          );
+          const res = await apiFetch("/api/marketing/gemini/generate-captions/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ referenceImageBase64: base64String }),
+          });
           const json = await res.json();
           if (!json.success) throw new Error(json.message);
 
@@ -974,7 +965,7 @@ function PublishingPage() {
                       <div className="flex min-w-0 items-center gap-3">
                         {hasLogo ? (
                           <img
-                            src={brand.logoDataUrl || brand.logoUrl}
+                            src={brand.logoUrl}
                             alt="Brand logo"
                             className="size-9 shrink-0 rounded-lg border border-border bg-background object-contain p-1"
                           />
@@ -1146,7 +1137,9 @@ function PublishingPage() {
                       asset.previewUrl ? "h-auto min-h-[280px] cursor-pointer" : "h-64",
                       asset.tone || "from-secondary to-muted",
                     )}
-                    onClick={() => asset.previewUrl && asset.contentType !== "video" && setShowFullImage(true)}
+                    onClick={() =>
+                      asset.previewUrl && asset.contentType !== "video" && setShowFullImage(true)
+                    }
                   >
                     {asset.previewUrl ? (
                       asset.contentType === "video" ? (
@@ -1299,8 +1292,9 @@ function PublishingPage() {
                       const isYoutube = acc.platform === "YOUTUBE";
                       const isVideo = asset?.contentType === "video";
                       const isFormatMismatch = isYoutube && !isVideo;
-                      
-                      const disabled = (s !== "CONNECTED" && s !== "TOKEN_EXPIRED") || isFormatMismatch;
+
+                      const disabled =
+                        (s !== "CONNECTED" && s !== "TOKEN_EXPIRED") || isFormatMismatch;
                       return (
                         <label
                           key={acc.id}

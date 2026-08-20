@@ -7,6 +7,7 @@ urlpatterns = [
     path('api/marketing/', include('apps.workspaces.urls')),
     path('api/marketing/', include('apps.social_accounts.urls')),
     path('api/marketing/', include('apps.marketing.urls')),
+    path('api/marketing/', include('apps.brands.urls')),
     path('api/marketing/', include('apps.gemini.urls')),
     path('api/marketing/publishing/', include('apps.publishing.urls')),
     path('api/marketing/analytics/', include('apps.analytics.urls')),

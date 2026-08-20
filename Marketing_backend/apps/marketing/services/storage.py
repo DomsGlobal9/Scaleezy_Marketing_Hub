@@ -1,40 +1,80 @@
-from django.conf import settings
+import logging
 import uuid
-import os
+
+from django.conf import settings
+
+logger = logging.getLogger(__name__)
+
+
+class StorageError(Exception):
+    """Raised when an upload genuinely failed and the caller must know."""
+
 
 class SupabaseStorageService:
+    BUCKET = 'Marketing_Poster_images'
+
     @staticmethod
-    def upload_file(workspace_id: str, file_obj, filename: str) -> str:
+    def _mock_url(workspace_id: str, filename: str) -> str:
+        return f"https://mock-storage.url/workspace_{workspace_id}/{uuid.uuid4()}_{filename}"
+
+    @classmethod
+    def upload_file(cls, workspace_id: str, file_obj, filename: str, *,
+                    strict: bool = False, prefix: str = 'workspace') -> str:
         """
-        Uploads a file to Supabase storage and returns the public URL.
+        Uploads to Supabase Storage and returns the public URL.
+
+        `strict=True` raises StorageError instead of returning a placeholder.
+        Non-strict is the historical behaviour and is kept for the asset
+        library, but it is genuinely dangerous: the row is created pointing at
+        a URL that serves nothing, and the failure only surfaces later when
+        publishing tries to fetch the media.
         """
         if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
-            # Fallback for local dev when Supabase isn't configured
-            print(f"[Storage Mock] Uploaded {filename} for workspace {workspace_id}")
-            return f"https://mock-storage.url/workspace_{workspace_id}/{uuid.uuid4()}_{filename}"
-            
+            if strict:
+                raise StorageError(
+                    "File storage is not configured. Set SUPABASE_URL and "
+                    "SUPABASE_SERVICE_ROLE_KEY."
+                )
+            logger.warning("[Storage Mock] %s for workspace %s", filename, workspace_id)
+            return cls._mock_url(workspace_id, filename)
+
         import requests
-        
-        # Clean up SUPABASE_URL if it has /rest/v1/ appended
-        base_url = settings.SUPABASE_URL.replace("/rest/v1/", "").replace("/rest/v1", "").rstrip("/")
-        
-        bucket_name = 'Marketing_Poster_images'
-        path_on_supastorage = f"workspace/{workspace_id}/{uuid.uuid4()}_{filename}"
-        
-        upload_url = f"{base_url}/storage/v1/object/{bucket_name}/{path_on_supastorage}"
+
+        # SUPABASE_URL is stored with /rest/v1/ appended for the data API.
+        base_url = (
+            settings.SUPABASE_URL.replace("/rest/v1/", "").replace("/rest/v1", "").rstrip("/")
+        )
+        path = f"{prefix}/{workspace_id}/{uuid.uuid4()}_{filename}"
+        upload_url = f"{base_url}/storage/v1/object/{cls.BUCKET}/{path}"
         headers = {
             "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
-            "Content-Type": file_obj.content_type if hasattr(file_obj, 'content_type') else "application/octet-stream"
+            "Content-Type": getattr(file_obj, 'content_type', None) or "application/octet-stream",
         }
-        
+
         try:
-            res = requests.post(upload_url, headers=headers, data=file_obj.read())
-            if not res.ok:
-                print(f"Supabase upload failed: {res.text}")
-                return f"https://mock-storage.url/workspace_{workspace_id}/{uuid.uuid4()}_{filename}"
-                
-            public_url = f"{base_url}/storage/v1/object/public/{bucket_name}/{path_on_supastorage}"
-            return public_url
-        except Exception as e:
-            print(f"Supabase upload exception: {e}")
-            return f"https://mock-storage.url/workspace_{workspace_id}/{uuid.uuid4()}_{filename}"
+            res = requests.post(upload_url, headers=headers, data=file_obj.read(), timeout=60)
+        except Exception as exc:
+            logger.exception("Supabase upload failed for %s", filename)
+            if strict:
+                raise StorageError(f"Upload failed: {exc}") from exc
+            return cls._mock_url(workspace_id, filename)
+
+        if not res.ok:
+            logger.error("Supabase upload rejected (%s): %s", res.status_code, res.text[:300])
+            if strict:
+                raise StorageError(f"Storage rejected the upload ({res.status_code}).")
+            return cls._mock_url(workspace_id, filename)
+
+        return f"{base_url}/storage/v1/object/public/{cls.BUCKET}/{path}"
+
+    @classmethod
+    def upload_and_describe(cls, workspace_id: str, file_obj, filename: str, *,
+                            prefix: str = 'workspace') -> dict:
+        """Strict upload returning both the public URL and the storage path."""
+        url = cls.upload_file(
+            workspace_id, file_obj, filename, strict=True, prefix=prefix
+        )
+        # Path is the tail of the public URL after the bucket segment.
+        marker = f"/public/{cls.BUCKET}/"
+        path = url.split(marker, 1)[1] if marker in url else ''
+        return {"url": url, "path": path}

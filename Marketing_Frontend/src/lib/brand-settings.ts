@@ -1,14 +1,17 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import { api, apiFetch } from "@/lib/api";
 
 /**
- * Brand kit — the logo and contact details that can be stamped onto generated
- * posters. Persisted in localStorage for now; swap `load`/`save` for the
- * workspace settings API once the backend fields exist.
+ * Brand kit — the identity stamped onto generated posters.
+ *
+ * Server-backed. This used to live in localStorage, which meant the brand kit
+ * was lost on a browser change and invisible to the server that actually
+ * renders the posters. The shape below is kept stable for existing callers;
+ * it is a view over the Brand record.
  */
 export interface BrandSettings {
-  /** Base64 preview held client-side until the logo is uploaded to the bucket. */
-  logoDataUrl: string;
-  /** Public Supabase URL, set once the backend upload endpoint exists. */
+  /** Public Supabase URL of the uploaded logo. */
   logoUrl: string;
   logoFileName: string;
   /** Default for the "show logo on poster" option in the generator. */
@@ -16,56 +19,178 @@ export interface BrandSettings {
   phoneNumber: string;
   /** Default for the "show phone number on poster" option in the generator. */
   showPhoneOnPosters: boolean;
+
+  // Wider brand identity, editable in Settings.
+  name: string;
+  industry: string;
+  tagline: string;
+  ctaKeyword: string;
+  brandTone: string;
+  instagramHandle: string;
+  palette: Record<string, string>;
 }
 
 export const DEFAULT_BRAND_SETTINGS: BrandSettings = {
-  logoDataUrl: "",
   logoUrl: "",
   logoFileName: "",
   showLogoOnPosters: false,
   phoneNumber: "",
   showPhoneOnPosters: false,
+  name: "",
+  industry: "",
+  tagline: "",
+  ctaKeyword: "",
+  brandTone: "",
+  instagramHandle: "",
+  palette: {},
 };
 
-const STORAGE_KEY = "scaleezy.brandSettings";
-
-export function loadBrandSettings(): BrandSettings {
-  if (typeof window === "undefined") return DEFAULT_BRAND_SETTINGS;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_BRAND_SETTINGS;
-    return { ...DEFAULT_BRAND_SETTINGS, ...JSON.parse(raw) };
-  } catch {
-    return DEFAULT_BRAND_SETTINGS;
-  }
+/** Raw Brand as the API returns it. */
+interface BrandDto {
+  id: string;
+  name: string;
+  industry: string;
+  tagline: string;
+  cta_keyword: string;
+  brand_tone: string;
+  instagram_handle: string;
+  palette: Record<string, string>;
+  logo_url: string;
+  logo_file_name: string;
+  contact_phone: string;
+  show_logo_on_posters: boolean;
+  show_phone_on_posters: boolean;
 }
 
-export function saveBrandSettings(settings: BrandSettings) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-  } catch {
-    // Quota or private mode — the in-memory copy still works for this session.
-  }
-}
+const toSettings = (b: BrandDto): BrandSettings => ({
+  logoUrl: b.logo_url ?? "",
+  logoFileName: b.logo_file_name ?? "",
+  showLogoOnPosters: !!b.show_logo_on_posters,
+  phoneNumber: b.contact_phone ?? "",
+  showPhoneOnPosters: !!b.show_phone_on_posters,
+  name: b.name ?? "",
+  industry: b.industry ?? "",
+  tagline: b.tagline ?? "",
+  ctaKeyword: b.cta_keyword ?? "",
+  brandTone: b.brand_tone ?? "",
+  instagramHandle: b.instagram_handle ?? "",
+  palette: b.palette ?? {},
+});
+
+/** Only the fields the API accepts; logo fields are set via the upload route. */
+const toPayload = (patch: Partial<BrandSettings>) => {
+  const out: Record<string, unknown> = {};
+  if (patch.name !== undefined) out["name"] = patch.name;
+  if (patch.industry !== undefined) out["industry"] = patch.industry;
+  if (patch.tagline !== undefined) out["tagline"] = patch.tagline;
+  if (patch.ctaKeyword !== undefined) out["cta_keyword"] = patch.ctaKeyword;
+  if (patch.brandTone !== undefined) out["brand_tone"] = patch.brandTone;
+  if (patch.instagramHandle !== undefined) out["instagram_handle"] = patch.instagramHandle;
+  if (patch.palette !== undefined) out["palette"] = patch.palette;
+  if (patch.phoneNumber !== undefined) out["contact_phone"] = patch.phoneNumber;
+  if (patch.showLogoOnPosters !== undefined) out["show_logo_on_posters"] = patch.showLogoOnPosters;
+  if (patch.showPhoneOnPosters !== undefined)
+    out["show_phone_on_posters"] = patch.showPhoneOnPosters;
+  return out;
+};
 
 /**
- * Reads the brand kit after mount. Deliberately not read during render so the
- * server-rendered HTML and the first client render match.
+ * Loads the workspace's brand and exposes an optimistic `update`.
+ *
+ * Text fields are debounced so typing a tagline does not fire a request per
+ * keystroke; toggles save immediately.
  */
 export function useBrandSettings() {
   const [settings, setSettings] = useState<BrandSettings>(DEFAULT_BRAND_SETTINGS);
+  const [brandId, setBrandId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const pending = useRef<Partial<BrandSettings>>({});
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    setSettings(loadBrandSettings());
+    let cancelled = false;
+    api<BrandDto>("/api/marketing/brands/current/")
+      .then((brand) => {
+        if (cancelled) return;
+        setBrandId(brand.id);
+        setSettings(toSettings(brand));
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Could not load brand.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      if (timer.current) clearTimeout(timer.current);
+    };
   }, []);
 
-  const update = (patch: Partial<BrandSettings>) =>
-    setSettings((prev) => {
-      const next = { ...prev, ...patch };
-      saveBrandSettings(next);
-      return next;
-    });
+  const flush = useCallback(async () => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    const patch = pending.current;
+    pending.current = {};
+    if (!brandId || Object.keys(patch).length === 0) return;
+    try {
+      const updated = await api<BrandDto>(`/api/marketing/brands/${brandId}/`, {
+        method: "PATCH",
+        body: toPayload(patch),
+      });
+      setSettings(toSettings(updated));
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save brand.");
+    }
+  }, [brandId]);
 
-  return { settings, update };
+  const update = useCallback(
+    (patch: Partial<BrandSettings>, { immediate = false } = {}) => {
+      // Optimistic: the UI reflects the change straight away.
+      setSettings((prev) => ({ ...prev, ...patch }));
+      pending.current = { ...pending.current, ...patch };
+
+      if (timer.current) clearTimeout(timer.current);
+      if (immediate) {
+        void flush();
+      } else {
+        timer.current = setTimeout(() => void flush(), 600);
+      }
+    },
+    [flush],
+  );
+
+  const uploadLogo = useCallback(
+    async (file: File) => {
+      if (!brandId) throw new Error("Brand is still loading.");
+      const form = new FormData();
+      form.append("file", file);
+      // apiFetch, not api(): FormData must pass through with no Content-Type
+      // so the browser writes the multipart boundary.
+      const res = await apiFetch(`/api/marketing/brands/${brandId}/logo/`, {
+        method: "POST",
+        body: form,
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || json?.success === false) {
+        throw new Error(json?.error?.message || json?.message || "Logo upload failed.");
+      }
+      setSettings(toSettings(json.data as BrandDto));
+    },
+    [brandId],
+  );
+
+  const removeLogo = useCallback(async () => {
+    if (!brandId) return;
+    const res = await apiFetch(`/api/marketing/brands/${brandId}/logo/`, { method: "DELETE" });
+    const json = await res.json().catch(() => null);
+    if (res.ok && json?.data) setSettings(toSettings(json.data as BrandDto));
+  }, [brandId]);
+
+  return { settings, update, uploadLogo, removeLogo, loading, error, brandId };
 }

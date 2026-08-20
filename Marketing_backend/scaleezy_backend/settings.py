@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'apps.users',
     'apps.workspaces',
     'apps.marketing',
+    'apps.brands',
     'apps.social_accounts',
     'apps.publishing',
     'apps.gemini',
