@@ -5,7 +5,9 @@ class MarketingAssetSerializer(serializers.ModelSerializer):
     class Meta:
         model = MarketingAsset
         fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+        # workspace is server-assigned from the authorised request, never
+        # taken from the client payload.
+        read_only_fields = ['id', 'workspace', 'created_at', 'updated_at', 'created_by']
 
 class UploadAssetSerializer(serializers.Serializer):
     workspace_id = serializers.UUIDField()

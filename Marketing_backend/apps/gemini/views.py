@@ -3,6 +3,13 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
 from .models import GeminiGenerationRequest, GeminiGenerationResult
 from .serializers import GeminiGenerationRequestSerializer, GeminiGenerationResultSerializer
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import PermissionDenied
+from apps.common.permissions import (
+    IsWorkspaceMember,
+    authorize_workspace,
+    get_request_workspace,
+)
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.responses import APIResponse
 from .services.generator import GeminiGeneratorService
@@ -12,6 +19,17 @@ from django.utils import timezone
 class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     queryset = GeminiGenerationRequest.objects.all()
     serializer_class = GeminiGenerationRequestSerializer
+    permission_classes = [IsAuthenticated, IsWorkspaceMember]
+    requires_workspace = False
+
+
+    def perform_create(self, serializer):
+        # workspace is read-only on the serializer, so it is assigned here from
+        # the caller's authorised workspace rather than the request payload.
+        workspace, error = get_request_workspace(self.request)
+        if error:
+            raise PermissionDenied("No accessible workspace for this request.")
+        serializer.save(workspace=workspace, user=self.request.user)
 
     @action(detail=False, methods=['post'])
     def generate(self, request):
@@ -99,7 +117,19 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             asset_id = request.data.get('asset_id')
             if not asset_id:
                 return APIResponse(success=False, message="No asset_id provided", status=400)
-                
+
+            # The asset must belong to a workspace the caller is in. Without
+            # this the service looked it up by bare id, so any authenticated
+            # user could have another tenant's media fetched and analysed.
+            from apps.marketing.models import MarketingAsset
+
+            if not MarketingAsset.objects.filter(
+                id=asset_id, workspace__in=self.accessible_workspace_ids()
+            ).exists():
+                return APIResponse(
+                    success=False, message="Asset not found.", status=status.HTTP_404_NOT_FOUND
+                )
+
             analysis = GeminiGeneratorService.analyze_video(asset_id)
             return APIResponse(success=True, data=analysis, status=200)
         except Exception as e:

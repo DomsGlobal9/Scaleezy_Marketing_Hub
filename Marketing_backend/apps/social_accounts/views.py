@@ -9,7 +9,7 @@ from .models import SocialConnection, SocialAccountAuditLog
 from apps.workspaces.models import MarketingWorkspace
 from .serializers import SocialConnectionSerializer, ConnectPlatformSerializer
 from apps.common.mixins import WorkspaceScopedMixin
-from apps.common.permissions import IsWorkspaceMember
+from apps.common.permissions import IsWorkspaceMember, authorize_workspace
 from apps.common.responses import APIResponse
 from .integrations.meta.facebook import FacebookAdapter
 from .integrations.meta.instagram import InstagramAdapter
@@ -60,6 +60,12 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
 
         workspace_id = serializer.validated_data['workspace_id']
         platform = serializer.validated_data['platform']
+
+        # This id is bound into the OAuth state and decides which workspace the
+        # resulting connection lands in. Authorise it explicitly.
+        _m, denied = authorize_workspace(request, workspace_id)
+        if denied:
+            return denied
 
         adapter = self.get_adapter(platform)
         if not adapter:
@@ -340,6 +346,22 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         workspace_id = request.query_params.get('workspace_id')
         if not workspace_id:
             return APIResponse(success=False, message="workspace_id is required", status=400)
+
+        # Authorise the workspace this action reads, not the one the permission
+        # class resolved — otherwise the header could name the caller's own
+        # workspace while this query targets somebody else's connection and
+        # decrypts their OAuth token.
+        _m, denied = authorize_workspace(request, workspace_id)
+        if denied:
+            return denied
+
+        # Authorise the workspace this action reads, not the one the permission
+        # class resolved — otherwise the header could name the caller's own
+        # workspace while this query targets somebody else's connection and
+        # decrypts their OAuth token.
+        _m, denied = authorize_workspace(request, workspace_id)
+        if denied:
+            return denied
 
         try:
             connection = SocialConnection.objects.filter(

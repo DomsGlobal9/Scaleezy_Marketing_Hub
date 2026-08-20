@@ -7,6 +7,8 @@ from apps.workspaces.models import MarketingWorkspace
 from apps.marketing.models import MarketingAsset
 from apps.social_accounts.models import SocialConnection
 from .serializers import PublishingJobSerializer, CreatePublishingJobSerializer
+from rest_framework.permissions import IsAuthenticated
+from apps.common.permissions import authorize_workspace
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.permissions import IsWorkspaceMember
 from apps.common.responses import APIResponse
@@ -16,6 +18,10 @@ from django.utils import timezone
 class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     queryset = PublishingJob.objects.all().prefetch_related('items')
     serializer_class = PublishingJobSerializer
+    permission_classes = [IsAuthenticated, IsWorkspaceMember]
+    # Lists are scoped by WorkspaceScopedMixin, so an unresolvable workspace
+    # is safe here; writes authorise the id they actually use, below.
+    requires_workspace = False
 
     def create(self, request, *args, **kwargs):
         serializer = CreatePublishingJobSerializer(data=request.data)
@@ -23,7 +29,14 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             return APIResponse(success=False, error=serializer.errors, status=status.HTTP_400_BAD_REQUEST)
             
         data = serializer.validated_data
-        
+
+        # Authorise the workspace this request actually writes to. The
+        # permission class checks whatever resolve_workspace_id returned,
+        # which is not necessarily this value.
+        _membership, denied = authorize_workspace(request, data['workspace_id'])
+        if denied:
+            return denied
+
         try:
             workspace = MarketingWorkspace.objects.get(id=data['workspace_id'])
             asset = MarketingAsset.objects.get(id=data['asset_id'], workspace=workspace)

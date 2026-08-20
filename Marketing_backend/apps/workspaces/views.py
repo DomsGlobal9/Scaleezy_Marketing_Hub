@@ -6,7 +6,12 @@ from rest_framework.views import APIView
 
 from apps.audit.models import AuditLog
 from apps.common.mixins import WorkspaceScopedMixin
-from apps.common.permissions import IsWorkspaceMember, get_request_workspace
+from rest_framework.permissions import IsAuthenticated
+from apps.common.permissions import (
+    HasWorkspaceRole,
+    IsWorkspaceMember,
+    get_request_workspace,
+)
 from apps.common.responses import APIResponse
 
 from .models import MarketingWorkspace, WorkspaceMember
@@ -26,6 +31,18 @@ class MarketingWorkspaceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     queryset = MarketingWorkspace.objects.all()
     serializer_class = MarketingWorkspaceSerializer
     workspace_field = 'id'
+    permission_classes = [IsAuthenticated, IsWorkspaceMember, HasWorkspaceRole]
+    requires_workspace = False
+    # Renaming or deleting a workspace destroys every child row with it, so it
+    # is not something a VIEWER or EDITOR should be able to do.
+    required_role = WorkspaceMember.Role.ADMIN
+    required_read_role = WorkspaceMember.Role.VIEWER
+
+    def get_permissions(self):
+        # Creating a workspace cannot require membership of one.
+        if self.action == 'create':
+            return [IsAuthenticated()]
+        return super().get_permissions()
 
     def perform_create(self, serializer):
         # Whoever creates a workspace owns it, otherwise the creator would be

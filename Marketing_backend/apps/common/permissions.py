@@ -34,24 +34,47 @@ def get_membership(user, workspace_id):
     )
 
 
+class WorkspaceMismatch(Exception):
+    """The request named two different workspaces."""
+
+
+def _payload_workspace_id(request):
+    """workspace_id supplied in the body or query string, if any."""
+    for source in (getattr(request, 'data', None), getattr(request, 'query_params', None)):
+        if source is not None and hasattr(source, 'get'):
+            try:
+                value = source.get('workspace_id')
+            except Exception:
+                value = None
+            if value:
+                return str(value)
+    return None
+
+
 def resolve_workspace_id(request, view=None):
     """
     Finds the workspace the request is acting on.
 
-    Checked in order: explicit X-Workspace-Id header, then a workspace_id in the
-    body or query string. Falls back to the caller's sole membership when they
-    belong to exactly one workspace, which keeps the existing single-workspace
-    frontend working without sending the header everywhere.
+    The header and the payload must agree. Previously the header simply won,
+    which made every view that reads `workspace_id` itself a confused deputy:
+    a caller could pass their OWN workspace in `X-Workspace-Id` to satisfy the
+    permission check, while the body pointed at somebody else's workspace —
+    the value the view actually used. Checked and used must be the same value.
+
+    Raises WorkspaceMismatch when the two disagree.
     """
-    header = request.headers.get('X-Workspace-Id')
+    header = request.headers.get('X-Workspace-Id') or None
+    payload = _payload_workspace_id(request)
+
+    if header and payload and str(header) != str(payload):
+        raise WorkspaceMismatch(
+            f"X-Workspace-Id ({header}) does not match workspace_id ({payload})"
+        )
+
     if header:
         return header
-
-    for source in (getattr(request, 'data', None), getattr(request, 'query_params', None)):
-        if isinstance(source, dict) or hasattr(source, 'get'):
-            value = source.get('workspace_id') if source is not None else None
-            if value:
-                return value
+    if payload:
+        return payload
 
     user = getattr(request, 'user', None)
     if user and user.is_authenticated:
@@ -65,6 +88,45 @@ def resolve_workspace_id(request, view=None):
     return None
 
 
+def authorize_workspace(request, workspace_id):
+    """
+    Authorises the workspace a view is ABOUT TO USE.
+
+    Call this with the id the view actually acts on, not with whatever the
+    permission layer happened to resolve. Returns (membership, None) or
+    (None, error_response).
+
+    Permission classes alone cannot cover this: most of these are detail=False
+    actions, so DRF never calls check_object_permissions, and the view reads
+    the id straight out of the request.
+    """
+    from rest_framework import status
+
+    from apps.common.responses import APIResponse
+
+    if not workspace_id:
+        return None, APIResponse(
+            success=False,
+            message="No workspace specified.",
+            error={"code": "NO_WORKSPACE", "message": "No workspace specified."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    membership = get_membership(request.user, workspace_id)
+    if membership is None:
+        logger.warning(
+            "Cross-workspace attempt: user=%s target_workspace=%s path=%s",
+            getattr(request.user, 'pk', None), workspace_id, request.path,
+        )
+        return None, APIResponse(
+            success=False,
+            message="You do not have access to this workspace.",
+            error={"code": "WORKSPACE_FORBIDDEN", "message": "No access to this workspace."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return membership, None
+
+
 class IsWorkspaceMember(BasePermission):
     """Caller must be an active member of the workspace being acted on."""
 
@@ -75,12 +137,19 @@ class IsWorkspaceMember(BasePermission):
         if not user or not user.is_authenticated:
             return False
 
-        workspace_id = resolve_workspace_id(request, view)
+        try:
+            workspace_id = resolve_workspace_id(request, view)
+        except WorkspaceMismatch as exc:
+            logger.warning("Rejected mismatched workspace ids: user=%s %s", user.pk, exc)
+            return False
+
         if not workspace_id:
-            # No workspace resolved. Allow through so the view can 400 with a
-            # useful message rather than a bare 403 — object-level checks and
-            # queryset scoping still prevent any cross-workspace read.
-            return True
+            # Fail closed. This used to return True so the view could produce a
+            # nicer 400, but that let workspace-less requests past the gate on
+            # views that then read an id straight from the payload.
+            # List endpoints are unaffected: WorkspaceScopedMixin scopes them,
+            # and a caller with exactly one membership still resolves.
+            return not getattr(view, 'requires_workspace', True)
 
         membership = get_membership(user, workspace_id)
         if membership is None:
