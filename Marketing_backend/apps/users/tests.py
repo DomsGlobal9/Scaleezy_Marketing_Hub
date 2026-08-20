@@ -153,6 +153,38 @@ class AuthFlowTests(APITestCase):
             AuthAuditLog.objects.filter(event=AuthAuditLog.Event.LOGOUT).exists()
         )
 
+    def test_logout_actually_revokes_the_refresh_token(self):
+        """
+        Regression: logout used to call .blacklist() without the token_blacklist
+        app installed, raise AttributeError, swallow it, and still report
+        success — leaving a live self-renewing credential behind.
+        """
+        login = self.client.post(
+            reverse('auth_login'),
+            {'username': 'anjali', 'password': self.password},
+            format='json',
+        )
+        refresh = login.data['data']['refresh']
+
+        self.client.force_authenticate(user=self.user)
+        res = self.client.post(reverse('auth_logout'), {'refresh': refresh}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data['data']['refresh_token_revoked'])
+
+        # The revoked token must no longer buy a new access token.
+        self.client.force_authenticate(user=None)
+        reuse = self.client.post(reverse('auth_refresh'), {'refresh': refresh}, format='json')
+        self.assertEqual(reuse.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_logout_audit_records_revocation_outcome(self):
+        self.client.force_authenticate(user=self.user)
+        self.client.post(reverse('auth_logout'), {}, format='json')
+        log = AuthAuditLog.objects.filter(event=AuthAuditLog.Event.LOGOUT).first()
+        # No refresh token supplied, so nothing was revoked — and the audit
+        # trail says so rather than claiming success.
+        self.assertFalse(log.succeeded)
+        self.assertIn('no refresh token', log.reason)
+
     def test_audit_log_captures_ip_and_user_agent(self):
         self.client.post(
             reverse('auth_login'),

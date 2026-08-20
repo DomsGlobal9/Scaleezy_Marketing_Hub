@@ -104,15 +104,38 @@ class LogoutView(APIView):
 
     def post(self, request):
         refresh = request.data.get('refresh')
+        revoked = False
+        reason = ''
+
         if refresh:
             try:
                 from rest_framework_simplejwt.tokens import RefreshToken
 
                 RefreshToken(refresh).blacklist()
-            except Exception:
-                # Blacklist app not installed, or token already unusable.
-                # Logging out must not fail because of this.
-                logger.debug("Refresh token could not be blacklisted", exc_info=True)
+                revoked = True
+            except TokenError as exc:
+                # Already expired or already blacklisted — the desired end state.
+                revoked = True
+                reason = f"token already invalid: {exc}"
+            except AttributeError:
+                # token_blacklist is not installed. Report this loudly rather
+                # than claiming a sign-out that did not happen: the refresh
+                # token stays valid and self-renewing for its full lifetime.
+                reason = 'token_blacklist app not installed — refresh token NOT revoked'
+                logger.error("Logout could not revoke refresh token: %s", reason)
+        else:
+            reason = 'no refresh token supplied'
 
-        record_auth_event(request, AuthAuditLog.Event.LOGOUT, user=request.user)
-        return APIResponse(success=True, message="Signed out.")
+        record_auth_event(
+            request,
+            AuthAuditLog.Event.LOGOUT,
+            user=request.user,
+            succeeded=revoked,
+            reason=reason,
+        )
+
+        return APIResponse(
+            success=True,
+            message="Signed out." if revoked else "Signed out on this device.",
+            data={"refresh_token_revoked": revoked},
+        )

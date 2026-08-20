@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     
     # Third-party
     'rest_framework',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
 
     # Local apps
@@ -145,7 +146,12 @@ SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=env.int('JWT_ACCESS_MINUTES', default=60)),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=env.int('JWT_REFRESH_DAYS', default=7)),
     'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': False,  # requires the token_blacklist app
+    # Deliberately False. Logout blacklists explicitly (see LogoutView), which
+    # is what makes sign-out real. Blacklisting on *rotation* as well would
+    # break multi-tab use: two tabs refreshing at once each invalidate the
+    # other's token and one gets logged out at random. Enable only after
+    # cross-tab refresh coordination exists.
+    'BLACKLIST_AFTER_ROTATION': False,
     'UPDATE_LAST_LOGIN': True,
     'AUTH_HEADER_TYPES': ('Bearer',),
     'SIGNING_KEY': SECRET_KEY,

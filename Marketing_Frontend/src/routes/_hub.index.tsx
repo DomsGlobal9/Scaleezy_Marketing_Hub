@@ -20,6 +20,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { PageHeader, SectionTitle, StatCard } from "@/components/marketing/primitives";
+import { apiFetch } from "@/lib/api";
 
 export const Route = createFileRoute("/_hub/")({
   head: () => ({
@@ -105,7 +106,7 @@ function OverviewPage() {
   const [kpis, setKpis] = useState<any[]>([]);
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/marketing/analytics/kpis/')
+    apiFetch('/api/marketing/analytics/kpis/')
       .then(res => res.json())
       .then(data => {
         if (data.kpis) {

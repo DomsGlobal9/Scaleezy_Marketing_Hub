@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { apiFetch } from "@/lib/api";
 
 export const Route = createFileRoute("/oauth/callback")({
   component: OAuthCallbackPage,
@@ -19,7 +20,8 @@ function OAuthCallbackPage() {
     }
 
     // Call the backend to exchange code for token
-    fetch(import.meta.env.VITE_API_URL + "/api/marketing/social-accounts/oauth_callback/", {
+    apiFetch("/api/marketing/social-accounts/oauth_callback/", {
+      public: true,
       method: "POST",
       headers: {
         "Content-Type": "application/json",

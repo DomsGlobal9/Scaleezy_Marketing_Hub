@@ -39,6 +39,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { apiFetch } from "@/lib/api";
 import {
   Select,
   SelectContent,
@@ -89,7 +90,7 @@ function AccountsPage() {
   const [disconnectTarget, setDisconnectTarget] = useState<SocialAccount | null>(null);
 
   useEffect(() => {
-    fetch(import.meta.env.VITE_API_URL + '/api/marketing/social-accounts/')
+    apiFetch('/api/marketing/social-accounts/')
       .then(res => res.json())
       .then(data => {
         if (Array.isArray(data)) {
@@ -571,11 +572,11 @@ function ConnectDialog({
                   setStep("authorizing");
 
                   // Let's implement this properly:
-                  fetch(import.meta.env.VITE_API_URL + "/api/marketing/workspaces/")
+                  apiFetch("/api/marketing/workspaces/")
                     .then(res => res.json())
                     .then(data => {
                         const wsId = Array.isArray(data) && data.length > 0 ? data[0].id : null;
-                        return fetch(import.meta.env.VITE_API_URL + "/api/marketing/social-accounts/connect/", {
+                        return apiFetch("/api/marketing/social-accounts/connect/", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({

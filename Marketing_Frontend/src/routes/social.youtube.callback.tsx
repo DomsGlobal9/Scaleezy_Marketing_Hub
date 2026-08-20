@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
+import { apiFetch } from "@/lib/api";
 
 export const Route = createFileRoute("/social/youtube/callback")({
   component: YouTubeCallbackPage,
@@ -38,7 +39,8 @@ function YouTubeCallbackPage() {
     }
 
     // Exchange code for token via backend
-    fetch(import.meta.env.VITE_API_URL + "/api/marketing/social-accounts/oauth_callback/", {
+    apiFetch("/api/marketing/social-accounts/oauth_callback/", {
+      public: true,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as HubRouteImport } from './routes/_hub'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as HubIndexRouteImport } from './routes/_hub.index'
@@ -24,6 +25,11 @@ import { Route as SocialYoutubeCallbackRouteImport } from './routes/social.youtu
 
 const HubRoute = HubRouteImport.update({
   id: '/_hub',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PrivacyRoute = PrivacyRouteImport.update({
@@ -84,6 +90,7 @@ const SocialYoutubeCallbackRoute = SocialYoutubeCallbackRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof HubIndexRoute
+  '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
   '/terms': typeof TermsRoute
   '/accounts': typeof HubAccountsRoute
@@ -96,6 +103,7 @@ export interface FileRoutesByFullPath {
   '/social/youtube/callback': typeof SocialYoutubeCallbackRoute
 }
 export interface FileRoutesByTo {
+  '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
   '/terms': typeof TermsRoute
   '/accounts': typeof HubAccountsRoute
@@ -111,6 +119,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_hub': typeof HubRouteWithChildren
+  '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
   '/terms': typeof TermsRoute
   '/_hub/accounts': typeof HubAccountsRoute
@@ -127,6 +136,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/login'
     | '/privacy'
     | '/terms'
     | '/accounts'
@@ -139,6 +149,7 @@ export interface FileRouteTypes {
     | '/social/youtube/callback'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/login'
     | '/privacy'
     | '/terms'
     | '/accounts'
@@ -153,6 +164,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/_hub'
+    | '/login'
     | '/privacy'
     | '/terms'
     | '/_hub/accounts'
@@ -168,6 +180,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   HubRoute: typeof HubRouteWithChildren
+  LoginRoute: typeof LoginRoute
   PrivacyRoute: typeof PrivacyRoute
   TermsRoute: typeof TermsRoute
   OauthCallbackRoute: typeof OauthCallbackRoute
@@ -183,6 +196,13 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof HubRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/privacy': {
@@ -285,6 +305,7 @@ const HubRouteWithChildren = HubRoute._addFileChildren(HubRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   HubRoute: HubRouteWithChildren,
+  LoginRoute: LoginRoute,
   PrivacyRoute: PrivacyRoute,
   TermsRoute: TermsRoute,
   OauthCallbackRoute: OauthCallbackRoute,

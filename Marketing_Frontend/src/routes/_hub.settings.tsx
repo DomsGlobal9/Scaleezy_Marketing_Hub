@@ -17,6 +17,7 @@ import {
 import { PageHeader, SectionTitle, StatusBadge } from "@/components/marketing/primitives";
 import { PERMISSION_MATRIX } from "@/lib/marketing-data";
 import { useBrandSettings } from "@/lib/brand-settings";
+import { apiFetch } from "@/lib/api";
 
 export const Route = createFileRoute("/_hub/settings")({
   head: () => ({
@@ -220,7 +221,7 @@ function SettingsPage() {
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
 
   useEffect(() => {
-    fetch("http://localhost:8000/api/marketing/settings/")
+    apiFetch("/api/marketing/settings/")
       .then((res) => res.json())
       .then((data) => {
         if (data.workspace) setWorkspace(data.workspace);
@@ -230,7 +231,7 @@ function SettingsPage() {
   }, []);
 
   const handleSave = () => {
-    fetch("http://localhost:8000/api/marketing/settings/", {
+    apiFetch("/api/marketing/settings/", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ workspace }),

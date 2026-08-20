@@ -50,6 +50,7 @@ import {
 import { DEMO_ACCOUNTS, PUBLISHING_HISTORY } from "@/lib/marketing-data";
 import { cn } from "@/lib/utils";
 import { useBrandSettings } from "@/lib/brand-settings";
+import { apiFetch } from "@/lib/api";
 
 export const Route = createFileRoute("/_hub/publishing")({
   head: () => ({
@@ -220,7 +221,7 @@ function PublishingPage() {
 
   useEffect(() => {
     // Fetch connected accounts for publishing
-    fetch(import.meta.env.VITE_API_URL + "/api/marketing/social-accounts/")
+    apiFetch("/api/marketing/social-accounts/")
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data)) {
@@ -229,7 +230,7 @@ function PublishingPage() {
       })
       .catch(console.error);
 
-    fetch(import.meta.env.VITE_API_URL + "/api/marketing/publishing/jobs/")
+    apiFetch("/api/marketing/publishing/jobs/")
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data)) {
@@ -269,14 +270,14 @@ function PublishingPage() {
 
     try {
       // Fetch workspaces
-      const wsRes = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/workspaces/");
+      const wsRes = await apiFetch("/api/marketing/workspaces/");
       const wsData = await wsRes.json();
       const wsId = Array.isArray(wsData) && wsData.length > 0 ? wsData[0].id : null;
 
-      let assetId = null;
+      let assetId = asset?.id || null;
       const b64Data = asset?.previewUrl || referenceImageBase64;
 
-      if (b64Data && b64Data.startsWith("data:") && wsId) {
+      if (!assetId && b64Data && b64Data.startsWith("data:") && wsId) {
         try {
           // Convert base64 data URI to Blob
           const r = await fetch(b64Data);
@@ -291,8 +292,7 @@ function PublishingPage() {
             asset?.source === "gemini" ? "GEMINI_GENERATED" : "MANUAL_UPLOAD",
           );
 
-          const uploadRes = await fetch(
-            import.meta.env.VITE_API_URL + "/api/marketing/assets/upload/",
+          const uploadRes = await apiFetch("/api/marketing/assets/upload/",
             {
               method: "POST",
               body: formData,
@@ -309,7 +309,7 @@ function PublishingPage() {
 
       if (!assetId) {
         // Fallback for MVP if no image is available
-        const asRes = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/assets/");
+        const asRes = await apiFetch("/api/marketing/assets/");
         const asData = await asRes.json();
         assetId = Array.isArray(asData) && asData.length > 0 ? asData[0].id : null;
       }
@@ -326,7 +326,7 @@ function PublishingPage() {
       ].filter(Boolean);
       const caption = captionParts.join("\n\n") || "";
 
-      const res = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/publishing/jobs/", {
+      const res = await apiFetch("/api/marketing/publishing/jobs/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -357,7 +357,7 @@ function PublishingPage() {
   const handleGenerate = async () => {
     setStep("gemini_generating");
     try {
-      const res = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/gemini/generate/", {
+      const res = await apiFetch("/api/marketing/gemini/generate/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -464,7 +464,7 @@ function PublishingPage() {
       setStep("gemini_generating");
       try {
         // Fetch workspaces
-        const wsRes = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/workspaces/");
+        const wsRes = await apiFetch("/api/marketing/workspaces/");
         const wsData = await wsRes.json();
         const wsId = Array.isArray(wsData) && wsData.length > 0 ? wsData[0].id : null;
         if (!wsId) throw new Error("No workspace found.");
@@ -474,8 +474,7 @@ function PublishingPage() {
         formData.append("workspace_id", wsId);
         formData.append("source", "MANUAL_UPLOAD");
 
-        const uploadRes = await fetch(
-            import.meta.env.VITE_API_URL + "/api/marketing/assets/upload/",
+        const uploadRes = await apiFetch("/api/marketing/assets/upload/",
             { method: "POST", body: formData }
         );
         const uploadData = await uploadRes.json();
@@ -485,8 +484,7 @@ function PublishingPage() {
         const fileUrl = uploadData.data.file_url;
 
         // Analyze video
-        const analyzeRes = await fetch(
-            import.meta.env.VITE_API_URL + "/api/marketing/gemini/analyze-video/",
+        const analyzeRes = await apiFetch("/api/marketing/gemini/analyze-video/",
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -539,8 +537,7 @@ function PublishingPage() {
         setStep("gemini_form");
         setIsAnalyzing(true);
         try {
-          const res = await fetch(
-            import.meta.env.VITE_API_URL + "/api/marketing/gemini/analyze-image/",
+          const res = await apiFetch("/api/marketing/gemini/analyze-image/",
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -565,8 +562,7 @@ function PublishingPage() {
         setIsGeneratingCaptions(true);
         setStep("gemini_generating"); // Re-use the loading step
         try {
-          const res = await fetch(
-            import.meta.env.VITE_API_URL + "/api/marketing/gemini/generate-captions/",
+          const res = await apiFetch("/api/marketing/gemini/generate-captions/",
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },

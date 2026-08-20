@@ -1,12 +1,44 @@
-import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
-import { BarChart3, LayoutDashboard, Menu, Send, Settings, Share2, Sparkles } from "lucide-react";
+import { createFileRoute, Link, Outlet, redirect, useNavigate } from "@tanstack/react-router";
+import {
+  BarChart3,
+  LayoutDashboard,
+  LogOut,
+  Menu,
+  Send,
+  Settings,
+  Share2,
+  Sparkles,
+} from "lucide-react";
 import { useState } from "react";
 
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { SiteFooter } from "@/components/marketing/site-footer";
+import { apiPost } from "@/lib/api";
 
 export const Route = createFileRoute("/_hub")({
+  // The guard below reads localStorage, which does not exist during SSR.
+  // Without ssr:false the server would evaluate beforeLoad as "signed out" and
+  // the client would never re-run it, bouncing signed-in users to /login on
+  // every refresh. This cascades to all five hub pages and nothing else —
+  // /privacy and /terms are root siblings and stay server-rendered.
+  ssr: false,
+  beforeLoad: ({ context, location, preload }) => {
+    // Preloads must not trigger navigation side effects.
+    if (preload) return;
+    if (!context.auth.isAuthenticated()) {
+      throw redirect({
+        to: "/login",
+        search: { redirect: location.href },
+        replace: true,
+      });
+    }
+  },
+  // Under ssr:false the subtree renders inside a ClientOnly boundary whose
+  // fallback is null by default — without this the hub is a blank page on
+  // every load.
+  pendingComponent: HubSkeleton,
   component: HubLayout,
 });
 
@@ -60,6 +92,71 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
+/** Shown while the client-only hub subtree resolves after hydration. */
+function HubSkeleton() {
+  return (
+    <div className="min-h-screen bg-background">
+      <aside className="fixed inset-y-0 left-0 hidden w-[270px] flex-col border-r border-border bg-card px-4 py-6 lg:flex">
+        <div className="px-2">
+          <Brand />
+        </div>
+        <div className="mt-8 flex-1 space-y-2">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full rounded-xl" />
+          ))}
+        </div>
+      </aside>
+      <main className="flex min-h-screen flex-col lg:pl-[270px]">
+        <div className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-8 sm:px-6 lg:px-10 lg:py-12">
+          <Skeleton className="h-8 w-64" />
+          <Skeleton className="mt-4 h-4 w-96 max-w-full" />
+          <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <Skeleton key={i} className="h-32 rounded-xl" />
+            ))}
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function SignOutButton({ onDone }: { onDone?: () => void }) {
+  const navigate = useNavigate();
+  const { auth } = Route.useRouteContext();
+  const [busy, setBusy] = useState(false);
+
+  const signOut = async () => {
+    setBusy(true);
+    const refresh = auth.getRefreshToken();
+    try {
+      // Best-effort server-side invalidation. The local session is cleared
+      // either way — a network failure must never trap someone signed in.
+      if (refresh) await apiPost("/api/auth/logout/", { refresh });
+    } catch {
+      /* ignore */
+    } finally {
+      auth.signOut();
+      onDone?.();
+      // No `redirect` — signing out should land on a clean login screen, not
+      // bounce back into the page the user just left.
+      await navigate({ to: "/login", search: { redirect: undefined }, replace: true });
+    }
+  };
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="w-full justify-start text-muted-foreground hover:text-foreground"
+      onClick={signOut}
+      disabled={busy}
+    >
+      <LogOut className="size-4" /> Sign out
+    </Button>
+  );
+}
+
 function HubLayout() {
   const [open, setOpen] = useState(false);
 
@@ -78,6 +175,9 @@ function HubLayout() {
             CRM, Inventory, Analytics, Finance and Try-On signals feed this hub.
           </p>
         </div>
+        <div className="mt-2">
+          <SignOutButton />
+        </div>
       </aside>
 
       <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-border bg-card/95 px-4 py-3 backdrop-blur lg:hidden">
@@ -92,6 +192,9 @@ function HubLayout() {
             <Brand />
             <div className="mt-8">
               <NavList onNavigate={() => setOpen(false)} />
+            </div>
+            <div className="mt-6 border-t border-border pt-4">
+              <SignOutButton onDone={() => setOpen(false)} />
             </div>
           </SheetContent>
         </Sheet>

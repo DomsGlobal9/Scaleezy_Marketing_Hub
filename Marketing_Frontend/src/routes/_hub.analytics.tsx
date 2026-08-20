@@ -31,6 +31,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { PageHeader, SectionTitle, StatCard } from "@/components/marketing/primitives";
+import { apiFetch } from "@/lib/api";
 
 export const Route = createFileRoute("/_hub/analytics")({
   head: () => ({
@@ -106,7 +107,7 @@ function AnalyticsPage() {
   const [roi, setRoi] = useState<any[]>([]);
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/marketing/analytics/dashboard/')
+    apiFetch('/api/marketing/analytics/dashboard/')
       .then(res => res.json())
       .then(data => {
         if (data.trend) setTrend(data.trend);
