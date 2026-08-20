@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     'apps.brands',
     'apps.content',
     'apps.feedback',
+    'apps.layouts',
     'apps.ai',
     'apps.social_accounts',
     'apps.publishing',
@@ -99,6 +100,12 @@ if 'test' in sys.argv:
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': ':memory:',
     }
+    # Storage is stubbed under test for the same reason the database is.
+    # Without this, any developer with a real .env runs the suite against the
+    # live Supabase bucket: the brand-logo and poster-composition tests each
+    # upload a file, and those files stay there. SupabaseStorageService reads
+    # this flag and returns a deterministic URL without touching the network.
+    STORAGE_TEST_MODE = True
 
 
 # Password validation

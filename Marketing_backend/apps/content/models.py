@@ -66,6 +66,11 @@ class ContentItem(models.Model):
     # parent, so a join would buy nothing.
     slides = models.JSONField(default=list, blank=True)
 
+    # How it is composed. Empty until a poster has been rendered by the
+    # layout engine; the brand's layout_preference is the fallback.
+    layout_plugin = models.CharField(max_length=64, blank=True)
+    layout_config = models.JSONField(default=dict, blank=True)
+
     # What produced it, for cost tracking and for the Phase 5 AI router.
     ai_provider = models.CharField(max_length=50, blank=True)
     ai_model = models.CharField(max_length=100, blank=True)

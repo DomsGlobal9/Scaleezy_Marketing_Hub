@@ -1,11 +1,20 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Brain, CheckCircle2, Edit3, FileImage, Loader2, XCircle } from "lucide-react";
+import {
+  Brain,
+  CheckCircle2,
+  Edit3,
+  FileImage,
+  Loader2,
+  Palette,
+  XCircle,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { FeedbackTagPicker, useFeedbackElements } from "@/components/marketing/feedback-tags";
+import { PosterStudio, useLayoutCatalogue } from "@/components/marketing/poster-studio";
 import { EmptyState, PageHeader, StatusBadge } from "@/components/marketing/primitives";
 import { api, apiPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -25,6 +34,7 @@ export const Route = createFileRoute("/_hub/review")({
 
 interface ContentItem {
   id: string;
+  layout_plugin: string;
   headline: string;
   caption: string;
   hashtags: string;
@@ -79,7 +89,9 @@ function ReviewPage() {
   const [fixes, setFixes] = useState<Record<string, string>>({});
   const [tags, setTags] = useState<Record<string, string[]>>({});
   const [report, setReport] = useState<TrainingReport | null>(null);
+  const [studio, setStudio] = useState<string | null>(null);
   const { groups, provisional } = useFeedbackElements();
+  const { layouts, sizes } = useLayoutCatalogue();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -261,6 +273,29 @@ function ReviewPage() {
                     <span className="font-medium text-foreground">Reviewer note:</span>{" "}
                     {item.review_note}
                   </p>
+                ) : null}
+
+                {layouts.length > 0 ? (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="mt-3 px-0 text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => setStudio(studio === item.id ? null : item.id)}
+                    >
+                      <Palette className="size-4" />
+                      {studio === item.id ? "Hide studio" : "Compose on-brand"}
+                    </Button>
+                    {studio === item.id ? (
+                      <PosterStudio
+                        contentItemId={item.id}
+                        layouts={layouts}
+                        sizes={sizes}
+                        defaultLayout={item.layout_plugin || undefined}
+                        onRendered={() => void load()}
+                      />
+                    ) : null}
+                  </>
                 ) : null}
 
                 {item.status === "PENDING_REVIEW" ? (

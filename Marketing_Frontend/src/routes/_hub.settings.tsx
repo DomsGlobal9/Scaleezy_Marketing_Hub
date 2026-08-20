@@ -19,6 +19,8 @@ import { PERMISSION_MATRIX } from "@/lib/marketing-data";
 import { useBrandSettings } from "@/lib/brand-settings";
 import { AIProvidersPanel } from "@/components/marketing/ai-providers-panel";
 import { apiFetch } from "@/lib/api";
+import { useLayoutCatalogue } from "@/components/marketing/poster-studio";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_hub/settings")({
   head: () => ({
@@ -117,6 +119,7 @@ function BrandKitPanel() {
   };
 
   const hasLogo = !!settings.logoUrl;
+  const { layouts } = useLayoutCatalogue();
 
   return (
     <Panel label="Brand Kit" title="Logo & contact details">
@@ -229,6 +232,32 @@ function BrandKitPanel() {
             disabled={!settings.phoneNumber.trim()}
             onCheckedChange={(v) => update({ showPhoneOnPosters: v }, { immediate: true })}
           />
+        </div>
+
+        <div>
+          <Label className="text-xs tracking-wide uppercase">Default poster layout</Label>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {layouts.map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                title={option.description}
+                onClick={() => update({ layoutPreference: option.key }, { immediate: true })}
+                className={cn(
+                  "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                  settings.layoutPreference === option.key
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-border text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {option.display_name}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Used whenever a poster is composed from your brand rather than generated. Can be
+            changed per poster in Review.
+          </p>
         </div>
       </div>
     </Panel>

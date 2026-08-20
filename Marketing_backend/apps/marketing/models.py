@@ -15,6 +15,9 @@ class MarketingAsset(models.Model):
     class Source(models.TextChoices):
         GEMINI_GENERATED = 'GEMINI_GENERATED', 'Gemini Generated'
         MANUAL_UPLOAD = 'MANUAL_UPLOAD', 'Manual Upload'
+        # Composed server-side by the layout engine from the brand's own
+        # palette, fonts and photograph — neither generated nor uploaded.
+        COMPOSED = 'COMPOSED', 'Composed from brand'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(MarketingWorkspace, on_delete=models.CASCADE, related_name='marketing_assets')

@@ -231,17 +231,57 @@ prompt — covered end to end by `ReviewIntegrationTests.test_rejecting_twice_ch
 
 ---
 
-### Phase 7 — Layout & export engine
+### Phase 7 — Layout & export engine ✅
 
-The zip ships working PIL code (`poster_patterns_v2.py`, `build_daily.py`) — port it rather than
-rewrite.
+Shipped as `apps/layouts`.
 
-- Layout plugins: `agency_column`, `jil_sander`, `cos_split`, `data_hero`, `ghost_word`, `vs_table`.
-- Compose posters **locally from brand palette + fonts + photo**, instead of asking Gemini for the
-  whole image. This is what makes output consistently on-brand.
-- Export sizes per platform: IG 1080×1350 / 1080×1080 / 1080×1920, FB 1200×630, X 1600×900,
-  LinkedIn 1200×627, plus PDF.
-- Logo and phone overlays (already wired through the UI) get applied here, server-side.
+**Layout plugins** — all six, one file each under `patterns/`, discovered by a registry that
+mirrors `apps/ai/registry.py`: `agency_column`, `jil_sander`, `cos_split`, `data_hero`,
+`ghost_word`, `vs_table`. The keys match `Brand.Layout` exactly, and a test asserts they stay
+matched.
+
+**Composed locally, not generated.** `render.compose()` takes brand palette + brand fonts + a
+photograph and returns a finished poster. No image model is involved, so the output uses the
+brand's actual colours and typefaces every time instead of only accidentally.
+
+**Resolution independence.** Patterns are authored against a 1080-wide reference and measure in
+units of `width/1080`, so each export size is a genuine re-composition at those dimensions rather
+than a crop or an upscale of the portrait poster. A 1600×900 X card gets a wide layout.
+
+**Export sizes** — IG 1080×1350 / 1080×1080 / 1080×1920, FB 1200×630, X 1600×900,
+LinkedIn 1200×627, plus A4 PDF at 300dpi.
+
+**Overlays server-side.** Logo (top right, on a contrast plate) and phone (bottom strip) are
+applied by the renderer, not by each pattern, so all six behave identically and a new pattern gets
+them for free. Patterns lay out against `floor()`, which reserves the strip's height — the overlay
+can never land on a pattern's own footer row. The wizard's "Brand add-ons" toggles finally do
+something: `include_logo` / `include_phone` override the brand default per generation.
+
+**API** — `GET /layouts/` (catalogue), `POST /layouts/preview/` (composes, stores nothing),
+`POST /layouts/render/` (persists a MarketingAsset and points the ContentItem at it),
+`POST /layouts/export/` (one asset per destination; one size failing does not lose the others).
+
+**Frontend** — a poster studio on the review card: layout chips, a live preview composed by the
+same code that produces the final file, "use this poster", and per-platform export. Settings gains
+the brand's default layout.
+
+**Model changes** — `ContentItem.layout_plugin` / `layout_config` (specified back in Phase 3 but
+never implemented), and a `MarketingAsset.Source.COMPOSED`, because a composed poster is neither
+AI-generated nor manually uploaded.
+
+**Notes**
+
+- The spec's `poster_patterns_v2.py` and `build_daily.py` were to be ported rather than rewritten.
+  Neither file is present anywhere in this repo or alongside it, so the six patterns are written
+  from their names and the layout descriptions. If the originals turn up, each is a single
+  self-contained file to swap.
+- Images only ever enter from a base64 upload or a URL the *server* owns (a brand logo, an asset in
+  the caller's own workspace). There is deliberately no "fetch this URL" parameter — a renderer is
+  a convenient place to hide a server-side request forgery.
+- **Fixed in passing:** the test suite was uploading to the live Supabase bucket. Any developer
+  with a real `.env` ran the brand-logo test — and now the poster tests — against production
+  storage, leaving files behind. `STORAGE_TEST_MODE` now stubs uploads under test, the same way
+  the database is already swapped for in-memory SQLite.
 
 ---
 

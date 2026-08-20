@@ -29,6 +29,12 @@ class SupabaseStorageService:
         a URL that serves nothing, and the failure only surfaces later when
         publishing tries to fetch the media.
         """
+        if getattr(settings, 'STORAGE_TEST_MODE', False):
+            # Deterministic, and above the `strict` check on purpose: a strict
+            # caller under test wants the success path exercised, not a live
+            # upload to whatever bucket the developer's .env points at.
+            return f"https://storage.test/{prefix}/{workspace_id}/{filename}"
+
         if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
             if strict:
                 raise StorageError(

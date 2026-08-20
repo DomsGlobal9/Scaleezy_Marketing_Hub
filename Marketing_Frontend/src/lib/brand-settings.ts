@@ -28,6 +28,8 @@ export interface BrandSettings {
   brandTone: string;
   instagramHandle: string;
   palette: Record<string, string>;
+  /** Default layout the server composes posters with. */
+  layoutPreference: string;
 }
 
 export const DEFAULT_BRAND_SETTINGS: BrandSettings = {
@@ -43,6 +45,7 @@ export const DEFAULT_BRAND_SETTINGS: BrandSettings = {
   brandTone: "",
   instagramHandle: "",
   palette: {},
+  layoutPreference: "agency_column",
 };
 
 /** Raw Brand as the API returns it. */
@@ -60,6 +63,7 @@ interface BrandDto {
   contact_phone: string;
   show_logo_on_posters: boolean;
   show_phone_on_posters: boolean;
+  layout_preference: string;
 }
 
 const toSettings = (b: BrandDto): BrandSettings => ({
@@ -75,6 +79,7 @@ const toSettings = (b: BrandDto): BrandSettings => ({
   brandTone: b.brand_tone ?? "",
   instagramHandle: b.instagram_handle ?? "",
   palette: b.palette ?? {},
+  layoutPreference: b.layout_preference || "agency_column",
 });
 
 /** Only the fields the API accepts; logo fields are set via the upload route. */
@@ -91,6 +96,7 @@ const toPayload = (patch: Partial<BrandSettings>) => {
   if (patch.showLogoOnPosters !== undefined) out["show_logo_on_posters"] = patch.showLogoOnPosters;
   if (patch.showPhoneOnPosters !== undefined)
     out["show_phone_on_posters"] = patch.showPhoneOnPosters;
+  if (patch.layoutPreference !== undefined) out["layout_preference"] = patch.layoutPreference;
   return out;
 };
 
