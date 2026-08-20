@@ -17,6 +17,7 @@ import { Route as HubIndexRouteImport } from './routes/_hub.index'
 import { Route as HubAccountsRouteImport } from './routes/_hub.accounts'
 import { Route as HubAnalyticsRouteImport } from './routes/_hub.analytics'
 import { Route as HubPublishingRouteImport } from './routes/_hub.publishing'
+import { Route as HubReviewRouteImport } from './routes/_hub.review'
 import { Route as HubSettingsRouteImport } from './routes/_hub.settings'
 import { Route as OauthCallbackRouteImport } from './routes/oauth.callback'
 import { Route as SocialLinkedinCallbackRouteImport } from './routes/social.linkedin.callback'
@@ -62,6 +63,11 @@ const HubPublishingRoute = HubPublishingRouteImport.update({
   path: '/publishing',
   getParentRoute: () => HubRoute,
 } as any)
+const HubReviewRoute = HubReviewRouteImport.update({
+  id: '/review',
+  path: '/review',
+  getParentRoute: () => HubRoute,
+} as any)
 const HubSettingsRoute = HubSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -96,6 +102,7 @@ export interface FileRoutesByFullPath {
   '/accounts': typeof HubAccountsRoute
   '/analytics': typeof HubAnalyticsRoute
   '/publishing': typeof HubPublishingRoute
+  '/review': typeof HubReviewRoute
   '/settings': typeof HubSettingsRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
@@ -109,6 +116,7 @@ export interface FileRoutesByTo {
   '/accounts': typeof HubAccountsRoute
   '/analytics': typeof HubAnalyticsRoute
   '/publishing': typeof HubPublishingRoute
+  '/review': typeof HubReviewRoute
   '/settings': typeof HubSettingsRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/': typeof HubIndexRoute
@@ -125,6 +133,7 @@ export interface FileRoutesById {
   '/_hub/accounts': typeof HubAccountsRoute
   '/_hub/analytics': typeof HubAnalyticsRoute
   '/_hub/publishing': typeof HubPublishingRoute
+  '/_hub/review': typeof HubReviewRoute
   '/_hub/settings': typeof HubSettingsRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/_hub/': typeof HubIndexRoute
@@ -142,6 +151,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/analytics'
     | '/publishing'
+    | '/review'
     | '/settings'
     | '/oauth/callback'
     | '/social/linkedin/callback'
@@ -155,6 +165,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/analytics'
     | '/publishing'
+    | '/review'
     | '/settings'
     | '/oauth/callback'
     | '/'
@@ -170,6 +181,7 @@ export interface FileRouteTypes {
     | '/_hub/accounts'
     | '/_hub/analytics'
     | '/_hub/publishing'
+    | '/_hub/review'
     | '/_hub/settings'
     | '/oauth/callback'
     | '/_hub/'
@@ -247,6 +259,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof HubPublishingRouteImport
       parentRoute: typeof HubRoute
     }
+    '/_hub/review': {
+      id: '/_hub/review'
+      path: '/review'
+      fullPath: '/review'
+      preLoaderRoute: typeof HubReviewRouteImport
+      parentRoute: typeof HubRoute
+    }
     '/_hub/settings': {
       id: '/_hub/settings'
       path: '/settings'
@@ -289,6 +308,7 @@ interface HubRouteChildren {
   HubAccountsRoute: typeof HubAccountsRoute
   HubAnalyticsRoute: typeof HubAnalyticsRoute
   HubPublishingRoute: typeof HubPublishingRoute
+  HubReviewRoute: typeof HubReviewRoute
   HubSettingsRoute: typeof HubSettingsRoute
   HubIndexRoute: typeof HubIndexRoute
 }
@@ -297,6 +317,7 @@ const HubRouteChildren: HubRouteChildren = {
   HubAccountsRoute: HubAccountsRoute,
   HubAnalyticsRoute: HubAnalyticsRoute,
   HubPublishingRoute: HubPublishingRoute,
+  HubReviewRoute: HubReviewRoute,
   HubSettingsRoute: HubSettingsRoute,
   HubIndexRoute: HubIndexRoute,
 }

@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
@@ -16,6 +18,9 @@ from .services.generator import GeminiGeneratorService
 from django.utils import timezone
 
 
+logger = logging.getLogger(__name__)
+
+
 class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     queryset = GeminiGenerationRequest.objects.all()
     serializer_class = GeminiGenerationRequestSerializer
@@ -30,6 +35,48 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if error:
             raise PermissionDenied("No accessible workspace for this request.")
         serializer.save(workspace=workspace, user=self.request.user)
+
+    def _persist_content(self, request, brief, result):
+        """
+        Saves a generation as a DRAFT ContentItem.
+
+        Best-effort: a storage hiccup here must not lose the user the content
+        they just waited for, so failures are logged and the payload is still
+        returned.
+        """
+        from apps.brands.models import Brand
+        from apps.content.models import ContentItem
+
+        try:
+            workspace, error = get_request_workspace(request)
+            if error:
+                return None
+
+            content_format = {
+                'video': ContentItem.Format.VIDEO,
+                'carousel': ContentItem.Format.CAROUSEL,
+            }.get(str(request.data.get('contentType', '')).lower(), ContentItem.Format.POSTER)
+
+            slides = request.data.get('slides') or []
+
+            return ContentItem.objects.create(
+                workspace=workspace,
+                brand=Brand.objects.filter(workspace=workspace).order_by('-is_default').first(),
+                content_format=content_format,
+                status=ContentItem.Status.DRAFT,
+                headline=(result.get('postTitle') or '')[:500],
+                caption=result.get('postDescription') or '',
+                hashtags=result.get('postHashtags') or '',
+                cta=(brief.get('offer') or '')[:255],
+                preview_url=(result.get('posterImageUrl') or '')[:1000],
+                slides=slides if isinstance(slides, list) else [],
+                ai_provider='GOOGLE_GEMINI',
+                ai_prompt=str(brief)[:5000],
+                created_by=request.user if request.user.is_authenticated else None,
+            )
+        except Exception:
+            logger.exception("Could not persist generated content")
+            return None
 
     @action(detail=False, methods=['post'])
     def generate(self, request):
@@ -64,12 +111,18 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         try:
             result_data = GeminiGeneratorService.generate_marketing_content(request_data)
 
+            # Persist the generation. Previously this was returned to the
+            # browser and never stored, so the copy existed only in React
+            # state and was lost on refresh.
+            content_item = self._persist_content(request, data, result_data)
+
             response_payload = {
                 'postTitle': result_data.get('postTitle', ''),
                 'postDescription': result_data.get('postDescription', ''),
                 'postHashtags': result_data.get('postHashtags', ''),
                 'posterImageUrl': result_data.get('posterImageUrl', ''),
                 'metadata': result_data.get('metadata', {}),
+                'contentItemId': str(content_item.id) if content_item else None,
             }
 
             return APIResponse(success=True, data=response_payload, status=status.HTTP_201_CREATED)

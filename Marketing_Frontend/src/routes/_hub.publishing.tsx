@@ -100,6 +100,8 @@ interface CarouselSlide {
 
 interface DraftAsset {
   id?: string;
+  /** ContentItem row the backend persisted for this generation. */
+  contentItemId?: string;
   name: string;
   type: string;
   dimensions: string;
@@ -331,6 +333,7 @@ function PublishingPage() {
           publish_mode: mode === "now" ? "NOW" : "SCHEDULED",
           caption,
           social_connection_ids: ids,
+          ...(asset?.contentItemId ? { content_item_id: asset.contentItemId } : {}),
         }),
       });
 
@@ -426,6 +429,9 @@ function PublishingPage() {
         postDescription: d.postDescription || "",
         postHashtags: d.postHashtags || "",
         previewUrl: d.posterImageUrl || d.videoUrl || undefined,
+        // Row the backend persisted for this generation; sent on publish
+        // so the approval gate can be enforced.
+        contentItemId: d.contentItemId || undefined,
         ...(contentType === "carousel"
           ? {
               slides: slides.map((s, i) => ({

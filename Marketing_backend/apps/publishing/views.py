@@ -37,6 +37,32 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if denied:
             return denied
 
+        # Review gate: when the request names a content item, it must have been
+        # approved. Nothing reaches a real audience without a human decision.
+        content_item = None
+        content_item_id = request.data.get('content_item_id')
+        if content_item_id:
+            from apps.content.models import ContentItem
+
+            content_item = ContentItem.objects.filter(
+                id=content_item_id, workspace_id=data['workspace_id']
+            ).first()
+            if content_item is None:
+                return APIResponse(
+                    success=False, message="Content not found.",
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            if not content_item.is_publishable:
+                return APIResponse(
+                    success=False,
+                    message="This content has not been approved for publishing.",
+                    error={
+                        "code": "NOT_APPROVED",
+                        "message": f"Content is {content_item.get_status_display()}.",
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
         try:
             workspace = MarketingWorkspace.objects.get(id=data['workspace_id'])
             asset = MarketingAsset.objects.get(id=data['asset_id'], workspace=workspace)

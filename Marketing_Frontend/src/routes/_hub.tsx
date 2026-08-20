@@ -1,6 +1,7 @@
 import { createFileRoute, Link, Outlet, redirect, useNavigate } from "@tanstack/react-router";
 import {
   BarChart3,
+  CheckCircle2,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -46,6 +47,7 @@ const NAV = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
   { to: "/accounts", label: "Social Media Accounts", icon: Share2 },
   { to: "/publishing", label: "Publishing", icon: Send },
+  { to: "/review", label: "Review", icon: CheckCircle2 },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
