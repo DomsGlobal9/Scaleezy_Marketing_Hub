@@ -98,6 +98,7 @@ interface CarouselSlide {
 }
 
 interface DraftAsset {
+  id?: string;
   name: string;
   type: string;
   dimensions: string;
@@ -447,11 +448,88 @@ function PublishingPage() {
     }
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Convert file to base64
+    const isVideo = file.type.startsWith("video/");
+
+    if (isVideo) {
+      if (uploadIntention === "reference") {
+        toast.error("Video cannot be used as a reference for AI generation.");
+        return;
+      }
+      
+      setIsGeneratingCaptions(true);
+      setStep("gemini_generating");
+      try {
+        // Fetch workspaces
+        const wsRes = await fetch(import.meta.env.VITE_API_URL + "/api/marketing/workspaces/");
+        const wsData = await wsRes.json();
+        const wsId = Array.isArray(wsData) && wsData.length > 0 ? wsData[0].id : null;
+        if (!wsId) throw new Error("No workspace found.");
+
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("workspace_id", wsId);
+        formData.append("source", "MANUAL_UPLOAD");
+
+        const uploadRes = await fetch(
+            import.meta.env.VITE_API_URL + "/api/marketing/assets/upload/",
+            { method: "POST", body: formData }
+        );
+        const uploadData = await uploadRes.json();
+        if (!uploadData.success) throw new Error("Upload failed.");
+
+        const assetId = uploadData.data.id;
+        const fileUrl = uploadData.data.file_url;
+
+        // Analyze video
+        const analyzeRes = await fetch(
+            import.meta.env.VITE_API_URL + "/api/marketing/gemini/analyze-video/",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ asset_id: assetId }),
+            }
+        );
+        const analyzeData = await analyzeRes.json();
+        if (!analyzeData.success) throw new Error(analyzeData.message);
+
+        const d = analyzeData.data;
+
+        setAsset({
+          id: assetId,
+          name: file.name,
+          type: "MP4",
+          dimensions: "Original",
+          created: new Date().toLocaleDateString("en-GB", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          }),
+          source: "upload",
+          contentType: "video",
+          campaign: d.campaignName || "Uploaded Video",
+          tone: "from-blue-500/20 to-purple-500/20",
+          postTitle: d.postTitle || "",
+          postDescription: d.postDescription || "",
+          postHashtags: d.postHashtags || "",
+          previewUrl: fileUrl,
+        });
+        toast.success("Video analyzed successfully!");
+        setStep("preview");
+      } catch (e) {
+          console.error("Failed to process video", e);
+          toast.error("Failed to process video.");
+          setStep("create_or_upload");
+      } finally {
+          setIsGeneratingCaptions(false);
+      }
+      return;
+    }
+
+    // Convert file to base64 for images
     const reader = new FileReader();
     reader.onload = async (event) => {
       const base64String = event.target?.result as string;
@@ -588,14 +666,14 @@ function PublishingPage() {
                 </div>
                 <div>
                   <h3 className="text-lg  font-semibold text-foreground">
-                    ↑ Upload Poster / Image
+                    ↑ Upload Media (Image / Video)
                   </h3>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Upload a reference image or a final poster.
+                    Upload a reference image or a final ready media file.
                   </p>
                 </div>
                 <div className="cursor-pointer mt-4 rounded-full bg-background px-6 py-2 text-sm font-medium text-foreground border border-border transition-transform group-hover:scale-105 shadow-sm">
-                  Upload Poster
+                  Upload Media
                 </div>
               </button>
             </div>
@@ -1072,22 +1150,30 @@ function PublishingPage() {
                       asset.previewUrl ? "h-auto min-h-[280px] cursor-pointer" : "h-64",
                       asset.tone || "from-secondary to-muted",
                     )}
-                    onClick={() => asset.previewUrl && setShowFullImage(true)}
+                    onClick={() => asset.previewUrl && asset.contentType !== "video" && setShowFullImage(true)}
                   >
                     {asset.previewUrl ? (
-                      <>
-                        <img
+                      asset.contentType === "video" ? (
+                        <video
                           src={asset.previewUrl}
-                          alt="Generated Poster"
-                          className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                          controls
+                          className="absolute inset-0 h-full w-full object-contain bg-black"
                         />
-                        <div className="absolute inset-0 bg-black/40 opacity-0 transition-opacity duration-300 group-hover:opacity-100 flex items-center justify-center">
-                          <div className="flex items-center gap-2 text-white bg-black/50 px-4 py-2 rounded-full backdrop-blur-md">
-                            <ZoomIn className="size-4" />
-                            <span className="text-sm font-medium">View Full Size</span>
+                      ) : (
+                        <>
+                          <img
+                            src={asset.previewUrl}
+                            alt="Generated Poster"
+                            className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                          />
+                          <div className="absolute inset-0 bg-black/40 opacity-0 transition-opacity duration-300 group-hover:opacity-100 flex items-center justify-center pointer-events-none">
+                            <div className="flex items-center gap-2 text-white bg-black/50 px-4 py-2 rounded-full backdrop-blur-md">
+                              <ZoomIn className="size-4" />
+                              <span className="text-sm font-medium">View Full Size</span>
+                            </div>
                           </div>
-                        </div>
-                      </>
+                        </>
+                      )
                     ) : (
                       <p className="relative z-10 font-display text-3xl text-white mix-blend-overlay">
                         {asset.campaign}

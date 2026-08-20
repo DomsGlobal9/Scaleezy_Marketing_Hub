@@ -1,5 +1,9 @@
 import json
 import base64
+import requests
+import tempfile
+import os
+import time
 from django.conf import settings
 from google import genai
 from google.genai import types
@@ -131,6 +135,91 @@ Return ONLY a valid JSON object with these exact keys:
             return json.loads(raw_text)
         except json.JSONDecodeError:
             return {}
+
+    @classmethod
+    def analyze_video(cls, asset_id: str) -> dict:
+        """
+        Downloads the video asset, uploads it to Gemini, and generates captions.
+        """
+        from apps.marketing.models import MarketingAsset
+        
+        try:
+            asset = MarketingAsset.objects.get(id=asset_id)
+        except MarketingAsset.DoesNotExist:
+            raise Exception("Video asset not found.")
+            
+        if not asset.file_url:
+            raise Exception("Video has no file URL.")
+
+        client = cls._get_client()
+        
+        # Download the video locally to upload to Gemini File API
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
+        os.close(tmp_fd)
+        
+        uploaded_file = None
+        try:
+            # 1. Download
+            response = requests.get(asset.file_url, stream=True, timeout=30)
+            response.raise_for_status()
+            with open(tmp_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                    
+            # 2. Upload to Gemini
+            uploaded_file = client.files.upload(file=tmp_path)
+            
+            # 3. Wait for processing
+            while uploaded_file.state.name == "PROCESSING":
+                print(".", end="", flush=True)
+                time.sleep(2)
+                uploaded_file = client.files.get(name=uploaded_file.name)
+                
+            if uploaded_file.state.name == "FAILED":
+                raise Exception("Video processing failed in Gemini.")
+                
+            # 4. Generate Content
+            prompt = """You are an expert social media manager.
+I am providing a marketing video.
+Please analyze the video content and write a highly engaging social media caption for it.
+
+Return ONLY a valid JSON object with these exact keys:
+{
+  "campaignName": "A catchy 2-4 word campaign name describing the video",
+  "postTitle": "A short, catchy title (max 10 words)",
+  "postDescription": "An engaging social media caption with emojis (2-4 sentences)",
+  "postHashtags": "5-8 relevant hashtags separated by spaces"
+}"""
+            
+            gen_response = client.models.generate_content(
+                model=cls.TEXT_MODEL,
+                contents=[prompt, uploaded_file],
+            )
+            
+            raw_text = gen_response.text.strip()
+            if raw_text.startswith('```'):
+                raw_text = raw_text.split('\n', 1)[1] if '\n' in raw_text else raw_text[3:]
+            if raw_text.endswith('```'):
+                raw_text = raw_text[:-3]
+            raw_text = raw_text.strip()
+            if raw_text.startswith('json'):
+                raw_text = raw_text[4:].strip()
+
+            try:
+                return json.loads(raw_text)
+            except json.JSONDecodeError:
+                return {}
+                
+        finally:
+            # Clean up Gemini File
+            if uploaded_file:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                except Exception as e:
+                    print(f"Failed to delete Gemini file: {e}")
+            # Clean up local temp file
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     @classmethod
     def generate_text_and_image_prompt(cls, request_data: dict) -> dict:

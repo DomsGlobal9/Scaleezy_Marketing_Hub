@@ -93,6 +93,20 @@ class GeminiGenerationViewSet(viewsets.ModelViewSet):
             traceback.print_exc()
             return APIResponse(success=False, message=str(e), status=500)
 
+    @action(detail=False, methods=['post'], url_path='analyze-video')
+    def analyze_video(self, request):
+        try:
+            asset_id = request.data.get('asset_id')
+            if not asset_id:
+                return APIResponse(success=False, message="No asset_id provided", status=400)
+                
+            analysis = GeminiGeneratorService.analyze_video(asset_id)
+            return APIResponse(success=True, data=analysis, status=200)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return APIResponse(success=False, message=str(e), status=500)
+
     @action(detail=True, methods=['get'])
     def results(self, request, pk=None):
         try:
