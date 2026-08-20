@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -12,7 +12,12 @@ function OAuthCallbackPage() {
   const navigate = useNavigate();
   const search = useSearch({ from: "/oauth/callback" }) as { code?: string; state?: string };
 
+  const fired = useRef(false);
+
   useEffect(() => {
+    if (fired.current) return;
+    fired.current = true;
+
     if (!search.code || !search.state) {
       toast.error("Invalid OAuth callback parameters.");
       navigate({ to: "/accounts" });
