@@ -47,7 +47,14 @@ logger = logging.getLogger(__name__)
 
 def execute_publishing_job(job_id: str):
     """
-    Executes a publishing job synchronously.
+    Publishes every outstanding item on a job.
+
+    Runs on the background worker rather than in the request that created the
+    job — a multi-channel post with a video upload takes long enough to hit a
+    gateway timeout, and when it did the request died mid-publish with some
+    channels posted and nothing to resume it.
+
+    Each item is independent: one platform failing does not stop the others.
     """
     try:
         job = PublishingJob.objects.get(id=job_id)
@@ -58,10 +65,13 @@ def execute_publishing_job(job_id: str):
     job.started_at = timezone.now()
     job.save()
 
-    all_success = True
-    any_success = False
-
     for item in job.items.all():
+        if item.status == PublishingJobItem.Status.PUBLISHED:
+            # Already live with an external_post_id. Both retry paths re-run
+            # the whole job, so without this a retry of one failed channel
+            # posts a second copy to every channel that had succeeded.
+            continue
+
         item.status = PublishingJobItem.Status.PUBLISHING
         item.save()
 
@@ -82,14 +92,15 @@ def execute_publishing_job(job_id: str):
             item.error_message = "Platform not supported yet"
             item.failed_at = timezone.now()
             item.save()
-            all_success = False
             continue
 
-        # Check item result
-        if item.status == PublishingJobItem.Status.PUBLISHED:
-            any_success = True
-        else:
-            all_success = False
+    # Judged from the final state of every item, including ones that were
+    # already published before this run.
+    statuses = list(job.items.values_list('status', flat=True))
+    any_success = any(s == PublishingJobItem.Status.PUBLISHED for s in statuses)
+    all_success = bool(statuses) and all(
+        s == PublishingJobItem.Status.PUBLISHED for s in statuses
+    )
 
     job.completed_at = timezone.now()
     if all_success and any_success:

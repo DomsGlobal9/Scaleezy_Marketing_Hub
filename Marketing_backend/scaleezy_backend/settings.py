@@ -46,6 +46,8 @@ INSTALLED_APPS = [
     'apps.content',
     'apps.feedback',
     'apps.layouts',
+    'apps.jobs',
+    'apps.billing',
     'apps.ai',
     'apps.social_accounts',
     'apps.publishing',
@@ -166,6 +168,18 @@ SIMPLE_JWT = {
     'UPDATE_LAST_LOGIN': True,
     'AUTH_HEADER_TYPES': ('Bearer',),
     'SIGNING_KEY': SECRET_KEY,
+}
+
+
+# Background tasks
+# Durable, database-backed, run by `manage.py run_tasks`. Django ships only an
+# immediate backend, which executes inside the enqueueing request and so
+# cannot outlive it or defer.
+TASKS = {
+    'default': {
+        'BACKEND': 'apps.jobs.backend.DatabaseBackend',
+        'OPTIONS': {'MAX_ATTEMPTS': env.int('TASK_MAX_ATTEMPTS', default=3)},
+    }
 }
 
 

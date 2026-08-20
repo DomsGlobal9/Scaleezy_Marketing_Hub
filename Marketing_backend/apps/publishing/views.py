@@ -12,7 +12,7 @@ from apps.common.permissions import authorize_workspace
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.permissions import IsWorkspaceMember
 from apps.common.responses import APIResponse
-from .services import execute_publishing_job
+from .tasks import publish_job
 from django.utils import timezone
 
 class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
@@ -99,10 +99,13 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                         status=PublishingJobItem.Status.QUEUED
                     )
             
-            # If immediate publish mode, execute synchronously
+            # Immediate publishing goes on the queue rather than running
+            # inside this request. A multi-channel post with a video upload
+            # takes long enough to hit a gateway timeout, and when it did the
+            # connection died mid-publish with some channels posted, some not,
+            # and nothing to resume it. The job row is the progress record.
             if job.publish_mode == PublishingJob.PublishMode.NOW:
-                execute_publishing_job(job.id)
-                # Refresh job from db to get latest status
+                publish_job.enqueue(str(job.id))
                 job.refresh_from_db()
                 
             return APIResponse(success=True, data=PublishingJobSerializer(job).data, status=status.HTTP_201_CREATED)
@@ -121,8 +124,8 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         for item in failed_items:
             item.status = PublishingJobItem.Status.QUEUED
             item.save()
-        execute_publishing_job(job.id)
-            
+        publish_job.enqueue(str(job.id))
+
         if failed_items.exists():
             job.status = PublishingJob.Status.PUBLISHING
             job.save()
@@ -151,9 +154,9 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             job.status = PublishingJob.Status.PUBLISHING
             job.save()
             
-            # For simplicity in MVP, we just execute the whole job again synchronously
-            # Or execute a single item synchronous logic if needed. For now just doing the whole job if any fails.
-            execute_publishing_job(job.id)
+            # Re-runs the job on the worker. Items already PUBLISHED are
+            # skipped there, so only the one just reset is republished.
+            publish_job.enqueue(str(job.id))
             return APIResponse(success=True, message="Item retried.")
         except PublishingJobItem.DoesNotExist:
             return APIResponse(success=False, message="Item not found.", status=404)

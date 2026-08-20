@@ -353,10 +353,62 @@ function PublishingPage() {
     }
   };
 
+  /**
+   * Waits for a queued generation to finish.
+   *
+   * The request row is the progress record: it moves PENDING -> GENERATING ->
+   * COMPLETED, and the result is fetched once it lands. Polling stops at the
+   * ceiling rather than forever, so a stuck worker surfaces as an error
+   * instead of a spinner nobody can escape.
+   */
+  const pollGeneration = async (generationId: string) => {
+    const started = Date.now();
+    const CEILING_MS = 10 * 60 * 1000;
+    const EVERY_MS = 3000;
+
+    while (Date.now() - started < CEILING_MS) {
+      await new Promise((resolve) => setTimeout(resolve, EVERY_MS));
+
+      const res = await apiFetch(`/api/marketing/gemini/${generationId}/`);
+      const json = await res.json();
+      const request = json.data ?? json;
+
+      if (request?.status === "FAILED") {
+        throw new Error(request.error_message || "Generation failed.");
+      }
+      if (request?.status !== "COMPLETED") continue;
+
+      const resultRes = await apiFetch(`/api/marketing/gemini/${generationId}/results/`);
+      const resultJson = await resultRes.json();
+      const result = resultJson.data ?? {};
+      const metadata = result.metadata ?? {};
+
+      return {
+        postTitle: metadata.postTitle ?? "",
+        postDescription: result.generated_text ?? "",
+        postHashtags: metadata.postHashtags ?? "",
+        posterImageUrl: result.generated_asset_url ?? "",
+        metadata,
+        contentItemId: null,
+      };
+    }
+
+    throw new Error("Generation is taking longer than expected. Check back shortly.");
+  };
+
   const handleGenerate = async () => {
     setStep("gemini_generating");
     try {
-      const res = await apiFetch("/api/marketing/gemini/generate/", {
+      // Video and multi-slide carousels run long enough to hit a gateway
+      // timeout on the synchronous endpoint, and when they do the work is
+      // lost even if the server finished it. Those go on the queue and are
+      // polled; a poster still comes back in one request.
+      const background = contentType === "video" || contentType === "carousel";
+      const endpoint = background
+        ? "/api/marketing/gemini/generate-async/"
+        : "/api/marketing/gemini/generate/";
+
+      const res = await apiFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -398,7 +450,7 @@ function PublishingPage() {
       if (!json.success) {
         throw new Error(json.message || "Generation failed");
       }
-      const d = json.data;
+      const d = background ? await pollGeneration(json.data.generationId) : json.data;
 
       // The backend returns one image today. For a carousel, keep the ordered
       // slide plan and attach any per-slide images it does send back.

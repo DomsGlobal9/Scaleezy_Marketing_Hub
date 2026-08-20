@@ -102,6 +102,13 @@ class AIRouter:
 
     def dispatch(self, capability: str, brief: Dict[str, Any],
                  content_item_id=None) -> Dict[str, Any]:
+        # Spend is checked before the call, not after: an over-cap workspace
+        # that only finds out from AIUsageLog has already been billed for the
+        # generation that took it over.
+        from apps.billing.quota import enforce
+
+        enforce(self.workspace)
+
         candidates = self._candidates(capability)
         if not candidates:
             raise NoProviderAvailable(

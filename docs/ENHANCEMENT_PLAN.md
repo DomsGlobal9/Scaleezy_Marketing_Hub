@@ -16,7 +16,7 @@ Scaleezy Marketing Hub, without discarding what already works.
 | Vector search | **pgvector on existing Supabase Postgres** | No new vendor, no new bill, no extra service. Comfortably handles this scale. |
 | AI providers | **Open-ended registry, DB-driven, per-customer on/off, routed per capability** | Broader than the spec's fixed 5: any number of providers, switchable per customer from an admin console, and assignable per task — one AI for copy, another for images, another for video, or several competing on the same task. |
 | Tenancy | **Row-scoped by workspace + enforced auth** | Not schema-per-tenant. `customer_id` already implies the parent Scaleezy system owns real tenancy. |
-| Async | **Deferred to Phase 8, and not Celery by default** | Only video and multi-slide carousels genuinely need it. |
+| Async | **Database-backed queue on Django 6.1's Tasks API — no Celery, no Redis** | Shipped in Phase 8. Needs a worker process; see the deployment note there. |
 
 ---
 
@@ -285,13 +285,65 @@ AI-generated nor manually uploaded.
 
 ---
 
-### Phase 8 — Async, quotas & cost control
+### Phase 8 — Async, quotas & cost control ✅
 
-- Move video and carousel generation off the request thread. Publishing is already synchronous and
-  will hit gateway timeouts at scale.
-- `Subscription` + quota checks before generation; `AIUsageLog` aggregates into spend caps.
-- Scheduled publishing finally executes — `publish_mode=SCHEDULED` currently creates a job that
-  nothing ever runs.
+Shipped as `apps/jobs` (the queue) and `apps/billing` (the limits).
+
+> **⚠ Deployment requirement.** Publishing and background generation now need a worker process.
+> Without one, jobs queue and never run — posts silently do not go out. Run **either**:
+>
+> ```
+> python manage.py run_tasks              # long-running worker
+> python manage.py run_tasks --once       # one tick, for a cron every ~5 min
+> ```
+>
+> `--once` exists because the cheapest deployments have no always-on worker. A five-minute cron
+> gives scheduled publishing five-minute granularity, which is fine for a social post.
+
+**The queue.** Django 6.1 ships the Tasks API but only an immediate backend, which runs the task
+inside the request that enqueued it — so it can neither outlive a request nor defer. `apps.jobs`
+supplies a `DatabaseBackend` implementing that same API against a `task_runs` table. No Celery, no
+Redis, no second service: the queue is the Postgres we already pay for. Claiming uses
+`SELECT … FOR UPDATE SKIP LOCKED` where the database supports it, so two workers never take the
+same row. Failures retry with exponential backoff, tasks abandoned by a dead worker are reclaimed
+after 30 minutes, and a task that blows up never takes the worker down with it.
+
+**Scheduled publishing executes.** `publish_mode=SCHEDULED` has always written a `scheduled_at` and
+a status of `SCHEDULED`, and nothing ever ran it — a post scheduled for Friday simply never went
+out. `apps/publishing/scheduler.py` sweeps for due jobs on every worker pass and queues them, so
+one `run_tasks --once` is a complete tick. The status flip and the enqueue share a transaction, so
+overlapping sweeps cannot double-post.
+
+**Publishing moved off the request thread**, immediate mode included. A multi-channel post with a
+video upload takes long enough to hit a gateway timeout, and when it did the request died
+mid-publish with some channels posted, nothing to resume it, and no record of where it stopped.
+
+**Generation.** Video and multi-slide carousels go to `POST /gemini/generate-async/`, which returns
+`202` with a generation id; the frontend polls the request row, which has had
+PENDING/GENERATING/COMPLETED/FAILED since the beginning and was never populated. Posters still
+return in a single request — they are fast, and making everyone poll would be worse.
+
+**Quotas.** `Plan` (global catalogue) + `Subscription` (per workspace, with per-customer
+overrides). Usage is **counted, never accumulated** — generations from `ContentItem`, spend from
+`AIUsageLog` — so a stored counter cannot drift into letting a workspace generate forever or
+locking out one that has done nothing. Enforced before the call in both generation endpoints and
+in `AIRouter.dispatch`, because an over-cap workspace that only finds out from `AIUsageLog` has
+already been billed for the generation that took it over. `GET /billing/` reports usage; Settings
+shows it.
+
+**Two deliberate choices worth knowing about:**
+
+1. **The seed migration enrols nobody.** Plans are seeded; no `Subscription` is created. Every
+   existing workspace predates the table, and a billing migration that quietly enrolled them all
+   would turn a deploy into an outage the first time someone hit a limit they never agreed to. An
+   unsubscribed workspace stays unlimited; enrolling one is an explicit act in the admin.
+2. **No self-service plan change.** The billing endpoints are read-only. An endpoint that let a
+   customer upgrade themselves is an endpoint that lets them raise their own spend cap.
+
+**Fixed in passing:** `execute_publishing_job` iterated *every* item on the job, including ones
+already `PUBLISHED`. Both retry paths re-run the whole job, so retrying one failed channel posted a
+second copy to every channel that had succeeded. Published items are now skipped, and job status is
+judged from the final state of all items.
 
 ---
 

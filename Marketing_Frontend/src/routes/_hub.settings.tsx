@@ -18,6 +18,7 @@ import { PageHeader, SectionTitle, StatusBadge } from "@/components/marketing/pr
 import { PERMISSION_MATRIX } from "@/lib/marketing-data";
 import { useBrandSettings } from "@/lib/brand-settings";
 import { AIProvidersPanel } from "@/components/marketing/ai-providers-panel";
+import { UsagePanel } from "@/components/marketing/usage-panel";
 import { apiFetch } from "@/lib/api";
 import { useLayoutCatalogue } from "@/components/marketing/poster-studio";
 import { cn } from "@/lib/utils";
@@ -396,6 +397,10 @@ function SettingsPage() {
 
       <div className="mt-6 grid gap-6 xl:grid-cols-2">
         <BrandKitPanel />
+        <Panel label="Plan" title="Usage this period">
+          <UsagePanel />
+        </Panel>
+
         <Panel label="AI" title="Providers & routing">
           <AIProvidersPanel />
         </Panel>
