@@ -221,6 +221,8 @@ class InspirationSignalSerializer(serializers.ModelSerializer):
             'id', 'inspiration', 'workspace', 'brand', 'category', 'attribute',
             'value', 'sentiment', 'weight', 'confidence', 'origin',
             'user_confirmation', 'conflicts_with', 'extracted_by_provider',
+            'normalized_attribute', 'normalized_value',
+            'superseded_at', 'superseded_by', 'superseded_reason',
             'retrieval_eligibility', 'created_by', 'confirmed_by',
             'confirmed_at', 'created_at', 'updated_at',
         ]
@@ -235,6 +237,11 @@ class InspirationSignalSerializer(serializers.ModelSerializer):
             # Confirmation moves through the confirm/reject actions only.
             'user_confirmation', 'conflicts_with', 'created_by', 'confirmed_by',
             'confirmed_at', 'created_at', 'updated_at',
+            # Derived and audit-only. The folded copies are what identity and
+            # equality are decided on, so a client must never supply them; the
+            # supersession trail is written by the service.
+            'normalized_attribute', 'normalized_value',
+            'superseded_at', 'superseded_by', 'superseded_reason',
         ]
 
     def get_retrieval_eligibility(self, obj):
@@ -266,11 +273,28 @@ class InspirationSignalSerializer(serializers.ModelSerializer):
                 {"inspiration": "Inspiration must belong to the authorized workspace."}
             )
 
-        if self.instance is not None and 'inspiration' in data:
-            if data['inspiration'] != self.instance.inspiration:
+        if self.instance is not None:
+            if 'inspiration' in data and data['inspiration'] != self.instance.inspiration:
                 raise serializers.ValidationError(
                     {"inspiration": "A signal cannot be moved to another inspiration."}
                 )
+
+            # What a preference SAYS is append-only. Editing it in place would
+            # rewrite the record of what a brand believed, with no trace that
+            # it ever said anything else — and the supersession history the
+            # audit rules require would simply not exist. Changing your mind is
+            # a new signal, which retires this one and says so.
+            for field in ('category', 'attribute', 'value', 'sentiment'):
+                if field in data and data[field] != getattr(self.instance, field):
+                    raise serializers.ValidationError(
+                        {
+                            field: (
+                                "A stated preference cannot be edited. Create a new "
+                                "signal for this attribute; it will supersede this one "
+                                "and this one stays on the record."
+                            )
+                        }
+                    )
 
         if self.instance is None:
             if inspiration.lifecycle_status == BrandInspiration.LifecycleStatus.ARCHIVED:

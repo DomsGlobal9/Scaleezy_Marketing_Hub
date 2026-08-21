@@ -30,6 +30,12 @@ from .serializers import (
     BrandInspirationUploadSerializer,
     InspirationSignalSerializer,
 )
+from .services import (
+    InspirationSignalError,
+    confirm_signal,
+    record_user_signal,
+    reject_signal,
+)
 
 
 class WorkspaceResolvedViewSet(viewsets.ModelViewSet):
@@ -195,16 +201,11 @@ class InspirationSignalViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
         return queryset
 
     def perform_create(self, serializer):
-        # Origin is decided here, never by the payload: a signal that arrives
-        # through the authenticated API is something a person stated, and it
-        # is confirmed by definition.
-        serializer.save(
-            origin=InspirationSignal.Origin.USER,
-            user_confirmation=InspirationSignal.UserConfirmation.CONFIRMED,
-            created_by=self.request.user,
-            confirmed_by=self.request.user,
-            confirmed_at=timezone.now(),
-        )
+        # Origin is decided in the service, never by the payload: a signal that
+        # arrives through the authenticated API is something a person stated,
+        # and it is confirmed by definition. The service also retires whatever
+        # preference this one replaces, so the attribute never has two.
+        record_user_signal(serializer, user=self.request.user)
 
     def destroy(self, request, *args, **kwargs):
         return APIResponse(
@@ -221,21 +222,30 @@ class InspirationSignalViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
         records the human verdict and who gave it — and leaves `origin`
         untouched, so an inference that a user agreed with is still visibly an
         inference.
+
+        When the inference contradicts a stated preference, agreeing with it
+        also explicitly supersedes that preference: the alternative is a brand
+        that holds two opposite active truths about one attribute.
         """
-        signal = self.get_object()
-        signal.user_confirmation = InspirationSignal.UserConfirmation.CONFIRMED
-        signal.confirmed_by = request.user
-        signal.confirmed_at = timezone.now()
-        # Agreeing with the inference settles the disagreement it was held for.
-        signal.conflicts_with = None
-        signal.save(
-            update_fields=[
-                'user_confirmation', 'confirmed_by', 'confirmed_at', 'conflicts_with',
-            ]
-        )
+        try:
+            signal = confirm_signal(self.get_object(), user=request.user)
+        except InspirationSignalError as exc:
+            return APIResponse(
+                success=False,
+                message=str(exc),
+                error={"code": "PREFERENCE_CONFLICT", "message": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        superseded = signal.supersedes.first()
+        message = "Signal confirmed."
+        if superseded is not None:
+            message = (
+                "Signal confirmed. It supersedes the previous stated preference "
+                f"for {signal.category}/{signal.attribute}."
+            )
         return APIResponse(
             success=True,
-            message="Signal confirmed.",
+            message=message,
             data=InspirationSignalSerializer(
                 signal, context=self.get_serializer_context()
             ).data,
@@ -243,11 +253,20 @@ class InspirationSignalViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
 
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
-        signal = self.get_object()
-        signal.user_confirmation = InspirationSignal.UserConfirmation.REJECTED
-        signal.confirmed_by = request.user
-        signal.confirmed_at = timezone.now()
-        signal.save(update_fields=['user_confirmation', 'confirmed_by', 'confirmed_at'])
+        """A human withdraws a signal.
+
+        Rejecting a stated preference leaves the attribute without one; it does
+        not revive whatever that preference replaced.
+        """
+        try:
+            signal = reject_signal(self.get_object(), user=request.user)
+        except InspirationSignalError as exc:
+            return APIResponse(
+                success=False,
+                message=str(exc),
+                error={"code": "PREFERENCE_CONFLICT", "message": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         return APIResponse(
             success=True,
             message="Signal rejected. It is no longer eligible for retrieval.",

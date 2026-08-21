@@ -10,6 +10,7 @@ from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.utils import IntegrityError
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -22,8 +23,17 @@ from apps.common.testing import (
 from apps.knowledge.models import BrandSource
 from apps.workspaces.models import WorkspaceMember
 
-from .models import BrandInspiration, InspirationSignal
-from .services import InspirationSignalError, record_ai_signal
+from .models import (
+    BrandInspiration,
+    InspirationSignal,
+    SupersessionReason,
+    normalize_signal_text,
+)
+from .services import (
+    InspirationSignalError,
+    authoritative_user_signal,
+    record_ai_signal,
+)
 
 User = get_user_model()
 
@@ -107,6 +117,31 @@ class InspirationTestBase(TenantFixtureMixin, TenantSecurityAssertions, TestCase
             created_by=kwargs.pop('created_by', self.user1),
             **kwargs,
         )
+
+    def state_preference(self, inspiration, *, category='TYPOGRAPHY',
+                         attribute='headline_face', value='Condensed grotesque',
+                         sentiment=None, client=None, expect=None):
+        """State a preference through the API, which is the only path that
+        retires the preference it replaces."""
+        payload = {
+            'inspiration': str(inspiration.id),
+            'category': category,
+            'attribute': attribute,
+            'value': value,
+            'sentiment': sentiment or InspirationSignal.Sentiment.LIKED,
+        }
+        response = (client or self.client1).post(
+            SIGNALS_URL, payload, format='json', **self.ws1()
+        )
+        expected = expect or status.HTTP_201_CREATED
+        self.assertEqual(
+            response.status_code, expected,
+            f"stating a preference returned {response.status_code}: "
+            f"{response.content[:300]}",
+        )
+        if response.status_code != status.HTTP_201_CREATED:
+            return response
+        return InspirationSignal.objects.get(id=response.json()['id'])
 
     def make_user_signal(self, inspiration, **kwargs):
         return InspirationSignal.objects.create(
@@ -601,18 +636,33 @@ class InspirationProvenanceTests(InspirationTestBase):
         self.assertTrue(user_signal.retrieval_eligibility()['eligible'])
 
     def test_agreeing_ai_signal_is_not_flagged_as_conflict(self):
+        """Agreement is not a conflict — but it is not a second vote either.
+
+        Rewritten for the CTO rework: the inference now has to match the stated
+        VALUE as well as the sentiment to count as agreeing, and even when it
+        agrees it is not separately retrievable. The stated preference is the
+        authority; the inference stays as provenance.
+        """
         inspiration = self.make_inspiration()
-        self.make_user_signal(
-            inspiration, sentiment=InspirationSignal.Sentiment.LIKED
+        user_signal = self.make_user_signal(
+            inspiration,
+            value='Condensed grotesque',
+            sentiment=InspirationSignal.Sentiment.LIKED,
         )
         ai_signal = record_ai_signal(
             inspiration=inspiration,
             category='TYPOGRAPHY',
             attribute='headline_face',
+            value='Condensed grotesque',
             sentiment=InspirationSignal.Sentiment.LIKED,
         )
         self.assertIsNone(ai_signal.conflicts_with_id)
-        self.assertTrue(ai_signal.retrieval_eligibility()['eligible'])
+        self.assertEqual(
+            ai_signal.retrieval_eligibility(),
+            {'eligible': False, 'reason': 'USER_PREFERENCE_TAKES_PRECEDENCE'},
+        )
+        self.assertNotIn(ai_signal, InspirationSignal.objects.eligible_for_retrieval())
+        self.assertIn(user_signal, InspirationSignal.objects.eligible_for_retrieval())
 
     def test_record_ai_signal_is_idempotent(self):
         inspiration = self.make_inspiration()
@@ -1138,3 +1188,680 @@ class InspirationModelInvariantTests(InspirationTestBase):
                 reference_url='https://example.com/x',
             )
         self.assertFalse(BrandInspiration.objects.exists())
+
+
+class PreferenceAuthorityTests(InspirationTestBase):
+    """CTO rework: for one inspiration + category + attribute, exactly one
+    stated preference is authoritative, and nothing contradicts it silently."""
+
+    def eligible_for(self, inspiration, attribute='headline_face',
+                     category='TYPOGRAPHY'):
+        return list(
+            InspirationSignal.objects.for_attribute(inspiration, category, attribute)
+            .eligible_for_retrieval()
+        )
+
+    # --- the conflict rule -------------------------------------------------
+
+    def test_same_sentiment_different_value_conflicts(self):
+        """The case the old rule missed: both say LIKED, about different things."""
+        inspiration = self.make_inspiration()
+        user_signal = self.state_preference(inspiration, value='Condensed grotesque')
+
+        ai_signal = record_ai_signal(
+            inspiration=inspiration,
+            category='TYPOGRAPHY',
+            attribute='headline_face',
+            value='Serif display',
+            sentiment=InspirationSignal.Sentiment.LIKED,
+        )
+
+        self.assertEqual(ai_signal.sentiment, user_signal.sentiment)
+        self.assertNotEqual(ai_signal.normalized_value, user_signal.normalized_value)
+        self.assertEqual(ai_signal.conflicts_with_id, user_signal.id)
+        self.assertEqual(
+            ai_signal.retrieval_eligibility(),
+            {'eligible': False, 'reason': 'CONFLICTS_WITH_USER_SIGNAL'},
+        )
+        self.assertEqual(self.eligible_for(inspiration), [user_signal])
+
+    def test_different_sentiment_same_value_conflicts(self):
+        inspiration = self.make_inspiration()
+        user_signal = self.state_preference(
+            inspiration, value='Condensed grotesque',
+            sentiment=InspirationSignal.Sentiment.LIKED,
+        )
+
+        ai_signal = record_ai_signal(
+            inspiration=inspiration,
+            category='TYPOGRAPHY',
+            attribute='headline_face',
+            value='Condensed grotesque',
+            sentiment=InspirationSignal.Sentiment.DISLIKED,
+        )
+
+        self.assertEqual(ai_signal.normalized_value, user_signal.normalized_value)
+        self.assertNotEqual(ai_signal.sentiment, user_signal.sentiment)
+        self.assertEqual(ai_signal.conflicts_with_id, user_signal.id)
+        self.assertEqual(self.eligible_for(inspiration), [user_signal])
+
+    def test_value_normalization_ignores_case_and_whitespace(self):
+        """A preference retyped with different spacing is the same preference."""
+        self.assertEqual(
+            normalize_signal_text('  Condensed   GROTESQUE '),
+            normalize_signal_text('condensed grotesque'),
+        )
+
+        inspiration = self.make_inspiration()
+        user_signal = self.state_preference(inspiration, value='  Condensed   GROTESQUE ')
+        ai_signal = record_ai_signal(
+            inspiration=inspiration,
+            category='TYPOGRAPHY',
+            attribute='headline_face',
+            value='condensed grotesque',
+            sentiment=InspirationSignal.Sentiment.LIKED,
+        )
+
+        self.assertEqual(user_signal.normalized_value, 'condensed grotesque')
+        self.assertIsNone(
+            ai_signal.conflicts_with_id,
+            "casing and spacing manufactured a conflict that is not there",
+        )
+
+    def test_attribute_normalization_keeps_one_authority(self):
+        """The attribute key folds too.
+
+        Beyond the letter of the review, but without it `Headline_Face` and
+        `headline_face` are different attributes and both can be authoritative
+        for what a person calls one thing.
+        """
+        inspiration = self.make_inspiration()
+        first = self.state_preference(
+            inspiration, attribute='Headline_Face', value='Condensed grotesque'
+        )
+        second = self.state_preference(
+            inspiration, attribute='  headline_face  ', value='Serif display'
+        )
+
+        first.refresh_from_db()
+        self.assertTrue(first.is_superseded)
+        self.assertEqual(first.superseded_by_id, second.id)
+        self.assertEqual(
+            authoritative_user_signal(inspiration, 'TYPOGRAPHY', 'HEADLINE_FACE').id,
+            second.id,
+        )
+
+    # --- latest wins, history survives -------------------------------------
+
+    def test_latest_user_signal_wins_and_history_is_auditable(self):
+        inspiration = self.make_inspiration()
+        first = self.state_preference(inspiration, value='Condensed grotesque')
+        second = self.state_preference(inspiration, value='Geometric sans')
+        third = self.state_preference(
+            inspiration, value='Serif display',
+            sentiment=InspirationSignal.Sentiment.DISLIKED,
+        )
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        third.refresh_from_db()
+
+        # Only the newest is authoritative.
+        self.assertEqual(
+            authoritative_user_signal(inspiration, 'TYPOGRAPHY', 'headline_face').id,
+            third.id,
+        )
+        self.assertEqual(self.eligible_for(inspiration), [third])
+
+        # The older two are history, and say what replaced them and why.
+        for older, successor in ((first, second), (second, third)):
+            self.assertTrue(older.is_superseded)
+            self.assertEqual(older.superseded_by_id, successor.id)
+            self.assertEqual(
+                older.superseded_reason, SupersessionReason.NEWER_USER_SIGNAL
+            )
+            self.assertEqual(
+                older.retrieval_eligibility(),
+                {'eligible': False, 'reason': 'SUPERSEDED_BY_NEWER_USER_SIGNAL'},
+            )
+
+        # ...and they are all still readable through the API.
+        listed = self.client1.get(
+            f'{SIGNALS_URL}?inspiration_id={inspiration.id}', **self.ws1()
+        ).json()
+        self.assertEqual(
+            {row['id'] for row in listed},
+            {str(first.id), str(second.id), str(third.id)},
+        )
+        superseded_row = next(row for row in listed if row['id'] == str(first.id))
+        self.assertIsNotNone(superseded_row['superseded_at'])
+        self.assertEqual(superseded_row['superseded_by'], str(second.id))
+
+    def test_database_refuses_two_authoritative_user_signals(self):
+        """The determinism is enforced by the schema, not only by the service."""
+        inspiration = self.make_inspiration()
+        self.state_preference(inspiration, value='Condensed grotesque')
+        with self.assertRaises(IntegrityError):
+            InspirationSignal.objects.create(
+                inspiration=inspiration,
+                category='TYPOGRAPHY',
+                attribute='headline_face',
+                value='Serif display',
+                sentiment=InspirationSignal.Sentiment.LIKED,
+                origin=InspirationSignal.Origin.USER,
+                user_confirmation=InspirationSignal.UserConfirmation.CONFIRMED,
+            )
+
+    def test_at_most_one_signal_is_retrievable_per_attribute(self):
+        """The invariant the whole rework exists to produce."""
+        inspiration = self.make_inspiration()
+        self.state_preference(inspiration, value='Condensed grotesque')
+        self.state_preference(inspiration, value='Geometric sans')
+        record_ai_signal(
+            inspiration=inspiration,
+            category='TYPOGRAPHY',
+            attribute='headline_face',
+            value='Serif display',
+            sentiment=InspirationSignal.Sentiment.DISLIKED,
+        )
+        # A second, unrelated attribute to prove the rule is per-attribute.
+        self.state_preference(
+            inspiration, category='COLOR', attribute='accent', value='acid green'
+        )
+
+        eligible = list(InspirationSignal.objects.filter(
+            inspiration=inspiration
+        ).eligible_for_retrieval())
+        keys = [(s.category, s.normalized_attribute) for s in eligible]
+        self.assertEqual(len(keys), len(set(keys)), f"two active truths: {eligible}")
+        self.assertEqual(len(eligible), 2)
+
+    def test_row_verdict_and_queryset_agree(self):
+        """`retrieval_eligibility()` must not tell a different story than the
+        query a retrieval step would actually run."""
+        inspiration = self.make_inspiration()
+        superseded = self.state_preference(inspiration, value='Condensed grotesque')
+        current = self.state_preference(inspiration, value='Geometric sans')
+        conflicting_ai = record_ai_signal(
+            inspiration=inspiration,
+            category='TYPOGRAPHY',
+            attribute='headline_face',
+            value='Serif display',
+            sentiment=InspirationSignal.Sentiment.LIKED,
+        )
+        agreeing_ai = record_ai_signal(
+            inspiration=inspiration,
+            category='COLOR',
+            attribute='accent',
+            value='acid green',
+            sentiment=InspirationSignal.Sentiment.LIKED,
+        )
+        colour_preference = self.state_preference(
+            inspiration, category='COLOR', attribute='accent', value='acid green'
+        )
+        rejected = self.make_user_signal(
+            inspiration, category='MOOD', attribute='overall', value='calm'
+        )
+        self.client1.post(f'{SIGNALS_URL}{rejected.id}/reject/', format='json', **self.ws1())
+
+        eligible_ids = set(
+            InspirationSignal.objects.eligible_for_retrieval().values_list('id', flat=True)
+        )
+        for signal in InspirationSignal.objects.filter(inspiration=inspiration):
+            with self.subTest(signal=str(signal)):
+                self.assertEqual(
+                    signal.retrieval_eligibility()['eligible'],
+                    signal.id in eligible_ids,
+                    f"row verdict {signal.retrieval_eligibility()} disagrees with the "
+                    f"queryset for {signal}",
+                )
+        self.assertEqual(
+            eligible_ids, {current.id, colour_preference.id},
+        )
+        self.assertNotIn(superseded.id, eligible_ids)
+        self.assertNotIn(conflicting_ai.id, eligible_ids)
+        self.assertNotIn(agreeing_ai.id, eligible_ids)
+
+    # --- confirming a contradicting inference ------------------------------
+
+    def test_confirming_conflicting_ai_direction_supersedes_the_preference(self):
+        inspiration = self.make_inspiration()
+        user_signal = self.state_preference(inspiration, value='Condensed grotesque')
+        ai_signal = record_ai_signal(
+            inspiration=inspiration,
+            category='TYPOGRAPHY',
+            attribute='headline_face',
+            value='Serif display',
+            sentiment=InspirationSignal.Sentiment.LIKED,
+            provider='test-provider',
+        )
+        self.assertEqual(ai_signal.conflicts_with_id, user_signal.id)
+
+        response = self.client1.post(
+            f'{SIGNALS_URL}{ai_signal.id}/confirm/', format='json', **self.ws1()
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        user_signal.refresh_from_db()
+        ai_signal.refresh_from_db()
+
+        # The contradicted preference is explicitly retired, and says why.
+        self.assertTrue(user_signal.is_superseded)
+        self.assertEqual(user_signal.superseded_by_id, ai_signal.id)
+        self.assertEqual(
+            user_signal.superseded_reason, SupersessionReason.CONFIRMED_AI_DIRECTION
+        )
+        self.assertEqual(
+            user_signal.retrieval_eligibility(),
+            {'eligible': False, 'reason': 'SUPERSEDED_BY_CONFIRMED_AI_DIRECTION'},
+        )
+
+        # The inference is now the active direction — still visibly inferred.
+        self.assertEqual(ai_signal.origin, InspirationSignal.Origin.AI)
+        self.assertEqual(
+            ai_signal.user_confirmation, InspirationSignal.UserConfirmation.CONFIRMED
+        )
+        self.assertIsNone(ai_signal.conflicts_with_id)
+        self.assertEqual(self.eligible_for(inspiration), [ai_signal])
+        self.assertIsNone(
+            authoritative_user_signal(inspiration, 'TYPOGRAPHY', 'headline_face')
+        )
+
+    def test_confirming_an_agreeing_ai_signal_supersedes_nothing(self):
+        inspiration = self.make_inspiration()
+        user_signal = self.state_preference(inspiration, value='Condensed grotesque')
+        ai_signal = record_ai_signal(
+            inspiration=inspiration,
+            category='TYPOGRAPHY',
+            attribute='headline_face',
+            value='Condensed grotesque',
+            sentiment=InspirationSignal.Sentiment.LIKED,
+        )
+        self.client1.post(f'{SIGNALS_URL}{ai_signal.id}/confirm/', format='json', **self.ws1())
+
+        user_signal.refresh_from_db()
+        self.assertFalse(
+            user_signal.is_superseded,
+            "agreeing with a preference must not retire it",
+        )
+        self.assertEqual(self.eligible_for(inspiration), [user_signal])
+
+    def test_confirm_uses_current_authority_not_a_stale_pointer(self):
+        """The stated preference can move between the inference being filed and
+        someone acting on it."""
+        inspiration = self.make_inspiration()
+        first = self.state_preference(inspiration, value='Condensed grotesque')
+        ai_signal = record_ai_signal(
+            inspiration=inspiration,
+            category='TYPOGRAPHY',
+            attribute='headline_face',
+            value='Serif display',
+            sentiment=InspirationSignal.Sentiment.LIKED,
+        )
+        self.assertEqual(ai_signal.conflicts_with_id, first.id)
+
+        second = self.state_preference(inspiration, value='Geometric sans')
+        self.client1.post(f'{SIGNALS_URL}{ai_signal.id}/confirm/', format='json', **self.ws1())
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        ai_signal.refresh_from_db()
+
+        # The row that gets retired is the one that was actually authoritative.
+        self.assertEqual(
+            first.superseded_reason, SupersessionReason.NEWER_USER_SIGNAL
+        )
+        self.assertEqual(first.superseded_by_id, second.id)
+        self.assertEqual(
+            second.superseded_reason, SupersessionReason.CONFIRMED_AI_DIRECTION
+        )
+        self.assertEqual(second.superseded_by_id, ai_signal.id)
+        self.assertEqual(self.eligible_for(inspiration), [ai_signal])
+
+    # --- retries and resurrection ------------------------------------------
+
+    def test_ai_retry_cannot_resurrect_an_older_user_preference(self):
+        inspiration = self.make_inspiration()
+        user_signal = self.state_preference(inspiration, value='Condensed grotesque')
+        ai_signal = record_ai_signal(
+            inspiration=inspiration,
+            category='TYPOGRAPHY',
+            attribute='headline_face',
+            value='Serif display',
+            sentiment=InspirationSignal.Sentiment.LIKED,
+        )
+        self.client1.post(f'{SIGNALS_URL}{ai_signal.id}/confirm/', format='json', **self.ws1())
+
+        # The analysis job runs again — twice, with the same finding.
+        for _ in range(2):
+            retried = record_ai_signal(
+                inspiration=inspiration,
+                category='TYPOGRAPHY',
+                attribute='headline_face',
+                value='Serif display',
+                sentiment=InspirationSignal.Sentiment.LIKED,
+            )
+
+        user_signal.refresh_from_db()
+        self.assertTrue(user_signal.is_superseded)
+        self.assertEqual(
+            user_signal.superseded_reason, SupersessionReason.CONFIRMED_AI_DIRECTION
+        )
+        self.assertNotIn(
+            user_signal, InspirationSignal.objects.eligible_for_retrieval()
+        )
+        self.assertIsNone(
+            authoritative_user_signal(inspiration, 'TYPOGRAPHY', 'headline_face')
+        )
+        self.assertEqual(retried.id, ai_signal.id)
+        self.assertEqual(
+            retried.user_confirmation, InspirationSignal.UserConfirmation.CONFIRMED
+        )
+        self.assertEqual(self.eligible_for(inspiration), [retried])
+
+    def test_reanalysis_supersedes_rather_than_rewriting_a_judged_inference(self):
+        """A human verdict must not end up attached to content they never saw."""
+        inspiration = self.make_inspiration()
+        original = record_ai_signal(
+            inspiration=inspiration,
+            category='MOOD',
+            attribute='overall',
+            value='calm',
+            sentiment=InspirationSignal.Sentiment.LIKED,
+        )
+        self.client1.post(f'{SIGNALS_URL}{original.id}/confirm/', format='json', **self.ws1())
+
+        replacement = record_ai_signal(
+            inspiration=inspiration,
+            category='MOOD',
+            attribute='overall',
+            value='frantic',
+            sentiment=InspirationSignal.Sentiment.DISLIKED,
+        )
+
+        original.refresh_from_db()
+        self.assertNotEqual(replacement.id, original.id)
+        self.assertEqual(original.value, 'calm', "a confirmed verdict was rewritten")
+        self.assertEqual(
+            original.user_confirmation, InspirationSignal.UserConfirmation.CONFIRMED
+        )
+        self.assertTrue(original.is_superseded)
+        self.assertEqual(
+            original.superseded_reason, SupersessionReason.NEWER_AI_INFERENCE
+        )
+        self.assertEqual(original.superseded_by_id, replacement.id)
+        self.assertEqual(
+            replacement.user_confirmation, InspirationSignal.UserConfirmation.PENDING
+        )
+
+    def test_rejecting_the_authority_does_not_revive_its_predecessor(self):
+        inspiration = self.make_inspiration()
+        first = self.state_preference(inspiration, value='Condensed grotesque')
+        second = self.state_preference(inspiration, value='Geometric sans')
+
+        self.client1.post(f'{SIGNALS_URL}{second.id}/reject/', format='json', **self.ws1())
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertTrue(first.is_superseded)
+        self.assertNotIn(first, InspirationSignal.objects.eligible_for_retrieval())
+        self.assertNotIn(second, InspirationSignal.objects.eligible_for_retrieval())
+        self.assertIsNone(
+            authoritative_user_signal(inspiration, 'TYPOGRAPHY', 'headline_face')
+        )
+        self.assertEqual(self.eligible_for(inspiration), [])
+
+    def test_rejecting_the_authority_releases_a_held_inference(self):
+        inspiration = self.make_inspiration()
+        user_signal = self.state_preference(inspiration, value='Condensed grotesque')
+        ai_signal = record_ai_signal(
+            inspiration=inspiration,
+            category='TYPOGRAPHY',
+            attribute='headline_face',
+            value='Serif display',
+            sentiment=InspirationSignal.Sentiment.LIKED,
+        )
+        self.assertEqual(ai_signal.conflicts_with_id, user_signal.id)
+
+        self.client1.post(f'{SIGNALS_URL}{user_signal.id}/reject/', format='json', **self.ws1())
+
+        ai_signal.refresh_from_db()
+        self.assertIsNone(
+            ai_signal.conflicts_with_id,
+            "the inference is still held against a preference that was withdrawn",
+        )
+        self.assertEqual(self.eligible_for(inspiration), [ai_signal])
+
+    # --- history is append-only --------------------------------------------
+
+    def test_a_stated_preference_cannot_be_edited(self):
+        inspiration = self.make_inspiration()
+        signal = self.state_preference(inspiration, value='Condensed grotesque')
+        for field, new_value in (
+            ('value', 'Serif display'),
+            ('sentiment', InspirationSignal.Sentiment.DISLIKED),
+            ('attribute', 'body_face'),
+            ('category', 'COLOR'),
+        ):
+            with self.subTest(field=field):
+                response = self.client1.patch(
+                    f'{SIGNALS_URL}{signal.id}/',
+                    {field: new_value},
+                    format='json',
+                    **self.ws1(),
+                )
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn(field, response.json())
+        signal.refresh_from_db()
+        self.assertEqual(signal.value, 'Condensed grotesque')
+        self.assertEqual(signal.sentiment, InspirationSignal.Sentiment.LIKED)
+
+    def test_weight_and_confidence_remain_editable(self):
+        """The immutability rule must not freeze the whole row."""
+        inspiration = self.make_inspiration()
+        signal = self.state_preference(inspiration, value='Condensed grotesque')
+        response = self.client1.patch(
+            f'{SIGNALS_URL}{signal.id}/',
+            {'weight': 0.9, 'confidence': 0.8},
+            format='json',
+            **self.ws1(),
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        signal.refresh_from_db()
+        self.assertEqual(signal.weight, 0.9)
+
+    def test_client_cannot_supply_the_supersession_trail(self):
+        inspiration = self.make_inspiration()
+        other = self.make_user_signal(
+            inspiration, category='MOOD', attribute='overall', value='calm'
+        )
+        response = self.client1.post(
+            SIGNALS_URL,
+            {
+                'inspiration': str(inspiration.id),
+                'category': 'TYPOGRAPHY',
+                'attribute': 'headline_face',
+                'value': 'Condensed grotesque',
+                'sentiment': InspirationSignal.Sentiment.LIKED,
+                'superseded_at': '2020-01-01T00:00:00Z',
+                'superseded_by': str(other.id),
+                'superseded_reason': SupersessionReason.NEWER_USER_SIGNAL,
+                'normalized_value': 'injected',
+                'normalized_attribute': 'injected',
+            },
+            format='json',
+            **self.ws1(),
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        signal = InspirationSignal.objects.get(id=response.json()['id'])
+        self.assertIsNone(signal.superseded_at)
+        self.assertIsNone(signal.superseded_by_id)
+        self.assertEqual(signal.superseded_reason, '')
+        self.assertEqual(signal.normalized_value, 'condensed grotesque')
+        self.assertEqual(signal.normalized_attribute, 'headline_face')
+
+    def test_database_refuses_self_supersession(self):
+        """PR1-011. Longer cycles are unreachable: superseding a row
+        deactivates it, and only active rows are ever superseded."""
+        inspiration = self.make_inspiration()
+        signal = self.make_user_signal(inspiration)
+        signal.superseded_at = timezone.now()
+        signal.superseded_by = signal
+        with self.assertRaises(IntegrityError):
+            signal.save(
+                update_fields=['superseded_at', 'superseded_by']
+            )
+
+    def test_new_preference_allowed_after_the_authority_is_rejected(self):
+        """Withdraw a preference, then state a different one. Ordinary flow."""
+        inspiration = self.make_inspiration()
+        first = self.state_preference(inspiration, value='Condensed grotesque')
+        self.client1.post(f'{SIGNALS_URL}{first.id}/reject/', format='json', **self.ws1())
+
+        second = self.state_preference(inspiration, value='Geometric sans')
+        self.assertEqual(
+            authoritative_user_signal(inspiration, 'TYPOGRAPHY', 'headline_face').id,
+            second.id,
+        )
+        self.assertEqual(self.eligible_for(inspiration), [second])
+
+    def test_reconfirming_a_withdrawn_preference_is_refused(self):
+        """Re-confirming an older withdrawn preference cannot jump the queue.
+
+        Without this the request hits the uniqueness constraint and returns a
+        500 — and if it succeeded it would make an OLDER preference
+        authoritative, which is the opposite of "latest wins".
+        """
+        inspiration = self.make_inspiration()
+        first = self.state_preference(inspiration, value='Condensed grotesque')
+        self.client1.post(f'{SIGNALS_URL}{first.id}/reject/', format='json', **self.ws1())
+        second = self.state_preference(inspiration, value='Geometric sans')
+
+        response = self.client1.post(
+            f'{SIGNALS_URL}{first.id}/confirm/', format='json', **self.ws1()
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        first.refresh_from_db()
+        self.assertEqual(
+            first.user_confirmation, InspirationSignal.UserConfirmation.REJECTED
+        )
+        self.assertEqual(
+            authoritative_user_signal(inspiration, 'TYPOGRAPHY', 'headline_face').id,
+            second.id,
+        )
+        self.assertEqual(self.eligible_for(inspiration), [second])
+
+    def test_reconfirming_a_withdrawn_preference_is_allowed_when_nothing_replaced_it(self):
+        inspiration = self.make_inspiration()
+        signal = self.state_preference(inspiration, value='Condensed grotesque')
+        self.client1.post(f'{SIGNALS_URL}{signal.id}/reject/', format='json', **self.ws1())
+
+        response = self.client1.post(
+            f'{SIGNALS_URL}{signal.id}/confirm/', format='json', **self.ws1()
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        signal.refresh_from_db()
+        self.assertEqual(
+            signal.user_confirmation, InspirationSignal.UserConfirmation.CONFIRMED
+        )
+        self.assertEqual(self.eligible_for(inspiration), [signal])
+
+    def test_history_cannot_be_confirmed_or_rejected(self):
+        """A superseded row is the record of what was true, not a live verdict."""
+        inspiration = self.make_inspiration()
+        first = self.state_preference(inspiration, value='Condensed grotesque')
+        self.state_preference(inspiration, value='Geometric sans')
+        first.refresh_from_db()
+        self.assertTrue(first.is_superseded)
+
+        for action in ('confirm', 'reject'):
+            with self.subTest(action=action):
+                response = self.client1.post(
+                    f'{SIGNALS_URL}{first.id}/{action}/', format='json', **self.ws1()
+                )
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        first.refresh_from_db()
+        self.assertEqual(
+            first.user_confirmation, InspirationSignal.UserConfirmation.CONFIRMED
+        )
+        self.assertEqual(
+            first.superseded_reason, SupersessionReason.NEWER_USER_SIGNAL
+        )
+
+    def test_normalized_attribute_survives_worst_case_case_folding(self):
+        """`attribute` caps at 255 characters, but casefolding can treble that.
+
+        U+FB04 folds to "ffl", so a full-length attribute of ligatures folds to
+        765 characters. If the column were shorter the write would fail on
+        PostgreSQL and silently truncate on SQLite.
+        """
+        inspiration = self.make_inspiration()
+        attribute = '\ufb04' * 255
+        signal = self.make_user_signal(inspiration, attribute=attribute)
+        signal.refresh_from_db()
+        self.assertEqual(len(signal.normalized_attribute), 765)
+        self.assertEqual(
+            InspirationSignal._meta.get_field('normalized_attribute').max_length, 765
+        )
+        self.assertEqual(
+            authoritative_user_signal(inspiration, 'TYPOGRAPHY', attribute).id,
+            signal.id,
+        )
+
+    def test_queryset_update_cannot_desynchronise_the_folded_columns(self):
+        """`QuerySet.update()` bypasses `save()`.
+
+        Left alone it would change `attribute` while `normalized_attribute`
+        kept pointing at the old key — the row would stop being findable by
+        its own attribute and the uniqueness rule would guard nothing.
+        """
+        inspiration = self.make_inspiration()
+        signal = self.make_user_signal(inspiration)
+        rows = InspirationSignal.objects.filter(pk=signal.pk)
+
+        for field, new_value in (('attribute', 'body_face'), ('value', 'Serif')):
+            with self.subTest(field=field):
+                with self.assertRaises(InspirationSignalError):
+                    rows.update(**{field: new_value})
+
+        signal.refresh_from_db()
+        self.assertEqual(signal.attribute, 'headline_face')
+        self.assertEqual(signal.normalized_attribute, 'headline_face')
+
+        # Fields that do not feed a folded column are still updatable in bulk.
+        rows.update(weight=0.9)
+        signal.refresh_from_db()
+        self.assertEqual(signal.weight, 0.9)
+
+    def test_bulk_create_folds_its_rows(self):
+        inspiration = self.make_inspiration()
+        InspirationSignal.objects.bulk_create([
+            InspirationSignal(
+                inspiration=inspiration,
+                category='COLOR',
+                attribute='  Accent  ',
+                value='  Acid   GREEN ',
+                sentiment=InspirationSignal.Sentiment.LIKED,
+                origin=InspirationSignal.Origin.USER,
+                user_confirmation=InspirationSignal.UserConfirmation.CONFIRMED,
+            )
+        ])
+        signal = InspirationSignal.objects.get(inspiration=inspiration, category='COLOR')
+        self.assertEqual(signal.normalized_attribute, 'accent')
+        self.assertEqual(signal.normalized_value, 'acid green')
+
+    def test_superseded_signals_stay_inside_their_tenant(self):
+        """History is auditable to the workspace that owns it, and nobody else."""
+        inspiration = self.make_inspiration()
+        first = self.state_preference(inspiration, value='Condensed grotesque')
+        self.state_preference(inspiration, value='Geometric sans')
+
+        self.assert_object_hidden_from_other_workspace(
+            client=self.client2,
+            detail_url=f'{SIGNALS_URL}{first.id}/',
+            list_url=SIGNALS_URL,
+            workspace=self.workspace2,
+            object_id=first.id,
+        )

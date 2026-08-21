@@ -19,8 +19,36 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models import Exists, OuterRef, Q
 
 from apps.knowledge.models import BrandSource
+
+
+class InspirationSignalError(Exception):
+    """A signal write cannot be performed as asked.
+
+    Lives here rather than in `services` because the model layer raises it too
+    — the bulk write paths below reject writes that would desynchronise the
+    folded columns — and services imports models, not the other way round.
+    """
+
+
+def normalize_signal_text(text):
+    """Fold the incidental differences out of a signal key or value.
+
+    "Condensed  Grotesque " and "condensed grotesque" are the same preference
+    typed twice; if they compare as different, two contradictory records can
+    both be authoritative for one attribute and nothing downstream can say
+    which one a human meant.
+
+    Deliberately simple — case and whitespace only. Anything cleverer
+    (stemming, synonyms, unit parsing) would start deciding that two genuinely
+    different preferences are the same, which is a worse failure than missing
+    a duplicate.
+    """
+    if not text:
+        return ''
+    return ' '.join(str(text).split()).casefold()
 
 
 class SignalCategory(models.TextChoices):
@@ -221,12 +249,125 @@ class BrandInspiration(models.Model):
         return {'eligible': True, 'reason': 'ACTIVE'}
 
 
+class SupersessionReason(models.TextChoices):
+    """Why a preference stopped being the active one.
+
+    Kept as data rather than inferred from the shape of the chain: an auditor
+    reading a superseded row a year later needs to know whether the human
+    changed their mind or accepted a machine's suggestion.
+    """
+
+    NEWER_USER_SIGNAL = (
+        'SUPERSEDED_BY_NEWER_USER_SIGNAL',
+        'Replaced by a newer stated preference',
+    )
+    CONFIRMED_AI_DIRECTION = (
+        'SUPERSEDED_BY_CONFIRMED_AI_DIRECTION',
+        'A user accepted a contradicting inference',
+    )
+    NEWER_AI_INFERENCE = (
+        'SUPERSEDED_BY_NEWER_AI_INFERENCE',
+        'Replaced by a newer inference after a human had ruled on this one',
+    )
+
+
 class InspirationSignalQuerySet(models.QuerySet):
-    def eligible_for_retrieval(self):
+    # `attribute` and `value` have folded twins that identity and equality are
+    # decided on. Anything that writes the raw column without the twin leaves
+    # a row that is no longer findable by its own attribute and that the
+    # uniqueness rule silently stops guarding — so the bulk paths, which do not
+    # call save(), are handled explicitly rather than left to be discovered.
+    _FOLDED_SOURCES = ('attribute', 'value')
+
+    def update(self, **kwargs):
+        conflicting = sorted(set(kwargs) & set(self._FOLDED_SOURCES))
+        if conflicting:
+            raise InspirationSignalError(
+                f"{', '.join(conflicting)} cannot be changed with queryset.update(): "
+                "it would leave the normalized column stale. Use save() on the "
+                "instance, or state a new signal."
+            )
+        return super().update(**kwargs)
+
+    def bulk_update(self, objs, fields, **kwargs):
+        conflicting = sorted(set(fields) & set(self._FOLDED_SOURCES))
+        if conflicting:
+            raise InspirationSignalError(
+                f"{', '.join(conflicting)} cannot be changed with bulk_update(): "
+                "include the matching normalized_* fields, or use save()."
+            )
+        return super().bulk_update(objs, fields, **kwargs)
+
+    def bulk_create(self, objs, *args, **kwargs):
+        for obj in objs:
+            obj.normalized_attribute = normalize_signal_text(obj.attribute)
+            obj.normalized_value = normalize_signal_text(obj.value)
+        return super().bulk_create(objs, *args, **kwargs)
+
+    def active(self):
+        """Rows that still assert something.
+
+        Superseded rows are kept for audit but have stopped being true;
+        rejected rows were withdrawn by a human.
+        """
+        return self.filter(superseded_at__isnull=True).exclude(
+            user_confirmation=InspirationSignal.UserConfirmation.REJECTED
+        )
+
+    def for_attribute(self, inspiration, category, attribute):
+        """Everything ever recorded about one attribute, history included."""
         return self.filter(
-            inspiration__in=BrandInspiration.objects.eligible_for_retrieval(),
-            conflicts_with__isnull=True,
-        ).exclude(user_confirmation=InspirationSignal.UserConfirmation.REJECTED)
+            inspiration=inspiration,
+            category=category,
+            normalized_attribute=normalize_signal_text(attribute),
+        )
+
+    def authoritative_user_signals(self):
+        """The stated preferences that currently hold.
+
+        The partial unique constraint allows only one per attribute, so this
+        is at most one row per (inspiration, category, normalized_attribute).
+        """
+        return self.filter(
+            origin=InspirationSignal.Origin.USER,
+            user_confirmation=InspirationSignal.UserConfirmation.CONFIRMED,
+            superseded_at__isnull=True,
+        )
+
+    def eligible_for_retrieval(self):
+        """The single active preference per attribute.
+
+        Four things take a row out: its reference was archived, it was
+        superseded, a human rejected it, or it is an inference that
+        contradicts a stated preference.
+
+        The fifth is the one the CTO review turns on: when a human HAS stated
+        a preference for an attribute, an inference about that same attribute
+        is not retrievable even when it agrees. Two rows saying the same thing
+        would be counted twice by anything that weighs signals, and "agrees"
+        is only ever true until the next re-analysis. The stated preference is
+        the authority; the inference is kept as provenance.
+        """
+        user_authority = InspirationSignal.objects.filter(
+            inspiration_id=OuterRef('inspiration_id'),
+            category=OuterRef('category'),
+            normalized_attribute=OuterRef('normalized_attribute'),
+            origin=InspirationSignal.Origin.USER,
+            user_confirmation=InspirationSignal.UserConfirmation.CONFIRMED,
+            superseded_at__isnull=True,
+        )
+        return (
+            self.active()
+            .filter(
+                inspiration__in=BrandInspiration.objects.eligible_for_retrieval(),
+                conflicts_with__isnull=True,
+            )
+            .annotate(_under_user_authority=Exists(user_authority))
+            .filter(
+                Q(origin=InspirationSignal.Origin.USER)
+                | Q(_under_user_authority=False)
+            )
+        )
 
 
 class InspirationSignal(models.Model):
@@ -288,6 +429,34 @@ class InspirationSignal(models.Model):
     )
     extracted_by_provider = models.CharField(max_length=100, blank=True)
 
+    # --- supersession -------------------------------------------------
+    # A preference is never edited or deleted; it is replaced, and the row it
+    # was replaced by is recorded. `superseded_at` — not the foreign key — is
+    # what "active" is read from, so that if `superseded_by` is ever nulled
+    # (it is SET_NULL) a historical preference cannot quietly come back to
+    # life.
+    superseded_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    superseded_by = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='supersedes',
+    )
+    superseded_reason = models.CharField(
+        max_length=48, choices=SupersessionReason.choices, blank=True, default=''
+    )
+
+    # Case- and whitespace-folded copies, written by save(). They are what the
+    # identity of an attribute and the equality of a value are decided on, so
+    # the Python path and the SQL path cannot disagree about whether two
+    # signals are about the same thing.
+    # 765 = 255 x 3, because casefolding can treble a string's length: U+FB04
+    # (the "ffl" ligature) folds to three characters. A shorter column would
+    # fail the write on PostgreSQL and truncate silently on SQLite.
+    normalized_attribute = models.CharField(max_length=765, blank=True, default='')
+    normalized_value = models.TextField(blank=True, default='')
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -314,17 +483,59 @@ class InspirationSignal(models.Model):
         indexes = [
             models.Index(fields=['inspiration', 'category']),
             models.Index(fields=['inspiration', 'origin']),
+            models.Index(fields=['inspiration', 'category', 'normalized_attribute']),
         ]
         constraints = [
-            # One inferred signal per (inspiration, category, attribute) so a
-            # retried PR6 analysis job cannot pile up duplicates. Users may
-            # state several signals about the same attribute.
+            # Exactly one stated preference may hold for an attribute at a
+            # time. This is the CTO rework in one line: "latest active explicit
+            # USER signal is authoritative" is only deterministic if the
+            # database refuses to hold two of them. Superseded and rejected
+            # rows fall outside the condition, so history accumulates freely.
             models.UniqueConstraint(
-                fields=['inspiration', 'category', 'attribute'],
-                condition=models.Q(origin='AI'),
-                name='uniq_ai_signal_per_inspiration_attribute',
-            )
+                fields=['inspiration', 'category', 'normalized_attribute'],
+                condition=models.Q(
+                    origin='USER', superseded_at__isnull=True, user_confirmation='CONFIRMED'
+                ),
+                name='uniq_authoritative_user_signal',
+            ),
+            # One live inference per attribute, so a retried PR6 analysis job
+            # cannot pile up duplicates.
+            models.UniqueConstraint(
+                fields=['inspiration', 'category', 'normalized_attribute'],
+                condition=models.Q(origin='AI', superseded_at__isnull=True),
+                name='uniq_active_ai_signal',
+            ),
+            # PR1-011. A row cannot supersede itself; longer cycles are
+            # unreachable because superseding a row deactivates it, and only
+            # active rows are ever superseded.
+            models.CheckConstraint(
+                condition=~models.Q(superseded_by=models.F('id')),
+                name='inspiration_signal_no_self_supersession',
+            ),
         ]
+
+    def save(self, *args, **kwargs):
+        """Keep the folded copies in step with what they are folded from.
+
+        Computed here rather than at the call site so no writer — API, service
+        or future job — can create a row whose normalized key disagrees with
+        its raw key. When `update_fields` is given, the folded columns are
+        added to it if their source changed, otherwise the row would keep a
+        stale key that the retrieval query still trusts.
+        """
+        self.normalized_attribute = normalize_signal_text(self.attribute)
+        self.normalized_value = normalize_signal_text(self.value)
+
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None:
+            update_fields = set(update_fields)
+            if 'attribute' in update_fields:
+                update_fields.add('normalized_attribute')
+            if 'value' in update_fields:
+                update_fields.add('normalized_value')
+            kwargs['update_fields'] = update_fields
+
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.category}/{self.attribute} {self.sentiment} ({self.origin})"
@@ -340,7 +551,23 @@ class InspirationSignal(models.Model):
     def brand_id(self):
         return self.inspiration.brand_id
 
+    @property
+    def is_superseded(self):
+        return self.superseded_at is not None
+
     def retrieval_eligibility(self):
+        """Why this signal is or is not the active preference for its attribute.
+
+        Mirrors `InspirationSignalQuerySet.eligible_for_retrieval()` clause for
+        clause. The two are checked against each other by
+        `test_row_verdict_and_queryset_agree`, because a per-row verdict that
+        disagreed with the query would be worse than no verdict at all.
+        """
+        if self.is_superseded:
+            return {
+                'eligible': False,
+                'reason': self.superseded_reason or 'SUPERSEDED',
+            }
         if self.user_confirmation == self.UserConfirmation.REJECTED:
             return {'eligible': False, 'reason': 'REJECTED_BY_USER'}
         if self.conflicts_with_id:
@@ -348,4 +575,21 @@ class InspirationSignal(models.Model):
         parent = self.inspiration.retrieval_eligibility()
         if not parent['eligible']:
             return {'eligible': False, 'reason': parent['reason']}
+        if self.origin == self.Origin.AI and self._has_user_authority():
+            return {'eligible': False, 'reason': 'USER_PREFERENCE_TAKES_PRECEDENCE'}
         return {'eligible': True, 'reason': 'ACTIVE'}
+
+    def _has_user_authority(self):
+        """Is there a stated preference for this attribute right now?"""
+        return (
+            InspirationSignal.objects.filter(
+                inspiration_id=self.inspiration_id,
+                category=self.category,
+                normalized_attribute=self.normalized_attribute,
+                origin=self.Origin.USER,
+                user_confirmation=self.UserConfirmation.CONFIRMED,
+                superseded_at__isnull=True,
+            )
+            .exclude(pk=self.pk)
+            .exists()
+        )
