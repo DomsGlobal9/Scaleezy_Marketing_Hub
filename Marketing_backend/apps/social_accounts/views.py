@@ -23,6 +23,7 @@ from .integrations.exceptions import (
     LinkedInOAuthError,
     LinkedInStateValidationError,
 )
+from .integrations.meta.exceptions import MetaAPIError
 from .integrations.meta.exceptions import MetaOAuthError
 from .integrations.youtube.exceptions import YouTubeOAuthError
 from .utils.encryption import encrypt_token, decrypt_token

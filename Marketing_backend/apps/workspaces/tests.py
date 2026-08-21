@@ -217,6 +217,13 @@ class QuerysetScopingTests(TestCase):
         nobody = User.objects.create_user(username='nobody', password='p')
         self.assertEqual(list(self._view_for(nobody).get_queryset()), [])
 
-    def test_staff_bypass_sees_everything(self):
+    def test_staff_does_not_bypass_tenant_isolation(self):
+        """Staff users should not see all workspaces; they must be explicit members."""
         staff = User.objects.create_user(username='staff', password='p', is_staff=True)
-        self.assertEqual(len(list(self._view_for(staff).get_queryset())), 2)
+        # Without membership, they see nothing
+        self.assertEqual(len(list(self._view_for(staff).get_queryset())), 0)
+        
+        # When added to a workspace, they see ONLY that workspace's data
+        WorkspaceMember.objects.create(workspace=self.ws_a, user=staff)
+        results = list(self._view_for(staff).get_queryset())
+        self.assertEqual(results, [self.asset_a])

@@ -1,11 +1,9 @@
 # Baseline Failures (PR 0)
 
 ## Backend Tests (`python manage.py test`)
-- **Status:** **FAIL**
-- **Failures:** 2
-- **Notes:** The backend test suite ran and produced 2 failures:
-  1. `test_missing_configuration_raises_error (apps.social_accounts.test_meta.MetaAdapterTests)`: Fails because the local `.env` now contains Meta credentials, so the test condition (empty credentials) is no longer met.
-  2. `test_staff_bypass_sees_everything (apps.workspaces.tests.QuerysetScopingTests)`: Fails because the `is_staff` bypass in `WorkspaceScopedMixin` was deliberately removed earlier to fix the YouTube workspace assignment bug, but the test was not updated to reflect this security change.
+- **Status:** **PASS**
+- **Failures:** 0
+- **Notes:** The backend test suite ran successfully (290 tests) against the `default` test database. The two previous failures (`test_missing_configuration_raises_error` and `test_staff_bypass_sees_everything`) were fixed in PR0 rework. Expected RBAC rejections (e.g., `Denied by role: user=2 role=EDITOR required=ADMIN`) are properly asserted and do not cause test failures.
 
 ## Frontend Linter (`npm run lint`)
 - **Status:** **FAIL**

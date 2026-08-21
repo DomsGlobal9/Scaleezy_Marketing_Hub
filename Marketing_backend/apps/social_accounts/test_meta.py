@@ -1,7 +1,7 @@
 import uuid
 from unittest.mock import patch, MagicMock
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from django.core.cache import cache
 
@@ -46,8 +46,8 @@ class MetaAdapterTests(TestCase):
         self.assertIn("state=", url)
         self.assertIn("scope=", url)
 
+    @override_settings(META_CLIENT_ID='')
     def test_missing_configuration_raises_error(self):
-        self.fb_adapter.client_id = ''
         with self.assertRaises(MetaConfigurationError):
             self.fb_adapter.get_authorization_url("test-ws")
 

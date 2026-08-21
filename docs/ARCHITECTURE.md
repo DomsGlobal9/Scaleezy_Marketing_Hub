@@ -209,6 +209,9 @@ Every endpoint returns the same shape via `apps/common/responses.py`:
 MarketingWorkspace ──┬── SocialConnection ──┬── SocialAccountSettings   (1:1, CASCADE)
                      │                      └── SocialAccountAuditLog   (SET_NULL)
                      │
+                     ├── Brand ──────────────── ContentItem ────── Feedback / FeedbackElement
+                     ├── Subscription ───────── Plan (FK)
+                     ├── WorkspaceAIProvider ── AIProvider (FK)
                      ├── MarketingAsset ─────── PublishingJob ── PublishingJobItem
                      │        ▲                                          │
                      │        │                                          │
@@ -334,13 +337,15 @@ Current state, so the document isn't read as a description of finished work.
 
 | Gap | Detail |
 |---|---|
-| **Scheduled jobs never run** | `publish_mode=SCHEDULED` creates the job and stops. Nothing picks it up. Needs a cron/management command. |
-| **Only X publishes** | `services.py` branches on `if platform == 'X'`. Facebook/Instagram/LinkedIn adapters exist and work for OAuth, but publishing fails with "Platform not supported yet". |
 | **Settings not enforced** | `daily_post_limit`, allowed hours and `publishing_paused` are stored and shown but never checked. Only `publishing_enabled` is honored. |
 | **Two audit systems** | `AuditLog` (strings) and `SocialAccountAuditLog` (FKs). Publishing writes the first, social accounts the second, settings reads only the first — so connect/disconnect never appears there. |
-| **Gemini results not persisted** | `generate/` returns content without writing `GeminiGenerationRequest`/`Result`. |
 | **Storage fails silently** | Failed Supabase uploads still return a mock URL and create the asset row. |
-| **No auth** | Every viewset is `AllowAny`; `CORS_ALLOW_ALL_ORIGINS = True`. |
-| **Sync publishing blocks the request** | N remote API calls inside one HTTP request. Will hit gateway timeouts. |
-| **Split API base URL in frontend** | `analytics`, `index` and `settings` hardcode `http://localhost:8000`; everything else uses `VITE_API_URL`. Breaks on deploy. |
 | **`apps.users` is empty** | Uses the default Django `User`. Swapping to a custom user model after migrations is painful. |
+
+---
+
+## 5) React 18 StrictMode OAuth Callback Guards
+
+Frontend OAuth callback routes (`oauth.callback.tsx`, `social.meta.callback.tsx`, `social.youtube.callback.tsx`) use a `useRef` guard to prevent double-firing API requests.
+
+In React 18 StrictMode (development), `useEffect` hooks fire twice. If the OAuth callback code exchange endpoint is hit twice, the second request fails because the authorization code has already been consumed, raising `Invalid or expired OAuth state` or similar platform-level errors. The `useRef` boolean ensures the fetch is only dispatched exactly once during mount.

@@ -118,21 +118,11 @@ to be authored from the group definitions.
 
 ## 6. Test suite state
 
-**288 tests, 1 failing.**
+**290 tests, 0 failing.**
 
-`apps.social_accounts.test_meta.MetaAdapterTests.test_missing_configuration_raises_error`
-
-Pre-existing and unrelated to the spec work — it dates from commit `5364f1a`. The test sets
-`self.fb_adapter.client_id = ''` and expects `MetaConfigurationError`, but `_ensure_configured()`
-reads `settings.META_CLIENT_ID`, not the instance attribute
-(`apps/social_accounts/integrations/meta/facebook.py:28-30`). Setting it on the instance does
-nothing.
-
-It only ever passed because `META_CLIENT_ID` was empty in `.env`. Now that real Facebook and
-Instagram credentials are configured, the setting is non-empty and the assertion fails.
-
-Two problems, one fix: the test asserts against the wrong thing, **and** it reads live `.env` state,
-which makes the suite environment-dependent. Wrap it in `override_settings(META_CLIENT_ID='')`.
+The two previously failing tests have been addressed in PR0:
+1. `test_missing_configuration_raises_error`: Now correctly uses `@override_settings` to remain environment-independent.
+2. `test_staff_does_not_bypass_tenant_isolation`: Now explicitly asserts that staff users do *not* bypass workspace scoping (they see 0 workspaces by default).
 
 ---
 
