@@ -18,5 +18,6 @@ urlpatterns = [
     path('api/marketing/analytics/', include('apps.analytics.urls')),
     path('api/marketing/knowledge/', include('apps.knowledge.urls')),
     path('api/marketing/', include('apps.inspirations.urls')),
+    path('api/marketing/', include('apps.learning.urls')),
     # Other paths will be added here
 ]

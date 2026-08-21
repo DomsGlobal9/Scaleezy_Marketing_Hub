@@ -64,4 +64,14 @@ def capture(
         except Exception:
             logger.exception("Training pass failed for feedback %s", feedback.pk)
 
+    # Mirror the verdict into the learning fabric (PR3). Additive: the
+    # training engine above is untouched and still owns the read side, so the
+    # two run alongside each other while the fabric fills up. Imported here
+    # rather than at module scope to keep the app graph acyclic, and
+    # best-effort for the same reason the training pass is — a reviewer's
+    # verdict must land even if nothing learns from it.
+    from apps.learning.adapters import record_feedback_event_safely
+
+    record_feedback_event_safely(feedback)
+
     return feedback

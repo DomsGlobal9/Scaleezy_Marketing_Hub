@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     'apps.common',
     'apps.knowledge',
     'apps.inspirations',
+    'apps.learning',
 ]
 
 MIDDLEWARE = [
