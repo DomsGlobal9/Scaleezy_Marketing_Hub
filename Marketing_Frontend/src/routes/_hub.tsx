@@ -1,6 +1,7 @@
 import { createFileRoute, Link, Outlet, redirect, useNavigate } from "@tanstack/react-router";
 import {
   BarChart3,
+  Brain,
   CheckCircle2,
   LayoutDashboard,
   LogOut,
@@ -45,6 +46,7 @@ export const Route = createFileRoute("/_hub")({
 
 const NAV = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
+  { to: "/brand-master", label: "Brand Master", icon: Brain },
   { to: "/accounts", label: "Social Media Accounts", icon: Share2 },
   { to: "/publishing", label: "Publishing", icon: Send },
   { to: "/review", label: "Review", icon: CheckCircle2 },

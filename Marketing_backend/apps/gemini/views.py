@@ -58,25 +58,53 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             )
         return None
 
-    def _brand_rules(self, request):
-        """
-        The learned rules for this workspace's default brand.
+    def _brand_context(self, request, task_type=None):
+        """Brand intelligence for this generation, from the Context Gateway.
 
-        Best-effort: a brand with nothing learned yet, or no brand at all,
-        simply yields no rules and the prompt is unchanged.
+        This used to reach into the training engine for learned rules, which
+        meant the generator held its own opinion about what brand knowledge
+        is and saw none of the confirmed facts, stated preferences or hard
+        rules the rest of the system had collected. It now asks the one
+        service that owns that question, so precedence is resolved once and
+        a second provider does not need a second copy of it.
+
+        Best-effort: a brand with nothing compiled yet yields empty context
+        and the prompt is simply unchanged.
         """
         from apps.brands.models import Brand
-        from apps.feedback.training import rules_for_prompt
+        from apps.context.services.context_gateway import (
+            TaskType,
+            build_generation_context,
+            context_as_brief,
+        )
 
         try:
             workspace, error = get_request_workspace(request)
             if error:
-                return []
+                return None
             brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
-            return rules_for_prompt(brand)
+            if brand is None:
+                return None
+            context = build_generation_context(
+                workspace, brand, task_type or TaskType.COPY,
+                instruction=str(request.data.get('campaignName', ''))[:500],
+            )
+            return {'context': context, 'brief': context_as_brief(context)}
         except Exception:
-            logger.exception("Could not load learned brand rules")
+            logger.exception("Could not build brand context")
+            return None
+
+    def _brand_rules(self, request):
+        """The prompt-facing view of gateway context.
+
+        Kept as a list of instruction lines because that is what the existing
+        generator prompt consumes; the shape is the adapter boundary, not the
+        intelligence.
+        """
+        gateway = self._brand_context(request)
+        if not gateway:
             return []
+        return gateway['brief']['brand_context']
 
     def _persist_content(self, request, brief, result):
         """

@@ -32,3 +32,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+node_modules/
+.output/
+.wrangler/
+.nitro/
+.tanstack/
