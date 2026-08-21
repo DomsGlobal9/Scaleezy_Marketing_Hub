@@ -106,7 +106,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             return []
         return gateway['brief']['brand_context']
 
-    def _persist_content(self, request, brief, result):
+    def _persist_content(self, request, brief, result, provider_key=''):
         """
         Saves a generation as a DRAFT ContentItem.
 
@@ -140,7 +140,10 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 cta=(brief.get('offer') or '')[:255],
                 preview_url=(result.get('posterImageUrl') or '')[:1000],
                 slides=slides if isinstance(slides, list) else [],
-                ai_provider='GOOGLE_GEMINI',
+                # Whichever provider the router actually selected. This
+                # used to be hard-coded, so every generation claimed Gemini
+                # produced it however it was routed.
+                ai_provider=(provider_key or 'UNKNOWN')[:100],
                 ai_prompt=str(brief)[:5000],
                 created_by=request.user if request.user.is_authenticated else None,
             )
@@ -181,6 +184,15 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'brand_rules': self._brand_rules(request),
         }
 
+        # Everything the Context Gateway resolved, carried alongside the
+        # campaign fields so any adapter can use the structured form rather
+        # than parsing the prose back out.
+        gateway = self._brand_context(request)
+        if gateway:
+            request_data['brand_context'] = gateway['brief']['brand_context']
+            request_data['structured'] = gateway['brief']['structured']
+            request_data['brain_version'] = gateway['context']['brain_version']
+
         workspace, workspace_error = get_request_workspace(request)
         if workspace_error:
             return workspace_error
@@ -188,33 +200,98 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if quota_error:
             return quota_error
 
+        from apps.ai.router import AIRouter, NoProviderAvailable
+
         try:
-            result_data = GeminiGeneratorService.generate_marketing_content(request_data)
-
-            # Persist the generation. Previously this was returned to the
-            # browser and never stored, so the copy existed only in React
-            # state and was lost on refresh.
-            content_item = self._persist_content(request, data, result_data)
-
-            response_payload = {
-                'postTitle': result_data.get('postTitle', ''),
-                'postDescription': result_data.get('postDescription', ''),
-                'postHashtags': result_data.get('postHashtags', ''),
-                'posterImageUrl': result_data.get('posterImageUrl', ''),
-                'metadata': result_data.get('metadata', {}),
-                'contentItemId': str(content_item.id) if content_item else None,
-            }
-
-            return APIResponse(success=True, data=response_payload, status=status.HTTP_201_CREATED)
-
+            routed = self._route_generation(workspace, request_data)
+        except NoProviderAvailable as exc:
+            # Honest unavailability. A workspace with nothing routed has not
+            # generated anything, and saying so beats an empty success.
+            return APIResponse(
+                success=False,
+                message="No AI provider is configured for content generation.",
+                error={'code': 'NO_PROVIDER', 'message': str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logger.exception("Generation failed")
             return APIResponse(
                 success=False,
                 message=str(e),
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+        result_data = routed['payload']
+        # Persist the generation. Previously this was returned to the browser
+        # and never stored, so the copy existed only in React state and was
+        # lost on refresh.
+        content_item = self._persist_content(
+            request, data, result_data, provider_key=routed['provider']
+        )
+
+        response_payload = {
+            'postTitle': result_data.get('postTitle', ''),
+            'postDescription': result_data.get('postDescription', ''),
+            'postHashtags': result_data.get('postHashtags', ''),
+            'posterImageUrl': result_data.get('posterImageUrl', ''),
+            'metadata': {
+                **(result_data.get('metadata') or {}),
+                'provider': routed['provider'],
+                'provider_name': routed['provider_name'],
+                'brain_version': routed['brain_version'],
+            },
+            'contentItemId': str(content_item.id) if content_item else None,
+        }
+
+        return APIResponse(
+            success=True, data=response_payload, status=status.HTTP_201_CREATED
+        )
+
+    def _route_generation(self, workspace, request_data):
+        """Run the generation through the router, whichever provider is routed.
+
+        This used to call GeminiGeneratorService directly, which hard-coded one
+        vendor into the main production path: a workspace that had routed a
+        different provider still got Gemini, and adding a provider would have
+        meant editing this view. Now the view names a capability and the router
+        decides who serves it.
+
+        The provider-neutral result is mapped back to the response contract the
+        frontend already speaks. Adapting at this boundary is deliberate - the
+        alternative is rewriting the client every time a provider's result
+        shape differs.
+        """
+        from apps.ai.models import Capability
+        from apps.ai.router import AIRouter
+
+        router = AIRouter(workspace)
+        text = router.dispatch(Capability.TEXT, request_data)
+
+        # Gemini answers copy and imagery in one call, so the poster may
+        # already be here. A provider that does not is asked separately, and
+        # a workspace with no image route simply gets no poster rather than a
+        # failed generation.
+        raw = text.get('raw') or {}
+        poster = raw.get('posterImageUrl', '') or text.get('image_url', '')
+        if not poster:
+            try:
+                poster = router.dispatch(Capability.IMAGE, request_data).get('image_url', '')
+            except Exception:
+                logger.info("No image provider available for this generation.")
+                poster = ''
+
+        return {
+            'provider': text.get('provider', ''),
+            'provider_name': text.get('provider_name', ''),
+            'brain_version': request_data.get('brain_version', ''),
+            'payload': {
+                'postTitle': text.get('headline') or raw.get('postTitle', ''),
+                'postDescription': text.get('caption') or raw.get('postDescription', ''),
+                'postHashtags': text.get('hashtags') or raw.get('postHashtags', ''),
+                'posterImageUrl': poster,
+                'metadata': raw.get('metadata', {}),
+            },
+        }
 
     @action(detail=False, methods=['post'], url_path='generate-async')
     def generate_async(self, request):
