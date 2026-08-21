@@ -17,6 +17,7 @@ import { Route as HubIndexRouteImport } from './routes/_hub.index'
 import { Route as HubAccountsRouteImport } from './routes/_hub.accounts'
 import { Route as HubAnalyticsRouteImport } from './routes/_hub.analytics'
 import { Route as HubBrandMasterRouteImport } from './routes/_hub.brand-master'
+import { Route as HubOnboardingRouteImport } from './routes/_hub.onboarding'
 import { Route as HubPublishingRouteImport } from './routes/_hub.publishing'
 import { Route as HubReviewRouteImport } from './routes/_hub.review'
 import { Route as HubSettingsRouteImport } from './routes/_hub.settings'
@@ -64,6 +65,11 @@ const HubBrandMasterRoute = HubBrandMasterRouteImport.update({
   path: '/brand-master',
   getParentRoute: () => HubRoute,
 } as any)
+const HubOnboardingRoute = HubOnboardingRouteImport.update({
+  id: '/onboarding',
+  path: '/onboarding',
+  getParentRoute: () => HubRoute,
+} as any)
 const HubPublishingRoute = HubPublishingRouteImport.update({
   id: '/publishing',
   path: '/publishing',
@@ -108,6 +114,7 @@ export interface FileRoutesByFullPath {
   '/accounts': typeof HubAccountsRoute
   '/analytics': typeof HubAnalyticsRoute
   '/brand-master': typeof HubBrandMasterRoute
+  '/onboarding': typeof HubOnboardingRoute
   '/publishing': typeof HubPublishingRoute
   '/review': typeof HubReviewRoute
   '/settings': typeof HubSettingsRoute
@@ -123,6 +130,7 @@ export interface FileRoutesByTo {
   '/accounts': typeof HubAccountsRoute
   '/analytics': typeof HubAnalyticsRoute
   '/brand-master': typeof HubBrandMasterRoute
+  '/onboarding': typeof HubOnboardingRoute
   '/publishing': typeof HubPublishingRoute
   '/review': typeof HubReviewRoute
   '/settings': typeof HubSettingsRoute
@@ -141,6 +149,7 @@ export interface FileRoutesById {
   '/_hub/accounts': typeof HubAccountsRoute
   '/_hub/analytics': typeof HubAnalyticsRoute
   '/_hub/brand-master': typeof HubBrandMasterRoute
+  '/_hub/onboarding': typeof HubOnboardingRoute
   '/_hub/publishing': typeof HubPublishingRoute
   '/_hub/review': typeof HubReviewRoute
   '/_hub/settings': typeof HubSettingsRoute
@@ -160,6 +169,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/analytics'
     | '/brand-master'
+    | '/onboarding'
     | '/publishing'
     | '/review'
     | '/settings'
@@ -175,6 +185,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/analytics'
     | '/brand-master'
+    | '/onboarding'
     | '/publishing'
     | '/review'
     | '/settings'
@@ -192,6 +203,7 @@ export interface FileRouteTypes {
     | '/_hub/accounts'
     | '/_hub/analytics'
     | '/_hub/brand-master'
+    | '/_hub/onboarding'
     | '/_hub/publishing'
     | '/_hub/review'
     | '/_hub/settings'
@@ -271,6 +283,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof HubBrandMasterRouteImport
       parentRoute: typeof HubRoute
     }
+    '/_hub/onboarding': {
+      id: '/_hub/onboarding'
+      path: '/onboarding'
+      fullPath: '/onboarding'
+      preLoaderRoute: typeof HubOnboardingRouteImport
+      parentRoute: typeof HubRoute
+    }
     '/_hub/publishing': {
       id: '/_hub/publishing'
       path: '/publishing'
@@ -327,6 +346,7 @@ interface HubRouteChildren {
   HubAccountsRoute: typeof HubAccountsRoute
   HubAnalyticsRoute: typeof HubAnalyticsRoute
   HubBrandMasterRoute: typeof HubBrandMasterRoute
+  HubOnboardingRoute: typeof HubOnboardingRoute
   HubPublishingRoute: typeof HubPublishingRoute
   HubReviewRoute: typeof HubReviewRoute
   HubSettingsRoute: typeof HubSettingsRoute
@@ -337,6 +357,7 @@ const HubRouteChildren: HubRouteChildren = {
   HubAccountsRoute: HubAccountsRoute,
   HubAnalyticsRoute: HubAnalyticsRoute,
   HubBrandMasterRoute: HubBrandMasterRoute,
+  HubOnboardingRoute: HubOnboardingRoute,
   HubPublishingRoute: HubPublishingRoute,
   HubReviewRoute: HubReviewRoute,
   HubSettingsRoute: HubSettingsRoute,

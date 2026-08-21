@@ -19,6 +19,10 @@ call is how a context window fills with things the model then has to ignore.
 Hard rules are the exception: they travel with every task, because a
 constraint that only applies to some jobs is not a constraint.
 """
+import hashlib
+
+from django.core.cache import cache
+
 from apps.brands.services.brand_brain import (
     SCHEMA_VERSION,
     compile_brand_brain,
@@ -75,6 +79,10 @@ TASK_PROFILES = {
     },
 }
 
+#: How long a cut context may be reused. Short on purpose: the brain_version
+#: in the key does the real invalidation; the TTL only bounds memory.
+CONTEXT_CACHE_SECONDS = 600
+
 #: Budget. Enough to steer a generation, not enough to bury it.
 MAX_ITEMS = 12
 MAX_SOFT_RULES = 10
@@ -130,6 +138,22 @@ def build_generation_context(
     if not brain:
         raise ContextError("This brand has no compiled Brand Brain.")
 
+    # ---- context cache -------------------------------------------------
+    # Selection over an unchanged brain is deterministic, so the cut is
+    # reusable until the brain moves. The brain_version in the key is the
+    # invalidation: new learning compiles a new version and stale entries
+    # simply stop being addressed. Workspace and brand ids are in the key,
+    # so one tenant's context is unreachable from another's request by
+    # construction.
+    cache_key = 'genctx:' + hashlib.sha256('|'.join([
+        str(workspace.id), str(brand.pk), brain.get('brain_version', ''),
+        str(CONTEXT_SCHEMA_VERSION), task_type,
+        instruction or '', channel or '', content_format or '', objective or '',
+    ]).encode('utf-8')).hexdigest()
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     identity = brain.get('identity', {})
     positioning = brain.get('positioning', {})
     audiences = brain.get('audiences', {})
@@ -141,7 +165,7 @@ def build_generation_context(
         if claim.get('category') in profile['categories']
     ][:MAX_ITEMS]
 
-    return {
+    context = {
         'context_schema_version': CONTEXT_SCHEMA_VERSION,
         'workspace_id': str(workspace.id),
         'brand_id': str(brand.pk),
@@ -226,6 +250,9 @@ def build_generation_context(
             ),
         },
     }
+
+    cache.set(cache_key, context, timeout=CONTEXT_CACHE_SECONDS)
+    return context
 
 
 def context_as_brief(context):

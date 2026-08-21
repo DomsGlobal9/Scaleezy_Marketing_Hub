@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     'apps.inspirations',
     'apps.learning',
     'apps.context',
+    'apps.onboarding',
 ]
 
 MIDDLEWARE = [

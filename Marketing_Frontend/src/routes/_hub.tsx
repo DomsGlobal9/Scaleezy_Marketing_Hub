@@ -47,6 +47,7 @@ export const Route = createFileRoute("/_hub")({
 const NAV = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
   { to: "/brand-master", label: "Brand Master", icon: Brain },
+  { to: "/onboarding", label: "Brand Setup", icon: Sparkles },
   { to: "/accounts", label: "Social Media Accounts", icon: Share2 },
   { to: "/publishing", label: "Publishing", icon: Send },
   { to: "/review", label: "Review", icon: CheckCircle2 },

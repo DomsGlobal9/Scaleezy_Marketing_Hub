@@ -228,6 +228,17 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         content_item = self._persist_content(
             request, data, result_data, provider_key=routed['provider']
         )
+        if content_item is not None:
+            # Lightweight generation trace for future optimisation: which
+            # brain, which providers, what failed. No prompt material.
+            content_item.layout_config = {
+                **(content_item.layout_config or {}),
+                'generation_trace': {
+                    'brain_version': routed.get('brain_version', ''),
+                    **routed.get('trace', {}),
+                },
+            }
+            content_item.save(update_fields=['layout_config'])
 
         response_payload = {
             'postTitle': result_data.get('postTitle', ''),
@@ -262,7 +273,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         shape differs.
         """
         from apps.ai.models import Capability
-        from apps.ai.router import AIRouter
+        from apps.ai.router import AIRouter, NoProviderAvailable
 
         router = AIRouter(workspace)
         text = router.dispatch(Capability.TEXT, request_data)
@@ -270,20 +281,40 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         # Gemini answers copy and imagery in one call, so the poster may
         # already be here. A provider that does not is asked separately, and
         # a workspace with no image route simply gets no poster rather than a
-        # failed generation.
+        # failed generation. The copy that already succeeded is never redone
+        # because the image failed.
         raw = text.get('raw') or {}
         poster = raw.get('posterImageUrl', '') or text.get('image_url', '')
+        trace = {
+            'capabilities': {
+                Capability.TEXT: {
+                    'status': 'OK',
+                    'provider': text.get('provider', ''),
+                    'latency_ms': text.get('latency_ms'),
+                },
+            },
+        }
         if not poster:
             try:
-                poster = router.dispatch(Capability.IMAGE, request_data).get('image_url', '')
-            except Exception:
+                image = router.dispatch(Capability.IMAGE, request_data)
+                poster = image.get('image_url', '')
+                trace['capabilities'][Capability.IMAGE] = {
+                    'status': 'OK',
+                    'provider': image.get('provider', ''),
+                    'latency_ms': image.get('latency_ms'),
+                }
+            except Exception as exc:
                 logger.info("No image provider available for this generation.")
+                trace['capabilities'][Capability.IMAGE] = {
+                    'status': 'FAILED', 'error': str(exc)[:300],
+                }
                 poster = ''
 
         return {
             'provider': text.get('provider', ''),
             'provider_name': text.get('provider_name', ''),
             'brain_version': request_data.get('brain_version', ''),
+            'trace': trace,
             'payload': {
                 'postTitle': text.get('headline') or raw.get('postTitle', ''),
                 'postDescription': text.get('caption') or raw.get('postDescription', ''),

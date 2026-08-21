@@ -8,7 +8,7 @@
  * the product good.
  */
 import { useCallback, useEffect, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   AlertTriangle,
   BookOpen,
@@ -876,6 +876,20 @@ function BrandMasterPage() {
         eyebrow="Brand Master"
         title="What Scaleezy knows"
         subtitle="Every fact, reference, preference and rule behind your brand's work — and where each one came from."
+        actions={
+          overview ? (
+            overview.readiness.readiness_level === "READY" ||
+            overview.readiness.readiness_level === "STRONG" ? (
+              <Button asChild>
+                <Link to="/">Create content</Link>
+              </Button>
+            ) : (
+              <Button asChild variant="outline">
+                <Link to="/onboarding">Continue setup</Link>
+              </Button>
+            )
+          ) : null
+        }
       />
 
       {loading ? (

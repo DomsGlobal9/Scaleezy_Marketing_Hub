@@ -247,14 +247,16 @@ class GenerationChainTests(ContextTestBase):
         def fake_dispatch(self_router, capability, brief, content_item_id=None):
             seen['capability'] = capability
             seen['brief'] = brief
-            return {'text': 'generated', 'provider': 'fake'}
+            # The adapter contract for TEXT: a headline at minimum. The
+            # validator rejects anything less, deliberately.
+            return {'headline': 'generated', 'caption': '', 'provider': 'fake'}
 
         with patch('apps.ai.router.AIRouter.dispatch', fake_dispatch):
             outcome = generate_with_context(
                 self.workspace1, self.brand1, TaskType.COPY, instruction='Launch post',
             )
 
-        self.assertEqual(outcome['result']['text'], 'generated')
+        self.assertEqual(outcome['result']['headline'], 'generated')
         self.assertEqual(
             outcome['brain_version'], self.brand1.creative_brain['brain_version']
         )
