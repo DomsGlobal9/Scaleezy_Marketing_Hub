@@ -3,6 +3,8 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
+from rest_framework.parsers import MultiPartParser, FormParser
+import mimetypes
 
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.permissions import (
@@ -12,8 +14,9 @@ from apps.common.permissions import (
 )
 from apps.common.responses import APIResponse
 from apps.workspaces.models import WorkspaceMember
+from apps.marketing.services.storage import StorageError, SupabaseStorageService
 from .models import BrandSource, BrandMemory
-from .serializers import BrandSourceSerializer, BrandMemorySerializer
+from .serializers import BrandSourceSerializer, BrandMemorySerializer, BrandSourceUploadSerializer
 from .tasks import process_source
 
 class BrandSourceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
@@ -42,6 +45,50 @@ class BrandSourceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             workspace=self._authorised_workspace(),
             created_by=self.request.user
         )
+
+    @action(
+        detail=False,
+        methods=['post'],
+        parser_classes=[MultiPartParser, FormParser],
+        url_path='upload',
+    )
+    def upload(self, request):
+        workspace = self._authorised_workspace()
+        serializer = BrandSourceUploadSerializer(data=request.data)
+        if not serializer.is_valid():
+            return APIResponse(success=False, error=serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        file_obj = serializer.validated_data['file']
+        brand_id = request.data.get('brand')
+        if not brand_id:
+            return APIResponse(success=False, message="brand is required", status=status.HTTP_400_BAD_REQUEST)
+
+        # Basic mime type guess
+        mime_type, _ = mimetypes.guess_type(file_obj.name)
+        if not mime_type:
+            mime_type = 'application/octet-stream'
+
+        try:
+            stored = SupabaseStorageService.upload_and_describe(
+                str(workspace.id), file_obj, file_obj.name, prefix='knowledge-sources'
+            )
+        except StorageError as exc:
+            return APIResponse(success=False, message=str(exc), status=status.HTTP_502_BAD_GATEWAY)
+
+        # Create source
+        source = BrandSource.objects.create(
+            workspace=workspace,
+            brand_id=brand_id,
+            source_type=BrandSource.SourceType.DOCUMENT,
+            title=file_obj.name,
+            file_url=stored['url'],
+            storage_path=stored['path'],
+            mime_type=mime_type,
+            file_name=file_obj.name,
+            status=BrandSource.SourceStatus.UPLOADED,
+            created_by=request.user
+        )
+        return APIResponse(success=True, data=BrandSourceSerializer(source).data)
 
     @action(detail=True, methods=['post'])
     def process(self, request, pk=None):

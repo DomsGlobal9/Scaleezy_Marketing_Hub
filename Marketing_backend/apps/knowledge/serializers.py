@@ -24,3 +24,6 @@ class BrandMemorySerializer(serializers.ModelSerializer):
         ]
         # Exclude embedding as it can be large and not usually needed in list/detail APIs
         read_only_fields = ['id', 'workspace', 'created_at', 'updated_at']
+
+class BrandSourceUploadSerializer(serializers.Serializer):
+    file = serializers.FileField(required=True)
