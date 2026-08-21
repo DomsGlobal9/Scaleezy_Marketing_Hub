@@ -290,37 +290,51 @@ def _collect_claims(rules, preferences, signals):
     return claims
 
 
-def _memory_conflicts(memories):
-    """Two confirmed memories asserting different things under one key.
+#: Claim category for a keyed memory that does not name one itself. A
+#: `normalized_key` of "COLOR/accent" claims under COLOR; a bare
+#: "roast_freshness" claims under FACT.
+MEMORY_CLAIM_CATEGORY = 'FACT'
 
-    Both are equally authoritative, so nothing decides it and neither is
-    emitted as product truth.
+
+def _memory_claims(memories):
+    """Keyed confirmed memories, as claims in the same contest as everything else.
+
+    A memory with a `normalized_key` is asserting something specific about a
+    named thing, which is exactly what a rule or a preference does — so it has
+    to be ranked against them rather than sitting in a separate list where a
+    softer claim about the same key could quietly become the answer.
+
+    Unkeyed memories are narrative. They stay in their semantic sections and
+    are not forced into invented keys, because a key nobody chose would
+    collide by accident.
     """
-    grouped = {}
+    claims = []
     for memory in memories:
-        key = normalize_signal_text(memory.normalized_key or '')
+        key = (memory.normalized_key or '').strip()
         if not key:
             continue
-        grouped.setdefault(key, []).append(memory)
+        category, _, attribute = key.rpartition('/')
+        claims.append(Claim(
+            category=category or MEMORY_CLAIM_CATEGORY,
+            attribute=attribute,
+            value=memory.content,
+            rank=RANK_VERIFIED_FACT,
+            source_type='brand_memory',
+            source_id=memory.pk,
+            confidence=memory.confidence,
+            weight=1.0,
+        ))
+    return claims
 
-    conflicts, blocked = [], set()
-    for key in sorted(grouped):
-        group = grouped[key]
-        if len({normalize_signal_text(m.content) for m in group}) > 1:
-            conflicts.append({
-                'category': 'BRAND_MEMORY',
-                'attribute': key,
-                'authority': RANK_LABELS[RANK_VERIFIED_FACT],
-                'reason': 'EQUAL_AUTHORITY_DISAGREEMENT',
-                'claims': sorted(
-                    ({'source_type': 'brand_memory', 'source_id': str(m.pk),
-                      'memory_type': m.memory_type, 'value': m.content}
-                     for m in group),
-                    key=lambda c: c['source_id'],
-                ),
-            })
-            blocked.update(m.pk for m in group)
-    return conflicts, blocked
+
+def _memories_blocked_by_conflict(conflicts):
+    """Memories withheld because an equally authoritative one disagrees."""
+    return {
+        claim['source_id']
+        for conflict in conflicts
+        for claim in conflict['claims']
+        if claim.get('source_type') == 'brand_memory'
+    }
 
 
 def _memory_texts(memories, types, blocked):
@@ -328,7 +342,7 @@ def _memory_texts(memories, types, blocked):
         {
             m.content.strip()
             for m in memories
-            if m.memory_type in types and m.pk not in blocked and m.content.strip()
+            if m.memory_type in types and str(m.pk) not in blocked and m.content.strip()
         }
     )
 
@@ -346,11 +360,10 @@ def compile_brand_brain(brand):
     preferences = list(_preferences(brand))
     signals = list(_signals(brand))
 
-    memory_conflicts, blocked_memories = _memory_conflicts(memories)
-    resolved, overridden, claim_conflicts = resolve_claims(
-        _collect_claims(rules, preferences, signals)
+    resolved, overridden, conflicts = resolve_claims(
+        _collect_claims(rules, preferences, signals) + _memory_claims(memories)
     )
-    conflicts = memory_conflicts + claim_conflicts
+    blocked_memories = _memories_blocked_by_conflict(conflicts)
 
     hard_rules = sorted(
         (

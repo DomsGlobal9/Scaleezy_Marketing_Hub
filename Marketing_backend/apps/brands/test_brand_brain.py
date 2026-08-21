@@ -481,3 +481,138 @@ class BrainEndpointTests(BrandBrainTestBase):
             f'{BRANDS_URL}{self.brand1.id}/brain/', **self.ws1()
         ).json()['data']
         self.assertIn('Ships in 48 hours', body['verified_product_truth'])
+
+
+class VerifiedFactPrecedenceTests(BrandBrainTestBase):
+    """A confirmed memory with a `normalized_key` is asserting something about
+    a named thing, so it competes with rules, preferences and inferences
+    instead of sitting in a list where a softer claim about the same key could
+    quietly become the answer."""
+
+    KEY = 'FACT/roast_freshness'
+
+    def add_keyed_fact(self, content='Roasted within 48 hours of shipping', source=None):
+        return self.add_memory(content, normalized_key=self.KEY, source=source)
+
+    def contradicting_signal(self, value='Roasted within 7 days'):
+        return self.add_signal(
+            category='FACT', attribute='roast_freshness', value=value,
+            origin=InspirationSignal.Origin.USER,
+            sentiment=InspirationSignal.Sentiment.NEUTRAL,
+        )
+
+    def test_a_verified_fact_outranks_an_explicit_human_preference(self):
+        fact = self.add_keyed_fact()
+        signal = self.contradicting_signal()
+
+        brain = compile_brand_brain(self.brand1)
+        claim = {c['attribute']: c for c in brain['preferences']}['roast_freshness']
+        self.assertEqual(claim['value'], fact.content)
+        self.assertEqual(claim['authority'], 'verified_fact')
+        self.assertEqual(brain['unresolved_conflict_count'], 0)
+
+        outranked = [o for o in brain['overridden'] if o['source_id'] == str(signal.pk)]
+        self.assertEqual(len(outranked), 1)
+        self.assertEqual(outranked[0]['authority'], 'explicit_preference')
+
+    def test_a_verified_fact_outranks_a_learned_rule(self):
+        fact = self.add_keyed_fact()
+        rule = BrandRule.objects.create(
+            workspace=self.workspace1, brand=self.brand1,
+            text='Roasted within 7 days', hardness=BrandRule.Hardness.SOFT,
+            origin=BrandRule.Origin.LEARNED,
+            structured={'category': 'FACT', 'attribute': 'roast_freshness',
+                        'value': 'Roasted within 7 days'},
+        )
+
+        brain = compile_brand_brain(self.brand1)
+        claim = {c['attribute']: c for c in brain['preferences']}['roast_freshness']
+        self.assertEqual(claim['value'], fact.content)
+        self.assertEqual(claim['authority'], 'verified_fact')
+        self.assertIn(
+            str(rule.pk), [o['source_id'] for o in brain['overridden']]
+        )
+
+    def test_a_hard_explicit_rule_still_outranks_a_verified_fact(self):
+        """Positive control on the top of the hierarchy."""
+        self.add_keyed_fact()
+        create_explicit_rule(
+            workspace=self.workspace1, brand=self.brand1,
+            text='Say roasted to order', hardness=BrandRule.Hardness.HARD,
+            structured={'category': 'FACT', 'attribute': 'roast_freshness',
+                        'value': 'Roasted to order'},
+        )
+        brain = compile_brand_brain(self.brand1)
+        claim = {c['attribute']: c for c in brain['preferences']}['roast_freshness']
+        self.assertEqual(claim['authority'], 'hard_explicit_rule')
+
+    def test_two_verified_facts_that_disagree_stay_an_unresolved_conflict(self):
+        self.add_keyed_fact('Roasted within 48 hours of shipping')
+        self.add_keyed_fact('Roasted within 5 days of shipping')
+
+        brain = compile_brand_brain(self.brand1)
+        self.assertEqual(brain['unresolved_conflict_count'], 1)
+        conflict = brain['conflicts'][0]
+        self.assertEqual(conflict['authority'], 'verified_fact')
+        self.assertEqual(len(conflict['claims']), 2)
+        # Neither is asserted, and neither reaches product truth.
+        self.assertEqual(
+            [c for c in brain['preferences'] if c['attribute'] == 'roast_freshness'], []
+        )
+        self.assertEqual(brain['verified_product_truth'], [])
+
+    def test_a_lower_claim_does_not_win_when_the_facts_cancel_out(self):
+        self.add_keyed_fact('Roasted within 48 hours of shipping')
+        self.add_keyed_fact('Roasted within 5 days of shipping')
+        signal = self.contradicting_signal()
+
+        brain = compile_brand_brain(self.brand1)
+        self.assertEqual(
+            [c for c in brain['preferences'] if c['attribute'] == 'roast_freshness'], []
+        )
+        self.assertIn(str(signal.pk), [o['source_id'] for o in brain['overridden']])
+
+    def test_unkeyed_memories_are_untouched_by_any_of_this(self):
+        """Narrative memory keeps its semantic home and is never forced into
+        an invented claim key."""
+        self.add_memory('We started in a shed',
+                        memory_type=BrandMemory.MemoryType.POSITIONING_SIGNAL)
+        self.add_memory('Beginners find grinding intimidating',
+                        memory_type=BrandMemory.MemoryType.BUYER_PAIN)
+        self.add_keyed_fact('Roasted within 48 hours of shipping')
+        self.add_keyed_fact('Roasted within 5 days of shipping')
+
+        brain = compile_brand_brain(self.brand1)
+        self.assertIn('We started in a shed', brain['positioning']['statements'])
+        self.assertIn('Beginners find grinding intimidating', brain['audiences']['pains'])
+        # The unrelated conflict did not drag them in.
+        self.assertEqual(
+            [c['attribute'] for c in brain['preferences']], []
+        )
+
+    def test_a_fact_from_an_archived_source_stops_outranking_anything(self):
+        source = self.add_source()
+        self.add_keyed_fact(source=source)
+        signal = self.contradicting_signal()
+        self.assertEqual(
+            {c['attribute']: c for c in
+             compile_brand_brain(self.brand1)['preferences']}['roast_freshness'
+             ]['authority'],
+            'verified_fact',
+        )
+
+        source.status = BrandSource.SourceStatus.ARCHIVED
+        source.save(update_fields=['status'])
+
+        brain = compile_brand_brain(self.brand1)
+        claim = {c['attribute']: c for c in brain['preferences']}['roast_freshness']
+        self.assertEqual(claim['source_id'], str(signal.pk))
+        self.assertEqual(claim['authority'], 'explicit_preference')
+
+    def test_keyed_facts_keep_the_fingerprint_deterministic(self):
+        self.add_keyed_fact()
+        self.contradicting_signal()
+        first = compile_brand_brain(self.brand1)
+        second = compile_brand_brain(self.brand1)
+        self.assertEqual(first['brain_version'], second['brain_version'])
+        self.assertNotEqual(first['compiled_at'], second['compiled_at'])
