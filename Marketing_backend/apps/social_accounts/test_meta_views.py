@@ -5,9 +5,11 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from apps.users.models import User
+from django.contrib.auth import get_user_model
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 from apps.social_accounts.integrations.meta.exceptions import MetaConfigurationError
+
+User = get_user_model()
 
 
 class MetaViewsTests(TestCase):
