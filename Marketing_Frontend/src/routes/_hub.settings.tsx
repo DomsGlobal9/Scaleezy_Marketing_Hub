@@ -123,13 +123,71 @@ function BrandKitPanel() {
   const { layouts } = useLayoutCatalogue();
 
   return (
-    <Panel label="Brand Kit" title="Logo & contact details">
+    <Panel label="Brand Kit" title="Brand identity, logo & contact details">
       {error ? (
         <p className="mb-4 rounded-xl border border-destructive/30 bg-destructive/8 px-3 py-2 text-sm text-destructive">
           {error}
         </p>
       ) : null}
       <div className="grid gap-5">
+        {/* Identity fields. Everything the onboarding "basics" stage and the
+            readiness engine score - they had a save pipeline but no inputs,
+            so a new user was asked for fields the UI gave them nowhere to
+            type. Text fields save debounced via update(), same as phone. */}
+        <div className="grid gap-5 sm:grid-cols-2">
+          <div>
+            <Label className="text-xs tracking-wide uppercase">Brand name</Label>
+            <Input
+              className="mt-1.5"
+              placeholder="Acme Coffee"
+              value={settings.name}
+              onChange={(e) => update({ name: e.target.value })}
+            />
+          </div>
+          <div>
+            <Label className="text-xs tracking-wide uppercase">Industry</Label>
+            <Input
+              className="mt-1.5"
+              placeholder="Specialty coffee"
+              value={settings.industry}
+              onChange={(e) => update({ industry: e.target.value })}
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <Label className="text-xs tracking-wide uppercase">Tagline</Label>
+            <Input
+              className="mt-1.5"
+              placeholder="Roasted this week"
+              value={settings.tagline}
+              onChange={(e) => update({ tagline: e.target.value })}
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <Label className="text-xs tracking-wide uppercase">Brand tone</Label>
+            <Input
+              className="mt-1.5"
+              placeholder="Warm, unfussy, expert without the jargon"
+              value={settings.brandTone}
+              onChange={(e) => update({ brandTone: e.target.value })}
+            />
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              How generated copy should sound. A short phrase is enough.
+            </p>
+          </div>
+          <div>
+            <Label className="text-xs tracking-wide uppercase">CTA keyword</Label>
+            <Input
+              className="mt-1.5"
+              placeholder="Order now"
+              value={settings.ctaKeyword}
+              onChange={(e) => update({ ctaKeyword: e.target.value })}
+            />
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              The action your posts push toward.
+            </p>
+          </div>
+        </div>
+
         <div>
           <Label className="text-xs tracking-wide uppercase">Brand logo</Label>
           <p className="mt-1 text-xs text-muted-foreground">
