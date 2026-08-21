@@ -20,12 +20,20 @@ from apps.common.testing import (
 )
 from apps.workspaces.models import WorkspaceMember
 
-from .models import BrandPreference, BrandRule, LearningEvent, LearningScope, SubjectType
+from .models import (
+    BrandPreference,
+    BrandRule,
+    LearningEvent,
+    LearningScope,
+    PreferenceEvidence,
+    SubjectType,
+)
 from .services import (
     LearningError,
     create_explicit_rule,
     deactivate_rule,
     promote_preference_to_rule,
+    preference_evidence_events,
     record_event,
     reinforce_preference,
     resolve_preferences,
@@ -91,15 +99,20 @@ class LearningTestBase(TenantFixtureMixin, TenantSecurityAssertions, TestCase):
             **kwargs,
         )
 
+    def reinforce(self, event, **kwargs):
+        return reinforce_preference(
+            workspace=kwargs.pop('workspace', self.workspace1),
+            brand=kwargs.pop('brand', self.brand1),
+            category=kwargs.pop('category', 'TYPOGRAPHY'),
+            attribute=kwargs.pop('attribute', 'headline_face'),
+            value=kwargs.pop('value', 'Condensed grotesque'),
+            event=event,
+            **kwargs,
+        )
+
     def make_established_preference(self):
-        for _ in range(BrandPreference.ESTABLISHED_AT_EVIDENCE):
-            preference = reinforce_preference(
-                workspace=self.workspace1,
-                brand=self.brand1,
-                category='TYPOGRAPHY',
-                attribute='headline_face',
-                value='Condensed grotesque',
-            )
+        for index in range(BrandPreference.ESTABLISHED_AT_EVIDENCE):
+            preference = self.reinforce(self.make_event(dedupe_key=f'ev{index}'))
         return preference
 
 
@@ -184,18 +197,97 @@ class LearningEventTests(LearningTestBase):
 
 class PreferenceThresholdTests(LearningTestBase):
     def test_one_event_is_an_opinion_not_an_established_preference(self):
-        preference = reinforce_preference(
-            workspace=self.workspace1,
-            brand=self.brand1,
-            category='TYPOGRAPHY',
-            attribute='headline_face',
-            value='Condensed grotesque',
-        )
+        preference = self.reinforce(self.make_event())
         self.assertEqual(preference.evidence_count, 1)
         self.assertEqual(preference.state, BrandPreference.State.EMERGING)
 
-    def test_the_second_event_establishes_it(self):
-        preference = self.make_established_preference()
+    def test_replaying_the_same_event_counts_once(self):
+        """The CTO blocker: a retried job must not make one occurrence look
+        like two."""
+        event = self.make_event(dedupe_key='replay-me')
+        first = self.reinforce(event)
+        self.assertEqual(first.evidence_count, 1)
+
+        for _ in range(3):
+            again = self.reinforce(event)
+
+        self.assertEqual(again.pk, first.pk)
+        self.assertEqual(again.evidence_count, 1)
+        self.assertEqual(
+            again.state, BrandPreference.State.EMERGING,
+            "a replayed event carried the preference over the threshold",
+        )
+        self.assertEqual(PreferenceEvidence.objects.filter(preference=again).count(), 1)
+
+    def test_two_distinct_events_count_twice(self):
+        self.reinforce(self.make_event(dedupe_key='a'))
+        preference = self.reinforce(self.make_event(dedupe_key='b'))
+        self.assertEqual(preference.evidence_count, 2)
+        self.assertEqual(
+            PreferenceEvidence.objects.filter(preference=preference).count(), 2
+        )
+
+    def test_evidence_lineage_is_inspectable(self):
+        events = [self.make_event(dedupe_key=f'l{i}') for i in range(2)]
+        for event in events:
+            preference = self.reinforce(event)
+
+        self.assertEqual(
+            [e.pk for e in preference_evidence_events(preference)],
+            [e.pk for e in events],
+        )
+        body = self.client1.get(
+            f'{PREFERENCES_URL}{preference.id}/', **self.ws1()
+        ).json()
+        self.assertEqual(body['evidence_count'], 2)
+        self.assertEqual(body['evidence_event_ids'], [str(e.pk) for e in events])
+
+    def test_evidence_must_come_from_the_same_workspace(self):
+        foreign = record_event(
+            workspace=self.workspace2, brand=self.brand2,
+            event_type=LearningEvent.EventType.REJECTED,
+        )
+        with self.assertRaises(LearningError):
+            self.reinforce(foreign)
+        self.assertFalse(BrandPreference.objects.exists())
+
+    def test_evidence_must_come_from_the_same_brand(self):
+        other_brand_event = self.make_event(brand=self.brand1b, dedupe_key='ob')
+        with self.assertRaises(LearningError):
+            self.reinforce(other_brand_event)
+        self.assertFalse(PreferenceEvidence.objects.exists())
+
+    def test_model_refuses_cross_tenant_evidence(self):
+        """The invariant holds for ORM writers, not only through the service."""
+        preference = self.reinforce(self.make_event(dedupe_key='p'))
+        foreign = record_event(
+            workspace=self.workspace2, brand=self.brand2,
+            event_type=LearningEvent.EventType.REJECTED,
+        )
+        with self.assertRaises(ValidationError):
+            PreferenceEvidence.objects.create(
+                preference=preference, learning_event=foreign
+            )
+
+    def test_duplicate_evidence_pairs_are_refused_by_the_database(self):
+        preference = self.reinforce(self.make_event(dedupe_key='d'))
+        existing = PreferenceEvidence.objects.get(preference=preference)
+        with self.assertRaises(IntegrityError):
+            PreferenceEvidence.objects.create(
+                preference=preference, learning_event=existing.learning_event
+            )
+
+    def test_it_becomes_established_only_after_two_distinct_events(self):
+        preference = self.reinforce(self.make_event(dedupe_key='one'))
+        self.assertEqual(preference.state, BrandPreference.State.EMERGING)
+
+        preference = self.reinforce(self.make_event(dedupe_key='one'))
+        self.assertEqual(
+            preference.state, BrandPreference.State.EMERGING,
+            "the same event was counted twice",
+        )
+
+        preference = self.reinforce(self.make_event(dedupe_key='two'))
         self.assertEqual(preference.evidence_count, 2)
         self.assertEqual(preference.state, BrandPreference.State.ESTABLISHED)
 
@@ -244,25 +336,14 @@ class PreferenceThresholdTests(LearningTestBase):
         preference.state = BrandPreference.State.RETIRED
         preference.save(update_fields=['state'])
         with self.assertRaises(LearningError):
-            reinforce_preference(
-                workspace=self.workspace1,
-                brand=self.brand1,
-                category='TYPOGRAPHY',
-                attribute='headline_face',
-            )
+            self.reinforce(self.make_event(dedupe_key='after-retire'))
 
 
 class RuleAuthorityTests(LearningTestBase):
     def test_one_off_feedback_cannot_become_a_rule(self):
         """The PR3 acceptance criterion."""
-        preference = reinforce_preference(
-            workspace=self.workspace1,
-            brand=self.brand1,
-            category='TYPOGRAPHY',
-            attribute='headline_face',
-            value='Condensed grotesque',
-        )
         single_event = self.make_event()
+        preference = self.reinforce(single_event)
         with self.assertRaises(LearningError):
             promote_preference_to_rule(
                 preference=preference, evidence_events=[single_event]
@@ -280,13 +361,24 @@ class RuleAuthorityTests(LearningTestBase):
         )
 
     def test_an_emerging_preference_cannot_back_a_rule(self):
-        preference = reinforce_preference(
-            workspace=self.workspace1, brand=self.brand1,
-            category='TYPOGRAPHY', attribute='headline_face',
-        )
+        preference = self.reinforce(self.make_event(dedupe_key='solo'))
         events = [self.make_event(dedupe_key=f'e{i}') for i in range(2)]
         with self.assertRaises(LearningError):
             promote_preference_to_rule(preference=preference, evidence_events=events)
+
+    def test_a_replayed_event_cannot_unlock_promotion(self):
+        """Reinforcing with one event three times leaves the preference
+        EMERGING, so there is nothing a learned rule could rest on."""
+        event = self.make_event(dedupe_key='only-one')
+        for _ in range(3):
+            preference = self.reinforce(event)
+
+        self.assertEqual(preference.evidence_count, 1)
+        with self.assertRaises(LearningError):
+            promote_preference_to_rule(
+                preference=preference, evidence_events=[event, event]
+            )
+        self.assertFalse(BrandRule.objects.exists())
 
     def test_a_learned_rule_can_never_be_hard(self):
         """Enforced in the schema, not only in the service."""
@@ -658,4 +750,85 @@ class FeedbackBridgeTests(LearningTestBase):
         self.assertEqual(event.workspace_id, self.workspace2.id)
         self.assertEqual(
             LearningEvent.objects.filter(workspace=self.workspace1).count(), 0
+        )
+
+
+class ScopeConsistencyTests(LearningTestBase):
+    """Scope and brand have to mean the same thing to the writer and the
+    resolver, or a row belongs to nobody and is silently never resolved."""
+
+    def test_brand_scope_requires_a_brand(self):
+        for scope in (LearningScope.BRAND, LearningScope.CAMPAIGN, LearningScope.ASSET):
+            with self.subTest(scope=scope):
+                with self.assertRaises(LearningError):
+                    self.reinforce(
+                        self.make_event(dedupe_key=f'ns-{scope}'),
+                        brand=None,
+                        scope=scope,
+                    )
+                with self.assertRaises(LearningError):
+                    create_explicit_rule(
+                        workspace=self.workspace1, brand=None,
+                        text='brandless', scope=scope,
+                    )
+
+    def test_tenant_scope_must_not_name_a_brand(self):
+        with self.assertRaises(LearningError):
+            self.reinforce(
+                self.make_event(dedupe_key='tenant-with-brand'),
+                scope=LearningScope.TENANT,
+            )
+        with self.assertRaises(LearningError):
+            create_explicit_rule(
+                workspace=self.workspace1, brand=self.brand1,
+                text='tenant-with-brand', scope=LearningScope.TENANT,
+            )
+
+    def test_a_workspace_wide_preference_resolves_for_every_brand(self):
+        event = record_event(
+            workspace=self.workspace1, brand=None,
+            event_type=LearningEvent.EventType.PREFERENCE_SIGNAL,
+        )
+        preference = reinforce_preference(
+            workspace=self.workspace1, brand=None, event=event,
+            category='TONE', attribute='register', value='plain',
+            scope=LearningScope.TENANT,
+        )
+        for brand in (self.brand1, self.brand1b):
+            with self.subTest(brand=brand.name):
+                self.assertIn(
+                    preference,
+                    resolve_preferences(workspace=self.workspace1, brand=brand),
+                )
+
+    def test_only_one_live_workspace_wide_preference_per_attribute(self):
+        event = record_event(
+            workspace=self.workspace1, brand=None,
+            event_type=LearningEvent.EventType.PREFERENCE_SIGNAL,
+        )
+        reinforce_preference(
+            workspace=self.workspace1, brand=None, event=event,
+            category='TONE', attribute='register', value='plain',
+            scope=LearningScope.TENANT,
+        )
+        with self.assertRaises(IntegrityError):
+            BrandPreference.objects.create(
+                workspace=self.workspace1, brand=None,
+                category='TONE', attribute='register', value='ornate',
+                scope=LearningScope.TENANT,
+            )
+
+    def test_the_database_refuses_a_scope_brand_mismatch(self):
+        with self.assertRaises(IntegrityError):
+            BrandPreference.objects.create(
+                workspace=self.workspace1, brand=None,
+                category='TONE', attribute='register',
+                scope=LearningScope.BRAND,
+            )
+
+    def test_a_brand_scoped_preference_stays_with_its_brand(self):
+        preference = self.make_established_preference()
+        self.assertNotIn(
+            preference,
+            resolve_preferences(workspace=self.workspace1, brand=self.brand1b),
         )

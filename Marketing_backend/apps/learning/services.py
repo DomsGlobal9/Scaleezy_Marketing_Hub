@@ -15,6 +15,7 @@ from .models import (
     BrandRule,
     LearningEvent,
     LearningScope,
+    PreferenceEvidence,
     SubjectType,
 )
 
@@ -83,31 +84,58 @@ def record_event(
     )
 
 
+def check_scope_matches_brand(scope, brand):
+    """Scope and brand say the same thing, or neither is trustworthy.
+
+    The resolver reads a brandless row as workspace-wide, so a brandless row
+    must actually be TENANT-scoped; and a brand-scoped row with no brand
+    belongs to nobody. Checked in the writer and again by a CHECK constraint,
+    so the two cannot drift.
+    """
+    if scope == LearningScope.TENANT:
+        if brand is not None:
+            raise LearningError(
+                "TENANT scope is workspace-wide and must not name a brand."
+            )
+    elif brand is None:
+        raise LearningError(f"{scope} scope requires a brand.")
+
+
 @transaction.atomic
 def reinforce_preference(
     *,
     workspace,
-    brand,
+    event,
     category,
     attribute,
+    brand=None,
     value='',
     weight=None,
     confidence=None,
     scope=LearningScope.BRAND,
-    event=None,
 ):
-    """Add one piece of evidence to a leaning, creating it if it is new.
+    """Add one event to the evidence behind a leaning.
 
-    A preference starts EMERGING and only becomes ESTABLISHED once a second
-    distinct event supports it. That threshold is the whole difference between
-    a learning system and a system that overfits to whoever reviewed last.
+    `event` is required and is what the strength of a preference is counted
+    from. Attaching the same event again is a no-op: `PreferenceEvidence` holds
+    the pair under a unique constraint, so a retried job or a redelivered
+    webhook cannot make one occurrence look like two and carry a preference
+    over the EMERGING → ESTABLISHED line on its own.
+
+    `evidence_count` is recomputed from that table rather than incremented, so
+    the number and the lineage can never disagree.
     """
-    if brand is None:
-        raise LearningError("A preference must belong to a brand.")
-    if brand.workspace_id != workspace.id:
+    check_scope_matches_brand(scope, brand)
+    if brand is not None and brand.workspace_id != workspace.id:
         raise LearningError("Brand must belong to the same workspace as the preference.")
+    if event is None:
+        raise LearningError("A preference must be reinforced by a LearningEvent.")
+    if event.workspace_id != workspace.id:
+        raise LearningError("Evidence must come from the same workspace.")
+    if brand is not None and event.brand_id != brand.id:
+        raise LearningError("Evidence must come from the same brand as the preference.")
 
-    preference, created = BrandPreference.objects.get_or_create(
+    preference, _ = BrandPreference.objects.get_or_create(
         workspace=workspace,
         brand=brand,
         category=category,
@@ -126,13 +154,18 @@ def reinforce_preference(
             "This preference was retired. Create a new one rather than reviving it."
         )
 
-    preference.evidence_count += 1
+    _, is_new_evidence = PreferenceEvidence.objects.get_or_create(
+        preference=preference, learning_event=event
+    )
+
     if value:
         preference.value = value
     if weight is not None:
         preference.weight = weight
     if confidence is not None:
         preference.confidence = confidence
+
+    preference.evidence_count = preference.evidence.count()
     if (
         preference.state == BrandPreference.State.EMERGING
         and preference.evidence_count >= BrandPreference.ESTABLISHED_AT_EVIDENCE
@@ -141,12 +174,22 @@ def reinforce_preference(
 
     preference.save()
 
-    if event is not None:
-        logger.info(
-            "Preference %s reinforced to %s by event %s",
-            preference.pk, preference.evidence_count, event.pk,
-        )
+    logger.info(
+        "Preference %s now rests on %s distinct event(s); event %s was %s",
+        preference.pk,
+        preference.evidence_count,
+        event.pk,
+        "new" if is_new_evidence else "already counted",
+    )
     return preference
+
+
+def preference_evidence_events(preference):
+    """The events a leaning rests on, oldest first. The lineage a reviewer
+    follows to ask why the brand believes something."""
+    return LearningEvent.objects.filter(
+        preference_evidence__preference=preference
+    ).order_by('created_at')
 
 
 @transaction.atomic
@@ -168,6 +211,7 @@ def create_explicit_rule(
     "never do this" and meant it. The provenance is what makes that safe:
     origin is EXPLICIT, and `created_by` records who granted the authority.
     """
+    check_scope_matches_brand(scope, brand)
     if brand is not None and brand.workspace_id != workspace.id:
         raise LearningError("Brand must belong to the same workspace as the rule.")
 
@@ -270,7 +314,11 @@ def resolve_preferences(*, workspace, brand=None, scopes=None):
 
 
 def models_brand_filter(brand):
-    """Rows for this brand, plus workspace-wide rows that carry no brand."""
+    """Rows for this brand, plus genuinely workspace-wide ones.
+
+    The scope is checked, not just the null brand, so the resolver agrees with
+    what the writer allows: brandless means TENANT and nothing else.
+    """
     from django.db.models import Q
 
-    return Q(brand=brand) | Q(brand__isnull=True)
+    return Q(brand=brand) | Q(brand__isnull=True, scope=LearningScope.TENANT)

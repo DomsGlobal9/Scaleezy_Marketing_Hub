@@ -69,12 +69,25 @@ class LearningEventSerializer(WorkspaceScopedBrandSerializer):
 
 
 class BrandPreferenceSerializer(WorkspaceScopedBrandSerializer):
+    # The lineage, not just the number. A reviewer asking why the brand
+    # believes something needs the events, and a count with nothing behind it
+    # is what the CTO rework removed.
+    evidence_event_ids = serializers.SerializerMethodField()
+
+    def get_evidence_event_ids(self, obj):
+        return [
+            str(pk)
+            for pk in obj.evidence.order_by('created_at').values_list(
+                'learning_event_id', flat=True
+            )
+        ]
+
     class Meta:
         model = BrandPreference
         fields = [
             'id', 'workspace', 'brand', 'category', 'attribute', 'value',
-            'weight', 'confidence', 'evidence_count', 'state', 'scope',
-            'created_at', 'updated_at',
+            'weight', 'confidence', 'evidence_count', 'evidence_event_ids',
+            'state', 'scope', 'created_at', 'updated_at',
         ]
         read_only_fields = [
             'id', 'workspace', 'created_at', 'updated_at',

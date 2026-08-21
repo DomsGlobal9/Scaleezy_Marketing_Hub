@@ -245,7 +245,27 @@ class BrandPreference(TenantOwnedModel):
                 fields=['workspace', 'brand', 'category', 'attribute'],
                 condition=~models.Q(state='RETIRED'),
                 name='uniq_active_brand_preference',
-            )
+            ),
+            # NULL never equals NULL in SQL, so the constraint above does not
+            # bind workspace-wide rows at all. Without this second one a
+            # TENANT-scoped attribute could hold any number of contradictory
+            # leanings.
+            models.UniqueConstraint(
+                fields=['workspace', 'category', 'attribute'],
+                condition=models.Q(brand__isnull=True) & ~models.Q(state='RETIRED'),
+                name='uniq_active_tenant_preference',
+            ),
+            # Scope and brand have to agree, or the resolver and the writer end
+            # up meaning different things by the same row: a BRAND-scoped row
+            # with no brand belongs to nobody, and a TENANT-scoped row pinned
+            # to one brand is not workspace-wide.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(scope='TENANT', brand__isnull=True)
+                    | (~models.Q(scope='TENANT') & models.Q(brand__isnull=False))
+                ),
+                name='brand_preference_scope_matches_brand',
+            ),
         ]
 
     def __str__(self):
@@ -354,8 +374,76 @@ class BrandRule(TenantOwnedModel):
             models.CheckConstraint(
                 condition=~models.Q(origin='LEARNED', hardness='HARD'),
                 name='learned_rules_are_never_hard',
-            )
+            ),
+            # Same agreement between scope and brand as BrandPreference, for
+            # the same reason: the resolver treats a brandless row as
+            # workspace-wide, so a brandless row must actually say TENANT.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(scope='TENANT', brand__isnull=True)
+                    | (~models.Q(scope='TENANT') & models.Q(brand__isnull=False))
+                ),
+                name='brand_rule_scope_matches_brand',
+            ),
         ]
 
     def __str__(self):
         return f"[{self.hardness}/{self.origin}] {self.text[:60]}"
+
+
+class PreferenceEvidence(models.Model):
+    """Which events a leaning actually rests on.
+
+    `evidence_count` used to be a counter that `reinforce_preference` bumped on
+    every call, which meant replaying one event — a retried job, a redelivered
+    webhook — counted it twice and could carry a preference over the
+    EMERGING → ESTABLISHED line on the strength of one thing that happened
+    once. A count is not evidence; this table is.
+
+    The unique pair is what makes a replay a no-op, and it keeps the lineage
+    inspectable: a rule cites its preference, and the preference can now name
+    every event behind it.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    preference = models.ForeignKey(
+        'BrandPreference', on_delete=models.CASCADE, related_name='evidence'
+    )
+    learning_event = models.ForeignKey(
+        LearningEvent, on_delete=models.CASCADE, related_name='preference_evidence'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'learning_preference_evidence'
+        ordering = ['created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['preference', 'learning_event'],
+                name='uniq_preference_evidence',
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.preference_id} <- {self.learning_event_id}"
+
+    def save(self, *args, **kwargs):
+        """Evidence has to come from the same tenant, and from the same brand
+        when the leaning is a brand's rather than the workspace's.
+
+        Enforced here as well as in the service because a job attaching
+        evidence through the ORM is exactly the writer that would not go
+        through the service.
+        """
+        if self.learning_event.workspace_id != self.preference.workspace_id:
+            raise ValidationError(
+                "Evidence must come from the same workspace as the preference."
+            )
+        if (
+            self.preference.brand_id
+            and self.learning_event.brand_id != self.preference.brand_id
+        ):
+            raise ValidationError(
+                "Evidence must come from the same brand as the preference."
+            )
+        return super().save(*args, **kwargs)
