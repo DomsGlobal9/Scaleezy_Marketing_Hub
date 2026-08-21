@@ -6,6 +6,60 @@ from django.conf import settings
 from django.db import migrations, models
 
 
+def repair_scope_and_evidence(apps, schema_editor):
+    """Make existing rows satisfy the rules the constraints below enforce.
+
+    0001 shipped without them, so a database that ran it can legally hold
+    exactly what 0002 refuses: a brandless BRAND-scoped rule, a TENANT-scoped
+    row pinned to a brand, several live workspace-wide preferences for one
+    attribute. AddConstraint on such a table aborts the whole migration and
+    leaves the code deployed against a schema that lacks the new columns.
+
+    Nothing is deleted. Rows are moved to the scope they actually have, and
+    duplicates are retired rather than removed.
+    """
+    BrandRule = apps.get_model('learning', 'BrandRule')
+    BrandPreference = apps.get_model('learning', 'BrandPreference')
+
+    for model in (BrandRule, BrandPreference):
+        # A row with no brand is workspace-wide whatever it claimed.
+        model.objects.filter(brand__isnull=True).exclude(scope='TENANT').update(
+            scope='TENANT'
+        )
+        # A row naming a brand is not workspace-wide.
+        model.objects.filter(brand__isnull=False, scope='TENANT').update(scope='BRAND')
+
+    # Only one live workspace-wide preference per attribute; keep the newest.
+    seen = set()
+    for preference in (
+        BrandPreference.objects.filter(brand__isnull=True)
+        .exclude(state='RETIRED')
+        .order_by('-updated_at', '-id')
+        .iterator()
+    ):
+        key = (preference.workspace_id, preference.category, preference.attribute)
+        if key in seen:
+            preference.state = 'RETIRED'
+            preference.save(update_fields=['state'])
+        else:
+            seen.add(key)
+
+    # evidence_count predates the lineage table, so nothing stands behind it.
+    # Reporting ESTABLISHED on evidence that cannot be named is the fake state
+    # the rules forbid; these fall back to EMERGING and re-earn it.
+    BrandPreference.objects.all().update(evidence_count=0, state='EMERGING')
+
+
+def refuse_reverse(apps, schema_editor):
+    from django.db.migrations.exceptions import IrreversibleError
+
+    raise IrreversibleError(
+        "0002_preference_evidence cannot be reversed: it retired duplicate "
+        "workspace-wide preferences and reset unbacked evidence counts, and "
+        "0001 has no column to restore them to."
+    )
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -27,6 +81,7 @@ class Migration(migrations.Migration):
                 'ordering': ['created_at'],
             },
         ),
+        migrations.RunPython(repair_scope_and_evidence, refuse_reverse),
         migrations.AddConstraint(
             model_name='brandpreference',
             constraint=models.UniqueConstraint(condition=models.Q(('brand__isnull', True), models.Q(('state', 'RETIRED'), _negated=True)), fields=('workspace', 'category', 'attribute'), name='uniq_active_tenant_preference'),

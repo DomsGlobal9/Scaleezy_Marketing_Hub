@@ -17,6 +17,7 @@ from apps.marketing.services.storage import StorageError, SupabaseStorageService
 from apps.workspaces.models import WorkspaceMember
 
 from .models import Brand
+from .services.brand_brain import compile_brand_brain, rebuild_brand_brain
 from .serializers import BrandLogoUploadSerializer, BrandSerializer
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,39 @@ class BrandViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if error:
             raise PermissionDenied("No accessible workspace for this request.")
         return workspace
+
+    @action(detail=True, methods=['post'], url_path='rebuild-brain')
+    def rebuild_brain(self, request, pk=None):
+        """Recompile the Brand Brain from the records that own the truth.
+
+        Safe to call at any time: the compiler only reads, so a rebuild cannot
+        lose anything. An unchanged brand recompiles to the same
+        `brain_version` with a fresh `compiled_at`.
+        """
+        brand = self.get_object()
+        brain = rebuild_brand_brain(brand)
+        return APIResponse(
+            success=True,
+            message="Brand Brain recompiled.",
+            data={
+                'brain_version': brain['brain_version'],
+                'compiled_at': brain['compiled_at'],
+                'schema_version': brain['schema_version'],
+                'unresolved_conflict_count': brain['unresolved_conflict_count'],
+            },
+        )
+
+    @action(detail=True, methods=['get'], url_path='brain')
+    def brain(self, request, pk=None):
+        """The current snapshot.
+
+        Compiles on the fly when the column is empty rather than reporting an
+        empty brain as fact — the records are the truth, and a brand that has
+        never been compiled still has one.
+        """
+        brand = self.get_object()
+        brain = brand.creative_brain or compile_brand_brain(brand)
+        return APIResponse(success=True, data=brain)
 
     def perform_create(self, serializer):
         serializer.save(

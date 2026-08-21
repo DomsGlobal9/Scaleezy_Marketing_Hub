@@ -28,6 +28,8 @@ defaults to no.
 import uuid
 
 from django.conf import settings
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
@@ -447,3 +449,21 @@ class PreferenceEvidence(models.Model):
                 "Evidence must come from the same brand as the preference."
             )
         return super().save(*args, **kwargs)
+
+
+@receiver(post_delete, sender=PreferenceEvidence)
+def _recompute_preference_after_evidence_removed(sender, instance, **kwargs):
+    """Keep the count honest when evidence is cascaded away.
+
+    Deleting a brand or a LearningEvent takes its evidence rows with it. The
+    preference would otherwise go on reporting ESTABLISHED on two events when
+    one of them no longer exists.
+    """
+    from .services import recompute_preference_evidence
+
+    try:
+        preference = BrandPreference.objects.get(pk=instance.preference_id)
+    except BrandPreference.DoesNotExist:
+        # The preference itself is being deleted; nothing to reconcile.
+        return
+    recompute_preference_evidence(preference)

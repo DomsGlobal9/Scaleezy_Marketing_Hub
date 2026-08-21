@@ -345,26 +345,26 @@ class RuleAuthorityTests(LearningTestBase):
         single_event = self.make_event()
         preference = self.reinforce(single_event)
         with self.assertRaises(LearningError):
-            promote_preference_to_rule(
-                preference=preference, evidence_events=[single_event]
-            )
+            promote_preference_to_rule(preference=preference)
         self.assertFalse(BrandRule.objects.exists())
 
     def test_corroborated_evidence_produces_a_soft_learned_rule(self):
         preference = self.make_established_preference()
-        events = [self.make_event(dedupe_key=f'e{i}') for i in range(2)]
-        rule = promote_preference_to_rule(preference=preference, evidence_events=events)
+        rule = promote_preference_to_rule(preference=preference)
         self.assertEqual(rule.origin, BrandRule.Origin.LEARNED)
         self.assertEqual(rule.hardness, BrandRule.Hardness.SOFT)
+        # The cited lineage IS the preference's evidence, not a list the
+        # caller handed in.
         self.assertEqual(
-            set(rule.evidence_event_ids), {str(e.pk) for e in events}
+            set(rule.evidence_event_ids),
+            {str(e.pk) for e in preference_evidence_events(preference)},
         )
+        self.assertEqual(len(rule.evidence_event_ids), 2)
 
     def test_an_emerging_preference_cannot_back_a_rule(self):
         preference = self.reinforce(self.make_event(dedupe_key='solo'))
-        events = [self.make_event(dedupe_key=f'e{i}') for i in range(2)]
         with self.assertRaises(LearningError):
-            promote_preference_to_rule(preference=preference, evidence_events=events)
+            promote_preference_to_rule(preference=preference)
 
     def test_a_replayed_event_cannot_unlock_promotion(self):
         """Reinforcing with one event three times leaves the preference
@@ -375,9 +375,7 @@ class RuleAuthorityTests(LearningTestBase):
 
         self.assertEqual(preference.evidence_count, 1)
         with self.assertRaises(LearningError):
-            promote_preference_to_rule(
-                preference=preference, evidence_events=[event, event]
-            )
+            promote_preference_to_rule(preference=preference)
         self.assertFalse(BrandRule.objects.exists())
 
     def test_a_learned_rule_can_never_be_hard(self):
@@ -543,14 +541,15 @@ class LearningTenantIsolationTests(LearningTestBase):
                         ),
                     )
 
-    def test_promotion_refuses_evidence_from_another_brand(self):
+    def test_evidence_from_another_brand_never_reaches_a_preference(self):
         preference = self.make_established_preference()
-        foreign = [
-            self.make_event(brand=self.brand1b, dedupe_key=f'x{i}') for i in range(2)
-        ]
+        foreign = self.make_event(brand=self.brand1b, dedupe_key='x0')
         with self.assertRaises(LearningError):
-            promote_preference_to_rule(preference=preference, evidence_events=foreign)
-        self.assertFalse(BrandRule.objects.exists())
+            self.reinforce(foreign)
+        self.assertEqual(
+            set(preference_evidence_events(preference).values_list('brand_id', flat=True)),
+            {self.brand1.id},
+        )
 
     def test_records_are_hidden_from_the_other_tenant(self):
         event = self.make_event()
@@ -832,3 +831,69 @@ class ScopeConsistencyTests(LearningTestBase):
             preference,
             resolve_preferences(workspace=self.workspace1, brand=self.brand1b),
         )
+
+
+class PromotionEvidenceTests(LearningTestBase):
+    """CTO blocker: promotion counted a caller-supplied list, so one event
+    listed twice cleared a two-event threshold and a rule could cite lineage
+    its preference never rested on."""
+
+    def test_promotion_cannot_be_fed_a_list_at_all(self):
+        import inspect
+
+        signature = inspect.signature(promote_preference_to_rule)
+        self.assertNotIn('evidence_events', signature.parameters)
+
+    def test_a_rule_cites_exactly_the_preference_evidence(self):
+        preference = self.make_established_preference()
+        unrelated = self.make_event(dedupe_key='unrelated')
+        rule = promote_preference_to_rule(preference=preference)
+        self.assertNotIn(str(unrelated.pk), rule.evidence_event_ids)
+        self.assertEqual(
+            set(rule.evidence_event_ids),
+            {str(e.pk) for e in preference_evidence_events(preference)},
+        )
+
+    def test_a_replayed_event_still_cannot_reach_promotion(self):
+        event = self.make_event(dedupe_key='one-only')
+        for _ in range(5):
+            preference = self.reinforce(event)
+        self.assertEqual(preference.evidence_count, 1)
+        with self.assertRaises(LearningError):
+            promote_preference_to_rule(preference=preference)
+        self.assertFalse(BrandRule.objects.exists())
+
+
+class EvidenceLifecycleTests(LearningTestBase):
+    """CTO blocker: evidence cascaded away without the count or the state
+    noticing, leaving a preference ESTABLISHED on evidence that is gone."""
+
+    def test_losing_evidence_demotes_the_preference(self):
+        preference = self.make_established_preference()
+        self.assertEqual(preference.state, BrandPreference.State.ESTABLISHED)
+
+        preference_evidence_events(preference).first().delete()
+
+        preference.refresh_from_db()
+        self.assertEqual(preference.evidence_count, 1)
+        self.assertEqual(preference.state, BrandPreference.State.EMERGING)
+
+    def test_a_demoted_preference_can_no_longer_back_a_rule(self):
+        preference = self.make_established_preference()
+        preference_evidence_events(preference).first().delete()
+        preference.refresh_from_db()
+        with self.assertRaises(LearningError):
+            promote_preference_to_rule(preference=preference)
+
+    def test_a_tenant_preference_refuses_one_brands_evidence(self):
+        """It would resolve for every sibling brand on evidence only ever seen
+        about one of them - and promotion would then refuse that same
+        evidence, stranding the preference."""
+        with self.assertRaises(LearningError):
+            reinforce_preference(
+                workspace=self.workspace1, brand=None,
+                event=self.make_event(dedupe_key='brandy'),
+                category='TONE', attribute='register',
+                scope=LearningScope.TENANT,
+            )
+        self.assertFalse(BrandPreference.objects.exists())

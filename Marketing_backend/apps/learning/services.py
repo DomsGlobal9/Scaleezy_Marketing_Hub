@@ -134,6 +134,16 @@ def reinforce_preference(
         raise LearningError("Evidence must come from the same workspace.")
     if brand is not None and event.brand_id != brand.id:
         raise LearningError("Evidence must come from the same brand as the preference.")
+    if brand is None and event.brand_id is not None:
+        # A workspace-wide leaning cannot rest on one brand's evidence: it
+        # would resolve for every sibling brand on the strength of something
+        # only ever observed about one of them. Promotion already refused this
+        # evidence, so without the guard a TENANT preference could reach
+        # ESTABLISHED and then never be promotable.
+        raise LearningError(
+            "A TENANT-scoped preference needs workspace-wide evidence; this "
+            "event belongs to a single brand."
+        )
 
     preference, _ = BrandPreference.objects.get_or_create(
         workspace=workspace,
@@ -184,6 +194,22 @@ def reinforce_preference(
     return preference
 
 
+def recompute_preference_evidence(preference):
+    """Re-derive the count and state from the evidence that actually exists.
+
+    Evidence disappears without going through this module: deleting a brand or
+    a LearningEvent cascades the rows away. Left alone, a preference keeps
+    claiming ESTABLISHED on evidence that is gone, which is precisely the
+    fake-completion the rules forbid.
+    """
+    preference.evidence_count = preference.evidence.count()
+    if preference.evidence_count < BrandPreference.ESTABLISHED_AT_EVIDENCE:
+        if preference.state == BrandPreference.State.ESTABLISHED:
+            preference.state = BrandPreference.State.EMERGING
+    preference.save(update_fields=['evidence_count', 'state', 'updated_at'])
+    return preference
+
+
 def preference_evidence_events(preference):
     """The events a leaning rests on, oldest first. The lineage a reviewer
     follows to ask why the brand believes something."""
@@ -231,31 +257,40 @@ def create_explicit_rule(
 
 
 @transaction.atomic
-def promote_preference_to_rule(*, preference, evidence_events=(), priority=0):
+def promote_preference_to_rule(*, preference, priority=0):
     """Turn an established leaning into a soft rule.
 
-    Refuses on two counts, and both are the PR3 acceptance criteria:
+    The evidence is read from `PreferenceEvidence`, never taken from the
+    caller. It used to be a list argument whose LENGTH was checked, so
+    `evidence_events=[e, e]` cleared a two-event threshold with one event, and
+    the ids a rule cited did not have to be the ones its preference actually
+    rested on. That is the same defect the CTO rework removed from
+    `reinforce_preference`, one layer up.
 
-    * not enough evidence — a one-off stays an opinion;
+    Refuses on two counts, both PR3 acceptance criteria:
+
+    * not enough DISTINCT evidence — a one-off stays an opinion;
     * the result is always SOFT — an inference never becomes a constraint the
       generator cannot break. A person can promote it to hard afterwards, and
       that is a decision with a name attached.
     """
-    events = list(evidence_events)
-    if len(events) < BrandRule.MIN_EVIDENCE_FOR_LEARNED_RULE:
-        raise LearningError(
-            f"A learned rule needs at least {BrandRule.MIN_EVIDENCE_FOR_LEARNED_RULE} "
-            f"supporting events; got {len(events)}. One-off feedback is an opinion."
-        )
     if preference.state != BrandPreference.State.ESTABLISHED:
         raise LearningError(
             "Only an established preference can back a rule; this one is "
             f"{preference.state}."
         )
+
+    events = list(preference_evidence_events(preference))
+    if len(events) < BrandRule.MIN_EVIDENCE_FOR_LEARNED_RULE:
+        raise LearningError(
+            f"A learned rule needs at least {BrandRule.MIN_EVIDENCE_FOR_LEARNED_RULE} "
+            f"distinct supporting events; this preference rests on {len(events)}. "
+            "One-off feedback is an opinion."
+        )
     for event in events:
         if event.workspace_id != preference.workspace_id:
             raise LearningError("Evidence must come from the same workspace.")
-        if event.brand_id and event.brand_id != preference.brand_id:
+        if preference.brand_id and event.brand_id != preference.brand_id:
             raise LearningError("Evidence must come from the same brand.")
 
     return BrandRule.objects.create(
