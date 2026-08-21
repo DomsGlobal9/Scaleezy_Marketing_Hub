@@ -16,6 +16,7 @@ its inspiration's tenant the way a denormalised copy eventually does.
 import uuid
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
@@ -176,6 +177,36 @@ class BrandInspiration(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.inspiration_type})"
+
+    def save(self, *args, **kwargs):
+        """Enforce the tenancy invariant for every writer, not just the API.
+
+        The serializers already reject a mismatched brand or source, but they
+        only guard requests. Ingestion jobs, management commands and future
+        services write through the ORM, and a row whose brand belongs to
+        another workspace is not a validation failure there — it is a tenant
+        breach that would look like ordinary data forever after.
+        """
+        self._assert_tenant_invariants()
+        return super().save(*args, **kwargs)
+
+    def _assert_tenant_invariants(self):
+        if self.brand_id and self.brand.workspace_id != self.workspace_id:
+            raise ValidationError(
+                "BrandInspiration.brand must belong to the same workspace as "
+                "the inspiration."
+            )
+        if self.source_id:
+            if self.source.workspace_id != self.workspace_id:
+                raise ValidationError(
+                    "BrandInspiration.source must belong to the same workspace "
+                    "as the inspiration."
+                )
+            if self.source.brand_id != self.brand_id:
+                raise ValidationError(
+                    "BrandInspiration.source must belong to the same brand as "
+                    "the inspiration."
+                )
 
     def retrieval_eligibility(self):
         """Why this reference may or may not be used, in the object's own words.

@@ -112,6 +112,8 @@ Separate from knowledge on purpose. A source says what is *true* about a busines
 
 Constraint: `UNIQUE (inspiration, category, attribute) WHERE origin = 'AI'` — a retried analysis job refreshes one row instead of piling up duplicates.
 
+`BrandInspiration.save()` refuses a brand from another workspace, or a source from another workspace or brand. The serializers already reject those, but they only guard requests — jobs and management commands write through the ORM, where a mismatched row would afterwards look like ordinary data rather than a breach.
+
 Retrieval eligibility is a query, not a flag: `BrandInspiration.objects.eligible_for_retrieval()` drops archived references and references whose source was archived; `InspirationSignal.objects.eligible_for_retrieval()` additionally drops user-rejected signals and inferences that contradict a stated preference. The API exposes the same rule as `?eligible_only=true` and reports each row's verdict in `retrieval_eligibility`.
 
 Analysis is not implemented: `POST /api/marketing/inspirations/{id}/analyze/` returns `501` until PR6. Nothing in PR2 fetches a reference URL or calls a provider.

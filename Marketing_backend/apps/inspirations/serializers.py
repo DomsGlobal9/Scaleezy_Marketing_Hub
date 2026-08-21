@@ -100,6 +100,21 @@ class BrandInspirationSerializer(serializers.ModelSerializer):
     def get_retrieval_eligibility(self, obj):
         return obj.retrieval_eligibility()
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Scope the relation querysets the same way the upload and signal
+        # serializers do, so another tenant's id is not resolvable on ANY
+        # path. `validate()` below still runs: a queryset can express "in my
+        # workspace" but not "on this inspiration's brand".
+        request = self.context.get('request')
+        if request is None:
+            return
+        workspace, error = get_request_workspace(request)
+        if error or not workspace:
+            return
+        self.fields['brand'].queryset = Brand.objects.filter(workspace=workspace)
+        self.fields['source'].queryset = BrandSource.objects.filter(workspace=workspace)
+
     def validate(self, data):
         workspace = request_workspace_or_raise(self)
 

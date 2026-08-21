@@ -5,17 +5,22 @@ Structured as: the happy paths that prove the feature is connected, then the
 adversarial paths that prove it cannot be talked out of its rules. The second
 group is the point of the file.
 """
+from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.utils import IntegrityError
 from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from django.contrib.auth import get_user_model
-
 from apps.brands.models import Brand
+from apps.common.testing import (
+    TenantFixtureMixin,
+    TenantSecurityAssertions,
+    workspace_header,
+)
 from apps.knowledge.models import BrandSource
-from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
+from apps.workspaces.models import WorkspaceMember
 
 from .models import BrandInspiration, InspirationSignal
 from .services import InspirationSignalError, record_ai_signal
@@ -26,44 +31,29 @@ INSPIRATIONS_URL = '/api/marketing/inspirations/'
 SIGNALS_URL = '/api/marketing/inspiration-signals/'
 
 
-class InspirationTestBase(TestCase):
+class InspirationTestBase(TenantFixtureMixin, TenantSecurityAssertions, TestCase):
     """Two tenants, two brands inside tenant 1, and a viewer."""
 
     def setUp(self):
-        self.client1 = APIClient()
-        self.client2 = APIClient()
-        self.viewer_client = APIClient()
-
         # Tenant 1
-        self.workspace1 = MarketingWorkspace.objects.create(
-            customer_id='c1', workspace_name='Workspace 1'
+        self.workspace1 = self.make_workspace('Workspace 1', 'c1')
+        self.user1, self.client1 = self.authenticate_as(
+            self.workspace1, WorkspaceMember.Role.ADMIN, 'user1'
         )
-        self.user1 = User.objects.create_user(username='user1', password='p')
-        WorkspaceMember.objects.create(
-            workspace=self.workspace1, user=self.user1, role=WorkspaceMember.Role.ADMIN
+        self.viewer, self.viewer_client = self.authenticate_as(
+            self.workspace1, WorkspaceMember.Role.VIEWER, 'viewer'
         )
         self.brand1 = Brand.objects.create(workspace=self.workspace1, name='Brand 1')
         # Second brand in the SAME workspace: workspace equality alone is not
         # enough to keep references straight (PR1-002).
         self.brand1b = Brand.objects.create(workspace=self.workspace1, name='Brand 1b')
-        self.client1.force_authenticate(user=self.user1)
-
-        self.viewer = User.objects.create_user(username='viewer', password='p')
-        WorkspaceMember.objects.create(
-            workspace=self.workspace1, user=self.viewer, role=WorkspaceMember.Role.VIEWER
-        )
-        self.viewer_client.force_authenticate(user=self.viewer)
 
         # Tenant 2
-        self.workspace2 = MarketingWorkspace.objects.create(
-            customer_id='c2', workspace_name='Workspace 2'
-        )
-        self.user2 = User.objects.create_user(username='user2', password='p')
-        WorkspaceMember.objects.create(
-            workspace=self.workspace2, user=self.user2, role=WorkspaceMember.Role.ADMIN
+        self.workspace2 = self.make_workspace('Workspace 2', 'c2')
+        self.user2, self.client2 = self.authenticate_as(
+            self.workspace2, WorkspaceMember.Role.ADMIN, 'user2'
         )
         self.brand2 = Brand.objects.create(workspace=self.workspace2, name='Brand 2')
-        self.client2.force_authenticate(user=self.user2)
 
         self.source1 = BrandSource.objects.create(
             workspace=self.workspace1,
@@ -79,10 +69,33 @@ class InspirationTestBase(TestCase):
         )
 
     def ws1(self):
-        return {'HTTP_X_WORKSPACE_ID': str(self.workspace1.id)}
+        return workspace_header(self.workspace1)
 
     def ws2(self):
-        return {'HTTP_X_WORKSPACE_ID': str(self.workspace2.id)}
+        return workspace_header(self.workspace2)
+
+    def valid_payload(self, **overrides):
+        """The smallest inspiration payload that would otherwise succeed.
+
+        Attack tests start from this and change exactly one field, so a
+        rejection can only be attributed to the attack.
+        """
+        payload = {
+            'brand': str(self.brand1.id),
+            'title': 'Reference',
+            'reference_url': 'https://example.com/x',
+        }
+        payload.update(overrides)
+        return payload
+
+    def upload_payload(self, **overrides):
+        """The multipart equivalent of valid_payload()."""
+        payload = {
+            'brand': str(self.brand1.id),
+            'file': SimpleUploadedFile('ref.png', b'binary', content_type='image/png'),
+        }
+        payload.update(overrides)
+        return payload
 
     def make_inspiration(self, brand=None, workspace=None, source=None, **kwargs):
         return BrandInspiration.objects.create(
@@ -241,60 +254,46 @@ class InspirationHappyPathTests(InspirationTestBase):
 
 class InspirationTenantIsolationTests(InspirationTestBase):
     def test_cross_tenant_brand_injection_blocked(self):
-        response = self.client1.post(
-            INSPIRATIONS_URL,
-            {
-                'brand': str(self.brand2.id),
-                'title': 'Stolen brand',
-                'reference_url': 'https://example.com/x',
-            },
-            format='json',
-            **self.ws1(),
+        self.assert_cross_tenant_fk_rejected(
+            client=self.client1, url=INSPIRATIONS_URL, workspace=self.workspace1,
+            model=BrandInspiration, payload=self.valid_payload(),
+            field='brand', foreign_id=self.brand2.id,
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('brand', response.json())
         self.assertFalse(BrandInspiration.objects.filter(brand=self.brand2).exists())
 
     def test_cross_tenant_source_injection_blocked(self):
-        response = self.client1.post(
-            INSPIRATIONS_URL,
-            {
-                'brand': str(self.brand1.id),
-                'source': str(self.source2.id),
-                'title': 'Foreign provenance',
-                'reference_url': 'https://example.com/x',
-            },
-            format='json',
-            **self.ws1(),
+        self.assert_cross_tenant_fk_rejected(
+            client=self.client1, url=INSPIRATIONS_URL, workspace=self.workspace1,
+            model=BrandInspiration, payload=self.valid_payload(),
+            field='source', foreign_id=self.source2.id,
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('source', response.json())
 
     def test_cross_brand_source_injection_blocked_inside_one_workspace(self):
-        response = self.client1.post(
-            INSPIRATIONS_URL,
-            {
-                'brand': str(self.brand1.id),
-                'source': str(self.source1b.id),
-                'title': 'Wrong brand provenance',
-                'reference_url': 'https://example.com/x',
-            },
-            format='json',
-            **self.ws1(),
+        self.assert_cross_brand_fk_rejected(
+            client=self.client1, url=INSPIRATIONS_URL, workspace=self.workspace1,
+            model=BrandInspiration, payload=self.valid_payload(),
+            field='source', foreign_id=self.source1b.id,
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('source', response.json())
 
-    def test_inspiration_detail_is_404_cross_tenant(self):
+    def test_inspiration_is_hidden_from_the_other_tenant(self):
         inspiration = self.make_inspiration()
-        response = self.client2.get(f'{INSPIRATIONS_URL}{inspiration.id}/', **self.ws2())
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assert_object_hidden_from_other_workspace(
+            client=self.client2,
+            detail_url=f'{INSPIRATIONS_URL}{inspiration.id}/',
+            list_url=INSPIRATIONS_URL,
+            workspace=self.workspace2,
+            object_id=inspiration.id,
+        )
 
-    def test_list_excludes_other_tenant_inspirations(self):
-        self.make_inspiration()
-        response = self.client2.get(INSPIRATIONS_URL, **self.ws2())
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.json(), [])
+    def test_signal_is_hidden_from_the_other_tenant(self):
+        signal = self.make_user_signal(self.make_inspiration())
+        self.assert_object_hidden_from_other_workspace(
+            client=self.client2,
+            detail_url=f'{SIGNALS_URL}{signal.id}/',
+            list_url=SIGNALS_URL,
+            workspace=self.workspace2,
+            object_id=signal.id,
+        )
 
     def test_staff_without_membership_cannot_read(self):
         staff = User.objects.create_user(username='staff', password='p', is_staff=True)
@@ -324,38 +323,22 @@ class InspirationTenantIsolationTests(InspirationTestBase):
         self.assertIn('inspiration', response.json())
         self.assertEqual(inspiration.signals.count(), 0)
 
-    def test_signal_detail_is_404_cross_tenant(self):
-        signal = self.make_user_signal(self.make_inspiration())
-        response = self.client2.get(f'{SIGNALS_URL}{signal.id}/', **self.ws2())
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
     def test_upload_cross_tenant_brand_injection_blocked(self):
-        file_obj = SimpleUploadedFile('ref.png', b'binary', content_type='image/png')
-        response = self.client1.post(
-            f'{INSPIRATIONS_URL}upload/',
-            {'brand': str(self.brand2.id), 'file': file_obj},
-            format='multipart',
-            **self.ws1(),
+        self.assert_cross_tenant_fk_rejected(
+            client=self.client1, url=f'{INSPIRATIONS_URL}upload/',
+            workspace=self.workspace1, model=BrandInspiration,
+            payload=self.upload_payload(), field='brand',
+            foreign_id=self.brand2.id, format='multipart',
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('brand', response.json()['error'])
-        self.assertFalse(BrandInspiration.objects.exists())
 
     def test_upload_cross_tenant_source_injection_blocked(self):
-        file_obj = SimpleUploadedFile('ref.png', b'binary', content_type='image/png')
-        response = self.client1.post(
-            f'{INSPIRATIONS_URL}upload/',
-            {
-                'brand': str(self.brand1.id),
-                'source': str(self.source2.id),
-                'file': file_obj,
-            },
-            format='multipart',
-            **self.ws1(),
+        self.assert_cross_tenant_fk_rejected(
+            client=self.client1, url=f'{INSPIRATIONS_URL}upload/',
+            workspace=self.workspace1, model=BrandInspiration,
+            payload=self.upload_payload(), field='source',
+            foreign_id=self.source2.id, format='multipart',
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('source', response.json()['error'])
-        self.assertFalse(BrandInspiration.objects.exists())
+
 
     def test_every_mutation_path_is_404_for_another_tenant(self):
         """The custom actions are mutation paths too (GLOBAL-010)."""
@@ -405,46 +388,30 @@ class InspirationTenantIsolationTests(InspirationTestBase):
         self.assertEqual(signal.value, 'Condensed grotesque')
 
     def test_upload_cross_brand_source_injection_blocked(self):
-        file_obj = SimpleUploadedFile('ref.png', b'binary', content_type='image/png')
-        response = self.client1.post(
-            f'{INSPIRATIONS_URL}upload/',
-            {
-                'brand': str(self.brand1.id),
-                'source': str(self.source1b.id),
-                'file': file_obj,
-            },
-            format='multipart',
-            **self.ws1(),
+        self.assert_cross_brand_fk_rejected(
+            client=self.client1, url=f'{INSPIRATIONS_URL}upload/',
+            workspace=self.workspace1, model=BrandInspiration,
+            payload=self.upload_payload(), field='source',
+            foreign_id=self.source1b.id, format='multipart',
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('source', response.json()['error'])
-        self.assertFalse(BrandInspiration.objects.exists())
 
 
 class InspirationImmutabilityTests(InspirationTestBase):
     def test_patch_cannot_move_inspiration_to_another_brand(self):
         inspiration = self.make_inspiration()
-        response = self.client1.patch(
-            f'{INSPIRATIONS_URL}{inspiration.id}/',
-            {'brand': str(self.brand1b.id)},
-            format='json',
-            **self.ws1(),
+        self.assert_field_immutable(
+            client=self.client1, url=f'{INSPIRATIONS_URL}{inspiration.id}/',
+            instance=inspiration, field='brand', new_value=self.brand1b.id,
+            workspace=self.workspace1,
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        inspiration.refresh_from_db()
-        self.assertEqual(inspiration.brand_id, self.brand1.id)
 
     def test_patch_cannot_move_inspiration_to_another_tenant_brand(self):
         inspiration = self.make_inspiration()
-        response = self.client1.patch(
-            f'{INSPIRATIONS_URL}{inspiration.id}/',
-            {'brand': str(self.brand2.id)},
-            format='json',
-            **self.ws1(),
+        self.assert_field_immutable(
+            client=self.client1, url=f'{INSPIRATIONS_URL}{inspiration.id}/',
+            instance=inspiration, field='brand', new_value=self.brand2.id,
+            workspace=self.workspace1,
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        inspiration.refresh_from_db()
-        self.assertEqual(inspiration.brand_id, self.brand1.id)
 
     def test_put_cannot_move_inspiration_to_another_brand(self):
         inspiration = self.make_inspiration()
@@ -489,14 +456,11 @@ class InspirationImmutabilityTests(InspirationTestBase):
 
     def test_patch_cannot_set_lifecycle_or_analysis_status(self):
         inspiration = self.make_inspiration()
-        response = self.client1.patch(
-            f'{INSPIRATIONS_URL}{inspiration.id}/',
-            {'lifecycle_status': 'ARCHIVED', 'analysis_status': 'READY'},
-            format='json',
-            **self.ws1(),
+        self.assert_protected_state_not_patchable(
+            client=self.client1, url=f'{INSPIRATIONS_URL}{inspiration.id}/',
+            instance=inspiration, workspace=self.workspace1,
+            updates={'lifecycle_status': 'ARCHIVED', 'analysis_status': 'READY'},
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        inspiration.refresh_from_db()
         self.assertEqual(inspiration.lifecycle_status, 'ACTIVE')
         self.assertEqual(inspiration.analysis_status, 'NOT_ANALYSED')
 
@@ -522,15 +486,11 @@ class InspirationImmutabilityTests(InspirationTestBase):
         inspiration = self.make_inspiration()
         other = self.make_inspiration(title='Other')
         signal = self.make_user_signal(inspiration)
-        response = self.client1.patch(
-            f'{SIGNALS_URL}{signal.id}/',
-            {'inspiration': str(other.id)},
-            format='json',
-            **self.ws1(),
+        self.assert_field_immutable(
+            client=self.client1, url=f'{SIGNALS_URL}{signal.id}/',
+            instance=signal, field='inspiration', new_value=other.id,
+            workspace=self.workspace1,
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        signal.refresh_from_db()
-        self.assertEqual(signal.inspiration_id, inspiration.id)
 
     def test_inspiration_requires_a_reference(self):
         response = self.client1.post(
@@ -579,14 +539,11 @@ class InspirationProvenanceTests(InspirationTestBase):
             sentiment=InspirationSignal.Sentiment.LIKED,
             provider='test-provider',
         )
-        response = self.client1.patch(
-            f'{SIGNALS_URL}{ai_signal.id}/',
-            {'origin': 'USER', 'user_confirmation': 'CONFIRMED'},
-            format='json',
-            **self.ws1(),
+        self.assert_protected_state_not_patchable(
+            client=self.client1, url=f'{SIGNALS_URL}{ai_signal.id}/',
+            instance=ai_signal, workspace=self.workspace1,
+            updates={'origin': 'USER', 'user_confirmation': 'CONFIRMED'},
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        ai_signal.refresh_from_db()
         self.assertEqual(ai_signal.origin, InspirationSignal.Origin.AI)
         self.assertEqual(
             ai_signal.user_confirmation, InspirationSignal.UserConfirmation.PENDING
@@ -828,6 +785,36 @@ class InspirationLifecycleTests(InspirationTestBase):
             inspiration, BrandInspiration.objects.eligible_for_retrieval()
         )
 
+    def test_repeating_archive_does_not_compound(self):
+        inspiration = self.make_inspiration()
+
+        def state():
+            inspiration.refresh_from_db()
+            return (inspiration.lifecycle_status, inspiration.archived_at)
+
+        self.assert_duplicate_action_idempotent(
+            client=self.client1,
+            url=f'{INSPIRATIONS_URL}{inspiration.id}/archive/',
+            workspace=self.workspace1,
+            state_of=state,
+            expected_second_status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    def test_repeating_analyze_does_not_compound(self):
+        inspiration = self.make_inspiration()
+
+        def state():
+            inspiration.refresh_from_db()
+            return (inspiration.analysis_status, inspiration.signals.count())
+
+        self.assert_duplicate_action_idempotent(
+            client=self.client1,
+            url=f'{INSPIRATIONS_URL}{inspiration.id}/analyze/',
+            workspace=self.workspace1,
+            state_of=state,
+            expected_second_status=status.HTTP_501_NOT_IMPLEMENTED,
+        )
+
     def test_archive_twice_is_rejected(self):
         inspiration = self.make_inspiration()
         self.client1.post(f'{INSPIRATIONS_URL}{inspiration.id}/archive/', **self.ws1())
@@ -1024,6 +1011,7 @@ class InspirationUsageScopeTests(InspirationTestBase):
 
 class InspirationRBACTests(InspirationTestBase):
     def test_viewer_can_read(self):
+        """Positive control: the role gate restricts writes, not the team."""
         inspiration = self.make_inspiration()
         response = self.viewer_client.get(
             f'{INSPIRATIONS_URL}{inspiration.id}/', **self.ws1()
@@ -1031,71 +1019,122 @@ class InspirationRBACTests(InspirationTestBase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_viewer_cannot_create_inspiration(self):
-        response = self.viewer_client.post(
-            INSPIRATIONS_URL,
-            {
-                'brand': str(self.brand1.id),
-                'title': 'Viewer reference',
-                'reference_url': 'https://example.com/x',
-            },
-            format='json',
-            **self.ws1(),
+        self.assert_viewer_mutation_denied(
+            client=self.viewer_client, method='post', url=INSPIRATIONS_URL,
+            workspace=self.workspace1, model=BrandInspiration,
+            payload=self.valid_payload(),
         )
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_viewer_cannot_upload_inspiration(self):
-        file_obj = SimpleUploadedFile('ref.png', b'binary', content_type='image/png')
-        response = self.viewer_client.post(
-            f'{INSPIRATIONS_URL}upload/',
-            {'brand': str(self.brand1.id), 'file': file_obj},
+        self.assert_viewer_mutation_denied(
+            client=self.viewer_client, method='post',
+            url=f'{INSPIRATIONS_URL}upload/', workspace=self.workspace1,
+            model=BrandInspiration, payload=self.upload_payload(),
             format='multipart',
-            **self.ws1(),
         )
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-
-    def test_viewer_cannot_archive_inspiration(self):
-        inspiration = self.make_inspiration()
-        response = self.viewer_client.post(
-            f'{INSPIRATIONS_URL}{inspiration.id}/archive/', **self.ws1()
-        )
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-        inspiration.refresh_from_db()
-        self.assertEqual(
-            inspiration.lifecycle_status, BrandInspiration.LifecycleStatus.ACTIVE
-        )
-
-    def test_viewer_cannot_patch_inspiration(self):
-        inspiration = self.make_inspiration()
-        response = self.viewer_client.patch(
-            f'{INSPIRATIONS_URL}{inspiration.id}/',
-            {'annotation': 'nope'},
-            format='json',
-            **self.ws1(),
-        )
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_viewer_cannot_create_signal(self):
         inspiration = self.make_inspiration()
-        response = self.viewer_client.post(
-            SIGNALS_URL,
-            {
+        self.assert_viewer_mutation_denied(
+            client=self.viewer_client, method='post', url=SIGNALS_URL,
+            workspace=self.workspace1, model=InspirationSignal,
+            payload={
                 'inspiration': str(inspiration.id),
                 'category': 'COLOR',
                 'attribute': 'accent',
                 'sentiment': InspirationSignal.Sentiment.LIKED,
             },
-            format='json',
-            **self.ws1(),
         )
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_viewer_cannot_confirm_or_reject_signal(self):
-        signal = self.make_user_signal(self.make_inspiration())
-        confirm = self.viewer_client.post(
-            f'{SIGNALS_URL}{signal.id}/confirm/', format='json', **self.ws1()
+    def test_viewer_cannot_archive_inspiration(self):
+        inspiration = self.make_inspiration()
+        self.assert_viewer_mutation_denied(
+            client=self.viewer_client, method='post',
+            url=f'{INSPIRATIONS_URL}{inspiration.id}/archive/',
+            workspace=self.workspace1, model=BrandInspiration, payload={},
         )
-        reject = self.viewer_client.post(
-            f'{SIGNALS_URL}{signal.id}/reject/', format='json', **self.ws1()
+        inspiration.refresh_from_db()
+        self.assertEqual(
+            inspiration.lifecycle_status, BrandInspiration.LifecycleStatus.ACTIVE
         )
-        self.assertEqual(confirm.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(reject.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_viewer_is_denied_on_every_mutation_path(self):
+        """A role gate that holds on the endpoints nobody remembers to test.
+
+        Table-driven because the failure mode here is a path being added later
+        without a matching test, not any one of these cases being subtle.
+        """
+        inspiration = self.make_inspiration()
+        signal = self.make_user_signal(inspiration)
+        detail = f'{INSPIRATIONS_URL}{inspiration.id}/'
+        signal_detail = f'{SIGNALS_URL}{signal.id}/'
+
+        cases = [
+            ('patch', detail, {'annotation': 'nope'}, BrandInspiration),
+            ('put', detail, self.valid_payload(title='nope'), BrandInspiration),
+            ('delete', detail, None, BrandInspiration),
+            ('post', f'{detail}analyze/', {}, BrandInspiration),
+            ('patch', signal_detail, {'value': 'nope'}, InspirationSignal),
+            ('post', f'{signal_detail}confirm/', {}, InspirationSignal),
+            ('post', f'{signal_detail}reject/', {}, InspirationSignal),
+            ('delete', signal_detail, None, InspirationSignal),
+        ]
+        for method, url, payload, model in cases:
+            with self.subTest(method=method, url=url):
+                self.assert_viewer_mutation_denied(
+                    client=self.viewer_client, method=method, url=url,
+                    workspace=self.workspace1, model=model, payload=payload,
+                )
+
+        inspiration.refresh_from_db()
+        signal.refresh_from_db()
+        self.assertEqual(inspiration.annotation, '')
+        self.assertEqual(
+            inspiration.lifecycle_status, BrandInspiration.LifecycleStatus.ACTIVE
+        )
+        self.assertEqual(signal.value, 'Condensed grotesque')
+        self.assertEqual(
+            signal.user_confirmation, InspirationSignal.UserConfirmation.CONFIRMED
+        )
+
+
+class InspirationModelInvariantTests(InspirationTestBase):
+    """The tenancy rule holds for ORM writers too, not just for requests.
+
+    Serializers guard the API. Jobs, management commands and future services
+    write through the model, and a row whose brand belongs to another
+    workspace would not look like an error afterwards — it would look like
+    data.
+    """
+
+    def test_model_refuses_a_brand_from_another_workspace(self):
+        with self.assertRaises(ValidationError):
+            BrandInspiration.objects.create(
+                workspace=self.workspace1,
+                brand=self.brand2,
+                title='Smuggled',
+                reference_url='https://example.com/x',
+            )
+        self.assertFalse(BrandInspiration.objects.exists())
+
+    def test_model_refuses_a_source_from_another_brand(self):
+        with self.assertRaises(ValidationError):
+            BrandInspiration.objects.create(
+                workspace=self.workspace1,
+                brand=self.brand1,
+                source=self.source1b,
+                title='Wrong provenance',
+                reference_url='https://example.com/x',
+            )
+        self.assertFalse(BrandInspiration.objects.exists())
+
+    def test_model_refuses_a_source_from_another_workspace(self):
+        with self.assertRaises(ValidationError):
+            BrandInspiration.objects.create(
+                workspace=self.workspace1,
+                brand=self.brand1,
+                source=self.source2,
+                title='Foreign provenance',
+                reference_url='https://example.com/x',
+            )
+        self.assertFalse(BrandInspiration.objects.exists())
