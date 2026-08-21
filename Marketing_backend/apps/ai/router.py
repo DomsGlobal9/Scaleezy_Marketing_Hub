@@ -55,6 +55,17 @@ class AIRouter:
             out.append({'route': route, 'workspace_provider': wp, 'adapter': adapter})
         return out
 
+    def primary_adapter(self, capability: str):
+        """The adapter that would serve this capability right now, or None.
+
+        A read-only peek for callers deciding whether two capabilities are
+        served by the same provider (e.g. to skip a redundant IMAGE call when
+        the TEXT result already carries the poster). Selection itself still
+        happens only in dispatch().
+        """
+        candidates = self._candidates(capability)
+        return candidates[0]['adapter'] if candidates else None
+
     def strategy_for(self, capability: str) -> str:
         route = (
             WorkspaceAIRoute.objects.filter(

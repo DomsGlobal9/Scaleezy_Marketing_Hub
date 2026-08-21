@@ -164,17 +164,64 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
             return result
         except Exception as exc:
             trace['capabilities'][capability] = {
-                'status': 'FAILED', 'error': str(exc)[:300],
+                'status': 'FAILED',
+                'error': str(exc)[:300],
+                'error_type': type(exc).__name__,
             }
             return None
 
-    # Two independent providers, two independent calls: nothing shared but
-    # the trace dict, which each branch writes under its own key.
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        text_future = pool.submit(run, Capability.TEXT, text_brief, text_context)
-        image_future = pool.submit(run, Capability.IMAGE, image_brief, image_context)
-        text = text_future.result()
-        image = image_future.result()
+    # When one provider serves BOTH capabilities and its text result already
+    # carries the poster, a concurrent IMAGE dispatch would repeat the same
+    # upstream call - concurrency as pure duplicate spend. One call is also
+    # strictly faster than two. Decided per-request from the router's own
+    # resolution, never from a provider name.
+    text_primary = router.primary_adapter(Capability.TEXT)
+    image_primary = router.primary_adapter(Capability.IMAGE)
+    combined = (
+        text_primary is not None
+        and image_primary is not None
+        and text_primary.key == image_primary.key
+        and getattr(text_primary, 'yields_poster_with_text', False)
+    )
+
+    if combined:
+        text = run(Capability.TEXT, text_brief, text_context)
+        image = None
+        if text is not None:
+            poster = (text.get('raw') or {}).get('posterImageUrl', '')
+            if poster:
+                image = {'image_url': poster, 'provider': text.get('provider', '')}
+                trace['capabilities'][Capability.IMAGE] = {
+                    'status': 'OK', 'combined_with_text': True,
+                    'provider': text.get('provider', ''),
+                }
+    else:
+        # Two independent providers, two independent calls, at the same time:
+        # nothing shared but the trace dict, which each branch writes under
+        # its own key.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            text_future = pool.submit(run, Capability.TEXT, text_brief, text_context)
+            image_future = pool.submit(run, Capability.IMAGE, image_brief, image_context)
+            text = text_future.result()
+            image = image_future.result()
+
+        # A failed IMAGE dispatch does not throw away a poster the TEXT call
+        # happened to return - partial success keeps everything that exists.
+        if image is None and text is not None:
+            poster = (text.get('raw') or {}).get('posterImageUrl', '')
+            if poster:
+                image = {'image_url': poster, 'provider': text.get('provider', '')}
+                trace['capabilities'][Capability.IMAGE] = {
+                    'status': 'OK', 'fallback_from_text': True,
+                    'provider': text.get('provider', ''),
+                }
+
+    if text is None:
+        failure = trace['capabilities'].get(Capability.TEXT, {})
+        if failure.get('error_type') == 'NoProviderAvailable':
+            # Honest unavailability outranks partial success: with no copy
+            # there is no generation to be partial about.
+            raise NoProviderConfigured(failure.get('error', 'No provider routed.'))
 
     return {'text': text, 'image': image, 'trace': trace}
 

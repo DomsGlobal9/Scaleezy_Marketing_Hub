@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 class GeminiAdapter(AIProviderAdapter):
     key = 'gemini'
     display_name = 'Google Gemini'
+    # generate_marketing_content returns copy and the poster from one call.
+    yields_poster_with_text = True
     capabilities = (
         Capability.TEXT,
         Capability.IMAGE,

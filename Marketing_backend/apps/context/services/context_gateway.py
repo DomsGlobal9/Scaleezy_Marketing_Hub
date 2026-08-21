@@ -280,6 +280,14 @@ def context_as_brief(context):
         lines.append(f"Prefer: {rule.get('text', '')}")
     for pattern in context['avoid_patterns']:
         lines.append(f"Avoid: {pattern}")
+    # Resolved preference claims, so what the brand has taught Scaleezy - a
+    # calibration verdict, an adjustment note - reaches the provider in the
+    # prose brief and not only in the structured block.
+    for claim in context['preferences']:
+        label = claim.get('attribute') or claim.get('category', '')
+        value = claim.get('value', '')
+        if value:
+            lines.append(f"Prefer ({label}): {value}")
 
     return {
         'task': context['task_type'],

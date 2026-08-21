@@ -190,8 +190,12 @@ class CalibrationTests(OnboardingTestBase):
             [d['tests_dimension'] for d in directions],
             ['minimal_restrained', 'expressive_editorial', 'conversion_focused'],
         )
-        # Three router calls; each carried gateway context.
-        self.assertEqual(len(calls), 3)
+        # Six router calls now - copy AND imagery per direction, because a
+        # direction that claims to test layout must actually display one.
+        # Each call carried gateway context.
+        capabilities = [call['capability'] for call in calls]
+        self.assertEqual(capabilities.count('TEXT'), 3)
+        self.assertEqual(capabilities.count('IMAGE'), 3)
         for call in calls:
             self.assertIn('brand_context', call['brief'])
 

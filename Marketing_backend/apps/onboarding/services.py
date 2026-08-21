@@ -14,8 +14,14 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.brands.services.brand_brain import rebuild_brand_brain
-from apps.context.services.context_gateway import TaskType
-from apps.context.services.generation import NoProviderConfigured, generate_with_context
+from apps.context.services.context_gateway import (
+    MOTION_CATEGORIES,
+    VISUAL_CATEGORIES,
+)
+from apps.context.services.generation import (
+    NoProviderConfigured,
+    generate_copy_and_image,
+)
 from apps.context.services.readiness import brand_readiness
 from apps.inspirations.models import BrandInspiration
 from apps.knowledge.models import BrandSource
@@ -58,9 +64,23 @@ def refresh_stage(onboarding):
     has_inspirations = (
         BrandInspiration.objects.filter(brand=brand).eligible_for_retrieval().exists()
     )
-    has_calibration = CalibrationDirection.objects.filter(brand=brand).exclude(
-        verdict=CalibrationDirection.Verdict.PENDING
-    ).exists()
+    # The latest round is the unit of calibration, and it is complete only
+    # when EVERY direction in it has a verdict. One click out of three used
+    # to complete the stage, which meant two of the three purposeful
+    # directions taught nothing and the stage lied about it. Skipping the
+    # remainder is still allowed - through the explicit skip, not through
+    # silence.
+    latest_round = (
+        CalibrationDirection.objects.filter(brand=brand)
+        .order_by('-created_at')
+        .values_list('round_id', flat=True)
+        .first()
+    )
+    has_calibration = bool(latest_round) and not (
+        CalibrationDirection.objects.filter(brand=brand, round_id=latest_round)
+        .filter(verdict=CalibrationDirection.Verdict.PENDING)
+        .exists()
+    )
     has_generated = brand.content_items.exists()
 
     stages = [
@@ -163,40 +183,59 @@ CALIBRATION_DIRECTIONS = [
 ]
 
 
-@transaction.atomic
 def generate_calibration_round(workspace, brand, *, user=None):
     """Three purposeful directions through the real generation chain.
 
-    Gateway → router → configured provider, per direction. Hard rules and
-    verified facts ride in the context exactly as they do for a normal
-    generation, because calibration output a brand rule would forbid teaches
-    the wrong thing.
+    Gateway → router → configured provider, per direction — and MULTIMODAL:
+    each direction runs copy and imagery together, because a direction that
+    claims to test layout density or imagery style while showing only a
+    sentence of copy has nothing behind the claim. Whether a visual actually
+    exists is recorded per direction (`preview_url`), and the verdict path
+    refuses to learn visual attributes a direction never displayed.
+
+    Hard rules and verified facts ride in the context exactly as they do for
+    a normal generation, because calibration output a brand rule would forbid
+    teaches the wrong thing.
+
+    Provider calls run OUTSIDE the transaction - three generations inside an
+    open transaction would hold a connection for the slowest provider's
+    latency. The rows are then written atomically, so a half-created round is
+    never visible.
     """
     round_id = uuid.uuid4()
-    directions = []
+    outcomes = []
     for spec in CALIBRATION_DIRECTIONS:
-        try:
-            outcome = generate_with_context(
-                workspace, brand, TaskType.COPY, instruction=spec['instruction'],
+        outcome = generate_copy_and_image(
+            workspace, brand, {}, instruction=spec['instruction'],
+        )
+        if outcome['text'] is None:
+            failure = outcome['trace']['capabilities'].get('TEXT', {})
+            raise CalibrationError(
+                "Calibration direction could not be generated: "
+                + failure.get('error', 'the provider returned nothing.')
             )
-        except NoProviderConfigured:
-            raise
-        result = outcome['result']
-        raw = result.get('raw') or {}
-        directions.append(CalibrationDirection.objects.create(
-            workspace=workspace,
-            brand=brand,
-            round_id=round_id,
-            label=spec['label'],
-            tests_dimension=spec['tests_dimension'],
-            tested_attributes=spec['tested_attributes'],
-            headline=(result.get('headline') or raw.get('postTitle', ''))[:500],
-            caption=result.get('caption') or raw.get('postDescription', ''),
-            hashtags=result.get('hashtags') or raw.get('postHashtags', ''),
-            preview_url=(raw.get('posterImageUrl') or result.get('image_url', ''))[:1000],
-            provider=result.get('provider', ''),
-            brain_version=outcome['brain_version'],
-        ))
+        outcomes.append((spec, outcome))
+
+    with transaction.atomic():
+        directions = []
+        for spec, outcome in outcomes:
+            text = outcome['text']
+            image = outcome['image'] or {}
+            raw = text.get('raw') or {}
+            directions.append(CalibrationDirection.objects.create(
+                workspace=workspace,
+                brand=brand,
+                round_id=round_id,
+                label=spec['label'],
+                tests_dimension=spec['tests_dimension'],
+                tested_attributes=spec['tested_attributes'],
+                headline=(text.get('headline') or raw.get('postTitle', ''))[:500],
+                caption=text.get('caption') or raw.get('postDescription', ''),
+                hashtags=text.get('hashtags') or raw.get('postHashtags', ''),
+                preview_url=(image.get('image_url') or '')[:1000],
+                provider=text.get('provider', ''),
+                brain_version=outcome['trace']['brain_version'],
+            ))
     return directions
 
 
@@ -249,29 +288,69 @@ def record_calibration_verdict(direction, verdict, *, user=None, note=''):
         created_by=user,
     )
 
-    # A verdict on a direction is evidence about the dimensions it tested.
-    # LIKED reinforces them as stated; NOT_US reinforces the aversion; ADJUST
-    # records the event with the correction and reinforces nothing on its own
-    # (the note is a instruction to a person or a later pass, not a preference
-    # the system can safely invert).
+    # A verdict on a direction is evidence about the dimensions it tested -
+    # but only the dimensions the direction actually DISPLAYED. A direction
+    # with no visual never showed its layout or imagery, so a verdict on it
+    # says nothing about either; learning LAYOUT from a sentence of copy is
+    # how a brain fills up with claims nothing ever exhibited.
+    visual = VISUAL_CATEGORIES | MOTION_CATEGORIES
+    has_visual = bool(direction.preview_url)
+
+    def evidenced_attributes():
+        for key, value in (direction.tested_attributes or {}).items():
+            category, _, attribute = key.partition('/')
+            category = category or 'OTHER'
+            if category in visual and not has_visual:
+                logger.info(
+                    "Skipping %s on calibration %s: no visual was displayed",
+                    key, direction.pk,
+                )
+                continue
+            yield key, category, attribute or key, value
+
     learned = False
     if verdict in (CalibrationDirection.Verdict.LIKED, CalibrationDirection.Verdict.NOT_US):
         sentiment = 'preferred' if verdict == CalibrationDirection.Verdict.LIKED else 'avoided'
-        for key, value in (direction.tested_attributes or {}).items():
-            category, _, attribute = key.partition('/')
+        for key, category, attribute, value in evidenced_attributes():
             try:
                 reinforce_preference(
                     workspace=direction.workspace,
                     brand=direction.brand,
                     event=event,
-                    category=category or 'OTHER',
-                    attribute=attribute or key,
+                    category=category,
+                    attribute=attribute,
                     value=f'{value} ({sentiment})',
                 )
                 learned = True
             except Exception:
                 logger.exception(
                     "Could not reinforce %s from calibration %s", key, direction.pk
+                )
+    elif verdict == CalibrationDirection.Verdict.ADJUSTED:
+        # The correction becomes a soft, traceable preference: one row per
+        # dimension the direction displayed, its value the user's words
+        # VERBATIM, so the next context for those dimensions carries exactly
+        # what was said. It starts EMERGING - one correction is an opinion,
+        # and nothing here can mint a rule, hard or otherwise; that path
+        # still requires corroborated evidence and goes through the learning
+        # service's own gates. The original note is also kept verbatim on
+        # the direction row itself.
+        note_verbatim = note.strip()[:500]
+        for key, category, attribute, _ in evidenced_attributes():
+            try:
+                reinforce_preference(
+                    workspace=direction.workspace,
+                    brand=direction.brand,
+                    event=event,
+                    category=category,
+                    attribute=f'{attribute} adjustment',
+                    value=note_verbatim,
+                )
+                learned = True
+            except Exception:
+                logger.exception(
+                    "Could not record adjustment %s from calibration %s",
+                    key, direction.pk,
                 )
 
     direction.verdict = verdict
@@ -283,7 +362,7 @@ def record_calibration_verdict(direction, verdict, *, user=None, note=''):
         'verdict', 'adjustment_note', 'decided_by', 'decided_at', 'learning_event_id',
     ])
 
-    if learned or verdict == CalibrationDirection.Verdict.ADJUSTED:
+    if learned:
         # The brain and readiness must reflect the new evidence immediately —
         # this is the before/after the user is shown.
         rebuild_brand_brain(direction.brand)

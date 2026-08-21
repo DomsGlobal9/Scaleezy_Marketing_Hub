@@ -22,6 +22,11 @@ class AIProviderAdapter(ABC):
     default_model: str = ''
     #: Indicative cost per generation, used for BEST_OF scoring.
     unit_cost: float = 0.0
+    #: True for adapters whose TEXT result already carries the poster URL in
+    #: its raw payload (one upstream call answers both). A capability trait,
+    #: not a provider name: callers may use it to skip a redundant IMAGE
+    #: dispatch when the same provider serves both capabilities.
+    yields_poster_with_text: bool = False
 
     def __init__(self, *, credentials: str = '', model: str = '', config: Dict[str, Any] = None):
         self.credentials = credentials

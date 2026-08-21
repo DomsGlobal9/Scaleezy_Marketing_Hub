@@ -119,7 +119,11 @@ class GenerationRoutingTests(TenantFixtureMixin, TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertTrue(calls, "the generation never reached the router")
-        self.assertEqual(calls[0]['capability'], Capability.TEXT)
+        # Order-independent: copy and imagery now dispatch concurrently, so
+        # which lands first in the call log is a race, not a contract.
+        self.assertIn(
+            Capability.TEXT, {c['capability'] for c in calls}
+        )
 
     def test_gateway_brand_intelligence_reaches_the_router(self):
         calls = []
@@ -129,7 +133,9 @@ class GenerationRoutingTests(TenantFixtureMixin, TestCase):
                 **workspace_header(self.workspace1),
             )
 
-        brief = calls[0]['brief']
+        brief = next(
+            c['brief'] for c in calls if c['capability'] == Capability.TEXT
+        )
         self.assertIn('MUST: Never show a competitor logo', brief['brand_context'])
         self.assertIn('Verified: Roasted within 48 hours', brief['brand_context'])
         self.assertEqual(brief['structured']['identity']['name'], 'Acme Coffee')
@@ -214,7 +220,9 @@ class GenerationRoutingTests(TenantFixtureMixin, TestCase):
                 **workspace_header(self.workspace2),
             )
 
-        brief = calls[0]['brief']
+        brief = next(
+            c['brief'] for c in calls if c['capability'] == Capability.TEXT
+        )
         self.assertEqual(brief['structured']['identity']['name'], 'Rival')
         self.assertNotIn(
             'MUST: Never show a competitor logo', brief['brand_context'],
@@ -270,3 +278,116 @@ class GenerationRoutingTests(TenantFixtureMixin, TestCase):
         self.assertEqual(item.brand_id, self.brand1.id)
         self.assertEqual(item.headline, 'Roasted this week')
         self.assertEqual(item.status, ContentItem.Status.DRAFT)
+
+
+class ConcurrentGenerationTests(GenerationRoutingTests):
+    """PR6 blocker: the accelerator must be genuinely user-visible on the
+    primary /generate/ path — both capabilities dispatched together, partial
+    success kept, and no duplicate call when one provider answers both."""
+
+    def test_generate_dispatches_text_and_image_concurrently(self):
+        import threading
+
+        seen_threads = {}
+        barrier = threading.Barrier(2, timeout=10)
+
+        def concurrent_probe(self_router, capability, brief, content_item_id=None):
+            seen_threads[capability] = threading.current_thread().name
+            # Both dispatches must be in flight at once to pass the barrier;
+            # a sequential implementation deadlocks here and times out.
+            barrier.wait()
+            if capability == Capability.TEXT:
+                return dict(FAKE_TEXT_RESULT)
+            return dict(FAKE_IMAGE_RESULT)
+
+        with patch('apps.ai.router.AIRouter.dispatch', concurrent_probe):
+            response = self.client1.post(
+                GENERATE_URL, self.payload(), format='json',
+                **workspace_header(self.workspace1),
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            set(seen_threads), {Capability.TEXT, Capability.IMAGE},
+            "both capabilities must be dispatched",
+        )
+        data = response.json()['data']
+        self.assertEqual(data['postTitle'], 'Roasted this week')
+        self.assertEqual(data['posterImageUrl'], 'https://cdn.example.com/poster.png')
+
+    def test_partial_image_failure_keeps_the_copy(self):
+        def image_fails(self_router, capability, brief, content_item_id=None):
+            if capability == Capability.TEXT:
+                return dict(FAKE_TEXT_RESULT)
+            raise RuntimeError('image provider exploded')
+
+        with patch('apps.ai.router.AIRouter.dispatch', image_fails):
+            response = self.client1.post(
+                GENERATE_URL, self.payload(), format='json',
+                **workspace_header(self.workspace1),
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        data = response.json()['data']
+        self.assertEqual(data['postTitle'], 'Roasted this week')
+        self.assertEqual(data['posterImageUrl'], '')
+        # The copy that succeeded was persisted; the trace records the failure.
+        item = ContentItem.objects.get(id=data['contentItemId'])
+        trace = item.layout_config['generation_trace']['capabilities']
+        self.assertEqual(trace[Capability.IMAGE]['status'], 'FAILED')
+        self.assertEqual(trace[Capability.TEXT]['status'], 'OK')
+
+    def test_a_poster_in_the_text_result_survives_an_image_failure(self):
+        def image_fails_text_has_poster(self_router, capability, brief,
+                                        content_item_id=None):
+            if capability == Capability.TEXT:
+                return {
+                    **FAKE_TEXT_RESULT,
+                    'raw': {'posterImageUrl': 'https://cdn.example.com/from-text.png'},
+                }
+            raise RuntimeError('image provider exploded')
+
+        with patch('apps.ai.router.AIRouter.dispatch', image_fails_text_has_poster):
+            response = self.client1.post(
+                GENERATE_URL, self.payload(), format='json',
+                **workspace_header(self.workspace1),
+            )
+
+        data = response.json()['data']
+        self.assertEqual(
+            data['posterImageUrl'], 'https://cdn.example.com/from-text.png'
+        )
+
+    def test_a_combined_provider_is_not_asked_twice(self):
+        """When one provider serves both capabilities and its text result
+        carries the poster, the second dispatch is pure duplicate spend."""
+
+        class CombinedAdapter:
+            key = 'combined'
+            yields_poster_with_text = True
+
+        calls = []
+
+        def counting(self_router, capability, brief, content_item_id=None):
+            calls.append(capability)
+            return {
+                **FAKE_TEXT_RESULT,
+                'raw': {'posterImageUrl': 'https://cdn.example.com/one-call.png'},
+            }
+
+        with (
+            patch('apps.ai.router.AIRouter.dispatch', counting),
+            patch(
+                'apps.ai.router.AIRouter.primary_adapter',
+                lambda self_router, capability: CombinedAdapter(),
+            ),
+        ):
+            response = self.client1.post(
+                GENERATE_URL, self.payload(), format='json',
+                **workspace_header(self.workspace1),
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(calls, [Capability.TEXT], "expected exactly one dispatch")
+        data = response.json()['data']
+        self.assertEqual(data['posterImageUrl'], 'https://cdn.example.com/one-call.png')

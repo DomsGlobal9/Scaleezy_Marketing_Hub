@@ -201,10 +201,11 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             return quota_error
 
         from apps.ai.router import AIRouter, NoProviderAvailable
+        from apps.context.services.generation import NoProviderConfigured
 
         try:
             routed = self._route_generation(workspace, request_data)
-        except NoProviderAvailable as exc:
+        except (NoProviderAvailable, NoProviderConfigured) as exc:
             # Honest unavailability. A workspace with nothing routed has not
             # generated anything, and saying so beats an empty success.
             return APIResponse(
@@ -259,67 +260,68 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         )
 
     def _route_generation(self, workspace, request_data):
-        """Run the generation through the router, whichever provider is routed.
+        """Run the generation through the accelerator, concurrently.
 
-        This used to call GeminiGeneratorService directly, which hard-coded one
-        vendor into the main production path: a workspace that had routed a
-        different provider still got Gemini, and adding a provider would have
-        meant editing this view. Now the view names a capability and the router
-        decides who serves it.
+        Copy and imagery are dispatched together through
+        `generate_copy_and_image` - the PR6 accelerator - instead of one
+        after the other, so the user waits for the slower capability rather
+        than the sum of both. Partial success is preserved: a failed poster
+        costs a poster, never the copy that already succeeded, and a provider
+        whose text result carries the poster is not asked twice.
 
-        The provider-neutral result is mapped back to the response contract the
-        frontend already speaks. Adapting at this boundary is deliberate - the
-        alternative is rewriting the client every time a provider's result
-        shape differs.
+        The provider-neutral result is mapped back to the response contract
+        the frontend already speaks. Adapting at this boundary is deliberate -
+        the alternative is rewriting the client every time a provider's
+        result shape differs.
         """
-        from apps.ai.models import Capability
-        from apps.ai.router import AIRouter, NoProviderAvailable
+        from apps.brands.models import Brand
+        from apps.context.services.generation import generate_copy_and_image
 
-        router = AIRouter(workspace)
-        text = router.dispatch(Capability.TEXT, request_data)
+        brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
+        if brand is None:
+            # No brand, no brand context - fall back to a plain routed TEXT
+            # dispatch rather than failing a workspace that has not finished
+            # setup.
+            from apps.ai.models import Capability
+            from apps.ai.router import AIRouter
 
-        # Gemini answers copy and imagery in one call, so the poster may
-        # already be here. A provider that does not is asked separately, and
-        # a workspace with no image route simply gets no poster rather than a
-        # failed generation. The copy that already succeeded is never redone
-        # because the image failed.
-        raw = text.get('raw') or {}
-        poster = raw.get('posterImageUrl', '') or text.get('image_url', '')
-        trace = {
-            'capabilities': {
-                Capability.TEXT: {
-                    'status': 'OK',
-                    'provider': text.get('provider', ''),
-                    'latency_ms': text.get('latency_ms'),
+            text = AIRouter(workspace).dispatch(Capability.TEXT, request_data)
+            raw = text.get('raw') or {}
+            return {
+                'provider': text.get('provider', ''),
+                'provider_name': text.get('provider_name', ''),
+                'brain_version': '',
+                'trace': {'capabilities': {'TEXT': {'status': 'OK'}}},
+                'payload': {
+                    'postTitle': text.get('headline') or raw.get('postTitle', ''),
+                    'postDescription': text.get('caption') or raw.get('postDescription', ''),
+                    'postHashtags': text.get('hashtags') or raw.get('postHashtags', ''),
+                    'posterImageUrl': raw.get('posterImageUrl', ''),
+                    'metadata': raw.get('metadata', {}),
                 },
-            },
-        }
-        if not poster:
-            try:
-                image = router.dispatch(Capability.IMAGE, request_data)
-                poster = image.get('image_url', '')
-                trace['capabilities'][Capability.IMAGE] = {
-                    'status': 'OK',
-                    'provider': image.get('provider', ''),
-                    'latency_ms': image.get('latency_ms'),
-                }
-            except Exception as exc:
-                logger.info("No image provider available for this generation.")
-                trace['capabilities'][Capability.IMAGE] = {
-                    'status': 'FAILED', 'error': str(exc)[:300],
-                }
-                poster = ''
+            }
+
+        outcome = generate_copy_and_image(
+            workspace, brand, request_data,
+            instruction=str(request_data.get('campaign_name', ''))[:500],
+        )
+        text = outcome['text'] or {}
+        image = outcome['image'] or {}
+        raw = text.get('raw') or {}
+        if not text:
+            failure = outcome['trace']['capabilities'].get('TEXT', {})
+            raise RuntimeError(failure.get('error', 'Generation produced no copy.'))
 
         return {
             'provider': text.get('provider', ''),
             'provider_name': text.get('provider_name', ''),
-            'brain_version': request_data.get('brain_version', ''),
-            'trace': trace,
+            'brain_version': outcome['trace'].get('brain_version', ''),
+            'trace': outcome['trace'],
             'payload': {
                 'postTitle': text.get('headline') or raw.get('postTitle', ''),
                 'postDescription': text.get('caption') or raw.get('postDescription', ''),
                 'postHashtags': text.get('hashtags') or raw.get('postHashtags', ''),
-                'posterImageUrl': poster,
+                'posterImageUrl': image.get('image_url', ''),
                 'metadata': raw.get('metadata', {}),
             },
         }
