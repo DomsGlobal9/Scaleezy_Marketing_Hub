@@ -49,3 +49,33 @@ Compiled Brand Brain can always be rebuilt from underlying authoritative records
 
 ### GLOBAL-005 — Security review is part of implementation
 Tenant isolation is not a final QA step. It is a design constraint for every serializer, model relation, action and task.
+
+## PR1 lessons (V4 additions)
+### PR1-007 — Multipart/upload paths are mutation paths
+Upload endpoints must receive the same tenant/brand validation as JSON CRUD.
+
+### PR1-008 — Partial PATCH must validate the effective final object
+Validation must consider unchanged instance values, not just the submitted fields.
+
+### PR1-009 — Brand assignment is immutable for provenance-bearing records
+Brand may only move through an explicit transfer workflow, which does not exist yet.
+
+### PR1-010 — Revoked/archived sources stop influencing intelligence
+Archived references must become ineligible for future retrieval.
+
+### PR1-011 — Supersession must not self-reference or cycle
+Applies when supersession is implemented.
+
+## Global permanent rules (V4 additions)
+### GLOBAL-006 — A checklist PASS requires evidence
+Named test + result, or exact code path + named test. Assertions are not evidence.
+
+### GLOBAL-007 — N/A is not PASS
+N/A requires a precise reason.
+
+### GLOBAL-008 — NOT VERIFIED blocks readiness
+### GLOBAL-009 — Refresh the mental model after CTO rework
+Stale preflight assumptions are invalid once requirements change.
+
+### GLOBAL-010 — Validate every mutation path
+Not only the primary endpoint: JSON, multipart, PUT, PATCH, custom actions, jobs and internal service calls.

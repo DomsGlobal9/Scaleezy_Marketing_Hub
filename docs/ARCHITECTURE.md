@@ -12,7 +12,7 @@ End-to-end reference: schema, data flow, references, and how to plug in other mo
 
 ## 1) Schema
 
-26 tables across 16 Django apps. Every primary key is a UUID. Every business table hangs off `MarketingWorkspace`.
+30 tables across 16 model-bearing Django apps (18 local apps; `apps.common` and `apps.layouts` hold no models). Every primary key is a UUID. Every business table hangs off `MarketingWorkspace`.
 
 ### Tenancy (`apps.workspaces`)
 
@@ -93,6 +93,28 @@ These are **stored aggregates**, not derived at query time from publishing data.
 ### Audit (`apps.audit`)
 
 **`audit_logs`** — denormalized. `workspace` (FK) but `user`, `platform`, `account` are plain strings. `date`, `action`, `previous_state`, `next_state`, `result`, `error`.
+
+### Brand knowledge (`apps.knowledge`, PR1)
+
+**`knowledge_brandsource`** — the raw material a brand hands over: uploads, pasted text, links, transcripts. `workspace`, `brand`, `source_type` (14 choices), `title`, `source_url` / `storage_path` / `file_url` / `raw_text`, `mime_type`, `language`, `status` (`UPLOADED` → `QUEUED`/`PROCESSING`/`READY`/`NEEDS_REVIEW`/`FAILED`/`ARCHIVED`), `content_hash`, `metadata`, `created_by`.
+
+**`knowledge_brandmemory`** — structured facts extracted from a source. `source` (nullable FK), `memory_type` (13 choices), `content`, `confidence`, `scope`, `permanence`, `status` (`CANDIDATE`/`CONFIRMED`/`REJECTED`/`SUPERSEDED`/`EXPIRED`), `valid_from`/`valid_until`, `supersedes` (self-FK).
+
+Extraction itself is not implemented: `POST /api/marketing/knowledge/sources/{id}/process/` returns `501` until PR6.
+
+### Brand inspirations (`apps.inspirations`, PR2)
+
+Separate from knowledge on purpose. A source says what is *true* about a business; an inspiration says what its work should *feel* like, and carries two kinds of claim that must never be confused — what a person stated, and what a model inferred.
+
+**`inspirations_brandinspiration`** — one reference. `workspace`, `brand`, `source` (nullable FK → `knowledge_brandsource`, the provenance link), `inspiration_type` (13 choices: image, screenshot, URL, web page, post, reel, video, ad, pin, competitor, reference, moodboard, other), `title`, `annotation` (the user's own words), `reference_url` / `storage_path` / `file_url` / `mime_type` / `file_name`, `external_platform` (free text — the platform is metadata, not an integration), `metadata`, `usage_scope` (`FULL_REFERENCE` / `SPECIFIC_ELEMENTS`) with `focus_areas`, `analysis_status` (`NOT_ANALYSED` only, until PR6), `lifecycle_status` (`ACTIVE`/`ARCHIVED`), `created_by`, `archived_by`/`archived_at`.
+
+**`inspirations_inspirationsignal`** — one extracted or stated preference. Holds **no** workspace or brand column: tenancy is read through `inspiration`, so there is no second copy to drift. `category` (17 choices), `attribute`, `value`, `sentiment` (`LIKED`/`DISLIKED`/`NEUTRAL`, always explicit and independent of `weight`), `weight`, `confidence`, `origin` (`USER`/`AI`, immutable), `user_confirmation` (`CONFIRMED`/`PENDING`/`REJECTED`), `conflicts_with` (self-FK), `extracted_by_provider`, `created_by`, `confirmed_by`/`confirmed_at`.
+
+Constraint: `UNIQUE (inspiration, category, attribute) WHERE origin = 'AI'` — a retried analysis job refreshes one row instead of piling up duplicates.
+
+Retrieval eligibility is a query, not a flag: `BrandInspiration.objects.eligible_for_retrieval()` drops archived references and references whose source was archived; `InspirationSignal.objects.eligible_for_retrieval()` additionally drops user-rejected signals and inferences that contradict a stated preference. The API exposes the same rule as `?eligible_only=true` and reports each row's verdict in `retrieval_eligibility`.
+
+Analysis is not implemented: `POST /api/marketing/inspirations/{id}/analyze/` returns `501` until PR6. Nothing in PR2 fetches a reference URL or calls a provider.
 
 ---
 

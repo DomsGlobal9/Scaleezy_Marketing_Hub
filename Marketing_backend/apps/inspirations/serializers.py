@@ -1,0 +1,266 @@
+"""
+Serializers for inspirations.
+
+Every tenant-owned relation is re-checked here against the workspace resolved
+from the authenticated request, never against an id the client supplied. The
+same checks run for the JSON and the multipart path (PR1-007, GLOBAL-010),
+which is why the relation rules live in `validate_reference_graph` rather than
+inside one serializer.
+"""
+from rest_framework import serializers
+
+from apps.brands.models import Brand
+from apps.common.permissions import get_request_workspace
+from apps.knowledge.models import BrandSource
+
+from .models import BrandInspiration, InspirationSignal, SignalCategory
+
+VALID_FOCUS_AREAS = {choice.value for choice in SignalCategory}
+
+
+def request_workspace_or_raise(serializer):
+    workspace, error = get_request_workspace(serializer.context['request'])
+    if error or not workspace:
+        raise serializers.ValidationError("Workspace is required and must be valid.")
+    return workspace
+
+
+def validate_reference_graph(workspace, brand, source, usage_scope, focus_areas):
+    """The rules that must hold for any inspiration, whatever path created it.
+
+    Raises DRF ValidationError so both the JSON serializer and the upload
+    serializer produce the same 400 shape.
+    """
+    if brand is not None and brand.workspace_id != workspace.id:
+        raise serializers.ValidationError(
+            {"brand": "Brand must belong to the authorized workspace."}
+        )
+
+    if source is not None:
+        if source.workspace_id != workspace.id:
+            raise serializers.ValidationError(
+                {"source": "Source must belong to the authorized workspace."}
+            )
+        if brand is not None and source.brand_id != brand.id:
+            raise serializers.ValidationError(
+                {"source": "Source must belong to the same brand as the inspiration."}
+            )
+        if source.status == BrandSource.SourceStatus.ARCHIVED:
+            raise serializers.ValidationError(
+                {"source": "Archived sources cannot be used as an inspiration reference."}
+            )
+
+    if focus_areas:
+        if not isinstance(focus_areas, list):
+            raise serializers.ValidationError(
+                {"focus_areas": "focus_areas must be a list of signal categories."}
+            )
+        unknown = [area for area in focus_areas if area not in VALID_FOCUS_AREAS]
+        if unknown:
+            raise serializers.ValidationError(
+                {"focus_areas": f"Unknown signal categories: {', '.join(map(str, unknown))}."}
+            )
+
+    # "Use only the typography" has to be storable as something other than a
+    # sentence in a free-text note, or no consumer can act on it.
+    if usage_scope == BrandInspiration.UsageScope.SPECIFIC_ELEMENTS and not focus_areas:
+        raise serializers.ValidationError(
+            {"focus_areas": "focus_areas is required when usage_scope is SPECIFIC_ELEMENTS."}
+        )
+    if usage_scope == BrandInspiration.UsageScope.FULL_REFERENCE and focus_areas:
+        raise serializers.ValidationError(
+            {"focus_areas": "focus_areas is only allowed when usage_scope is SPECIFIC_ELEMENTS."}
+        )
+
+
+class BrandInspirationSerializer(serializers.ModelSerializer):
+    retrieval_eligibility = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BrandInspiration
+        fields = [
+            'id', 'workspace', 'brand', 'source', 'inspiration_type', 'title',
+            'annotation', 'reference_url', 'storage_path', 'file_url',
+            'mime_type', 'file_name', 'external_platform', 'metadata',
+            'usage_scope', 'focus_areas', 'analysis_status', 'lifecycle_status',
+            'retrieval_eligibility', 'created_by', 'archived_by', 'archived_at',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'workspace', 'created_by',
+            # Lifecycle moves through named actions only (PR1-003).
+            'analysis_status', 'lifecycle_status', 'archived_by', 'archived_at',
+            # Storage coordinates are server-assigned by the upload action; a
+            # client that could set them could point a row at another tenant's
+            # object.
+            'storage_path', 'file_url', 'mime_type', 'file_name',
+            'created_at', 'updated_at',
+        ]
+
+    def get_retrieval_eligibility(self, obj):
+        return obj.retrieval_eligibility()
+
+    def validate(self, data):
+        workspace = request_workspace_or_raise(self)
+
+        # Evaluate the object as it would be AFTER the write, so a partial
+        # PATCH cannot slip past by leaving the offending half unchanged
+        # (PR1-008).
+        brand = data.get('brand') or getattr(self.instance, 'brand', None)
+        source = data.get('source') or getattr(self.instance, 'source', None)
+        usage_scope = data.get(
+            'usage_scope',
+            getattr(self.instance, 'usage_scope', BrandInspiration.UsageScope.FULL_REFERENCE),
+        )
+        focus_areas = data.get('focus_areas', getattr(self.instance, 'focus_areas', None) or [])
+
+        if self.instance is not None:
+            if 'brand' in data and data['brand'] != self.instance.brand:
+                raise serializers.ValidationError(
+                    {"brand": "Brand cannot be changed once set. No transfer workflow exists."}
+                )
+            if 'source' in data and data['source'] != self.instance.source:
+                raise serializers.ValidationError(
+                    {"source": "Source cannot be changed once set; provenance is immutable."}
+                )
+
+        validate_reference_graph(workspace, brand, source, usage_scope, focus_areas)
+
+        if self.instance is None:
+            reference_url = data.get('reference_url')
+            if not reference_url and source is None:
+                raise serializers.ValidationError(
+                    "An inspiration needs a reference: provide source, reference_url, "
+                    "or use the upload endpoint."
+                )
+
+        return data
+
+
+class BrandInspirationUploadSerializer(serializers.Serializer):
+    """Multipart entry path. Same relation rules as the JSON path."""
+
+    file = serializers.FileField(required=True)
+    brand = serializers.PrimaryKeyRelatedField(queryset=Brand.objects.none(), required=True)
+    source = serializers.PrimaryKeyRelatedField(
+        queryset=BrandSource.objects.none(), required=False, allow_null=True
+    )
+    title = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    inspiration_type = serializers.ChoiceField(
+        choices=BrandInspiration.InspirationType.choices,
+        required=False,
+        default=BrandInspiration.InspirationType.IMAGE,
+    )
+    annotation = serializers.CharField(required=False, allow_blank=True, default='')
+    external_platform = serializers.CharField(
+        max_length=100, required=False, allow_blank=True, default=''
+    )
+    usage_scope = serializers.ChoiceField(
+        choices=BrandInspiration.UsageScope.choices,
+        required=False,
+        default=BrandInspiration.UsageScope.FULL_REFERENCE,
+    )
+    focus_areas = serializers.ListField(
+        child=serializers.CharField(), required=False, default=list
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Scope the relation querysets to the caller's workspace so an id from
+        # another tenant is not even resolvable, then re-validate in validate()
+        # for the same-brand rule that a queryset cannot express.
+        request = self.context.get('request')
+        if request is None:
+            return
+        workspace, error = get_request_workspace(request)
+        if error or not workspace:
+            return
+        self.fields['brand'].queryset = Brand.objects.filter(workspace=workspace)
+        self.fields['source'].queryset = BrandSource.objects.filter(workspace=workspace)
+
+    def validate(self, data):
+        workspace = request_workspace_or_raise(self)
+        validate_reference_graph(
+            workspace,
+            data.get('brand'),
+            data.get('source'),
+            data.get('usage_scope', BrandInspiration.UsageScope.FULL_REFERENCE),
+            data.get('focus_areas') or [],
+        )
+        return data
+
+
+class InspirationSignalSerializer(serializers.ModelSerializer):
+    workspace = serializers.UUIDField(source='workspace_id', read_only=True)
+    brand = serializers.UUIDField(source='brand_id', read_only=True)
+    retrieval_eligibility = serializers.SerializerMethodField()
+    # The model defaults to NEUTRAL so existing rows stay valid, but the API
+    # refuses to guess: liked/disliked/neutral is a statement, not a default.
+    sentiment = serializers.ChoiceField(
+        choices=InspirationSignal.Sentiment.choices, required=True
+    )
+
+    class Meta:
+        model = InspirationSignal
+        fields = [
+            'id', 'inspiration', 'workspace', 'brand', 'category', 'attribute',
+            'value', 'sentiment', 'weight', 'confidence', 'origin',
+            'user_confirmation', 'conflicts_with', 'extracted_by_provider',
+            'retrieval_eligibility', 'created_by', 'confirmed_by',
+            'confirmed_at', 'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'id',
+            # `workspace` and `brand` are declared above as read-only mirrors
+            # of the parent inspiration, so they must not be repeated here.
+            # Provenance is assigned by the server. A client cannot mint a
+            # USER-origin signal for something a model inferred, and cannot
+            # move an AI signal to USER afterwards.
+            'origin', 'extracted_by_provider',
+            # Confirmation moves through the confirm/reject actions only.
+            'user_confirmation', 'conflicts_with', 'created_by', 'confirmed_by',
+            'confirmed_at', 'created_at', 'updated_at',
+        ]
+
+    def get_retrieval_eligibility(self, obj):
+        return obj.retrieval_eligibility()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get('request')
+        if request is None:
+            return
+        workspace, error = get_request_workspace(request)
+        if error or not workspace:
+            return
+        self.fields['inspiration'].queryset = BrandInspiration.objects.filter(
+            workspace=workspace
+        )
+
+    def validate(self, data):
+        workspace = request_workspace_or_raise(self)
+
+        inspiration = data.get('inspiration') or getattr(self.instance, 'inspiration', None)
+        if inspiration is None:
+            raise serializers.ValidationError({"inspiration": "This field is required."})
+
+        # Belt and braces: the queryset above already excludes other tenants,
+        # but this is the check that survives a future refactor of the field.
+        if inspiration.workspace_id != workspace.id:
+            raise serializers.ValidationError(
+                {"inspiration": "Inspiration must belong to the authorized workspace."}
+            )
+
+        if self.instance is not None and 'inspiration' in data:
+            if data['inspiration'] != self.instance.inspiration:
+                raise serializers.ValidationError(
+                    {"inspiration": "A signal cannot be moved to another inspiration."}
+                )
+
+        if self.instance is None:
+            if inspiration.lifecycle_status == BrandInspiration.LifecycleStatus.ARCHIVED:
+                raise serializers.ValidationError(
+                    {"inspiration": "Archived inspirations cannot receive new signals."}
+                )
+
+        return data
