@@ -64,6 +64,10 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # Serves the collected static files (Django admin CSS/JS) from the app
+    # process itself, which is how a single Render web service works - there
+    # is no separate static host in front of gunicorn.
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware', # CORS middleware
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -133,6 +137,16 @@ USE_TZ = True
 
 # Static files
 STATIC_URL = 'static/'
+# Where collectstatic gathers files at deploy time. Only the admin uses
+# statics today, but the build fails without a target directory.
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    # Compressed but NOT manifest storage: manifest mode hard-fails the whole
+    # deploy if any template references a static file that is missing, which
+    # is a worse failure mode than an uncompressed asset.
+    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage'},
+}
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 

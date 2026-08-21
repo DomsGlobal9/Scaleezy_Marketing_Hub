@@ -54,3 +54,6 @@ tzdata==2026.3
 uritemplate==4.2.0
 urllib3==2.7.0
 websockets==16.1.1
+
+# Static file serving for single-process deploys (Render)
+whitenoise>=6.8,<7
