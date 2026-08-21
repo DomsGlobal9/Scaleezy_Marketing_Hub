@@ -3,6 +3,7 @@
 import django.db.models.deletion
 from django.conf import settings
 from django.db import migrations, models
+from django.db.migrations.exceptions import IrreversibleError
 
 
 def _normalize(text):
@@ -45,6 +46,91 @@ def drop_normalized_columns(apps, schema_editor):
     """Nothing to undo: the columns are removed by reversing the AddFields."""
 
 
+def collapse_duplicate_preferences(apps, schema_editor):
+    """Retire pre-existing duplicates before the uniqueness rules land.
+
+    Under 0001 there was no uniqueness rule on USER rows at all, and the API
+    stamped every one of them CONFIRMED — so the exact data shape this
+    migration exists to remove is legal in any database written by the
+    previous code. Folding the columns is not enough: the constraints below
+    need those folded values to be UNIQUE, and `AddConstraint` on a table that
+    already violates them aborts the whole migration.
+
+    The old AI constraint keyed on the RAW `attribute`, so two AI rows on
+    'Headline_Face' and 'headline_face' were legal too and only collide once
+    folded. That half is the easy one to miss.
+
+    Nothing is deleted. Older rows are retired into a chain, each pointing at
+    the row immediately newer than it, and stamped with that row's
+    `created_at` rather than migration time so the recorded moment of change
+    stays truthful.
+    """
+    InspirationSignal = apps.get_model('inspirations', 'InspirationSignal')
+
+    # A USER row that was never stamped CONFIRMED could only have come from a
+    # bare ORM write; the API always stamped it. Treat it as the stated
+    # preference it was meant to be, so the new check constraint does not
+    # reject data the old code considered valid.
+    InspirationSignal.objects.filter(
+        origin='USER', user_confirmation='PENDING'
+    ).update(user_confirmation='CONFIRMED')
+
+    for origin, reason in (
+        ('USER', 'SUPERSEDED_BY_NEWER_USER_SIGNAL'),
+        ('AI', 'SUPERSEDED_BY_NEWER_AI_INFERENCE'),
+    ):
+        rows = InspirationSignal.objects.filter(
+            origin=origin, superseded_at__isnull=True
+        )
+        if origin == 'USER':
+            rows = rows.filter(user_confirmation='CONFIRMED')
+
+        groups = {}
+        for signal in rows.order_by('-created_at', '-id').iterator():
+            key = (signal.inspiration_id, signal.category, signal.normalized_attribute)
+            groups.setdefault(key, []).append(signal)
+
+        retired = []
+        for chain in groups.values():
+            if len(chain) < 2:
+                continue
+            # chain is newest-first, so each older row is superseded by its
+            # immediate successor and the history reads as a sequence instead
+            # of everything collapsing onto the survivor.
+            for older, successor in zip(chain[1:], chain[:-1]):
+                older.superseded_at = successor.created_at
+                older.superseded_reason = reason
+                older.superseded_by_id = successor.id
+                retired.append(older)
+
+        for start in range(0, len(retired), 500):
+            InspirationSignal.objects.bulk_update(
+                retired[start:start + 500],
+                ['superseded_at', 'superseded_reason', 'superseded_by'],
+            )
+
+
+def refuse_to_collapse_history(apps, schema_editor):
+    """Rolling this migration back would destroy the audit trail.
+
+    Reversing restores the old AI uniqueness rule, which is keyed on the raw
+    `attribute` and has no `superseded_at` predicate — so it cannot hold once
+    a re-analysis has filed a replacement alongside a superseded inference,
+    which is the normal steady state. The only way through would be deleting
+    the superseded rows, and those are exactly the history the CTO review
+    requires be kept.
+
+    Failing here is deliberate: it stops the rollback before any column is
+    dropped, and says what to do instead.
+    """
+    raise IrreversibleError(
+        "0002_preference_authority cannot be reversed: the old AI uniqueness "
+        "constraint cannot coexist with superseded signal history. To roll "
+        "back, first export inspirations_inspirationsignal, then decide "
+        "explicitly what happens to rows with superseded_at IS NOT NULL."
+    )
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -85,6 +171,9 @@ class Migration(migrations.Migration):
         migrations.RunPython(
             backfill_normalized_columns, drop_normalized_columns, elidable=True
         ),
+        migrations.RunPython(
+            collapse_duplicate_preferences, refuse_to_collapse_history
+        ),
         migrations.AddIndex(
             model_name='inspirationsignal',
             index=models.Index(fields=['inspiration', 'category', 'normalized_attribute'], name='inspiration_inspira_30d3c3_idx'),
@@ -100,5 +189,9 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name='inspirationsignal',
             constraint=models.CheckConstraint(condition=models.Q(('superseded_by', models.F('id')), _negated=True), name='inspiration_signal_no_self_supersession'),
+        ),
+        migrations.AddConstraint(
+            model_name='inspirationsignal',
+            constraint=models.CheckConstraint(condition=models.Q(('origin', 'USER'), ('user_confirmation', 'PENDING'), _negated=True), name='inspiration_signal_user_preference_is_confirmed'),
         ),
     ]

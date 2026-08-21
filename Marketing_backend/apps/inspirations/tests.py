@@ -1700,6 +1700,29 @@ class PreferenceAuthorityTests(InspirationTestBase):
         self.assertEqual(signal.normalized_value, 'condensed grotesque')
         self.assertEqual(signal.normalized_attribute, 'headline_face')
 
+    def test_an_unconfirmed_user_signal_cannot_sit_beside_the_authority(self):
+        """`user_confirmation` defaults to PENDING, which falls outside
+        `uniq_authoritative_user_signal`.
+
+        Without the check constraint an ORM writer that omits the field — the
+        default path for a job — creates a USER row that inserts cleanly next
+        to the real authority, and `eligible_for_retrieval()` returns both:
+        one attribute, two active truths. The API never produced this state,
+        so no request-level test would have caught it.
+        """
+        inspiration = self.make_inspiration()
+        authority = self.state_preference(inspiration, value='Condensed grotesque')
+        self.assertEqual(self.eligible_for(inspiration), [authority])
+
+        with self.assertRaises(IntegrityError):
+            InspirationSignal.objects.create(
+                inspiration=inspiration,
+                category='TYPOGRAPHY',
+                attribute='headline_face',
+                value='Serif display',
+                sentiment=InspirationSignal.Sentiment.DISLIKED,
+            )
+
     def test_database_refuses_self_supersession(self):
         """PR1-011. Longer cycles are unreachable: superseding a row
         deactivates it, and only active rows are ever superseded."""

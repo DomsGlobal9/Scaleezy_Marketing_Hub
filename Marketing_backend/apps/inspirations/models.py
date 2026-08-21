@@ -364,7 +364,17 @@ class InspirationSignalQuerySet(models.QuerySet):
             )
             .annotate(_under_user_authority=Exists(user_authority))
             .filter(
-                Q(origin=InspirationSignal.Origin.USER)
+                # CONFIRMED, not merely USER-origin. The check constraint below
+                # makes an unconfirmed stated preference unrepresentable, but
+                # the three places that decide "a USER signal that counts" —
+                # this clause, `authoritative_user_signals()` and
+                # `uniq_authoritative_user_signal` — have to name the same
+                # predicate, or the next person to relax one of them
+                # reintroduces two active truths for one attribute.
+                Q(
+                    origin=InspirationSignal.Origin.USER,
+                    user_confirmation=InspirationSignal.UserConfirmation.CONFIRMED,
+                )
                 | Q(_under_user_authority=False)
             )
         )
@@ -512,6 +522,17 @@ class InspirationSignal(models.Model):
                 condition=~models.Q(superseded_by=models.F('id')),
                 name='inspiration_signal_no_self_supersession',
             ),
+            # A stated preference is confirmed by definition — a person said
+            # it. `user_confirmation` defaults to PENDING for inferences, so
+            # without this an ORM writer that omits the field produces a USER
+            # row that falls OUTSIDE `uniq_authoritative_user_signal` and can
+            # therefore sit alongside the real authority, giving one attribute
+            # two active truths. The API never produced that state; a job
+            # would have.
+            models.CheckConstraint(
+                condition=~models.Q(origin='USER', user_confirmation='PENDING'),
+                name='inspiration_signal_user_preference_is_confirmed',
+            ),
         ]
 
     def save(self, *args, **kwargs):
@@ -570,6 +591,13 @@ class InspirationSignal(models.Model):
             }
         if self.user_confirmation == self.UserConfirmation.REJECTED:
             return {'eligible': False, 'reason': 'REJECTED_BY_USER'}
+        if (
+            self.origin == self.Origin.USER
+            and self.user_confirmation == self.UserConfirmation.PENDING
+        ):
+            # Unrepresentable while the check constraint stands. Kept so this
+            # verdict and the queryset never disagree about a row that exists.
+            return {'eligible': False, 'reason': 'AWAITING_USER_CONFIRMATION'}
         if self.conflicts_with_id:
             return {'eligible': False, 'reason': 'CONFLICTS_WITH_USER_SIGNAL'}
         parent = self.inspiration.retrieval_eligibility()
