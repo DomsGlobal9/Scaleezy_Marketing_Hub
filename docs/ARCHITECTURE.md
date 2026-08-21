@@ -12,9 +12,9 @@ End-to-end reference: schema, data flow, references, and how to plug in other mo
 
 ## 1) Schema
 
-12 tables across 8 Django apps. Every primary key is a UUID. Every business table hangs off `MarketingWorkspace`.
+26 tables across 16 Django apps. Every primary key is a UUID. Every business table hangs off `MarketingWorkspace`.
 
-### Tenancy
+### Tenancy (`apps.workspaces`)
 
 **`marketing_workspaces`** — the tenant root.
 
@@ -27,7 +27,7 @@ End-to-end reference: schema, data flow, references, and how to plug in other mo
 | `default_language` | varchar(10) | default `en` |
 | `created_at` / `updated_at` | timestamp | |
 
-### Social accounts
+### Social accounts (`apps.social_accounts`)
 
 **`social_connections`** — one row per connected channel.
 
@@ -48,29 +48,39 @@ Enums:
 
 **`social_account_audit_logs`** — FK'd audit trail. `workspace`, `social_connection`, `user`, `action` (11 choices), `old_value`, `new_value`, `error_message`, `ip_address`, `user_agent`.
 
-### Assets
+### Assets (`apps.marketing`)
 
 **`marketing_assets`** — metadata only; bytes live in Supabase Storage.
 
 `asset_type` (`POSTER`/`IMAGE`/`VIDEO`/`OTHER_SUPPORTED_ASSET`), `source` (`GEMINI_GENERATED`/`MANUAL_UPLOAD`), `file_name`, `file_url`, `storage_path`, `mime_type`, `file_size`, `width`, `height`, `duration`, `generation_id` (soft ref to a Gemini result), `created_by`.
 
-### Publishing
+### Brand Kits & Layouts (`apps.brands` & `apps.layouts`)
+
+**`brands`** — Centralized brand identity. `logo_url`, `primary_color`, `secondary_color`, `font_family`.
+**`apps.layouts`** — Compose posters natively strictly adhering to the configured brand identity.
+
+### Content Generation & Feedback (`apps.content` & `apps.feedback`)
+
+**`content_items`** — Stores generated content before publishing. Subject to a human-in-the-loop review gate.
+**`feedback_elements`** & **`feedback`** — Tracks explicit human reviewer verdicts (e.g. tone too casual) to continuously reinforce and optimize the AI model.
+
+### AI Orchestration (`apps.ai` & `apps.gemini`)
+
+**`ai_providers`**, **`workspace_ai_providers`**, **`workspace_ai_routes`** — Dynamic provider layer for routing capabilities to models based on cost, context, and configurations.
+**`ai_usage_logs`** — Tracks provider usage.
+**`gemini_generation_requests`** & **`gemini_generation_results`** — Context-aware orchestration engine specific to Gemini endpoints.
+
+### Publishing & Jobs (`apps.publishing` & `apps.jobs`)
 
 **`publishing_jobs`** — one user action. `workspace`, `asset`, `created_by`, `status` (8 choices), `publish_mode` (`NOW`/`SCHEDULED`), `scheduled_at`, `timezone`, `created_at`, `started_at`, `completed_at`.
 
 **`publishing_job_items`** — one row per target channel. This is the fan-out and the job↔connection join.
 
-`publishing_job` (FK), `social_connection` (FK), `status` (`QUEUED`/`PUBLISHING`/`PUBLISHED`/`FAILED`/`RETRYING`/`CANCELLED`), `external_post_id`, `external_post_url`, `error_code`, `error_message`, `retry_count`, `queued_at`, `published_at`, `failed_at`.
+**`task_runs`** — Durable, queue-based background task runner to handle resilient social publishing independent of the web request lifecycle.
 
-Constraint: `UNIQUE (publishing_job, social_connection)` — a job cannot double-post to the same account.
+### Analytics & Billing (`apps.analytics` & `apps.billing`)
 
-### AI generation
-
-**`gemini_generation_requests`** — the campaign brief. `workspace`, `user`, `prompt_data`, plus the structured fields the form collects: `campaign_name`, `product`, `target_audience`, `location`, `occasion`, `offer`, `brand_tone`, `content_format`, `visual_direction`. Then `status` (`PENDING`/`GENERATING`/`COMPLETED`/`FAILED`), `provider` (fixed `GOOGLE_GEMINI`), `model`, `error_message`.
-
-**`gemini_generation_results`** — OneToOne with the request. `asset` (FK, nullable), `generated_text`, `generated_asset_url`, `metadata` (JSON).
-
-### Analytics — pre-aggregated
+**`plans`** & **`subscriptions`** — SaaS tiering ensuring soft and hard AI spend limits.
 
 | Table | Grain | Columns |
 |---|---|---|
@@ -80,7 +90,7 @@ Constraint: `UNIQUE (publishing_job, social_connection)` — a job cannot double
 
 These are **stored aggregates**, not derived at query time from publishing data.
 
-### Audit (second system)
+### Audit (`apps.audit`)
 
 **`audit_logs`** — denormalized. `workspace` (FK) but `user`, `platform`, `account` are plain strings. `date`, `action`, `previous_state`, `next_state`, `result`, `error`.
 

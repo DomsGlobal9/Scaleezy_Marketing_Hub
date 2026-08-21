@@ -34,11 +34,6 @@ class WorkspaceScopedMixin:
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        user = getattr(self.request, 'user', None)
-
-        # Staff bypass exists for Django admin and support tooling only.
-        if user and user.is_authenticated and user.is_staff:
-            return queryset
 
         workspace_ids = self.accessible_workspace_ids()
         if not workspace_ids:

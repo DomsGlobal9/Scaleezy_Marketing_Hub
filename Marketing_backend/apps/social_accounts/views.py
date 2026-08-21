@@ -87,6 +87,12 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 error={"code": e.error_code, "message": e.safe_message},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except MetaAPIError as e:
+            return APIResponse(
+                success=False,
+                error={"code": e.error_code, "message": e.safe_message},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except Exception as e:
             if str(e) == "NOT_CONFIGURED":
                 return APIResponse(
