@@ -16,5 +16,6 @@ urlpatterns = [
     path('api/marketing/', include('apps.gemini.urls')),
     path('api/marketing/publishing/', include('apps.publishing.urls')),
     path('api/marketing/analytics/', include('apps.analytics.urls')),
+    path('api/marketing/knowledge/', include('apps.knowledge.urls')),
     # Other paths will be added here
 ]
