@@ -15,8 +15,8 @@ def process_source(source_id: str):
         logger.info(f"Processing source {source.id}")
         
         # In PR6, actual processing logic goes here
-        # For now, just mark it ready
-        source.status = BrandSource.SourceStatus.READY
+        # For now, just mark it PROCESSING (not READY) as it is a stub
+        source.status = BrandSource.SourceStatus.PROCESSING
         source.save()
         
         # Enqueue memory extraction (stub)

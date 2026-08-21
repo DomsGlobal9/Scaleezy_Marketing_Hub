@@ -27,7 +27,7 @@ class MetaViewsTests(TestCase):
         )
         self.client.force_authenticate(user=self.user)
 
-    @patch('apps.social_accounts.views.SocialConnectionViewSet._get_adapter')
+    @patch('apps.social_accounts.views.SocialConnectionViewSet.get_adapter')
     def test_connect_handles_meta_api_error(self, mock_get_adapter):
         """
         Verify that if the Meta adapter raises a MetaAPIError (like MetaConfigurationError)
@@ -51,10 +51,10 @@ class MetaViewsTests(TestCase):
         resp_data = response.json()
         self.assertFalse(resp_data.get('success'))
         self.assertIn('error', resp_data)
-        self.assertEqual(resp_data['error'].get('code'), 'configuration_error')
+        self.assertEqual(resp_data['error'].get('code'), 'META_NOT_CONFIGURED')
         self.assertEqual(resp_data['error'].get('message'), "Missing Meta credentials")
 
-    @patch('apps.social_accounts.views.SocialConnectionViewSet._get_adapter')
+    @patch('apps.social_accounts.views.SocialConnectionViewSet.get_adapter')
     def test_oauth_callback_handles_meta_api_error(self, mock_get_adapter):
         """
         Verify that if the Meta adapter raises a MetaAPIError during oauth_callback(),
@@ -78,5 +78,5 @@ class MetaViewsTests(TestCase):
         resp_data = response.json()
         self.assertFalse(resp_data.get('success'))
         self.assertIn('error', resp_data)
-        self.assertEqual(resp_data['error'].get('code'), 'configuration_error')
+        self.assertEqual(resp_data['error'].get('code'), 'META_NOT_CONFIGURED')
         self.assertEqual(resp_data['error'].get('message'), "Invalid state")

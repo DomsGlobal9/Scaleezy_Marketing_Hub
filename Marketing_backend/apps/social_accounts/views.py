@@ -191,6 +191,14 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 error={"code": e.error_code, "message": e.safe_message},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except MetaAPIError as e:
+            logger.warning(f"OAuth callback failed for {platform}: {e}")
+            return APIResponse(
+                success=False,
+                message=e.safe_message,
+                error={"code": e.error_code, "message": e.safe_message},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except MarketingWorkspace.DoesNotExist:
             logger.error(f"OAuth callback — workspace not found")
             return APIResponse(

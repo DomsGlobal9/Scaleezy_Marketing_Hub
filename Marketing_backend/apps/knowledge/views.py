@@ -46,6 +46,22 @@ class BrandSourceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             created_by=self.request.user
         )
 
+    def destroy(self, request, *args, **kwargs):
+        # Hard deletion is disabled to maintain provenance. Use revoke instead.
+        return APIResponse(success=False, message="Hard deletion is disabled. Use the revoke action instead.", status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    @action(detail=True, methods=['post'])
+    def revoke(self, request, pk=None):
+        source = self.get_object()
+        if source.status == BrandSource.SourceStatus.ARCHIVED:
+            return APIResponse(success=False, message="Source is already archived", status=status.HTTP_400_BAD_REQUEST)
+        
+        source.status = BrandSource.SourceStatus.ARCHIVED
+        source.save(update_fields=['status'])
+        
+        # Here we might also enqueue a task to cascade revocation to memories
+        return APIResponse(success=True, message="Source archived successfully")
+
     @action(
         detail=False,
         methods=['post'],
@@ -142,11 +158,3 @@ class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         memory.status = BrandMemory.MemoryStatus.REJECTED
         memory.save(update_fields=['status'])
         return APIResponse(success=True, message="Memory rejected")
-        
-    @action(detail=True, methods=['post'])
-    def resolve_conflict(self, request, pk=None):
-        # Placeholder for conflict resolution logic (superseding, etc.)
-        memory = self.get_object()
-        memory.status = BrandMemory.MemoryStatus.CONFIRMED
-        memory.save(update_fields=['status'])
-        return APIResponse(success=True, message="Conflict resolved")
