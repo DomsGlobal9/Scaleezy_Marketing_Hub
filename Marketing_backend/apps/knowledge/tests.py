@@ -35,6 +35,13 @@ class KnowledgeAPITests(TestCase):
         self.brand2 = Brand.objects.create(workspace=self.workspace2, name='Brand 2')
         self.client2.force_authenticate(user=self.user2)
 
+        self.source1 = BrandSource.objects.create(
+            workspace=self.workspace1,
+            brand=self.brand1,
+            title='Test Source 1',
+            created_by=self.user1
+        )
+
     def test_create_source_tenant_isolation(self):
         # User 1 creates source in Workspace 1
         url = '/api/marketing/knowledge/sources/'
@@ -54,18 +61,9 @@ class KnowledgeAPITests(TestCase):
         self.assertEqual(response2.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_process_source_action(self):
-        source = BrandSource.objects.create(
-            workspace=self.workspace1,
-            brand=self.brand1,
-            title='Test Source',
-            created_by=self.user1
-        )
-        url = f'/api/marketing/knowledge/sources/{source.id}/process/'
+        url = f'/api/marketing/knowledge/sources/{self.source1.id}/process/'
         response = self.client1.post(url, HTTP_X_WORKSPACE_ID=str(self.workspace1.id))
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        
-        source.refresh_from_db()
-        self.assertEqual(source.status, BrandSource.SourceStatus.QUEUED)
+        self.assertEqual(response.status_code, status.HTTP_501_NOT_IMPLEMENTED)
 
     def test_memory_tenant_isolation(self):
         source = BrandSource.objects.create(
@@ -166,3 +164,64 @@ class KnowledgeAPITests(TestCase):
         memory = BrandMemory.objects.get(id=response.json()['id'])
         # It should fall back to the model's default, which is CANDIDATE
         self.assertEqual(memory.status, BrandMemory.MemoryStatus.CANDIDATE)
+
+    def test_cross_tenant_upload_brand_injection(self):
+        # Client 1 tries to upload a file but assigns it to Brand 2 (which belongs to workspace 2)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        url = '/api/marketing/knowledge/sources/upload/'
+        file_obj = SimpleUploadedFile("test_file.txt", b"dummy content", content_type="text/plain")
+        data = {
+            'brand': str(self.brand2.id),
+            'file': file_obj
+        }
+        response = self.client1.post(url, data, format='multipart', HTTP_X_WORKSPACE_ID=str(self.workspace1.id))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Invalid pk", response.json()['error']['brand'][0])
+
+    def test_patch_relationship_injection_brand(self):
+        # Create a memory in workspace 1
+        memory = BrandMemory.objects.create(
+            workspace=self.workspace1,
+            brand=self.brand1,
+            memory_type=BrandMemory.MemoryType.FACT,
+            content="Original content"
+        )
+        url = f'/api/marketing/knowledge/memories/{memory.id}/'
+        # Try to change its brand to brand 2
+        data = {'brand': str(self.brand2.id)}
+        response = self.client1.patch(url, data, format='json', HTTP_X_WORKSPACE_ID=str(self.workspace1.id))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_patch_relationship_injection_supersedes(self):
+        # Create two memories in workspace 1
+        memory1 = BrandMemory.objects.create(
+            workspace=self.workspace1,
+            brand=self.brand1,
+            memory_type=BrandMemory.MemoryType.FACT,
+            content="Mem 1"
+        )
+        # Create a memory in workspace 2
+        memory2 = BrandMemory.objects.create(
+            workspace=self.workspace2,
+            brand=self.brand2,
+            memory_type=BrandMemory.MemoryType.FACT,
+            content="Mem 2"
+        )
+        
+        url = f'/api/marketing/knowledge/memories/{memory1.id}/'
+        # Try to supersede memory2 from workspace 1
+        data = {'supersedes': str(memory2.id)}
+        response = self.client1.patch(url, data, format='json', HTTP_X_WORKSPACE_ID=str(self.workspace1.id))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_process_archived_source(self):
+        url = f'/api/marketing/knowledge/sources/{self.source1.id}/process/'
+        
+        # Archive it first
+        revoke_url = f'/api/marketing/knowledge/sources/{self.source1.id}/revoke/'
+        self.client1.post(revoke_url, HTTP_X_WORKSPACE_ID=str(self.workspace1.id))
+        
+        # Now try to process it
+        response = self.client1.post(url, HTTP_X_WORKSPACE_ID=str(self.workspace1.id))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Archived sources cannot be processed", response.json()['message'])

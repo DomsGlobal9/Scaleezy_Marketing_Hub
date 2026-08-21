@@ -17,7 +17,6 @@ from apps.workspaces.models import WorkspaceMember
 from apps.marketing.services.storage import StorageError, SupabaseStorageService
 from .models import BrandSource, BrandMemory
 from .serializers import BrandSourceSerializer, BrandMemorySerializer, BrandSourceUploadSerializer
-from .tasks import process_source
 
 class BrandSourceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     queryset = BrandSource.objects.all()
@@ -70,14 +69,13 @@ class BrandSourceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     )
     def upload(self, request):
         workspace = self._authorised_workspace()
-        serializer = BrandSourceUploadSerializer(data=request.data)
+        serializer = BrandSourceUploadSerializer(data=request.data, context={'request': request})
         if not serializer.is_valid():
             return APIResponse(success=False, error=serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
         file_obj = serializer.validated_data['file']
-        brand_id = request.data.get('brand')
-        if not brand_id:
-            return APIResponse(success=False, message="brand is required", status=status.HTTP_400_BAD_REQUEST)
+        brand = serializer.validated_data['brand']
+        brand_id = brand.id
 
         # Basic mime type guess
         mime_type, _ = mimetypes.guess_type(file_obj.name)
@@ -109,16 +107,14 @@ class BrandSourceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def process(self, request, pk=None):
         source = self.get_object()
-        if source.status in [BrandSource.SourceStatus.PROCESSING, BrandSource.SourceStatus.QUEUED]:
-            return APIResponse(success=False, message="Source is already processing", status=status.HTTP_400_BAD_REQUEST)
+        if source.status == BrandSource.SourceStatus.ARCHIVED:
+            return APIResponse(success=False, message="Archived sources cannot be processed", status=status.HTTP_400_BAD_REQUEST)
             
-        source.status = BrandSource.SourceStatus.QUEUED
-        source.save(update_fields=['status'])
-        
-        # Enqueue the background task
-        process_source.enqueue(str(source.id))
-        
-        return APIResponse(success=True, message="Source processing queued")
+        return APIResponse(
+            success=False, 
+            message="Processing is not implemented until PR6.", 
+            status=status.HTTP_501_NOT_IMPLEMENTED
+        )
 
 
 class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):

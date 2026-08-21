@@ -19,9 +19,12 @@ class BrandSourceSerializer(serializers.ModelSerializer):
         if error or not workspace:
             raise serializers.ValidationError("Workspace is required and must be valid.")
         
-        brand = data.get('brand')
+        brand = data.get('brand') or getattr(self.instance, 'brand', None)
         if brand and brand.workspace_id != workspace.id:
             raise serializers.ValidationError({"brand": "Brand must belong to the authorized workspace."})
+
+        if self.instance and 'brand' in data and data['brand'] != self.instance.brand:
+            raise serializers.ValidationError({"brand": "Brand cannot be changed once set."})
             
         return data
 
@@ -43,18 +46,21 @@ class BrandMemorySerializer(serializers.ModelSerializer):
         if error or not workspace:
             raise serializers.ValidationError("Workspace is required and must be valid.")
             
-        brand = data.get('brand')
+        brand = data.get('brand') or getattr(self.instance, 'brand', None)
         if brand and brand.workspace_id != workspace.id:
             raise serializers.ValidationError({"brand": "Brand must belong to the authorized workspace."})
+
+        if self.instance and 'brand' in data and data['brand'] != self.instance.brand:
+            raise serializers.ValidationError({"brand": "Brand cannot be changed once set."})
             
-        source = data.get('source')
+        source = data.get('source') or getattr(self.instance, 'source', None)
         if source:
             if source.workspace_id != workspace.id:
                 raise serializers.ValidationError({"source": "Source must belong to the authorized workspace."})
             if brand and source.brand_id != brand.id:
                 raise serializers.ValidationError({"source": "Source must belong to the same brand."})
                 
-        supersedes = data.get('supersedes')
+        supersedes = data.get('supersedes') or getattr(self.instance, 'supersedes', None)
         if supersedes:
             if supersedes.workspace_id != workspace.id:
                 raise serializers.ValidationError({"supersedes": "Superseded memory must belong to the authorized workspace."})
