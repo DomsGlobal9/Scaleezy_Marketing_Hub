@@ -44,6 +44,15 @@ class Brand(models.Model):
 
     name = models.CharField(max_length=255)
     industry = models.CharField(max_length=100, blank=True)
+    website = models.URLField(max_length=500, blank=True)
+    location = models.CharField(max_length=255, blank=True)
+
+    # What the brand is, and who it is for, in the operator's own words. These
+    # are first-party statements, not sourced knowledge — brand guidelines stay
+    # in Knowledge, where a source can be revoked and the brain recompiled
+    # without it.
+    description = models.TextField(blank=True)
+    audience = models.TextField(blank=True)
 
     # Visual identity
     palette = models.JSONField(default=default_palette, blank=True)
@@ -60,6 +69,11 @@ class Brand(models.Model):
     # Market context
     instagram_handle = models.CharField(max_length=100, blank=True)
     competitors = models.JSONField(default=list, blank=True)
+    # [{name, description}] and {platform: url}. A JSONField stores whatever it
+    # is handed, so the shape is enforced in BrandSerializer rather than left
+    # to whichever client wrote last.
+    products_services = models.JSONField(default=list, blank=True)
+    social_links = models.JSONField(default=dict, blank=True)
 
     # Logo. Stored on the brand rather than as a MarketingAsset so brand
     # artwork does not appear in the publishable asset library.

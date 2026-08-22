@@ -10,7 +10,7 @@ configured — and the response contract the frontend already speaks.
 """
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework import status
 
 from apps.ai.models import Capability
@@ -22,6 +22,7 @@ from apps.content.models import ContentItem
 from apps.knowledge.models import BrandMemory, BrandSource
 from apps.learning.models import BrandRule
 from apps.learning.services import create_explicit_rule
+from apps.marketing.models import MarketingAsset
 from apps.workspaces.models import WorkspaceMember
 
 GENERATE_URL = '/api/marketing/gemini/generate/'
@@ -256,7 +257,7 @@ class GenerationRoutingTests(TenantFixtureMixin, TestCase):
         data = response.json()['data']
         for key in (
             'postTitle', 'postDescription', 'postHashtags', 'posterImageUrl',
-            'contentItemId', 'metadata',
+            'contentItemId', 'assetId', 'metadata',
         ):
             with self.subTest(key=key):
                 self.assertIn(key, data)
@@ -278,6 +279,37 @@ class GenerationRoutingTests(TenantFixtureMixin, TestCase):
         self.assertEqual(item.brand_id, self.brand1.id)
         self.assertEqual(item.headline, 'Roasted this week')
         self.assertEqual(item.status, ContentItem.Status.DRAFT)
+
+    @override_settings(STORAGE_TEST_MODE=True)
+    def test_inline_provider_image_is_durable_before_content_is_returned(self):
+        def inline_image(self_router, capability, brief, content_item_id=None):
+            if capability == Capability.TEXT:
+                return dict(FAKE_TEXT_RESULT)
+            return {
+                'image_url': 'data:image/png;base64,aW1hZ2UtYnl0ZXM=',
+                'image_base64': 'aW1hZ2UtYnl0ZXM=',
+                'mime_type': 'image/png',
+                'provider': 'OPENAI',
+                'provider_name': 'OpenAI',
+            }
+
+        with patch('apps.ai.router.AIRouter.dispatch', inline_image):
+            response = self.client1.post(
+                GENERATE_URL, self.payload(), format='json',
+                **workspace_header(self.workspace1),
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content[:300])
+        data = response.json()['data']
+        self.assertTrue(data['posterImageUrl'].startswith('https://storage.test/generated/'))
+        self.assertNotIn('base64', data['posterImageUrl'])
+        self.assertTrue(data['assetId'])
+
+        item = ContentItem.objects.select_related('asset').get(pk=data['contentItemId'])
+        self.assertEqual(str(item.asset_id), data['assetId'])
+        self.assertEqual(item.preview_url, data['posterImageUrl'])
+        self.assertEqual(item.asset.source, MarketingAsset.Source.AI_GENERATED)
+        self.assertEqual(item.asset.file_url, data['posterImageUrl'])
 
 
 class ConcurrentGenerationTests(GenerationRoutingTests):

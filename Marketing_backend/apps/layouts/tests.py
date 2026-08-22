@@ -334,6 +334,33 @@ class LayoutAPITests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
         self.assertFalse(MarketingAsset.objects.exists())
 
+    def test_render_cannot_replace_media_after_content_is_approved(self):
+        approved_asset = MarketingAsset.objects.create(
+            workspace=self.ws,
+            file_name='approved.jpg',
+            file_url='https://storage.test/approved.jpg',
+            source=MarketingAsset.Source.MANUAL_UPLOAD,
+        )
+        self.item.asset = approved_asset
+        self.item.preview_url = approved_asset.file_url
+        self.item.status = ContentItem.Status.APPROVED
+        self.item.save(update_fields=['asset', 'preview_url', 'status'])
+        self.as_(self.editor)
+
+        res = self.client.post(
+            '/api/marketing/layouts/render/',
+            {'content_item': str(self.item.id), 'layout': 'data_hero'},
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error']['code'], 'CONTENT_LOCKED')
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.asset, approved_asset)
+        self.assertEqual(self.item.preview_url, approved_asset.file_url)
+        self.assertEqual(self.item.layout_plugin, '')
+        self.assertEqual(MarketingAsset.objects.count(), 1)
+
     @patch('apps.layouts.views.SupabaseStorageService.upload_and_describe')
     def test_render_reports_a_storage_failure_rather_than_lying(self, upload):
         upload.side_effect = StorageError("Storage rejected the upload (500).")

@@ -9,9 +9,7 @@
  */
 import { Link } from "@tanstack/react-router";
 import {
-  ArrowRight,
   BookOpen,
-  Check,
   Lightbulb,
   Loader2,
   Sparkles,
@@ -28,6 +26,7 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { Failed } from "@/components/marketing/brand-master-primitives";
+import { StageRail } from "@/components/marketing/stage-rail";
 import {
   READINESS_COPY,
   fetchOnboarding,
@@ -164,34 +163,16 @@ export function TeachScaleezy({
         the tab that owns it — progress made anywhere in Brand Master counts here.
       </p>
 
-      {/* Stage rail */}
-      <ol className="flex flex-wrap items-center gap-2">
-        {STAGES.map((step, index) => {
-          const done = stageIndex === -1 || index < stageIndex;
-          const active = step.key === stage;
-          const skipped = summary.onboarding.skipped_steps.includes(step.key);
-          return (
-            <li key={step.key} className="flex items-center gap-2">
-              <span
-                className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${
-                  active
-                    ? "border-foreground bg-foreground text-background"
-                    : done
-                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700"
-                      : "border-border text-muted-foreground"
-                }`}
-              >
-                {done ? <Check className="size-3" /> : null}
-                {step.label}
-                {skipped && !done ? <span className="opacity-70">(skipped)</span> : null}
-              </span>
-              {index < STAGES.length - 1 ? (
-                <ArrowRight className="size-3 text-muted-foreground/50" />
-              ) : null}
-            </li>
-          );
-        })}
-      </ol>
+      <StageRail
+        steps={STAGES.map((step, index) => ({
+          key: step.key,
+          label: step.label,
+          // stageIndex === -1 is the DONE stage: nothing is still ahead.
+          done: stageIndex === -1 || index < stageIndex,
+          active: step.key === stage,
+          skipped: summary.onboarding.skipped_steps.includes(step.key),
+        }))}
+      />
 
       {/* Readiness strip */}
       <Card>
@@ -308,7 +289,9 @@ export function TeachScaleezy({
   );
 }
 
-function StagePanel({
+/** Exported for the onboarding wizard, which shows the same prompts in its
+ *  own order rather than a second copy of them. */
+export function StagePanel({
   icon,
   title,
   body,
@@ -335,7 +318,7 @@ function StagePanel({
   );
 }
 
-function CalibrationPanel({
+export function CalibrationPanel({
   directions,
   busy,
   onCalibrate,

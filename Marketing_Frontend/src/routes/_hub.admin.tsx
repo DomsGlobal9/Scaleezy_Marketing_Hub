@@ -3,25 +3,13 @@ import { ShieldCheck } from "lucide-react";
 
 import { AIProvidersPanel } from "@/components/marketing/ai-providers-panel";
 import { PageHeader } from "@/components/marketing/primitives";
-import { api } from "@/lib/api";
-import { readActiveWorkspaceId } from "@/lib/workspace";
-
-interface CurrentUser {
-  memberships: Array<{
-    workspace_id: string;
-    role: string;
-  }>;
-}
+import { getSelectedWorkspace } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub/admin")({
   beforeLoad: async ({ preload }) => {
     if (preload) return;
 
-    const activeWorkspaceId = readActiveWorkspaceId();
-    const user = await api<CurrentUser>("/api/auth/me/");
-    const role = user.memberships.find(
-      (membership) => membership.workspace_id === activeWorkspaceId,
-    )?.role;
+    const role = getSelectedWorkspace()?.role;
 
     if (role !== "OWNER" && role !== "ADMIN") {
       throw redirect({ to: "/", replace: true });

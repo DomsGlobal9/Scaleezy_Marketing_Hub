@@ -14,8 +14,14 @@ whatever succeeded: a failed poster costs a poster, never the copy that was
 already written. Retrying is per-capability for the same reason — repeating
 work that succeeded is how failover turns into duplicate spend.
 """
+import base64
+import binascii
 import logging
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+
+import httpx
+from django.core.files.base import ContentFile
 
 from apps.ai.models import Capability
 from apps.ai.router import AIRouter, NoProviderAvailable
@@ -43,6 +49,103 @@ class NoProviderConfigured(Exception):
 
 class OutputRejected(Exception):
     """The provider returned something that fails deterministic checks."""
+
+
+MAX_GENERATED_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def persist_generated_image(workspace, result):
+    """Replace provider-temporary image data with durable platform storage.
+
+    Provider adapters normalize their output, but they do not own customer
+    assets. Inline base64 and explicitly ephemeral hosted URLs are copied into
+    the existing workspace storage boundary before any ContentItem records the
+    result. Stable provider/CDN URLs are left alone for compatibility.
+    """
+    if not isinstance(result, dict):
+        raise OutputRejected("Image provider returned no structured result.")
+
+    image_url = str(result.get('image_url') or '')
+    encoded = str(result.get('image_base64') or '')
+    mime_type = str(result.get('mime_type') or '')
+
+    if not encoded and image_url.startswith('data:'):
+        try:
+            header, encoded = image_url.split(',', 1)
+            mime_type = mime_type or header[5:].split(';', 1)[0]
+        except ValueError as exc:
+            raise OutputRejected("Image provider returned an invalid data URL.") from exc
+
+    try:
+        if encoded:
+            payload = base64.b64decode(encoded, validate=True)
+        elif result.get('image_url_ephemeral'):
+            if not image_url.startswith('https://'):
+                raise OutputRejected("Ephemeral image URL must use HTTPS.")
+            response = httpx.get(image_url, timeout=30.0, follow_redirects=True)
+            response.raise_for_status()
+            payload = response.content
+            mime_type = mime_type or response.headers.get('content-type', '').split(';', 1)[0]
+        else:
+            return result
+    except (ValueError, binascii.Error) as exc:
+        raise OutputRejected("Image provider returned invalid base64 data.") from exc
+    except httpx.HTTPError as exc:
+        raise OutputRejected("Provider image could not be copied to durable storage.") from exc
+
+    if not payload or len(payload) > MAX_GENERATED_IMAGE_BYTES:
+        raise OutputRejected("Generated image is empty or exceeds the 20 MB limit.")
+    if not mime_type.startswith('image/'):
+        raise OutputRejected("Generated media is not an image.")
+
+    suffix = {
+        'image/jpeg': 'jpg',
+        'image/png': 'png',
+        'image/webp': 'webp',
+        'image/gif': 'gif',
+    }.get(mime_type, 'img')
+    filename = f'generated-{uuid.uuid4().hex}.{suffix}'
+    upload = ContentFile(payload, name=filename)
+    upload.content_type = mime_type
+
+    from apps.marketing.services.storage import SupabaseStorageService
+
+    stored = SupabaseStorageService.upload_and_describe(
+        str(workspace.pk), upload, filename, prefix='generated'
+    )
+    return {
+        **result,
+        'image_url': stored['url'],
+        'storage_path': stored['path'],
+        'mime_type': mime_type,
+        'file_size': len(payload),
+        'file_name': filename,
+        # Never carry the large provider payload beyond this boundary.
+        'image_base64': '',
+        'image_url_ephemeral': False,
+    }
+
+
+def create_generated_asset(workspace, result_data, *, user=None):
+    """Create the durable MarketingAsset described by a normalized payload."""
+    metadata = result_data.get('metadata') or {}
+    image = metadata.get('generated_image') or {}
+    if not isinstance(image, dict) or not image.get('image_url'):
+        return None
+
+    from apps.marketing.models import MarketingAsset
+
+    return MarketingAsset.objects.create(
+        workspace=workspace,
+        asset_type=MarketingAsset.AssetType.IMAGE,
+        file_name=str(image.get('file_name') or 'generated-image')[:255],
+        file_url=str(image['image_url'])[:1000],
+        storage_path=str(image.get('storage_path') or '')[:1000] or None,
+        mime_type=str(image.get('mime_type') or '')[:100] or None,
+        file_size=image.get('file_size') or None,
+        source=MarketingAsset.Source.AI_GENERATED,
+        created_by=user,
+    )
 
 
 #: Cheap deterministic checks per capability. No extra LLM call — these catch
@@ -109,6 +212,8 @@ def generate_with_context(workspace, brand, task_type=TaskType.COPY, *, instruct
         raise NoProviderConfigured(str(exc)) from exc
 
     validate_output(capability, result, context)
+    if capability == Capability.IMAGE:
+        result = persist_generated_image(workspace, result)
 
     return {
         'result': result,
@@ -216,6 +321,19 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
                     'provider': text.get('provider', ''),
                 }
 
+    if image is not None:
+        try:
+            image = persist_generated_image(workspace, image)
+        except Exception as exc:
+            # Storage is part of completing an image. Keep successfully
+            # generated copy, but never call a temporary/truncated image done.
+            trace['capabilities'][Capability.IMAGE] = {
+                'status': 'FAILED',
+                'error': str(exc)[:300],
+                'error_type': type(exc).__name__,
+            }
+            image = None
+
     if text is None:
         failure = trace['capabilities'].get(Capability.TEXT, {})
         if failure.get('error_type') == 'NoProviderAvailable':
@@ -276,7 +394,14 @@ def generate_marketing_payload(workspace, brief, *, instruction=''):
             'postDescription': text.get('caption') or raw.get('postDescription', ''),
             'postHashtags': text.get('hashtags') or raw.get('postHashtags', ''),
             'posterImageUrl': image.get('image_url', ''),
-            'metadata': raw.get('metadata', {}),
+            'metadata': {
+                **(raw.get('metadata', {}) or {}),
+                **({'generated_image': {
+                    key: image.get(key)
+                    for key in ('image_url', 'storage_path', 'mime_type', 'file_size', 'file_name')
+                    if image.get(key) not in (None, '')
+                }} if image else {}),
+            },
         },
     }
 
@@ -290,6 +415,6 @@ def retry_image(workspace, brand, brief_extra, *, instruction=''):
     try:
         result = AIRouter(workspace).dispatch(Capability.IMAGE, brief)
         validate_output(Capability.IMAGE, result, context)
-        return result
+        return persist_generated_image(workspace, result)
     except NoProviderAvailable as exc:
         raise NoProviderConfigured(str(exc)) from exc

@@ -253,3 +253,118 @@ class BrandAPITests(APITestCase):
         self.assertEqual(self.brand_a.cta_keyword, 'EXPERIENCE COMFORT')
         self.assertTrue(self.brand_a.show_phone_on_posters)
         self.assertEqual(self.brand_a.competitors, ['@andamen'])
+
+    # ── business profile ─────────────────────────────────────────────────
+    PROFILE = {
+        'website': 'https://loom.example/',
+        'location': 'Kochi, Kerala',
+        'audience': 'Coastal homeowners furnishing a first house.',
+        'description': 'Handwoven textiles made on the Malabar coast.',
+        'products_services': [
+            {'name': 'Throw blankets', 'description': 'Cotton, handloom.'},
+            {'name': 'Cushion covers', 'description': ''},
+        ],
+        'social_links': {'instagram': 'https://instagram.com/loom'},
+    }
+
+    def test_business_profile_fields_round_trip_through_the_api(self):
+        """`fields = '__all__'` is the only thing making these writable.
+
+        If that ever narrows to an explicit list, the six fields go read-only
+        without any error, and the settings form silently stops saving.
+        """
+        self.as_(self.alice, self.ws_a)
+        res = self.client.post(
+            '/api/marketing/brands/', {'name': 'Loom & Co', **self.PROFILE}, format='json'
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+
+        brand = Brand.objects.get(name='Loom & Co')
+        for field, expected in self.PROFILE.items():
+            with self.subTest(field=field):
+                self.assertEqual(getattr(brand, field), expected)
+
+        read = self.client.get(f'/api/marketing/brands/{brand.id}/')
+        self.assertEqual(read.status_code, status.HTTP_200_OK)
+        for field, expected in self.PROFILE.items():
+            with self.subTest(field=field):
+                self.assertEqual(read.data[field], expected)
+
+    def test_a_product_without_a_description_reads_back_with_an_empty_one(self):
+        self.as_(self.alice, self.ws_a)
+        res = self.client.patch(
+            f'/api/marketing/brands/{self.brand_a.id}/',
+            {'products_services': [{'name': '  Cushion covers  '}]},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.brand_a.refresh_from_db()
+        self.assertEqual(
+            self.brand_a.products_services, [{'name': 'Cushion covers', 'description': ''}]
+        )
+
+    def test_products_services_stores_only_the_two_known_keys(self):
+        """A JSONField keeps whatever it is handed for the life of the row."""
+        self.as_(self.alice, self.ws_a)
+        self.client.patch(
+            f'/api/marketing/brands/{self.brand_a.id}/',
+            {'products_services': [{'name': 'Rug', 'description': 'Jute', 'price': 4999}]},
+            format='json',
+        )
+        self.brand_a.refresh_from_db()
+        self.assertEqual(
+            self.brand_a.products_services, [{'name': 'Rug', 'description': 'Jute'}]
+        )
+
+    def test_products_services_rejects_anything_that_is_not_a_named_item(self):
+        self.as_(self.alice, self.ws_a)
+        for bad in (
+            {'name': 'an object, not a list'},
+            ['a bare string'],
+            [{'description': 'no name at all'}],
+            [{'name': '   '}],
+            [{'name': 'Rug', 'description': 4999}],
+        ):
+            with self.subTest(bad=bad):
+                res = self.client.patch(
+                    f'/api/marketing/brands/{self.brand_a.id}/',
+                    {'products_services': bad},
+                    format='json',
+                )
+                self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+        self.brand_a.refresh_from_db()
+        self.assertEqual(self.brand_a.products_services, [])
+
+    def test_social_links_rejects_anything_that_is_not_platform_to_url(self):
+        self.as_(self.alice, self.ws_a)
+        for bad in (
+            ['https://instagram.com/loom'],
+            {'instagram': ['https://instagram.com/loom']},
+            {'instagram': {'url': 'https://instagram.com/loom'}},
+            {'instagram': 12345},
+            {'  ': 'https://instagram.com/loom'},
+        ):
+            with self.subTest(bad=bad):
+                res = self.client.patch(
+                    f'/api/marketing/brands/{self.brand_a.id}/',
+                    {'social_links': bad},
+                    format='json',
+                )
+                self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+        self.brand_a.refresh_from_db()
+        self.assertEqual(self.brand_a.social_links, {})
+
+    def test_a_business_profile_is_invisible_to_another_workspace(self):
+        """The profile carries location and audience — the fields a competitor
+        would most want, so scoping is asserted on them specifically."""
+        for field, value in self.PROFILE.items():
+            setattr(self.brand_a, field, value)
+        self.brand_a.save()
+
+        self.as_(self.mallory, self.ws_b)
+        detail = self.client.get(f'/api/marketing/brands/{self.brand_a.id}/')
+        self.assertEqual(detail.status_code, status.HTTP_404_NOT_FOUND)
+
+        listing = self.client.get('/api/marketing/brands/')
+        self.assertEqual(listing.status_code, status.HTTP_200_OK)
+        self.assertNotIn(str(self.brand_a.id), [str(row['id']) for row in listing.data])

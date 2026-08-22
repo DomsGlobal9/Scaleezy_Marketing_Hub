@@ -226,6 +226,11 @@ TASKS = {
 
 # API Keys & Third-party configs
 GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
+OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
+OPENAI_API_BASE_URL = env(
+    'OPENAI_API_BASE_URL', default='https://api.openai.com/v1'
+).rstrip('/')
+OPENAI_REQUEST_TIMEOUT = env.float('OPENAI_REQUEST_TIMEOUT', default=60.0)
 
 # Generation with no credential used to return canned copy, which the router
 # then logged as a successful Gemini call and the API persisted as a real

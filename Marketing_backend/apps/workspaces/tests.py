@@ -292,6 +292,20 @@ class ClientBootstrapTests(TestCase):
             {Capability.TEXT, Capability.IMAGE},
         )
 
+    def test_add_client_uses_the_requested_brand_name_inside_the_same_transaction(self):
+        response = self.client.post(
+            '/api/marketing/workspaces/',
+            {'workspace_name': 'Agency Client', 'brand_name': 'Public Brand'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        workspace = MarketingWorkspace.objects.get(workspace_name='Agency Client')
+        self.assertEqual(
+            list(Brand.objects.filter(workspace=workspace).values_list('name', flat=True)),
+            ['Public Brand'],
+        )
+
     def test_add_client_rolls_back_when_platform_ai_is_unavailable(self):
         # Provisioning is capability-based and may choose any installed
         # provider. Make the whole catalogue unavailable rather than assuming

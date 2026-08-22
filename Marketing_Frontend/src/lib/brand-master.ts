@@ -566,6 +566,7 @@ export const READINESS_COPY: Record<ReadinessLevel, { label: string; blurb: stri
 export type BrandMasterTab =
   | "overview"
   | "basics"
+  | "products"
   | "knowledge"
   | "inspirations"
   | "learning"
@@ -577,6 +578,7 @@ export type BrandMasterTab =
 export const BRAND_MASTER_TABS: BrandMasterTab[] = [
   "overview",
   "basics",
+  "products",
   "knowledge",
   "inspirations",
   "learning",
@@ -592,6 +594,11 @@ export function tabForReadinessKey(key: string): BrandMasterTab | "create" {
     case "identity":
     case "voice":
       return "basics";
+    // What the brand sells and who for is now its own surface, so the
+    // readiness engine's audience gap points at the fields that close it.
+    case "audience":
+    case "products":
+      return "products";
     case "knowledge":
     case "positioning":
       return "knowledge";

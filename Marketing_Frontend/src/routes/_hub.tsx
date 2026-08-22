@@ -2,6 +2,7 @@ import { createFileRoute, Link, Outlet, redirect, useNavigate } from "@tanstack/
 import {
   BarChart3,
   Brain,
+  Check,
   CheckCircle2,
   ChevronsUpDown,
   LayoutDashboard,
@@ -14,24 +15,23 @@ import {
   Share2,
   Sparkles,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AddClientDialog } from "@/components/marketing/add-client-dialog";
 import { SiteFooter } from "@/components/marketing/site-footer";
-import { api, apiPost } from "@/lib/api";
-import { readActiveWorkspaceId, setActiveWorkspaceId } from "@/lib/workspace";
+import { apiPost } from "@/lib/api";
+import { clearWorkspaces, loadWorkspaces, selectWorkspace, useWorkspaces } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub")({
   // The guard below reads localStorage, which does not exist during SSR.
@@ -40,16 +40,24 @@ export const Route = createFileRoute("/_hub")({
   // every refresh. This cascades to every hub page and nothing else —
   // /privacy and /terms are root siblings and stay server-rendered.
   ssr: false,
-  beforeLoad: ({ context, location, preload }) => {
-    // Preloads must not trigger navigation side effects.
-    if (preload) return;
+  beforeLoad: async ({ context, location, preload }) => {
     if (!context.auth.isAuthenticated()) {
+      // Preloads must not trigger navigation side effects.
+      if (preload) return;
       throw redirect({
         to: "/login",
         search: { redirect: location.href },
         replace: true,
       });
     }
+
+    // beforeLoad is the only serial, parent-first hook — child `loader`s all
+    // fire in parallel after it. Awaiting the membership list here is what
+    // stops a hub page requesting data for a workspace the user has left, or
+    // (with more than one client and nothing stored) with no workspace at all,
+    // which the backend answers with 400 NO_WORKSPACE. Preloads await it too:
+    // the result is cached for the document, so it costs one request.
+    await loadWorkspaces();
   },
   // Under ssr:false the subtree renders inside a ClientOnly boundary whose
   // fallback is null by default — without this the hub is a blank page on
@@ -87,13 +95,156 @@ function Brand() {
   );
 }
 
-function NavList({
-  isAdmin,
-  onNavigate,
+/**
+ * "+ Add Client" — the trigger only.
+ *
+ * The dialog itself is a sibling of the DropdownMenu rather than a child of it:
+ * Radix unmounts the menu content on close, so a dialog rendered in here would
+ * be torn down by the very click that opened it.
+ */
+function WorkspaceAddClientSlot({
+  first,
+  onSelected,
 }: {
-  isAdmin: boolean;
-  onNavigate?: () => void;
+  /** No clients at all — the menu has nothing else to say, so say this. */
+  first: boolean;
+  onSelected: () => void;
 }) {
+  return (
+    <>
+      <DropdownMenuSeparator />
+      <DropdownMenuItem onSelect={onSelected}>
+        <Plus aria-hidden />
+        <span>{first ? "Add your first client" : "Add client"}</span>
+      </DropdownMenuItem>
+    </>
+  );
+}
+
+function workspaceLabel(state: ReturnType<typeof useWorkspaces>): string {
+  const current = state.workspaces.find((w) => w.id === state.selectedId);
+  if (current) return current.name;
+  if (state.status === "loading" || state.status === "idle") return "Loading clients…";
+  if (state.status === "error") return "Clients unavailable";
+  return "No client yet";
+}
+
+function WorkspaceSwitcher({
+  onNavigate,
+  onAddClient,
+}: {
+  onNavigate?: () => void;
+  onAddClient: () => void;
+}) {
+  const state = useWorkspaces();
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={state.switching}
+          className="flex w-full items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-left transition-colors hover:bg-secondary disabled:opacity-60"
+        >
+          <span className="min-w-0 flex-1">
+            <span className="label-eyebrow block">Client</span>
+            <span className="mt-0.5 block truncate text-sm font-medium text-foreground">
+              {workspaceLabel(state)}
+            </span>
+          </span>
+          <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" strokeWidth={1.75} />
+        </button>
+      </DropdownMenuTrigger>
+
+      <DropdownMenuContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
+        <DropdownMenuLabel>Switch client</DropdownMenuLabel>
+        {state.workspaces.length === 0 ? (
+          <DropdownMenuItem disabled>
+            {state.status === "error" ? "Clients unavailable" : "No clients yet"}
+          </DropdownMenuItem>
+        ) : (
+          state.workspaces.map((workspace) => (
+            <DropdownMenuItem
+              key={workspace.id}
+              onSelect={() => {
+                onNavigate?.();
+                selectWorkspace(workspace.id);
+              }}
+            >
+              <Check
+                className={
+                  workspace.id === state.selectedId ? "text-gold" : "invisible"
+                }
+                aria-hidden
+              />
+              <span className="truncate">{workspace.name}</span>
+            </DropdownMenuItem>
+          ))
+        )}
+        <WorkspaceAddClientSlot
+          first={state.workspaces.length === 0}
+          onSelected={() => {
+            // Closes the mobile Sheet first. The dialog lives up in HubLayout
+            // precisely so that closing this menu — or the Sheet holding it —
+            // cannot unmount the wizard mid-creation.
+            onNavigate?.();
+            onAddClient();
+          }}
+        />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * Covers the page opaquely between committing a switch and the document being
+ * replaced, so the outgoing client's rows cannot be read or clicked while the
+ * new tenant loads.
+ */
+function WorkspaceSwitchOverlay() {
+  const { switching } = useWorkspaces();
+  if (!switching) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-background"
+      role="status"
+      aria-live="polite"
+    >
+      <p className="text-sm text-muted-foreground">Switching client…</p>
+    </div>
+  );
+}
+
+/**
+ * Nothing to address yet.
+ *
+ * Rendered in place of the page, not beside it: with no membership every hub
+ * request answers 400 NO_WORKSPACE, so the alternative is six panels each
+ * reporting the same failure in its own words. Only shown once the server has
+ * actually said the list is empty — "loading" and "error" are not "none".
+ */
+function NoClientsYet({ onAddClient }: { onAddClient: () => void }) {
+  return (
+    <div className="grid min-h-[60vh] place-items-center">
+      <div className="max-w-md text-center">
+        <span className="mx-auto grid size-12 place-items-center rounded-xl bg-primary/10 text-primary">
+          <Sparkles className="size-6" strokeWidth={1.5} />
+        </span>
+        <h2 className="mt-4 font-display text-xl font-semibold text-foreground">No clients yet</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          A client is a workspace of its own — brand, knowledge, content and channels, shared with
+          nothing else. Create one and setup starts straight away.
+        </p>
+        <Button className="mt-5" onClick={onAddClient}>
+          <Plus className="size-4" /> Add your first client
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function NavList({ isAdmin, onNavigate }: { isAdmin: boolean; onNavigate?: () => void }) {
   return (
     <nav className="space-y-1">
       <p className="label-eyebrow mb-3 px-3">Marketing Hub</p>
@@ -162,7 +313,9 @@ function SignOutButton({ onDone }: { onDone?: () => void }) {
       /* ignore */
     } finally {
       auth.signOut();
-      setActiveWorkspaceId(null);
+      // Whoever signs in next on this browser must not inherit this person's
+      // client as their default selection.
+      clearWorkspaces();
       onDone?.();
       // No `redirect` — signing out should land on a clean login screen, not
       // bounce back into the page the user just left.
@@ -183,178 +336,14 @@ function SignOutButton({ onDone }: { onDone?: () => void }) {
   );
 }
 
-interface WorkspaceMembership {
-  workspace_id: string;
-  workspace_name: string;
-  role: string;
-  status: string;
-}
-
-interface CurrentUser {
-  memberships: WorkspaceMembership[];
-}
-
-interface CreatedWorkspace {
-  id: string;
-  workspace_name: string;
-}
-
-function ClientSelector({
-  onReady,
-  instanceId,
-}: {
-  onReady: (role: string) => void;
-  instanceId: "desktop" | "mobile";
-}) {
-  const [memberships, setMemberships] = useState<WorkspaceMembership[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(readActiveWorkspaceId());
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-    void api<CurrentUser>("/api/auth/me/")
-      .then((user) => {
-        if (cancelled) return;
-        const available = user.memberships ?? [];
-        const stored = readActiveWorkspaceId();
-        const selected = available.some((item) => item.workspace_id === stored)
-          ? stored
-          : (available[0]?.workspace_id ?? null);
-        setMemberships(available);
-        setActiveId(selected);
-        setActiveWorkspaceId(selected);
-        if (selected) {
-          onReady(available.find((item) => item.workspace_id === selected)?.role ?? "");
-        }
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : "Could not load clients.");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [onReady]);
-
-  const switchClient = (workspaceId: string) => {
-    if (!workspaceId || workspaceId === activeId) return;
-    setActiveWorkspaceId(workspaceId);
-    // A reload is deliberate: it clears every route-local cache and draft so
-    // no stale Client A state can be displayed while Client B requests load.
-    window.location.reload();
-  };
-
-  const createClient = async () => {
-    const workspaceName = name.trim();
-    if (!workspaceName) {
-      setError("Enter a client name.");
-      return;
-    }
-    setCreating(true);
-    setError("");
-    try {
-      const created = await apiPost<CreatedWorkspace>("/api/marketing/workspaces/", {
-        workspace_name: workspaceName,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-      });
-      setActiveWorkspaceId(created.id);
-      window.location.assign("/brand-master?tab=teach");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not create the client.");
-      setCreating(false);
-    }
-  };
-
-  return (
-    <>
-      <div className="mb-5 border-b border-border pb-5">
-        <Label htmlFor={`active-client-${instanceId}`} className="label-eyebrow px-1">
-          Active client
-        </Label>
-        <div className="relative mt-2">
-          <select
-            id={`active-client-${instanceId}`}
-            value={activeId ?? ""}
-            disabled={loading || memberships.length === 0}
-            onChange={(event) => switchClient(event.target.value)}
-            className="h-10 w-full appearance-none rounded-xl border border-border bg-background px-3 pr-9 text-sm font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {memberships.length === 0 ? <option value="">No client selected</option> : null}
-            {memberships.map((membership) => (
-              <option key={membership.workspace_id} value={membership.workspace_id}>
-                {membership.workspace_name}
-              </option>
-            ))}
-          </select>
-          <ChevronsUpDown className="pointer-events-none absolute top-3 right-3 size-4 text-muted-foreground" />
-        </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="mt-2 w-full justify-start"
-          onClick={() => {
-            setError("");
-            setDialogOpen(true);
-          }}
-        >
-          <Plus className="size-4" /> Add Client
-        </Button>
-        {error && !dialogOpen ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
-      </div>
-
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add a client</DialogTitle>
-            <DialogDescription>
-              Scaleezy will create an isolated workspace, Brand Master, and AI routing ready for onboarding.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2 py-2">
-            <Label htmlFor={`new-client-name-${instanceId}`}>Client name</Label>
-            <Input
-              id={`new-client-name-${instanceId}`}
-              value={name}
-              autoFocus
-              maxLength={255}
-              placeholder="Acme Fashion"
-              onChange={(event) => setName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void createClient();
-              }}
-            />
-            {error ? <p className="text-sm text-destructive">{error}</p> : null}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={creating}>
-              Cancel
-            </Button>
-            <Button onClick={() => void createClient()} disabled={creating || !name.trim()}>
-              {creating ? "Creating…" : "Create client"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}
-
 function HubLayout() {
   const [open, setOpen] = useState(false);
-  const [workspaceReady, setWorkspaceReady] = useState(false);
-  const [activeRole, setActiveRole] = useState("");
-
-  const markWorkspaceReady = useCallback((role: string) => {
-    setActiveRole(role);
-    setWorkspaceReady(true);
-  }, []);
+  const [creating, setCreating] = useState(false);
+  const workspaces = useWorkspaces();
+  const noClients = workspaces.status === "ready" && workspaces.workspaces.length === 0;
+  const activeRole = workspaces.workspaces.find(
+    (workspace) => workspace.id === workspaces.selectedId,
+  )?.role;
   const isAdmin = activeRole === "OWNER" || activeRole === "ADMIN";
 
   return (
@@ -363,8 +352,10 @@ function HubLayout() {
         <div className="px-2">
           <Brand />
         </div>
-        <div className="mt-8 flex-1">
-          <ClientSelector onReady={markWorkspaceReady} instanceId="desktop" />
+        <div className="mt-6">
+          <WorkspaceSwitcher onAddClient={() => setCreating(true)} />
+        </div>
+        <div className="mt-6 flex-1">
           <NavList isAdmin={isAdmin} />
         </div>
         <div>
@@ -382,8 +373,13 @@ function HubLayout() {
           <SheetContent side="left" className="w-[85vw] max-w-[300px] bg-card px-4 py-6">
             <SheetTitle className="sr-only">Marketing Hub navigation</SheetTitle>
             <Brand />
-            <div className="mt-8">
-              <ClientSelector onReady={markWorkspaceReady} instanceId="mobile" />
+            <div className="mt-6">
+              <WorkspaceSwitcher
+                onNavigate={() => setOpen(false)}
+                onAddClient={() => setCreating(true)}
+              />
+            </div>
+            <div className="mt-6">
               <NavList isAdmin={isAdmin} onNavigate={() => setOpen(false)} />
             </div>
             <div className="mt-6 border-t border-border pt-4">
@@ -396,21 +392,17 @@ function HubLayout() {
 
       <main className="flex min-h-screen flex-col lg:pl-[270px]">
         <div className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-8 sm:px-6 lg:px-10 lg:py-12">
-          {workspaceReady ? (
-            <Outlet />
-          ) : (
-            <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8 text-center">
-              <h1 className="font-display text-2xl font-semibold text-foreground">
-                Select or add a client
-              </h1>
-              <p className="mt-2 text-sm text-muted-foreground">
-                Client context is required before Scaleezy can load brand, content, or publishing data.
-              </p>
-            </div>
-          )}
+          {noClients ? <NoClientsYet onAddClient={() => setCreating(true)} /> : <Outlet />}
         </div>
         <SiteFooter />
       </main>
+
+      <AddClientDialog
+        open={creating}
+        onOpenChange={setCreating}
+        onCreated={selectWorkspace}
+      />
+      <WorkspaceSwitchOverlay />
     </div>
   );
 }

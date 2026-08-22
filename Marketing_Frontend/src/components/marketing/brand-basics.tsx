@@ -1,36 +1,229 @@
 /**
  * Brand basics — the identity Scaleezy starts from.
  *
- * Backed by the Brand record through `useBrandSettings`. Every field here is
- * a real column: name, industry, tagline, tone, CTA keyword and Instagram
- * handle feed the Brand Brain's identity and voice sections; the logo, phone
- * and layout default are what the poster engine composes with. Text saves
- * debounced, toggles save immediately, and `onSaved` lets Brand Master refresh
+ * Backed by the Brand record through `useBrandSettings`. Every field here is a
+ * real column, including the three that were API-writable but had no editor at
+ * all until now: palette, fonts and competitors. Text saves debounced, toggles
+ * and pickers save immediately, and `onSaved` lets Brand Master refresh
  * readiness once the backend has actually accepted a change.
+ *
+ * The sections are exported individually because the onboarding wizard splits
+ * the same fields across its steps. It passes its own `useBrandSettings`
+ * instance so the wizard and this panel never hold two competing debounces
+ * over one brand.
  */
-import { ImagePlus, Loader2, Phone, Trash2 } from "lucide-react";
-import { useId, useRef, useState } from "react";
+import { AlertCircle, CheckCircle2, ImagePlus, Loader2, Phone, Save, Trash2 } from "lucide-react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
+import {
+  Field,
+  KeyValueEditor,
+  PaletteEditor,
+  TagListEditor,
+  Toggle,
+} from "@/components/marketing/brand-field-editors";
 import { useLayoutCatalogue } from "@/components/marketing/poster-studio";
 import { SectionTitle } from "@/components/marketing/primitives";
-import { useBrandSettings } from "@/lib/brand-settings";
+import type { BrandEditor } from "@/lib/brand-settings";
 import { cn } from "@/lib/utils";
 
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
+const FONT_ROLES = ["primary", "secondary"];
+const SOCIAL_PLATFORMS = [
+  "instagram",
+  "facebook",
+  "linkedin",
+  "youtube",
+  "x",
+  "tiktok",
+  "pinterest",
+];
 
-export function BrandBasicsPanel({ onSaved }: { onSaved?: () => void }) {
-  const { settings, update, flush, uploadLogo, removeLogo, loading, saving, saveState, error } =
-    useBrandSettings({
-      ...(onSaved ? { onSaved } : {}),
-    });
+export function SavingHint({ saving }: { saving: boolean }) {
+  if (!saving) return null;
+  return (
+    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <Loader2 className="size-3.5 animate-spin" /> Saving…
+    </span>
+  );
+}
+
+export function BrandError({ error }: { error: string | null }) {
+  if (!error) return null;
+  return (
+    <p
+      role="alert"
+      className="rounded-xl border border-destructive/30 bg-destructive/8 px-3 py-2 text-sm text-destructive"
+    >
+      {error}
+    </p>
+  );
+}
+
+/** One explicit commit point for every Brand Master editing panel. */
+export function BrandSaveControl({
+  editor,
+  extraDirty = false,
+  blockedReason,
+}: {
+  editor: BrandEditor;
+  /** A local draft that cannot enter the shared save queue yet. */
+  extraDirty?: boolean;
+  blockedReason?: string | null;
+}) {
+  const hasUnsavedWork = editor.dirty || extraDirty;
+  const canSave = editor.dirty && !editor.loading && !editor.saving && !!editor.brandId;
+
+  let message = "No unsaved changes.";
+  let tone = "text-muted-foreground";
+  let icon = <CheckCircle2 className="size-4" />;
+
+  if (editor.loading) {
+    message = "Loading brand…";
+    icon = <Loader2 className="size-4 animate-spin" />;
+  } else if (editor.saving) {
+    message = "Saving changes…";
+    icon = <Loader2 className="size-4 animate-spin" />;
+  } else if (editor.saveState === "failed") {
+    message = editor.error || "Save failed. Your changes are still here — try again.";
+    tone = "text-destructive";
+    icon = <AlertCircle className="size-4" />;
+  } else if (blockedReason) {
+    message = editor.dirty ? `Unsaved changes. ${blockedReason}` : blockedReason;
+    tone = "text-amber-700 dark:text-amber-400";
+    icon = <AlertCircle className="size-4" />;
+  } else if (hasUnsavedWork) {
+    message = "Unsaved changes. Autosave will run shortly, or save now.";
+    tone = "text-amber-700 dark:text-amber-400";
+    icon = <AlertCircle className="size-4" />;
+  } else if (editor.saveState === "saved") {
+    message = "All changes saved.";
+  }
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3">
+      <span aria-live="polite" className={cn("flex min-w-0 items-center gap-2 text-sm", tone)}>
+        {icon}
+        <span>{message}</span>
+      </span>
+      <Button type="button" size="sm" disabled={!canSave} onClick={() => void editor.flush()}>
+        {editor.saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+        {editor.saving ? "Saving…" : "Save changes"}
+      </Button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------ who they are */
+
+export function ClientBasicsSection({ editor }: { editor: BrandEditor }) {
+  const { settings, update, loading, saving } = editor;
+  return (
+    <section>
+      <SectionTitle
+        title="Client basics"
+        description="Who this brand is and where it trades. Saved as you type."
+        action={<SavingHint saving={saving} />}
+      />
+      <div className="mt-4 grid gap-5 sm:grid-cols-2">
+        <Field label="Brand name">
+          <Input
+            placeholder="Acme Coffee"
+            value={settings.name}
+            disabled={loading}
+            onChange={(e) => update({ name: e.target.value })}
+          />
+        </Field>
+        <Field label="Industry / category">
+          <Input
+            placeholder="Specialty coffee"
+            value={settings.industry}
+            disabled={loading}
+            onChange={(e) => update({ industry: e.target.value })}
+          />
+        </Field>
+        <Field label="Website" hint="Used as context, not fetched.">
+          <Input
+            type="url"
+            placeholder="https://acmecoffee.com"
+            value={settings.website}
+            disabled={loading}
+            onChange={(e) => update({ website: e.target.value })}
+          />
+        </Field>
+        <Field label="Location" hint="Where the brand operates or sells.">
+          <Input
+            placeholder="Bengaluru, India"
+            value={settings.location}
+            disabled={loading}
+            onChange={(e) => update({ location: e.target.value })}
+          />
+        </Field>
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------- how it talks */
+
+export function VoiceSection({ editor }: { editor: BrandEditor }) {
+  const { settings, update, loading, saving } = editor;
+  return (
+    <section>
+      <SectionTitle
+        title="Voice"
+        description="How generated copy should sound, and what it should push toward."
+        action={<SavingHint saving={saving} />}
+      />
+      <div className="mt-4 grid gap-5 sm:grid-cols-2">
+        <Field label="Tagline / positioning line" className="sm:col-span-2">
+          <Input
+            placeholder="Roasted this week"
+            value={settings.tagline}
+            disabled={loading}
+            onChange={(e) => update({ tagline: e.target.value })}
+          />
+        </Field>
+        <Field label="Brand tone" hint="A short phrase is enough." className="sm:col-span-2">
+          <Input
+            placeholder="Warm, unfussy, expert without the jargon"
+            value={settings.brandTone}
+            disabled={loading}
+            onChange={(e) => update({ brandTone: e.target.value })}
+          />
+        </Field>
+        <Field label="CTA keyword" hint="The action your posts push toward.">
+          <Input
+            placeholder="Order now"
+            value={settings.ctaKeyword}
+            disabled={loading}
+            onChange={(e) => update({ ctaKeyword: e.target.value })}
+          />
+        </Field>
+        <Field label="Instagram handle">
+          <Input
+            placeholder="@acmecoffee"
+            value={settings.instagramHandle}
+            disabled={loading}
+            onChange={(e) => update({ instagramHandle: e.target.value })}
+          />
+        </Field>
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------- logo */
+
+export function LogoSection({ editor }: { editor: BrandEditor }) {
+  const { settings, uploadLogo, removeLogo, loading } = editor;
   const logoInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
-  const { layouts } = useLayoutCatalogue();
+  const hasLogo = !!settings.logoUrl;
 
   const handleLogoPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -68,280 +261,235 @@ export function BrandBasicsPanel({ onSaved }: { onSaved?: () => void }) {
     }
   };
 
+  return (
+    <section>
+      <SectionTitle
+        title="Logo"
+        description="Used on generated posters and in Brand Master. PNG with a transparent background works best."
+      />
+      <div className="mt-4 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-4">
+        <div className="grid size-20 shrink-0 place-items-center overflow-hidden rounded-xl border border-border bg-secondary/40">
+          {hasLogo ? (
+            <img src={settings.logoUrl} alt="Brand logo" className="size-full object-contain p-2" />
+          ) : (
+            <ImagePlus className="size-6 text-muted-foreground" />
+          )}
+        </div>
+        <div className="min-w-0">
+          {hasLogo ? (
+            <p className="truncate text-sm font-medium text-foreground">
+              {settings.logoFileName || "Brand logo"}
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No logo uploaded yet. Add one so posters can carry it.
+            </p>
+          )}
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading || uploading}
+              onClick={() => logoInputRef.current?.click()}
+            >
+              <ImagePlus className="size-4" />
+              {uploading ? "Uploading…" : hasLogo ? "Replace" : "Upload logo"}
+            </Button>
+            {hasLogo ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                onClick={handleRemoveLogo}
+              >
+                <Trash2 className="size-4" /> Remove
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      </div>
+      <input
+        ref={logoInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleLogoPick}
+      />
+    </section>
+  );
+}
+
+/* -------------------------------------------------------- visual identity */
+
+export function VisualIdentitySection({ editor }: { editor: BrandEditor }) {
+  const { settings, update, loading, saving } = editor;
+  return (
+    <section>
+      <SectionTitle
+        title="Visual identity"
+        description="The palette and type the poster engine composes with, and the brain reports as visual language."
+        action={<SavingHint saving={saving} />}
+      />
+      <div className="mt-4 space-y-6">
+        <Field label="Colour palette">
+          <PaletteEditor
+            value={settings.palette}
+            disabled={loading}
+            onChange={(palette) => update({ palette })}
+          />
+        </Field>
+        <Field label="Fonts" hint="Named for the renderer, not loaded from here.">
+          <KeyValueEditor
+            value={settings.fonts}
+            disabled={loading}
+            keyLabel="Role, e.g. primary"
+            valuePlaceholder="DM Sans"
+            suggestions={FONT_ROLES}
+            emptyHint="No fonts set. Add a primary typeface to start."
+            onChange={(fonts) => update({ fonts })}
+          />
+        </Field>
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------ market context */
+
+export function MarketSection({ editor }: { editor: BrandEditor }) {
+  const { settings, update, loading, saving } = editor;
+  return (
+    <section>
+      <SectionTitle
+        title="Market context"
+        description="Who this brand is measured against, and where it already publishes."
+        action={<SavingHint saving={saving} />}
+      />
+      <div className="mt-4 space-y-6">
+        <Field
+          label="Competitors"
+          hint="Compiled into the brain's positioning so generation can differentiate rather than echo."
+        >
+          <TagListEditor
+            value={settings.competitors}
+            disabled={loading}
+            placeholder="Competitor name"
+            emptyHint="No competitors listed. Name a few and Scaleezy will avoid sounding like them."
+            onChange={(competitors) => update({ competitors })}
+          />
+        </Field>
+        <Field
+          label="Social links"
+          hint="Stored as given — a link without https:// is accepted but will not open as one."
+        >
+          <KeyValueEditor
+            value={settings.socialLinks}
+            disabled={loading}
+            keyLabel="Platform"
+            valuePlaceholder="https://instagram.com/acmecoffee"
+            suggestions={SOCIAL_PLATFORMS}
+            emptyHint="No links yet. Add the profiles this brand already posts to."
+            onChange={(socialLinks) => update({ socialLinks })}
+          />
+        </Field>
+      </div>
+    </section>
+  );
+}
+
+/* ---------------------------------------------------------- poster defaults */
+
+export function PosterDefaultsSection({ editor }: { editor: BrandEditor }) {
+  const { settings, update, loading } = editor;
+  const { layouts } = useLayoutCatalogue();
   const hasLogo = !!settings.logoUrl;
 
   return (
-    <div className="space-y-8">
-      {error ? (
-        <p className="rounded-xl border border-destructive/30 bg-destructive/8 px-3 py-2 text-sm text-destructive">
-          {error}
-        </p>
-      ) : null}
-
-      <section>
-        <SectionTitle
-          title="Identity"
-          description="What the brand is called and how it speaks. Saved as you type."
-          action={
-            saving || saveState === "saving" ? (
-              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" /> Saving…
-              </span>
-            ) : saveState === "failed" ? (
-              <Button variant="ghost" size="sm" onClick={() => void flush()}>
-                Save failed — retry
-              </Button>
-            ) : saveState === "pending" ? (
-              <span className="text-xs text-muted-foreground">Unsaved changes</span>
-            ) : saveState === "saved" ? (
-              <span className="text-xs text-muted-foreground" role="status">
-                Saved
-              </span>
-            ) : null
-          }
-        />
-        <div className="mt-4 grid gap-5 sm:grid-cols-2">
-          <Field label="Brand name">
-            <Input
-              placeholder="Acme Coffee"
-              value={settings.name}
-              disabled={loading}
-              onChange={(e) => update({ name: e.target.value })}
-            />
-          </Field>
-          <Field label="Industry / category">
-            <Input
-              placeholder="Specialty coffee"
-              value={settings.industry}
-              disabled={loading}
-              onChange={(e) => update({ industry: e.target.value })}
-            />
-          </Field>
-          <Field label="Tagline / positioning line" className="sm:col-span-2">
-            <Input
-              placeholder="Roasted this week"
-              value={settings.tagline}
-              disabled={loading}
-              onChange={(e) => update({ tagline: e.target.value })}
-            />
-          </Field>
-          <Field
-            label="Brand tone"
-            hint="How generated copy should sound. A short phrase is enough."
-            className="sm:col-span-2"
-          >
-            <Input
-              placeholder="Warm, unfussy, expert without the jargon"
-              value={settings.brandTone}
-              disabled={loading}
-              onChange={(e) => update({ brandTone: e.target.value })}
-            />
-          </Field>
-          <Field label="CTA keyword" hint="The action your posts push toward.">
-            <Input
-              placeholder="Order now"
-              value={settings.ctaKeyword}
-              disabled={loading}
-              onChange={(e) => update({ ctaKeyword: e.target.value })}
-            />
-          </Field>
-          <Field label="Instagram handle">
-            <Input
-              placeholder="@acmecoffee"
-              value={settings.instagramHandle}
-              disabled={loading}
-              onChange={(e) => update({ instagramHandle: e.target.value })}
-            />
-          </Field>
-        </div>
-      </section>
-
-      <section>
-        <SectionTitle
-          title="Logo"
-          description="Used on generated posters and in Brand Master. PNG with a transparent background works best."
-        />
-        <div className="mt-4 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-4">
-          <div className="grid size-20 shrink-0 place-items-center overflow-hidden rounded-xl border border-border bg-secondary/40">
-            {hasLogo ? (
-              <img
-                src={settings.logoUrl}
-                alt="Brand logo"
-                className="size-full object-contain p-2"
-              />
-            ) : (
-              <ImagePlus className="size-6 text-muted-foreground" />
-            )}
-          </div>
-          <div className="min-w-0">
-            {hasLogo ? (
-              <p className="truncate text-sm font-medium text-foreground">
-                {settings.logoFileName || "Brand logo"}
-              </p>
-            ) : (
-              <p className="text-sm text-muted-foreground">No logo uploaded yet.</p>
-            )}
-            <div className="mt-2 flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={loading || uploading}
-                onClick={() => logoInputRef.current?.click()}
-              >
-                <ImagePlus className="size-4" />
-                {uploading ? "Uploading…" : hasLogo ? "Replace" : "Upload logo"}
-              </Button>
-              {hasLogo ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-destructive hover:text-destructive"
-                  onClick={handleRemoveLogo}
-                >
-                  <Trash2 className="size-4" /> Remove
-                </Button>
-              ) : null}
-            </div>
-          </div>
-        </div>
-        <input
-          ref={logoInputRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={handleLogoPick}
-        />
-      </section>
-
-      <section>
-        <SectionTitle
-          title="Poster defaults"
-          description="What the layout engine stamps onto composed posters. Each can be overridden per poster."
-        />
-        <div className="mt-4 grid gap-4">
-          <Toggle
-            label="Show logo on generated posters"
-            hint={hasLogo ? undefined : "Upload a logo first."}
-            checked={settings.showLogoOnPosters}
-            disabled={!hasLogo}
-            onChange={(v) => update({ showLogoOnPosters: v }, { immediate: true })}
-          />
-          <Field
-            label="Contact phone number"
-            hint="Optionally printed at the bottom of a poster after it is generated."
-          >
-            <div className="relative">
-              <Phone className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type="tel"
-                className="pl-9"
-                placeholder="+91 98765 43210"
-                value={settings.phoneNumber}
-                disabled={loading}
-                onChange={(e) => update({ phoneNumber: e.target.value })}
-              />
-            </div>
-          </Field>
-          <Toggle
-            label="Show phone number on posters"
-            hint={settings.phoneNumber.trim() ? undefined : "Add a phone number first."}
-            checked={settings.showPhoneOnPosters}
-            disabled={!settings.phoneNumber.trim()}
-            onChange={(v) => update({ showPhoneOnPosters: v }, { immediate: true })}
-          />
-          <div>
-            <Label className="text-xs tracking-wide uppercase">Default poster layout</Label>
-            {layouts.length === 0 ? (
-              <p className="mt-1.5 text-xs text-muted-foreground">
-                Layout catalogue unavailable right now.
-              </p>
-            ) : (
-              <div className="mt-1.5 flex flex-wrap gap-1.5">
-                {layouts.map((option) => (
-                  <button
-                    key={option.key}
-                    type="button"
-                    title={option.description}
-                    onClick={() => update({ layoutPreference: option.key }, { immediate: true })}
-                    className={cn(
-                      "rounded-full border px-2.5 py-1 text-xs transition-colors",
-                      settings.layoutPreference === option.key
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {option.display_name}
-                  </button>
-                ))}
-              </div>
-            )}
-            <p className="mt-1.5 text-xs text-muted-foreground">
-              Used whenever a poster is composed from your brand rather than generated. Can be
-              changed per poster in Review.
-            </p>
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  className,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  className?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className={className}>
-      <Label className="block text-xs tracking-wide uppercase">
-        <span>{label}</span>
-        <div className="mt-1.5 normal-case tracking-normal">{children}</div>
-      </Label>
-      {hint ? <p className="mt-1.5 text-xs text-muted-foreground">{hint}</p> : null}
-    </div>
-  );
-}
-
-function Toggle({
-  label,
-  hint,
-  checked,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  hint?: string | undefined;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  const id = useId();
-  const hintId = `${id}-hint`;
-  return (
-    <div className="flex items-center justify-between gap-4 rounded-xl border border-border px-4 py-3">
-      <div className="min-w-0">
-        <Label htmlFor={id} className="text-sm font-normal">
-          {label}
-        </Label>
-        {hint ? (
-          <p id={hintId} className="mt-0.5 text-xs text-muted-foreground">
-            {hint}
-          </p>
-        ) : null}
-      </div>
-      <Switch
-        id={id}
-        checked={checked}
-        disabled={disabled}
-        aria-describedby={hint ? hintId : undefined}
-        onCheckedChange={onChange}
+    <section>
+      <SectionTitle
+        title="Poster defaults"
+        description="What the layout engine stamps onto composed posters. Each can be overridden per poster."
       />
+      <div className="mt-4 grid gap-4">
+        <Toggle
+          label="Show logo on generated posters"
+          hint={hasLogo ? undefined : "Upload a logo first."}
+          checked={settings.showLogoOnPosters}
+          disabled={!hasLogo}
+          onChange={(v) => update({ showLogoOnPosters: v }, { immediate: true })}
+        />
+        <Field
+          label="Contact phone number"
+          hint="Optionally printed at the bottom of a poster after it is generated."
+        >
+          <div className="relative">
+            <Phone className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="tel"
+              className="pl-9"
+              placeholder="+91 98765 43210"
+              value={settings.phoneNumber}
+              disabled={loading}
+              onChange={(e) => update({ phoneNumber: e.target.value })}
+            />
+          </div>
+        </Field>
+        <Toggle
+          label="Show phone number on posters"
+          hint={settings.phoneNumber.trim() ? undefined : "Add a phone number first."}
+          checked={settings.showPhoneOnPosters}
+          disabled={!settings.phoneNumber.trim()}
+          onChange={(v) => update({ showPhoneOnPosters: v }, { immediate: true })}
+        />
+        <div>
+          <Label className="text-xs tracking-wide uppercase">Default poster layout</Label>
+          {layouts.length === 0 ? (
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Layout catalogue unavailable right now.
+            </p>
+          ) : (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {layouts.map((option) => (
+                <button
+                  key={option.key}
+                  type="button"
+                  title={option.description}
+                  onClick={() => update({ layoutPreference: option.key }, { immediate: true })}
+                  className={cn(
+                    "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                    settings.layoutPreference === option.key
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {option.display_name}
+                </button>
+              ))}
+            </div>
+          )}
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Used whenever a poster is composed from your brand rather than generated. Can be changed
+            per poster in Review.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------- panel */
+
+export function BrandBasicsPanel({ editor }: { editor: BrandEditor }) {
+  return (
+    <div className="space-y-8">
+      <BrandSaveControl editor={editor} />
+      <BrandError error={editor.error} />
+      <ClientBasicsSection editor={editor} />
+      <VoiceSection editor={editor} />
+      <LogoSection editor={editor} />
+      <VisualIdentitySection editor={editor} />
+      <MarketSection editor={editor} />
+      <PosterDefaultsSection editor={editor} />
     </div>
   );
 }

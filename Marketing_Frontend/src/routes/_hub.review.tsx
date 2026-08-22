@@ -383,7 +383,7 @@ function ReviewPage() {
                   </Button>
                 ) : null}
 
-                {layouts.length > 0 ? (
+                {item.status === "DRAFT" && layouts.length > 0 ? (
                   <>
                     <Button
                       size="sm"

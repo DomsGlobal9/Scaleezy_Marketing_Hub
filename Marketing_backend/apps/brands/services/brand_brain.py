@@ -397,6 +397,7 @@ def compile_brand_brain(brand):
         'identity': {
             'name': brand.name,
             'industry': brand.industry,
+            'description': brand.description,
             'tagline': brand.tagline,
             'cta_keyword': brand.cta_keyword,
             'has_logo': bool(brand.logo_url),
@@ -409,6 +410,11 @@ def compile_brand_brain(brand):
             'competitors': sorted(str(c) for c in (brand.competitors or [])),
         },
         'audiences': {
+            # Who the brand says it serves, kept beside — never instead of —
+            # the pains and objections confirmed from evidence. It is a
+            # first-party statement, so it enters no precedence contest: there
+            # is nothing for it to contradict.
+            'stated': brand.audience,
             'pains': _memory_texts(
                 memories, (BrandMemory.MemoryType.BUYER_PAIN,), blocked_memories
             ),

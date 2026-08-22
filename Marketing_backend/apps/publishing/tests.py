@@ -1,14 +1,20 @@
 """Publishing execution — retry safety and the move onto the worker."""
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
+from rest_framework import status
+from rest_framework.test import APITestCase
 
-from apps.marketing.models import MarketingAsset
 from apps.content.models import ContentItem
+from apps.marketing.models import MarketingAsset
 from apps.publishing.models import PublishingJob, PublishingJobItem
 from apps.publishing.services import execute_publishing_job
 from apps.social_accounts.models import SocialConnection
-from apps.workspaces.models import MarketingWorkspace
+from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
+
+
+User = get_user_model()
 
 
 class ExecuteJobTests(TestCase):
@@ -113,3 +119,217 @@ class ExecuteJobTests(TestCase):
 
     def test_a_missing_job_is_a_no_op(self):
         execute_publishing_job('00000000-0000-0000-0000-000000000000')
+
+
+class PublishingRoleTests(APITestCase):
+    """Only a marketing manager may make something reach an audience."""
+
+    def setUp(self):
+        self.ws = MarketingWorkspace.objects.create(
+            customer_id='role-check', workspace_name='Publishing roles'
+        )
+        self.users = {}
+        for role in (
+            WorkspaceMember.Role.VIEWER,
+            WorkspaceMember.Role.EDITOR,
+            WorkspaceMember.Role.MANAGER,
+        ):
+            user = User.objects.create_user(username=role.lower(), password='pw')
+            WorkspaceMember.objects.create(workspace=self.ws, user=user, role=role)
+            self.users[role] = user
+
+        self.asset = MarketingAsset.objects.create(
+            workspace=self.ws,
+            file_name='approved.jpg',
+            source='MANUAL_UPLOAD',
+            file_url='https://storage.test/approved.jpg',
+        )
+        self.content = ContentItem.objects.create(
+            workspace=self.ws,
+            asset=self.asset,
+            headline='Approved version',
+            caption='Reviewed caption',
+            hashtags='#reviewed',
+            status=ContentItem.Status.APPROVED,
+        )
+        self.connection = SocialConnection.objects.create(
+            workspace=self.ws,
+            platform='X',
+            external_account_id='role-check-x',
+            account_name='Publishing X',
+            status=SocialConnection.Status.CONNECTED,
+        )
+        self.job = PublishingJob.objects.create(
+            workspace=self.ws,
+            asset=self.asset,
+            content_item=self.content,
+            caption='Original caption',
+            status=PublishingJob.Status.FAILED,
+        )
+        self.item = PublishingJobItem.objects.create(
+            publishing_job=self.job,
+            social_connection=self.connection,
+            status=PublishingJobItem.Status.FAILED,
+        )
+
+    def authenticate_as(self, role):
+        self.client.force_authenticate(user=self.users[role])
+        self.client.credentials(HTTP_X_WORKSPACE_ID=str(self.ws.id))
+
+    def publish_payload(self):
+        return {
+            'workspace_id': str(self.ws.id),
+            'asset_id': str(self.asset.id),
+            'content_item_id': str(self.content.id),
+            'publish_mode': PublishingJob.PublishMode.NOW,
+            'social_connection_ids': [str(self.connection.id)],
+        }
+
+    def test_viewer_and_editor_keep_read_access_but_cannot_create(self):
+        for role in (WorkspaceMember.Role.VIEWER, WorkspaceMember.Role.EDITOR):
+            with self.subTest(role=role):
+                self.authenticate_as(role)
+                self.assertEqual(
+                    self.client.get('/api/marketing/publishing/jobs/').status_code,
+                    status.HTTP_200_OK,
+                )
+                self.assertEqual(
+                    self.client.get(
+                        f'/api/marketing/publishing/jobs/{self.job.id}/'
+                    ).status_code,
+                    status.HTTP_200_OK,
+                )
+                before = PublishingJob.objects.count()
+                response = self.client.post(
+                    '/api/marketing/publishing/jobs/', self.publish_payload(), format='json'
+                )
+                self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+                self.assertEqual(PublishingJob.objects.count(), before)
+
+    @patch('apps.publishing.views.publish_job')
+    def test_manager_can_create_an_immediate_publishing_job(self, publish_task):
+        self.authenticate_as(WorkspaceMember.Role.MANAGER)
+
+        response = self.client.post(
+            '/api/marketing/publishing/jobs/', self.publish_payload(), format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        created = PublishingJob.objects.exclude(pk=self.job.pk).get()
+        self.assertEqual(created.created_by, self.users[WorkspaceMember.Role.MANAGER])
+        self.assertEqual(created.workspace, self.ws)
+        self.assertEqual(
+            created.caption,
+            'Approved version\n\nReviewed caption\n\n#reviewed',
+        )
+        publish_task.enqueue.assert_called_once_with(str(created.id))
+
+    def test_viewer_and_editor_cannot_patch_or_delete_jobs(self):
+        for role in (WorkspaceMember.Role.VIEWER, WorkspaceMember.Role.EDITOR):
+            with self.subTest(role=role, action='patch'):
+                self.authenticate_as(role)
+                response = self.client.patch(
+                    f'/api/marketing/publishing/jobs/{self.job.id}/',
+                    {'caption': 'Changed'},
+                    format='json',
+                )
+                self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+                self.job.refresh_from_db()
+                self.assertEqual(self.job.caption, 'Original caption')
+
+            with self.subTest(role=role, action='delete'):
+                response = self.client.delete(
+                    f'/api/marketing/publishing/jobs/{self.job.id}/'
+                )
+                self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+                self.assertTrue(PublishingJob.objects.filter(pk=self.job.pk).exists())
+
+    def test_manager_cannot_rewrite_or_delete_a_reviewed_job(self):
+        self.authenticate_as(WorkspaceMember.Role.MANAGER)
+        response = self.client.patch(
+            f'/api/marketing/publishing/jobs/{self.job.id}/',
+            {
+                'caption': 'Manager changed this',
+                'content_item': None,
+                'workspace': str(self.ws.id),
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED, response.data)
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.caption, 'Original caption')
+        self.assertEqual(self.job.content_item, self.content)
+
+        response = self.client.delete(f'/api/marketing/publishing/jobs/{self.job.id}/')
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertTrue(PublishingJob.objects.filter(pk=self.job.pk).exists())
+
+    @patch('apps.publishing.views.publish_job')
+    def test_request_caption_cannot_bypass_the_reviewed_copy(self, publish_task):
+        self.authenticate_as(WorkspaceMember.Role.MANAGER)
+        payload = self.publish_payload()
+        payload['caption'] = 'Unreviewed replacement copy'
+
+        response = self.client.post(
+            '/api/marketing/publishing/jobs/', payload, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        created = PublishingJob.objects.exclude(pk=self.job.pk).get()
+        self.assertEqual(
+            created.caption,
+            'Approved version\n\nReviewed caption\n\n#reviewed',
+        )
+        self.assertNotIn('Unreviewed replacement', created.caption)
+
+    @patch('apps.publishing.views.publish_job')
+    def test_viewer_and_editor_cannot_retry_a_job_or_item(self, publish_task):
+        for role in (WorkspaceMember.Role.VIEWER, WorkspaceMember.Role.EDITOR):
+            with self.subTest(role=role, action='retry-job'):
+                self.authenticate_as(role)
+                response = self.client.post(
+                    f'/api/marketing/publishing/jobs/{self.job.id}/retry/', {}, format='json'
+                )
+                self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+            with self.subTest(role=role, action='retry-item'):
+                response = self.client.post(
+                    f'/api/marketing/publishing/jobs/items/{self.item.id}/retry/',
+                    {},
+                    format='json',
+                )
+                self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.item.refresh_from_db()
+        self.job.refresh_from_db()
+        self.assertEqual(self.item.status, PublishingJobItem.Status.FAILED)
+        self.assertEqual(self.job.status, PublishingJob.Status.FAILED)
+        publish_task.enqueue.assert_not_called()
+
+    @patch('apps.publishing.views.publish_job')
+    def test_manager_can_retry_a_job(self, publish_task):
+        self.authenticate_as(WorkspaceMember.Role.MANAGER)
+
+        response = self.client.post(
+            f'/api/marketing/publishing/jobs/{self.job.id}/retry/', {}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.status, PublishingJobItem.Status.QUEUED)
+        publish_task.enqueue.assert_called_once_with(str(self.job.id))
+
+    @patch('apps.publishing.views.publish_job')
+    def test_manager_can_retry_a_failed_item(self, publish_task):
+        self.authenticate_as(WorkspaceMember.Role.MANAGER)
+
+        response = self.client.post(
+            f'/api/marketing/publishing/jobs/items/{self.item.id}/retry/', {}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.item.refresh_from_db()
+        self.job.refresh_from_db()
+        self.assertEqual(self.item.status, PublishingJobItem.Status.QUEUED)
+        self.assertEqual(self.job.status, PublishingJob.Status.PUBLISHING)
+        publish_task.enqueue.assert_called_once_with(str(self.job.id))

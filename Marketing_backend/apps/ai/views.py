@@ -91,8 +91,14 @@ class WorkspaceAIProviderViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         )
 
 
-class WorkspaceAIRouteViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
-    """Which provider serves which capability, and in what order."""
+class WorkspaceAIRouteViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSet):
+    """Which provider serves which capability, and in what order.
+
+    Route rows are deliberately read-only.  A capability's providers, order
+    and strategy form one policy, so changing an individual row could bypass
+    the validation and transaction in ``replace_set`` or leave a partially
+    updated policy behind.
+    """
 
     queryset = WorkspaceAIRoute.objects.select_related('provider').all()
     serializer_class = WorkspaceAIRouteSerializer
@@ -100,12 +106,6 @@ class WorkspaceAIRouteViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     requires_workspace = False
     required_role = WorkspaceMember.Role.ADMIN
     required_read_role = WorkspaceMember.Role.ADMIN
-
-    def perform_create(self, serializer):
-        workspace, error = get_request_workspace(self.request)
-        if error:
-            raise PermissionDenied("No accessible workspace for this request.")
-        serializer.save(workspace=workspace)
 
     @action(detail=False, methods=['post'], url_path='replace-set')
     def replace_set(self, request):

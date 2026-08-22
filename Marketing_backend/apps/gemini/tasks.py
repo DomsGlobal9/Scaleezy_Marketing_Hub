@@ -71,6 +71,7 @@ def generate_content(request_id: str):
                 'brain_version': routed['brain_version'],
                 'completed_at': timezone.now().isoformat(),
                 'contentItemId': str(content_item.id) if content_item else None,
+                'assetId': str(content_item.asset_id) if content_item and content_item.asset_id else None,
             },
         },
     )
@@ -91,8 +92,11 @@ def _persist(request, brief, result_data, provider_key):
     Mirrors the synchronous path's persistence so a background generation
     produces exactly the same ContentItem a foreground one would.
     """
+    from django.db import transaction
+
     from apps.brands.models import Brand
     from apps.content.models import ContentItem
+    from apps.context.services.generation import create_generated_asset
 
     try:
         content_format = {
@@ -102,23 +106,28 @@ def _persist(request, brief, result_data, provider_key):
 
         slides = brief.get('slides') or []
 
-        return ContentItem.objects.create(
-            workspace=request.workspace,
-            brand=Brand.objects.filter(workspace=request.workspace)
-            .order_by('-is_default')
-            .first(),
-            content_format=content_format,
-            status=ContentItem.Status.DRAFT,
-            headline=(result_data.get('postTitle') or '')[:500],
-            caption=result_data.get('postDescription') or '',
-            hashtags=result_data.get('postHashtags') or '',
-            cta=(brief.get('offer') or '')[:255],
-            preview_url=(result_data.get('posterImageUrl') or '')[:1000],
-            slides=slides if isinstance(slides, list) else [],
-            ai_provider=(provider_key or 'UNKNOWN')[:100],
-            ai_prompt=str(brief)[:5000],
-            created_by=request.user,
-        )
+        with transaction.atomic():
+            asset = create_generated_asset(
+                request.workspace, result_data, user=request.user
+            )
+            return ContentItem.objects.create(
+                workspace=request.workspace,
+                brand=Brand.objects.filter(workspace=request.workspace)
+                .order_by('-is_default')
+                .first(),
+                asset=asset,
+                content_format=content_format,
+                status=ContentItem.Status.DRAFT,
+                headline=(result_data.get('postTitle') or '')[:500],
+                caption=result_data.get('postDescription') or '',
+                hashtags=result_data.get('postHashtags') or '',
+                cta=(brief.get('offer') or '')[:255],
+                preview_url=(result_data.get('posterImageUrl') or '')[:1000],
+                slides=slides if isinstance(slides, list) else [],
+                ai_provider=(provider_key or 'UNKNOWN')[:100],
+                ai_prompt=str(brief)[:5000],
+                created_by=request.user,
+            )
     except Exception:
         logger.exception("Could not persist background generation %s", request.pk)
         return None

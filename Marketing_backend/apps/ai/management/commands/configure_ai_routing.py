@@ -5,18 +5,20 @@ Provision the minimum viable AI routing for a workspace.
     manage.py configure_ai_routing --apply
 
 A workspace with no route gets a 503 from every Create, because
-`AIRouter._candidates()` has nothing to select. That is a configuration gap,
-not a code one, so it is fixed with a command rather than a migration: routing
-is an operational decision per tenant, and a migration would impose one on
-every environment that runs it.
+`AIRouter._candidates()` has nothing to select. New workspaces now provision
+themselves on creation via strict `apps.ai.provisioning.provision_default_ai`,
+so this command is the repair tool: it backfills workspaces that predate that,
+re-enables what an operator switched off, and routes a provider other than the
+default one the service picks. The writes themselves are that same service, so
+there is one place where routing gets created and one place to change it.
 
 CREDENTIALS ARE NOT REQUIRED, AND BY DEFAULT NOT TOUCHED.
 `registry.build()` constructs an adapter whether or not a workspace credential
-is stored, and `GeminiAdapter` falls back to `settings.GEMINI_API_KEY` - the
-server's own environment. Leaving the workspace credential empty is therefore
-the SAFER configuration: the key stays in one place (the platform's secret
-store) instead of being copied into a database column, and rotating it is one
-operation rather than one per tenant.
+is stored, and an adapter may use its platform-managed server credential.
+Leaving the workspace credential empty is therefore the SAFER configuration:
+the key stays in one place (the platform's secret store) instead of being
+copied into a database column, and rotating it is one operation rather than
+one per tenant.
 
 `--credential-env NAME` exists for the case where one tenant must use a key of
 its own. It reads that environment variable directly and encrypts it with the
@@ -24,19 +26,18 @@ same Fernet helper the OAuth tokens use. The value is never printed, never
 logged and never returned to a client - only whether one is present.
 """
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
-from apps.ai.models import AIProvider, Capability, Strategy, WorkspaceAIProvider, WorkspaceAIRoute
+from apps.ai.models import AIProvider, Capability, WorkspaceAIProvider, WorkspaceAIRoute
+from apps.ai.provisioning import (
+    DEFAULT_PRIORITY,
+    DEFAULT_STRATEGY,
+    REQUIRED_CAPABILITIES,
+    provider_serves,
+    provision_ai_routing,
+    resolve_default_provider,
+)
 from apps.ai.registry import get_adapter_class
 from apps.workspaces.models import MarketingWorkspace
-
-#: The capabilities a workspace needs routed before Create works end to end.
-#: TEXT alone produces copy with no poster; the generation accelerator asks for
-#: both and keeps whichever succeeds.
-REQUIRED_CAPABILITIES = (Capability.TEXT, Capability.IMAGE)
-
-DEFAULT_PRIORITY = 100
-DEFAULT_STRATEGY = Strategy.FAILOVER
 
 
 class Command(BaseCommand):
@@ -44,8 +45,11 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--provider', default='gemini',
-            help="Adapter key to route (default: gemini). Must be installed AND in the catalogue.",
+            '--provider', default=None,
+            help=(
+                "Adapter key to route. Omit to select by enabled catalogue, installed "
+                "adapter, required capabilities and stable cost/key policy."
+            ),
         )
         parser.add_argument(
             '--workspace', action='append', default=None,
@@ -75,16 +79,32 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         apply_changes = options['apply'] and not options['dry_run']
-        provider_key = options['provider']
-
         capabilities = options['capability'] or list(REQUIRED_CAPABILITIES)
         unknown = [c for c in capabilities if c not in Capability.values]
         if unknown:
             raise CommandError(f"Unknown capability/capabilities: {', '.join(unknown)}")
 
-        # 1. The adapter must actually be installed. Routing to a provider with
-        #    no code behind it produces a candidate that build() drops, which
-        #    looks like "configured" and behaves like "503".
+        provider_key = options['provider']
+        if provider_key:
+            try:
+                provider = AIProvider.objects.get(key=provider_key)
+            except AIProvider.DoesNotExist:
+                raise CommandError(
+                    f"No AIProvider catalogue row exists for '{provider_key}'."
+                )
+        else:
+            provider = resolve_default_provider(capabilities)
+            if provider is None:
+                raise CommandError(
+                    "No installed, globally available catalogue provider serves "
+                    f"{', '.join(capabilities)}. Enable one in Admin or pass "
+                    "--provider after installing its adapter."
+                )
+            provider_key = provider.key
+
+        # The adapter must actually be installed. Routing to a provider with
+        # no code behind it produces a candidate that build() drops, which
+        # looks like "configured" and behaves like "503".
         adapter_class = get_adapter_class(provider_key)
         if adapter_class is None:
             raise CommandError(
@@ -92,21 +112,12 @@ class Command(BaseCommand):
                 f"produce no candidates."
             )
 
-        try:
-            provider = AIProvider.objects.get(key=provider_key)
-        except AIProvider.DoesNotExist:
-            raise CommandError(
-                f"'{provider_key}' is installed but absent from the AIProvider catalogue. "
-                f"Add the catalogue row first; this command does not invent providers."
-            )
-
-        # 2. The catalogue and the adapter must agree about what it can do.
+        # The catalogue and the adapter must agree about what it can do.
         #    Believing the catalogue alone is how a capability gets routed to
         #    code that cannot serve it.
         declared = {str(c) for c in (getattr(adapter_class, 'capabilities', ()) or ())}
         unsupported = [
-            c for c in capabilities
-            if not provider.supports(c) or (declared and c not in declared)
+            c for c in capabilities if not provider_serves(provider, adapter_class, [c])
         ]
         if unsupported:
             raise CommandError(
@@ -173,57 +184,21 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ write
 
     def _configure(self, workspace, provider, capabilities, priority, credential, apply_changes):
-        changes = []
-        label = f'{workspace.workspace_name} ({workspace.pk})'
-
-        with transaction.atomic():
-            wp = WorkspaceAIProvider.objects.filter(
-                workspace=workspace, provider=provider
-            ).first()
-
-            if wp is None:
-                changes.append(f'{label}: create WorkspaceAIProvider (enabled)')
-                if apply_changes:
-                    wp = WorkspaceAIProvider.objects.create(
-                        workspace=workspace, provider=provider, enabled=True,
-                    )
-            elif not wp.enabled:
-                changes.append(f'{label}: enable existing WorkspaceAIProvider')
-                if apply_changes:
-                    wp.enabled = True
-                    wp.save(update_fields=['enabled', 'updated_at'])
-
-            if credential and wp is not None:
-                # Encrypted with the same helper that protects OAuth tokens.
-                # Only the fact of a credential is ever reported, never its value.
-                from apps.social_accounts.utils.encryption import encrypt_token
-
-                changes.append(f'{label}: store workspace credential (encrypted)')
-                if apply_changes:
-                    wp.credentials_encrypted = encrypt_token(credential)
-                    wp.save(update_fields=['credentials_encrypted', 'updated_at'])
-
-            for capability in capabilities:
-                route = WorkspaceAIRoute.objects.filter(
-                    workspace=workspace, capability=capability, provider=provider
-                ).first()
-                if route is None:
-                    changes.append(f'{label}: route {capability} -> {provider.key}')
-                    if apply_changes:
-                        WorkspaceAIRoute.objects.create(
-                            workspace=workspace, capability=capability, provider=provider,
-                            priority=priority, enabled=True, strategy=DEFAULT_STRATEGY,
-                        )
-                elif not route.enabled:
-                    changes.append(f'{label}: re-enable {capability} route')
-                    if apply_changes:
-                        route.enabled = True
-                        route.save(update_fields=['enabled'])
+        """Reporting only. The writes belong to apps.ai.provisioning, which is
+        also what workspace creation calls — one writer, so the command and the
+        automatic path cannot drift into provisioning different things."""
+        changes = provision_ai_routing(
+            workspace, provider,
+            capabilities=capabilities, priority=priority,
+            credential=credential, apply=apply_changes,
+        )
 
         for change in changes:
             self.stdout.write(f'  {"+" if apply_changes else "~"} {change}')
         if not changes:
-            self.stdout.write(f'  = {label}: already correct')
+            self.stdout.write(
+                f'  = {workspace.workspace_name} ({workspace.pk}): already correct'
+            )
         return changes
 
     # ----------------------------------------------------------------- verify

@@ -2,8 +2,9 @@
  * Settings — workspace, account and security configuration only.
  *
  * Brand identity lives in Brand Master. Everything here reads and writes a
- * real backend record: the workspace row, the AI provider/routing tables,
- * the billing allowance and the publishing audit trail. Panels whose controls
+ * real backend record: the workspace row, the billing allowance and the
+ * publishing audit trail. AI provider credentials and routing live only in
+ * the guarded Admin module. Panels whose controls
  * saved nowhere (publishing defaults, notifications, session toggles, the
  * static permission matrix) were removed rather than left as decoration.
  */

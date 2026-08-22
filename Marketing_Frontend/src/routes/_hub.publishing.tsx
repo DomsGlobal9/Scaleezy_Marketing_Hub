@@ -47,7 +47,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useBrandSettings } from "@/lib/brand-settings";
 import { api, apiFetch, apiPost } from "@/lib/api";
-import { readActiveWorkspaceId } from "@/lib/workspace";
+import { readSelectedWorkspaceId } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub/publishing")({
   head: () => ({
@@ -463,7 +463,7 @@ function PublishingPage() {
 
   const ensureDraftAsset = async (draft: DraftAsset): Promise<string> => {
     if (draft.id) return draft.id;
-    const workspaceId = readActiveWorkspaceId();
+    const workspaceId = readSelectedWorkspaceId();
     if (!workspaceId) throw new Error("Select a client before saving content.");
     if (!draft.previewUrl) throw new Error("Attach or generate media before saving this draft.");
 
@@ -572,18 +572,12 @@ function PublishingPage() {
     toast(mode === "schedule" ? "Scheduling…" : "Publishing started.");
 
     try {
-      const wsId = readActiveWorkspaceId();
+      const wsId = readSelectedWorkspaceId();
       const assetId = asset?.id ?? null;
       const contentItemId = asset?.contentItemId ?? null;
       if (!wsId || !assetId || !contentItemId || !contentLocked) {
         throw new Error("Open an approved saved version from Review before publishing.");
       }
-
-      // Build the caption from the asset's generated/manual content
-      const captionParts = [asset?.postTitle, asset?.postDescription, asset?.postHashtags].filter(
-        Boolean,
-      );
-      const caption = captionParts.join("\n\n") || "";
 
       const res = await apiFetch("/api/marketing/publishing/jobs/", {
         method: "POST",
@@ -593,7 +587,6 @@ function PublishingPage() {
           asset_id: assetId,
           publish_mode: mode === "now" ? "NOW" : "SCHEDULED",
           ...(scheduledAt ? { scheduled_at: scheduledAt } : {}),
-          caption,
           social_connection_ids: ids,
           content_item_id: contentItemId,
         }),
@@ -664,6 +657,7 @@ function PublishingPage() {
         posterImageUrl: result.generated_asset_url ?? "",
         metadata,
         contentItemId: metadata.contentItemId ?? null,
+        assetId: metadata.assetId ?? null,
       };
     }
 
@@ -737,6 +731,7 @@ function PublishingPage() {
       const label = contentType === "carousel" ? "Carousel" : "Poster";
 
       setAsset({
+        id: d.assetId || undefined,
         name: `${campaignName || "Untitled"} ${label}.jpg`,
         type: "JPG",
         dimensions:
@@ -805,7 +800,7 @@ function PublishingPage() {
       setWorkingKind("video");
       setStep("ai_generating");
       try {
-        const wsId = readActiveWorkspaceId();
+        const wsId = readSelectedWorkspaceId();
         if (!wsId) throw new Error("No workspace found.");
 
         const formData = new FormData();
@@ -1061,8 +1056,8 @@ function PublishingPage() {
                     </h3>
                     <p className="text-sm text-muted-foreground mt-1">
                       {isAnalyzing
-                        ? "Gemini is currently analyzing your image to auto-fill the details..."
-                        : "Gemini will analyze this image to write the perfect caption and generate a highly enhanced, professional marketing poster."}
+                        ? "Scaleezy is analyzing your image to auto-fill the details..."
+                        : "Scaleezy will analyze this image and use your configured AI routing to write the caption and create a polished marketing poster."}
                     </p>
                     <button
                       onClick={() => setReferenceImageBase64("")}
@@ -1442,8 +1437,8 @@ function PublishingPage() {
                 <div>
                   <h3 className="text-lg font-semibold text-foreground">Reference Image</h3>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Gemini will use this image as inspiration to generate a brand new, highly
-                    polished AI poster.
+                    Scaleezy will use this image as inspiration and your configured AI routing to
+                    generate a new, polished poster.
                   </p>
                 </div>
                 <div className=" cursor-pointer mt-4 rounded-full bg-background px-6 py-2 text-sm font-medium text-foreground border border-border transition-transform group-hover:scale-105 shadow-sm">
@@ -1464,7 +1459,7 @@ function PublishingPage() {
                 <div>
                   <h3 className="text-lg font-semibold text-foreground">Final Ready Poster</h3>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Skip generation. Have Gemini write engaging captions and hashtags for this exact
+                    Skip image generation. Have Scaleezy write captions and hashtags for this exact
                     poster.
                   </p>
                 </div>

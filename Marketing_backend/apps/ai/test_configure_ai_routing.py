@@ -6,13 +6,24 @@ configurations that would look correct and behave like a 503, and that running
 it twice is not different from running it once.
 """
 from io import StringIO
+from unittest.mock import patch
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
+from apps.ai.adapters.base import AIProviderAdapter
 from apps.ai.models import AIProvider, Capability, Strategy, WorkspaceAIProvider, WorkspaceAIRoute
 from apps.workspaces.models import MarketingWorkspace
+
+
+class CommandTestAdapter(AIProviderAdapter):
+    key = 'test-command'
+    display_name = 'Test Command Provider'
+    capabilities = (Capability.TEXT, Capability.IMAGE)
+
+    def health_check(self):
+        return {'ok': True, 'detail': 'test adapter ready'}
 
 
 class ConfigureAIRoutingTests(TestCase):
@@ -20,13 +31,38 @@ class ConfigureAIRoutingTests(TestCase):
         self.workspace = MarketingWorkspace.objects.create(
             customer_id='c1', workspace_name='One'
         )
-        self.provider, _ = AIProvider.objects.get_or_create(
-            key='gemini',
+        self.provider, _ = AIProvider.objects.update_or_create(
+            key=CommandTestAdapter.key,
             defaults={
-                'display_name': 'Google Gemini',
-                'capabilities': ['TEXT', 'IMAGE', 'IMAGE_ANALYSIS', 'EMBEDDING'],
+                'display_name': CommandTestAdapter.display_name,
+                'capabilities': [Capability.TEXT, Capability.IMAGE],
+                'unit_cost': 0,
+                'is_available': True,
             },
         )
+        AIProvider.objects.exclude(pk=self.provider.pk).update(is_available=False)
+
+        patchers = (
+            patch(
+                'apps.ai.provisioning.all_adapters',
+                return_value={self.provider.key: CommandTestAdapter},
+            ),
+            patch(
+                'apps.ai.management.commands.configure_ai_routing.get_adapter_class',
+                side_effect=lambda key: (
+                    CommandTestAdapter if key == self.provider.key else None
+                ),
+            ),
+            patch(
+                'apps.ai.registry.get_adapter_class',
+                side_effect=lambda key: (
+                    CommandTestAdapter if key == self.provider.key else None
+                ),
+            ),
+        )
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def run_command(self, *args):
         out = StringIO()
@@ -40,10 +76,11 @@ class ConfigureAIRoutingTests(TestCase):
         self.assertFalse(WorkspaceAIRoute.objects.exists())
 
     def test_apply_creates_enabled_provider_and_both_routes(self):
-        self.run_command('--apply')
+        output = self.run_command('--apply')
 
         wp = WorkspaceAIProvider.objects.get(workspace=self.workspace, provider=self.provider)
         self.assertTrue(wp.enabled)
+        self.assertIn(f'provider={self.provider.key}', output)
         # The point of the design: no credential is copied into the database.
         self.assertEqual(wp.credentials_encrypted, '')
 
@@ -76,7 +113,9 @@ class ConfigureAIRoutingTests(TestCase):
 
     def test_refuses_a_capability_the_provider_does_not_support(self):
         with self.assertRaises(CommandError) as caught:
-            self.run_command('--apply', '--capability', 'VIDEO')
+            self.run_command(
+                '--apply', '--provider', self.provider.key, '--capability', 'VIDEO'
+            )
         self.assertIn('does not genuinely support', str(caught.exception))
         self.assertFalse(WorkspaceAIRoute.objects.exists())
 
@@ -93,7 +132,7 @@ class ConfigureAIRoutingTests(TestCase):
         self.provider.is_available = False
         self.provider.save(update_fields=['is_available'])
         with self.assertRaises(CommandError) as caught:
-            self.run_command('--apply')
+            self.run_command('--apply', '--provider', self.provider.key)
         self.assertIn('switched off globally', str(caught.exception))
 
     def test_credential_env_must_actually_be_set(self):
@@ -139,4 +178,4 @@ class ConfigureAIRoutingTests(TestCase):
 
         candidates = AIRouter(self.workspace)._candidates(Capability.TEXT)
         self.assertEqual(len(candidates), 1)
-        self.assertEqual(candidates[0]['route'].provider.key, 'gemini')
+        self.assertEqual(candidates[0]['route'].provider.key, self.provider.key)

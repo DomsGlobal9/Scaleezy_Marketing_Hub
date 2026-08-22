@@ -5,7 +5,12 @@
  * response unwrapping and error handling in three mutually inconsistent ways.
  */
 import { clearSession, readSession, writeSession } from "@/lib/auth";
-import { readActiveWorkspaceId } from "@/lib/workspace";
+// Cyclic by design: workspace.ts calls api() to discover memberships, api.ts
+// reads the resulting selection. Neither touches the other during module
+// evaluation, so the cycle resolves, and a direct import is what makes the
+// header unconditional — a registration seam would silently drop it on any
+// entry point that never imported the store.
+import { readSelectedWorkspaceId } from "@/lib/workspace";
 
 /**
  * Read once. Every previous call site did `VITE_API_URL + "/api/..."`, which
@@ -14,6 +19,7 @@ import { readActiveWorkspaceId } from "@/lib/workspace";
  */
 const BASE = (import.meta.env["VITE_API_URL"] ?? "").replace(/\/+$/, "");
 
+const AUTH_PREFIX = "/api/auth/";
 const REFRESH_PATH = "/api/auth/refresh/";
 
 export class ApiError extends Error {
@@ -48,6 +54,42 @@ function buildUrl(path: string): string {
     );
   }
   return `${BASE}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function isAuthPath(path: string): boolean {
+  let pathname = path;
+  if (/^https?:\/\//i.test(path)) {
+    try {
+      pathname = new URL(path).pathname;
+    } catch {
+      return false;
+    }
+  }
+  return pathname.startsWith(AUTH_PREFIX);
+}
+
+/**
+ * Everything both entry points must stamp on a request: who is calling, and
+ * which client they are calling about. Centralised here so adding a header is
+ * one edit rather than one per call site.
+ */
+function applyDefaultHeaders(headers: Headers, path: string) {
+  const token = readSession()?.access;
+  // Public calls still send the token when one exists — the OAuth callbacks
+  // benefit from it — but are never redirected away on 401, because they hold
+  // a single-use authorization code that cannot be replayed.
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  // The auth endpoints are workspace-agnostic, and /api/auth/me/ is how the
+  // store discovers memberships in the first place: sending a stale id there
+  // would break the one call that can repair it.
+  if (isAuthPath(path) || headers.has("X-Workspace-Id")) return;
+  const workspaceId = readSelectedWorkspaceId();
+  if (workspaceId) {
+    headers.set("X-Workspace-Id", workspaceId);
+  }
 }
 
 /**
@@ -169,17 +211,7 @@ export async function api<T = unknown>(path: string, options: ApiOptions = {}): 
     }
   }
 
-  const token = readSession()?.access;
-  // Public calls still send the token when one exists — the OAuth callbacks
-  // benefit from it — but are never redirected away on 401, because they hold
-  // a single-use authorization code that cannot be replayed.
-  if (token && !finalHeaders.has("Authorization")) {
-    finalHeaders.set("Authorization", `Bearer ${token}`);
-  }
-  const workspaceId = readActiveWorkspaceId();
-  if (workspaceId && !finalHeaders.has("X-Workspace-Id")) {
-    finalHeaders.set("X-Workspace-Id", workspaceId);
-  }
+  applyDefaultHeaders(finalHeaders, path);
 
   // `body: undefined` is rejected under exactOptionalPropertyTypes; null is the
   // correct "no body" value for RequestInit.
@@ -246,14 +278,7 @@ export async function apiFetch(
   const { public: isPublic, _retried, headers, ...rest } = init;
 
   const finalHeaders = new Headers(headers);
-  const token = readSession()?.access;
-  if (token && !finalHeaders.has("Authorization")) {
-    finalHeaders.set("Authorization", `Bearer ${token}`);
-  }
-  const workspaceId = readActiveWorkspaceId();
-  if (workspaceId && !finalHeaders.has("X-Workspace-Id")) {
-    finalHeaders.set("X-Workspace-Id", workspaceId);
-  }
+  applyDefaultHeaders(finalHeaders, path);
 
   const res = await fetch(buildUrl(path), { ...rest, headers: finalHeaders });
 

@@ -173,6 +173,13 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
                 error={"code": "NOT_FOUND", "message": "Content not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        if item.status != ContentItem.Status.DRAFT:
+            return APIResponse(
+                success=False,
+                message="Only a draft can be composed. Open a new revision first.",
+                error={"code": "CONTENT_LOCKED", "message": item.get_status_display()},
+                status=status.HTTP_409_CONFLICT,
+            )
 
         spec, brand = self._spec_for(workspace, data, item=item)
         layout = self._layout_key(data, brand, item)

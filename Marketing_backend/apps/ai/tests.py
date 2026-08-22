@@ -271,14 +271,75 @@ class AIConsoleAPITests(APITestCase):
         res = self.client.get('/api/marketing/ai/providers/')
         self.assertEqual(len(res.data), 0)
 
-    def test_route_rejects_a_provider_that_cannot_serve_the_capability(self):
-        self.as_(self.admin)
-        res = self.client.post(
-            '/api/marketing/ai/routes/',
-            {'capability': Capability.VIDEO, 'provider': str(self.provider.id)},
-            format='json',
+    def test_route_set_rejects_a_provider_that_cannot_serve_the_capability(self):
+        WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.provider, enabled=True
         )
+        self.as_(self.admin)
+
+        with patch('apps.ai.views.all_adapters', return_value={'fake': FakeAdapter}):
+            res = self.client.post(
+                '/api/marketing/ai/routes/replace-set/',
+                {
+                    'capability': Capability.VIDEO,
+                    'routes': [{'provider': str(self.provider.id), 'priority': 10}],
+                    'strategy': Strategy.FAILOVER,
+                },
+                format='json',
+            )
+
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(WorkspaceAIRoute.objects.filter(workspace=self.ws).exists())
+
+    def test_individual_route_rows_are_read_only(self):
+        """Every mutation must use the validated, atomic replace-set action."""
+        route = WorkspaceAIRoute.objects.create(
+            workspace=self.ws,
+            capability=Capability.TEXT,
+            provider=self.provider,
+            priority=10,
+            strategy=Strategy.FAILOVER,
+        )
+        self.as_(self.admin)
+
+        attempts = (
+            (
+                'post',
+                '/api/marketing/ai/routes/',
+                {
+                    'capability': Capability.TEXT,
+                    'provider': str(self.better_provider.id),
+                    'priority': 20,
+                },
+            ),
+            (
+                'put',
+                f'/api/marketing/ai/routes/{route.id}/',
+                {
+                    'capability': Capability.IMAGE,
+                    'provider': str(self.better_provider.id),
+                    'priority': 20,
+                },
+            ),
+            (
+                'patch',
+                f'/api/marketing/ai/routes/{route.id}/',
+                {'provider': str(self.better_provider.id)},
+            ),
+            ('delete', f'/api/marketing/ai/routes/{route.id}/', None),
+        )
+
+        for method, url, payload in attempts:
+            with self.subTest(method=method):
+                response = getattr(self.client, method)(url, payload, format='json')
+                self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+        route.refresh_from_db()
+        self.assertEqual(
+            (route.capability, route.provider, route.priority, route.strategy),
+            (Capability.TEXT, self.provider, 10, Strategy.FAILOVER),
+        )
+        self.assertEqual(WorkspaceAIRoute.objects.filter(workspace=self.ws).count(), 1)
 
     def test_route_set_replace_is_atomic_when_a_provider_is_not_enabled(self):
         WorkspaceAIProvider.objects.create(

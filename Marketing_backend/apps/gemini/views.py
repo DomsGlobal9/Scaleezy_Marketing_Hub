@@ -113,8 +113,11 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         they just waited for, so failures are logged and the payload is still
         returned.
         """
+        from django.db import transaction
+
         from apps.brands.models import Brand
         from apps.content.models import ContentItem
+        from apps.context.services.generation import create_generated_asset
 
         try:
             workspace, error = get_request_workspace(request)
@@ -128,24 +131,28 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
 
             slides = request.data.get('slides') or []
 
-            return ContentItem.objects.create(
-                workspace=workspace,
-                brand=Brand.objects.filter(workspace=workspace).order_by('-is_default').first(),
-                content_format=content_format,
-                status=ContentItem.Status.DRAFT,
-                headline=(result.get('postTitle') or '')[:500],
-                caption=result.get('postDescription') or '',
-                hashtags=result.get('postHashtags') or '',
-                cta=(brief.get('offer') or '')[:255],
-                preview_url=(result.get('posterImageUrl') or '')[:1000],
-                slides=slides if isinstance(slides, list) else [],
-                # Whichever provider the router actually selected. This
-                # used to be hard-coded, so every generation claimed Gemini
-                # produced it however it was routed.
-                ai_provider=(provider_key or 'UNKNOWN')[:100],
-                ai_prompt=str(brief)[:5000],
-                created_by=request.user if request.user.is_authenticated else None,
-            )
+            creator = request.user if request.user.is_authenticated else None
+            with transaction.atomic():
+                asset = create_generated_asset(workspace, result, user=creator)
+                return ContentItem.objects.create(
+                    workspace=workspace,
+                    brand=Brand.objects.filter(workspace=workspace).order_by('-is_default').first(),
+                    asset=asset,
+                    content_format=content_format,
+                    status=ContentItem.Status.DRAFT,
+                    headline=(result.get('postTitle') or '')[:500],
+                    caption=result.get('postDescription') or '',
+                    hashtags=result.get('postHashtags') or '',
+                    cta=(brief.get('offer') or '')[:255],
+                    preview_url=(result.get('posterImageUrl') or '')[:1000],
+                    slides=slides if isinstance(slides, list) else [],
+                    # Whichever provider the router actually selected. This
+                    # used to be hard-coded, so every generation claimed Gemini
+                    # produced it however it was routed.
+                    ai_provider=(provider_key or 'UNKNOWN')[:100],
+                    ai_prompt=str(brief)[:5000],
+                    created_by=creator,
+                )
         except Exception:
             logger.exception("Could not persist generated content")
             return None
@@ -252,6 +259,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 'brain_version': routed['brain_version'],
             },
             'contentItemId': str(content_item.id) if content_item else None,
+            'assetId': str(content_item.asset_id) if content_item and content_item.asset_id else None,
         }
 
         return APIResponse(

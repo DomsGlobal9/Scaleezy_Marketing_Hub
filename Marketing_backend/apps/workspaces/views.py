@@ -56,6 +56,11 @@ class MarketingWorkspaceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        brand_name = (
+            serializer.validated_data.get('brand_name')
+            or serializer.validated_data['workspace_name']
+            or 'My Brand'
+        )
 
         try:
             with transaction.atomic():
@@ -67,7 +72,7 @@ class MarketingWorkspaceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 )
                 Brand.objects.create(
                     workspace=workspace,
-                    name=workspace.workspace_name or 'My Brand',
+                    name=brand_name,
                     is_default=True,
                     created_by=request.user,
                 )

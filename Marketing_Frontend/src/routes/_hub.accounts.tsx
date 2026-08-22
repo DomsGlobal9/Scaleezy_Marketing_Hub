@@ -56,7 +56,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api, apiFetch, apiPost } from "@/lib/api";
-import { readActiveWorkspaceId } from "@/lib/workspace";
+import { readSelectedWorkspaceId } from "@/lib/workspace";
 import {
   EmptyState,
   PageHeader,
@@ -132,14 +132,20 @@ const platformId = (platform: string) => platform.toLowerCase().replaceAll("_", 
 const fmtDate = (value: string | null | undefined) =>
   value ? new Date(value).toLocaleString() : "—";
 
-async function workspaceId(): Promise<string | null> {
-  return readActiveWorkspaceId();
+/** The workspace the user is actually looking at.
+ *
+ * This used to take the first row of /workspaces/, which is only correct for
+ * someone with exactly one client. The id is bound into the OAuth state and
+ * decides which workspace the resulting connection lands in, so guessing it
+ * wrong connects a customer's social account to a different client. */
+function workspaceId(): string | null {
+  return readSelectedWorkspaceId();
 }
 
 /** Starts the official OAuth flow; the browser leaves for the platform. */
 async function startOAuth(platform: string) {
-  const wsId = await workspaceId();
-  if (!wsId) throw new Error("No workspace found for this account.");
+  const wsId = workspaceId();
+  if (!wsId) throw new Error("Select a client before connecting an account.");
   const data = await apiPost<{ authorization_url?: string }>(
     "/api/marketing/social-accounts/connect/",
     { workspace_id: wsId, platform: platform.toUpperCase().replaceAll("-", "_") },

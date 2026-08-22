@@ -110,9 +110,10 @@ function PrivacyPage() {
               content you choose to publish, via their official APIs.
             </>,
             <>
-              <strong className="text-foreground">Google Gemini</strong> — campaign briefs and any
-              reference image you upload are sent to Google&rsquo;s generative AI service to produce
-              copy and imagery.
+              <strong className="text-foreground">Configured AI providers</strong> — campaign
+              briefs and reference images are sent to the AI providers your workspace administrator
+              enables and routes (currently including Google Gemini and OpenAI) to produce copy and
+              imagery.
             </>,
             <>
               <strong className="text-foreground">Supabase</strong> — provides our database hosting

@@ -1,27 +1,42 @@
-from rest_framework import viewsets, status
-from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.db import transaction
-from .models import PublishingJob, PublishingJobItem
-from apps.workspaces.models import MarketingWorkspace
+
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+
+from apps.common.mixins import WorkspaceScopedMixin
+from apps.common.permissions import HasWorkspaceRole, IsWorkspaceMember, authorize_workspace
+from apps.common.responses import APIResponse
 from apps.marketing.models import MarketingAsset
 from apps.social_accounts.models import SocialConnection
-from .serializers import PublishingJobSerializer, CreatePublishingJobSerializer
-from rest_framework.permissions import IsAuthenticated
-from apps.common.permissions import authorize_workspace
-from apps.common.mixins import WorkspaceScopedMixin
-from apps.common.permissions import IsWorkspaceMember
-from apps.common.responses import APIResponse
+from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
+
+from .models import PublishingJob, PublishingJobItem
+from .serializers import CreatePublishingJobSerializer, PublishingJobSerializer
 from .tasks import publish_job
-from django.utils import timezone
+
 
 class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
+    """Workspace publishing history and execution.
+
+    Every member may read their workspace's publishing history. Creating,
+    changing, deleting or retrying a publishing job can reach a real audience,
+    so every unsafe method requires MANAGER or above.
+    """
+
     queryset = PublishingJob.objects.all().prefetch_related('items')
     serializer_class = PublishingJobSerializer
-    permission_classes = [IsAuthenticated, IsWorkspaceMember]
+    permission_classes = [IsAuthenticated, IsWorkspaceMember, HasWorkspaceRole]
     # Lists are scoped by WorkspaceScopedMixin, so an unresolvable workspace
     # is safe here; writes authorise the id they actually use, below.
     requires_workspace = False
+    required_role = WorkspaceMember.Role.MANAGER
+    required_read_role = WorkspaceMember.Role.VIEWER
+    # A persisted job is an execution record for one reviewed version. Raw
+    # PUT/PATCH/DELETE would let even an authorised manager swap its tenant,
+    # asset, content or copy after approval. Creation and the validated retry
+    # actions are the only public mutations.
+    http_method_names = ['get', 'post', 'head', 'options']
 
     def create(self, request, *args, **kwargs):
         serializer = CreatePublishingJobSerializer(data=request.data)
@@ -110,7 +125,14 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                     publish_mode=data['publish_mode'],
                     scheduled_at=data.get('scheduled_at'),
                     timezone=data.get('timezone', 'UTC'),
-                    caption=data.get('caption', ''),
+                    # Publish exactly the reviewed durable version. Request
+                    # copy is deliberately ignored so an API caller cannot
+                    # approve one caption and send another to the platforms.
+                    caption='\n\n'.join(filter(None, (
+                        content_item.headline,
+                        content_item.caption,
+                        content_item.hashtags,
+                    ))),
                     status=PublishingJob.Status.QUEUED if data['publish_mode'] == PublishingJob.PublishMode.NOW else PublishingJob.Status.SCHEDULED,
                     created_by=request.user if request.user.is_authenticated else None
                 )

@@ -147,7 +147,7 @@ export function AIProvidersPanel() {
     setBusy(wp.id);
     try {
       const res = await apiPost<unknown>(`/api/marketing/ai/providers/${wp.id}/test/`, {});
-      toast.success("Connection OK.");
+      toast.success("Credential is configured. Verify live access with a staging generation.");
       void res;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Connection failed.");
@@ -279,7 +279,7 @@ export function AIProvidersPanel() {
                       disabled={busy === p.id}
                       onClick={() => testProvider(wp)}
                     >
-                      <Plug className="size-4" /> Test
+                      <Plug className="size-4" /> Check configuration
                     </Button>
                   ) : null}
                 </div>
