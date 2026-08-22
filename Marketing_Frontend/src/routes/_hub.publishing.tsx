@@ -47,6 +47,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useBrandSettings } from "@/lib/brand-settings";
 import { apiFetch, apiPost } from "@/lib/api";
+import { readSelectedWorkspaceId } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub/publishing")({
   head: () => ({
@@ -372,9 +373,9 @@ function PublishingPage() {
 
     try {
       // Fetch workspaces
-      const wsRes = await apiFetch("/api/marketing/workspaces/");
-      const wsData = await wsRes.json();
-      const wsId = Array.isArray(wsData) && wsData.length > 0 ? wsData[0].id : null;
+      // The selected client, not whichever workspace the API listed first:
+      // with more than one client, [0] silently targets the wrong tenant.
+      const wsId = readSelectedWorkspaceId();
 
       let assetId = asset?.id || null;
       const b64Data = asset?.previewUrl || referenceImageBase64;
@@ -639,9 +640,8 @@ function PublishingPage() {
       setStep("gemini_generating");
       try {
         // Fetch workspaces
-        const wsRes = await apiFetch("/api/marketing/workspaces/");
-        const wsData = await wsRes.json();
-        const wsId = Array.isArray(wsData) && wsData.length > 0 ? wsData[0].id : null;
+        // Same reason as above: address the client the user selected.
+        const wsId = readSelectedWorkspaceId();
         if (!wsId) throw new Error("No workspace found.");
 
         const formData = new FormData();
