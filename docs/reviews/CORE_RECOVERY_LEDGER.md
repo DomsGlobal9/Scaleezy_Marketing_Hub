@@ -69,3 +69,12 @@ Update this section after each vertical slice with named tests and exact results
 - Added a 300-second shutdown allowance so the worker can finish an in-flight provider call or publish after `SIGTERM`, matching the command's graceful-stop contract.
 - Verification: YAML parse **PASS**; current official Render Blueprint schema **PASS**; worker command discovery/help **PASS**; focused durable-jobs and publishing suite **35 passed, 0 failed**; diff check **PASS**.
 - Release position remains **PRODUCTION PROMOTION BLOCKED** until the Blueprint is synced on Render, the worker reports healthy polling, and the credentialed AI/social smoke succeeds. PR7 remains closed.
+
+### 2026-08-23 — Admin console and open-ended AI completion
+
+- Replaced the implicit provider/routing surface with URL-addressable Overview, Providers, Routing & redundancy, and Activity tabs under the existing OWNER/ADMIN guard. Settings remains free of AI controls.
+- Added an explicit catalogue-backed **Add provider** workflow. Workspace admins can add every installed integration, store its encrypted key, optionally override its model and enable it; routing accepts an arbitrary ordered provider set rather than primary-plus-one-failover slots.
+- Made adapter discovery recursive and catalogue synchronisation idempotent at deploy time, so adding another adapter expands the Admin catalogue without core router or frontend changes. The operator kill switch remains authoritative.
+- Replaced key-presence checks with authenticated, read-only OpenAI/Gemini connection checks; failures are sanitised. New clients may now compose different default providers per required capability in one transaction.
+- Focused gate: all **76 AI/Admin backend checks have passing evidence** after supplying the required local test encryption key; targeted frontend lint and TypeScript **PASS**; production client/SSR/Nitro build **PASS**; diff check **PASS**.
+- Release position: **ADMIN P0 CODE GATE PASS; DEPLOYMENT NEXT**. P1 and PR7 remain closed until the live Admin tabs and Add provider workflow are confirmed.

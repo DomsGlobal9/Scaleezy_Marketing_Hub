@@ -435,11 +435,30 @@ class OpenAIAdapter(AIProviderAdapter):
         }
 
     def health_check(self) -> Dict[str, Any]:
-        if not self._api_key():
+        api_key = self._api_key()
+        if not api_key:
             return {'ok': False, 'detail': 'No OpenAI API key configured.'}
-        # Match the existing adapter contract: this is a configuration check,
-        # not a paid generation or a provider-side state mutation.
-        return {
-            'ok': True,
-            'detail': f'Credential configured (model {self.model}); connection not tested.',
-        }
+
+        # Listing models is authenticated and read-only. It validates the key
+        # without consuming generation tokens or creating provider-side state.
+        try:
+            base_url = str(
+                getattr(settings, 'OPENAI_API_BASE_URL', 'https://api.openai.com/v1')
+                or 'https://api.openai.com/v1'
+            ).rstrip('/')
+            timeout = float(getattr(settings, 'AI_PROVIDER_HEALTH_TIMEOUT', 10.0))
+            response = httpx.get(
+                f'{base_url}/models',
+                headers={'Authorization': f'Bearer {api_key}'},
+                timeout=timeout,
+            )
+        except httpx.TimeoutException:
+            return {'ok': False, 'detail': 'OpenAI health check timed out.'}
+        except httpx.HTTPError:
+            return {'ok': False, 'detail': 'OpenAI could not be reached.'}
+        except (TypeError, ValueError):
+            return {'ok': False, 'detail': 'OpenAI health check is misconfigured.'}
+
+        if response.status_code >= 300:
+            return {'ok': False, 'detail': self._error_for_status(response.status_code)}
+        return {'ok': True, 'detail': f'Connected (model {self.model}).'}

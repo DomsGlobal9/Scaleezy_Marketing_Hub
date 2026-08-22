@@ -1,9 +1,9 @@
 import logging
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 
@@ -77,7 +77,42 @@ class WorkspaceAIProviderViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         return workspace
 
     def perform_create(self, serializer):
-        serializer.save(workspace=self._workspace())
+        workspace = self._workspace()
+        provider = serializer.validated_data['provider']
+        if WorkspaceAIProvider.objects.filter(
+            workspace=workspace, provider=provider
+        ).exists():
+            raise ValidationError({
+                'provider': 'This provider is already configured for the selected client.'
+            })
+        try:
+            # The nested transaction keeps a concurrent duplicate from
+            # breaking the request transaction before it becomes a friendly
+            # validation response.
+            with transaction.atomic():
+                serializer.save(workspace=workspace)
+        except IntegrityError as exc:
+            raise ValidationError({
+                'provider': 'This provider is already configured for the selected client.'
+            }) from exc
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            workspace_provider = serializer.save()
+            if not workspace_provider.enabled:
+                WorkspaceAIRoute.objects.filter(
+                    workspace=workspace_provider.workspace,
+                    provider=workspace_provider.provider,
+                    enabled=True,
+                ).update(enabled=False)
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            WorkspaceAIRoute.objects.filter(
+                workspace=instance.workspace,
+                provider=instance.provider,
+            ).delete()
+            instance.delete()
 
     @action(detail=True, methods=['post'], url_path='test')
     def test(self, request, pk=None):
@@ -214,12 +249,27 @@ class AIUsageViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['get'])
     def summary(self, request):
-        from django.db.models import Count, Sum
+        from django.db.models import Avg, Count, Q, Sum
 
         rows = (
             self.get_queryset()
             .values('provider__key', 'capability')
-            .annotate(calls=Count('id'), spend=Sum('cost'))
+            .annotate(
+                calls=Count('id'),
+                successful_calls=Count('id', filter=Q(success=True)),
+                failed_calls=Count('id', filter=Q(success=False)),
+                spend=Sum('cost'),
+                average_latency_ms=Avg('latency_ms'),
+            )
             .order_by('-calls')
         )
-        return APIResponse(success=True, data=list(rows))
+        data = []
+        for row in rows:
+            calls = row['calls'] or 0
+            row['success_rate_percent'] = round(
+                (row['successful_calls'] / calls * 100) if calls else 0,
+                2,
+            )
+            row['average_latency_ms'] = round(float(row['average_latency_ms'] or 0), 2)
+            data.append(row)
+        return APIResponse(success=True, data=data)

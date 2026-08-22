@@ -18,6 +18,27 @@ _registry: Dict[str, Type[AIProviderAdapter]] = {}
 _loaded = False
 
 
+def _adapter_subclasses(base=AIProviderAdapter):
+    """Yield every adapter subclass, including shared-driver descendants.
+
+    Provider integrations commonly share a protocol implementation (for
+    example, several OpenAI-compatible services). ``__subclasses__()`` only
+    returns the immediate children, which made those perfectly valid nested
+    adapters invisible to discovery.
+    """
+    seen = set()
+
+    def walk(parent):
+        for child in parent.__subclasses__():
+            if child in seen:
+                continue
+            seen.add(child)
+            yield child
+            yield from walk(child)
+
+    yield from walk(base)
+
+
 def _discover():
     global _loaded
     if _loaded:
@@ -33,7 +54,7 @@ def _discover():
         except Exception:
             logger.exception("Could not import AI adapter module %s", module.name)
 
-    for cls in AIProviderAdapter.__subclasses__():
+    for cls in _adapter_subclasses():
         if cls.key:
             _registry[cls.key] = cls
     _loaded = True

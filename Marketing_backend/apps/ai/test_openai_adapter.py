@@ -175,8 +175,9 @@ class OpenAIAdapterTests(SimpleTestCase):
         self.assertEqual(result['captions']['postTitle'], 'Start Fresh')
         self.assertEqual(post.call_args.args[0], 'https://api.openai.test/v1/responses')
 
+    @patch('apps.ai.adapters.openai.httpx.get')
     @patch('apps.ai.adapters.openai.httpx.post')
-    def test_missing_key_fails_before_http_and_health_check_is_not_paid(self, post):
+    def test_missing_key_fails_before_http_and_health_check_is_not_paid(self, post, get):
         adapter = OpenAIAdapter()
 
         with self.assertRaisesMessage(AIProviderError, 'No OpenAI API key configured.'):
@@ -186,15 +187,41 @@ class OpenAIAdapterTests(SimpleTestCase):
             {'ok': False, 'detail': 'No OpenAI API key configured.'},
         )
         post.assert_not_called()
+        get.assert_not_called()
 
-    @patch('apps.ai.adapters.openai.httpx.post')
-    def test_health_check_reports_configuration_not_connection_success(self, post):
+    @patch('apps.ai.adapters.openai.httpx.get')
+    def test_health_check_authenticates_without_running_a_generation(self, get):
+        get.return_value = response({'data': []})
         result = OpenAIAdapter(credentials='workspace-test-key').health_check()
 
         self.assertTrue(result['ok'])
-        self.assertIn('Credential configured', result['detail'])
-        self.assertIn('connection not tested', result['detail'])
-        post.assert_not_called()
+        self.assertIn('Connected', result['detail'])
+        url, kwargs = get.call_args
+        self.assertEqual(url[0], 'https://api.openai.test/v1/models')
+        self.assertEqual(kwargs['headers']['Authorization'], 'Bearer workspace-test-key')
+        self.assertNotIn('workspace-test-key', result['detail'])
+
+    @patch('apps.ai.adapters.openai.httpx.get')
+    def test_health_check_sanitizes_invalid_credentials(self, get):
+        upstream_secret = 'upstream-echoed-secret'
+        failed = response({'error': {'message': upstream_secret}}, status_code=401)
+        failed.text = upstream_secret
+        get.return_value = failed
+
+        result = OpenAIAdapter(credentials='bad-key').health_check()
+
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['detail'], 'OpenAI authentication failed.')
+        self.assertNotIn(upstream_secret, str(result))
+        self.assertNotIn('bad-key', str(result))
+
+    @patch('apps.ai.adapters.openai.httpx.get')
+    def test_health_check_reports_timeout_without_raising(self, get):
+        get.side_effect = httpx.TimeoutException('private timeout detail')
+
+        result = OpenAIAdapter(credentials='workspace-test-key').health_check()
+
+        self.assertEqual(result, {'ok': False, 'detail': 'OpenAI health check timed out.'})
 
     @patch('apps.ai.adapters.openai.httpx.post')
     def test_provider_errors_are_sanitized(self, post):

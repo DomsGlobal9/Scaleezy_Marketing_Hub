@@ -45,6 +45,13 @@ class WorkspaceAIProviderSerializer(serializers.ModelSerializer):
             validated['credentials_encrypted'] = encrypt_token(raw) if raw else ''
         return validated
 
+    def validate_provider(self, provider):
+        if self.instance is not None and provider.pk != self.instance.provider_id:
+            raise serializers.ValidationError(
+                "A configured provider cannot be changed. Add a separate provider instead."
+            )
+        return provider
+
     def create(self, validated_data):
         return super().create(self._apply_credentials(validated_data))
 

@@ -10,8 +10,9 @@ identical mock directions.
 Nothing here calls Gemini. The two "a key is present" tests patch the two
 methods that would reach the network and assert only which key arrived.
 """
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import httpx
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
@@ -123,6 +124,47 @@ class AdapterCredentialTests(TestCase):
         adapter = GeminiAdapter(credentials='', model='m', config={})
         with self.assertRaises(GeminiNotConfigured):
             adapter.generate_text(BRIEF)
+
+    @override_settings(
+        GEMINI_API_KEY='',
+        GEMINI_API_BASE_URL='https://gemini.test/v1beta',
+        AI_PROVIDER_HEALTH_TIMEOUT=4.0,
+    )
+    @patch('apps.ai.adapters.gemini.httpx.get')
+    def test_health_check_authenticates_without_generation(self, get):
+        from apps.ai.adapters.gemini import GeminiAdapter
+
+        get.return_value = Mock(status_code=200)
+        result = GeminiAdapter(credentials='tenant-key').health_check()
+
+        self.assertTrue(result['ok'])
+        url, kwargs = get.call_args
+        self.assertEqual(url[0], 'https://gemini.test/v1beta/models')
+        self.assertEqual(kwargs['headers']['x-goog-api-key'], 'tenant-key')
+        self.assertEqual(kwargs['timeout'], 4.0)
+        self.assertNotIn('tenant-key', str(result))
+
+    @override_settings(GEMINI_API_KEY='')
+    @patch('apps.ai.adapters.gemini.httpx.get')
+    def test_health_check_sanitizes_invalid_credentials(self, get):
+        from apps.ai.adapters.gemini import GeminiAdapter
+
+        get.return_value = Mock(status_code=403, text='private upstream detail')
+        result = GeminiAdapter(credentials='bad-key').health_check()
+
+        self.assertEqual(result, {'ok': False, 'detail': 'Gemini authentication failed.'})
+        self.assertNotIn('bad-key', str(result))
+        self.assertNotIn('private upstream detail', str(result))
+
+    @override_settings(GEMINI_API_KEY='')
+    @patch('apps.ai.adapters.gemini.httpx.get')
+    def test_health_check_reports_timeout_without_raising(self, get):
+        from apps.ai.adapters.gemini import GeminiAdapter
+
+        get.side_effect = httpx.TimeoutException('private timeout detail')
+        result = GeminiAdapter(credentials='tenant-key').health_check()
+
+        self.assertEqual(result, {'ok': False, 'detail': 'Gemini health check timed out.'})
 
 
 @override_settings(GEMINI_API_KEY='', GEMINI_MOCK_MODE=False)

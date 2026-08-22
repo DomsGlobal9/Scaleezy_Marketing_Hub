@@ -1,11 +1,22 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { useCallback } from "react";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { ShieldCheck } from "lucide-react";
 
-import { AIProvidersPanel } from "@/components/marketing/ai-providers-panel";
+import {
+  AI_ADMIN_TABS,
+  AIProvidersPanel,
+  type AIAdminTab,
+} from "@/components/marketing/ai-providers-panel";
 import { PageHeader } from "@/components/marketing/primitives";
 import { getSelectedWorkspace } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub/admin")({
+  validateSearch: (search: Record<string, unknown>): { tab?: AIAdminTab } => {
+    const tab = search["tab"];
+    return typeof tab === "string" && (AI_ADMIN_TABS as readonly string[]).includes(tab)
+      ? { tab: tab as AIAdminTab }
+      : {};
+  },
   beforeLoad: async ({ preload }) => {
     if (preload) return;
 
@@ -28,8 +39,22 @@ export const Route = createFileRoute("/_hub/admin")({
 });
 
 function AdminPage() {
+  const navigate = useNavigate();
+  const search = Route.useSearch();
+  const activeTab: AIAdminTab = search.tab ?? "overview";
+  const setTab = useCallback(
+    (tab: AIAdminTab) => {
+      void navigate({
+        to: "/admin",
+        search: tab === "overview" ? {} : { tab },
+        replace: true,
+      });
+    },
+    [navigate],
+  );
+
   return (
-    <div>
+    <div className="space-y-8">
       <PageHeader
         eyebrow="Workspace administration"
         title="Admin"
@@ -45,7 +70,7 @@ function AdminPage() {
             select a vendor directly.
           </p>
         </div>
-        <AIProvidersPanel />
+        <AIProvidersPanel activeTab={activeTab} onTabChange={setTab} />
       </section>
     </div>
   );

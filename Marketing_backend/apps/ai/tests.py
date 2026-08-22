@@ -233,6 +233,81 @@ class AIConsoleAPITests(APITestCase):
         self.assertTrue(wp.enabled)
         self.assertTrue(wp.has_credentials)
 
+    def test_duplicate_provider_configuration_returns_friendly_validation(self):
+        WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.provider, enabled=True
+        )
+        self.as_(self.admin)
+
+        res = self.client.post(
+            '/api/marketing/ai/providers/',
+            {'provider': str(self.provider.id), 'enabled': True},
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('already configured', str(res.data['provider']))
+
+    def test_configured_provider_identity_is_immutable(self):
+        configured = WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.provider, enabled=True
+        )
+        self.as_(self.admin)
+
+        res = self.client.patch(
+            f'/api/marketing/ai/providers/{configured.id}/',
+            {'provider': str(self.better_provider.id)},
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        configured.refresh_from_db()
+        self.assertEqual(configured.provider, self.provider)
+
+    def test_disabling_provider_disables_its_active_routes(self):
+        configured = WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.provider, enabled=True
+        )
+        route = WorkspaceAIRoute.objects.create(
+            workspace=self.ws,
+            capability=Capability.TEXT,
+            provider=self.provider,
+            enabled=True,
+        )
+        self.as_(self.admin)
+
+        res = self.client.patch(
+            f'/api/marketing/ai/providers/{configured.id}/',
+            {'enabled': False},
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        route.refresh_from_db()
+        self.assertFalse(route.enabled)
+
+    def test_deleting_provider_configuration_removes_its_routes_only(self):
+        configured = WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.provider, enabled=True
+        )
+        own_route = WorkspaceAIRoute.objects.create(
+            workspace=self.ws,
+            capability=Capability.TEXT,
+            provider=self.provider,
+        )
+        other_route = WorkspaceAIRoute.objects.create(
+            workspace=self.other,
+            capability=Capability.TEXT,
+            provider=self.provider,
+        )
+        self.as_(self.admin)
+
+        res = self.client.delete(f'/api/marketing/ai/providers/{configured.id}/')
+
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(WorkspaceAIRoute.objects.filter(pk=own_route.pk).exists())
+        self.assertTrue(WorkspaceAIRoute.objects.filter(pk=other_route.pk).exists())
+
     def test_credentials_are_encrypted_and_never_returned(self):
         self.as_(self.admin)
         res = self.client.post(
@@ -453,3 +528,25 @@ class AIConsoleAPITests(APITestCase):
         res = self.client.get('/api/marketing/ai/routes/resolved/')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertIn(Capability.TEXT, res.data['data'])
+
+    def test_usage_summary_includes_reliability_and_latency(self):
+        for success, latency in ((True, 100), (True, 200), (False, 300)):
+            AIUsageLog.objects.create(
+                workspace=self.ws,
+                provider=self.provider,
+                capability=Capability.TEXT,
+                success=success,
+                latency_ms=latency,
+                cost='0.0100',
+            )
+        self.as_(self.admin)
+
+        res = self.client.get('/api/marketing/ai/usage/summary/')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        row = res.data['data'][0]
+        self.assertEqual(row['calls'], 3)
+        self.assertEqual(row['successful_calls'], 2)
+        self.assertEqual(row['failed_calls'], 1)
+        self.assertEqual(row['average_latency_ms'], 200.0)
+        self.assertEqual(row['success_rate_percent'], 66.67)
