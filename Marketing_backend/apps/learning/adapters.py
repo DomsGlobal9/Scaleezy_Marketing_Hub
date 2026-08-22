@@ -89,3 +89,23 @@ def record_feedback_event_safely(feedback):
             "Could not record a learning event for feedback %s", feedback.pk
         )
         return None
+
+
+def events_for_feedback(feedback_rows):
+    """The LearningEvents behind a set of Feedback rows, creating any missing.
+
+    `record_feedback_event` is idempotent on the feedback id, so this is safe
+    to call for rows that already have an event — and it means feedback
+    written before the fabric existed can still stand as evidence rather than
+    silently counting for nothing.
+    """
+    events = []
+    for feedback in feedback_rows:
+        existing = LearningEvent.objects.filter(
+            workspace_id=feedback.workspace_id, dedupe_key=f'feedback:{feedback.pk}'
+        ).first()
+        if existing is None:
+            existing = record_feedback_event_safely(feedback)
+        if existing is not None:
+            events.append(existing)
+    return events

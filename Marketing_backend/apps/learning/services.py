@@ -357,3 +357,104 @@ def models_brand_filter(brand):
     from django.db.models import Q
 
     return Q(brand=brand) | Q(brand__isnull=True, scope=LearningScope.TENANT)
+
+
+@transaction.atomic
+def upsert_learned_rule(
+    *,
+    workspace,
+    brand,
+    key,
+    text,
+    evidence_events,
+    confidence=0.5,
+    priority=0,
+    structured=None,
+    scope=LearningScope.BRAND,
+):
+    """A rule inferred from repeated evidence, keyed so it sharpens rather
+    than duplicates.
+
+    The entry point for anything that learns from a pattern rather than from a
+    person stating an instruction — today, the review/training engine. It
+    exists so that path writes into the fabric the Brand Brain compiles from,
+    instead of into the compiled snapshot itself, where the next compile would
+    silently overwrite it.
+
+    Guarantees the PR3 authority model, whoever calls it:
+
+    * always LEARNED and always SOFT — inference never becomes a constraint
+      the generator cannot break;
+    * at least `MIN_EVIDENCE_FOR_LEARNED_RULE` DISTINCT supporting events,
+      each of which must belong to this workspace and brand;
+    * one active rule per `key`, whose text and evidence are updated in place,
+      so the third occurrence sharpens the rule rather than adding a second.
+    """
+    check_scope_matches_brand(scope, brand)
+    if brand is not None and brand.workspace_id != workspace.id:
+        raise LearningError("Brand must belong to the same workspace as the rule.")
+    if not str(key or '').strip():
+        raise LearningError("A learned rule needs a key so it can be sharpened later.")
+
+    events = list(evidence_events or [])
+    for event in events:
+        if event.workspace_id != workspace.id:
+            raise LearningError("Evidence must come from the same workspace.")
+        if brand is not None and event.brand_id and event.brand_id != brand.pk:
+            raise LearningError("Evidence must come from the same brand.")
+
+    event_ids = sorted({str(event.pk) for event in events})
+    if len(event_ids) < BrandRule.MIN_EVIDENCE_FOR_LEARNED_RULE:
+        raise LearningError(
+            f"A learned rule needs at least {BrandRule.MIN_EVIDENCE_FOR_LEARNED_RULE} "
+            f"distinct supporting events; this one rests on {len(event_ids)}. "
+            "One-off feedback is an opinion."
+        )
+
+    payload = {
+        **(structured or {}),
+        'key': str(key),
+        'evidence_count': len(event_ids),
+    }
+
+    # Matched in Python rather than with a JSON lookup: the set of active
+    # learned rules for one brand is small, and this behaves identically on
+    # every database backend.
+    existing = next(
+        (
+            rule
+            for rule in BrandRule.objects.filter(
+                workspace=workspace, brand=brand,
+                origin=BrandRule.Origin.LEARNED, is_active=True,
+            ).order_by('created_at')
+            if isinstance(rule.structured, dict) and rule.structured.get('key') == str(key)
+        ),
+        None,
+    )
+
+    if existing is not None:
+        existing.text = text
+        existing.structured = payload
+        existing.evidence_event_ids = event_ids
+        existing.confidence = min(1.0, max(0.0, float(confidence)))
+        existing.priority = priority
+        # Hardness and origin are deliberately never touched here: a learned
+        # rule cannot be promoted into a constraint by being seen again.
+        existing.save(update_fields=[
+            'text', 'structured', 'evidence_event_ids', 'confidence', 'priority',
+            'updated_at',
+        ])
+        return existing
+
+    return BrandRule.objects.create(
+        workspace=workspace,
+        brand=brand,
+        text=text,
+        structured=payload,
+        hardness=BrandRule.Hardness.SOFT,
+        origin=BrandRule.Origin.LEARNED,
+        priority=priority,
+        scope=scope,
+        evidence_event_ids=event_ids,
+        confidence=min(1.0, max(0.0, float(confidence))),
+    )

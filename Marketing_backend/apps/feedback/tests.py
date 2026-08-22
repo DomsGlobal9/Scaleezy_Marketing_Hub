@@ -106,12 +106,64 @@ class TrainingEngineTests(Base):
         self.assertIn('keep the logo in the top left', rules[0])
 
     def test_repeat_sharpens_rather_than_duplicates(self):
+        from apps.feedback.training import learned_rules
+
         for _ in range(3):
             self.reject()
         self.brand.refresh_from_db()
-        rules = self.brand.creative_brain['rules']
+        rules = learned_rules(self.brand)
         self.assertEqual(len(rules), 1)
-        self.assertGreaterEqual(rules[0]['occurrences'], 3)
+        self.assertGreaterEqual(rules[0].structured['occurrences'], 3)
+
+    def test_a_learned_rule_is_soft_and_cites_its_evidence(self):
+        """PR3's authority model: an inference never becomes a constraint, and
+        it must be able to name the reviews it came from."""
+        from apps.learning.models import BrandRule, LearningEvent
+
+        self.reject()
+        self.reject()
+
+        rule = BrandRule.objects.get(brand=self.brand)
+        self.assertEqual(rule.origin, BrandRule.Origin.LEARNED)
+        self.assertEqual(rule.hardness, BrandRule.Hardness.SOFT)
+        self.assertGreaterEqual(
+            len(rule.evidence_event_ids), BrandRule.MIN_EVIDENCE_FOR_LEARNED_RULE
+        )
+        # Every cited id is a real event for this brand, not a number.
+        events = LearningEvent.objects.filter(pk__in=rule.evidence_event_ids)
+        self.assertEqual(events.count(), len(rule.evidence_event_ids))
+        for event in events:
+            self.assertEqual(event.brand_id, self.brand.pk)
+
+    def test_a_learned_rule_survives_a_brand_brain_rebuild(self):
+        """The defect this replaced: the rule lived in the compiled snapshot,
+        so the next compile deleted it."""
+        from apps.brands.services.brand_brain import rebuild_brand_brain
+        from apps.feedback.training import rules_for_prompt
+
+        self.reject()
+        self.reject()
+        self.assertEqual(len(rules_for_prompt(self.brand)), 1)
+
+        rebuild_brand_brain(self.brand)
+        self.brand.refresh_from_db()
+
+        self.assertEqual(len(rules_for_prompt(self.brand)), 1)
+        # And the compiler carries it into the snapshot generation reads.
+        texts = [rule['text'] for rule in self.brand.creative_brain['soft_rules']]
+        self.assertTrue(any('Logo placement' in text for text in texts), texts)
+        self.assertEqual(self.brand.creative_brain['hard_rules'], [])
+
+    def test_review_learning_reaches_the_generation_context(self):
+        """Teach -> review -> learn -> the next generation is told."""
+        from apps.context.services.context_gateway import build_generation_context
+
+        self.reject()
+        self.reject()
+
+        context = build_generation_context(self.ws, self.brand)
+        soft = ' '.join(rule['text'] for rule in context['soft_rules'])
+        self.assertIn('Logo placement', soft)
 
     def test_a_different_complaint_does_not_reinforce(self):
         self.reject()

@@ -6,6 +6,10 @@ compile to the same bytes, and deleting the snapshot loses nothing. Most of
 these tests are about the second one — proving the column is a cache, not a
 source of truth.
 """
+from datetime import datetime, timedelta, timezone as dt_timezone
+from itertools import count
+from unittest import mock
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework import status
@@ -18,6 +22,7 @@ from apps.learning.services import create_explicit_rule, record_event, reinforce
 from apps.workspaces.models import WorkspaceMember
 
 from .models import Brand
+from .services import brand_brain
 from .services.brand_brain import (
     SCHEMA_VERSION,
     compile_brand_brain,
@@ -26,6 +31,9 @@ from .services.brand_brain import (
 
 User = get_user_model()
 BRANDS_URL = '/api/marketing/brands/'
+# A stamp of our own, so no assertion in this file rests on how finely the
+# host clock ticks.
+FIXED_TIME = datetime(2026, 1, 1, 9, 0, tzinfo=dt_timezone.utc)
 
 
 class BrandBrainTestBase(TenantFixtureMixin, TestCase):
@@ -48,6 +56,19 @@ class BrandBrainTestBase(TenantFixtureMixin, TestCase):
 
     def ws1(self):
         return workspace_header(self.workspace1)
+
+    def pinned_clock(self):
+        """Hand every compile inside the block its own timestamp.
+
+        compiled_at is the only thing separating two back-to-back compiles,
+        and nothing makes the clock tick between them - on a coarse timer they
+        tie and a test about the payload fails on the stopwatch.
+        """
+        ticks = count()
+        return mock.patch.object(
+            brand_brain.timezone, 'now',
+            side_effect=lambda: FIXED_TIME + timedelta(minutes=next(ticks)),
+        )
 
     # --- fixtures --------------------------------------------------------
 
@@ -120,8 +141,9 @@ class DeterminismTests(BrandBrainTestBase):
 
     def test_compiled_at_changes_without_changing_the_fingerprint(self):
         self.add_memory('Ships in 48 hours')
-        first = compile_brand_brain(self.brand1)
-        second = compile_brand_brain(self.brand1)
+        with self.pinned_clock():
+            first = compile_brand_brain(self.brand1)
+            second = compile_brand_brain(self.brand1)
         self.assertNotEqual(first['compiled_at'], second['compiled_at'])
         self.assertEqual(first['brain_version'], second['brain_version'])
 
@@ -132,22 +154,54 @@ class DeterminismTests(BrandBrainTestBase):
         The rows keep their ids - recreating them would legitimately change
         the brain, because the source ids are part of what makes it
         explainable. What must not matter is which one comes back first.
+
+        Flipping created_at moves the model's natural order and nothing else -
+        the compiler pins order_by('id') and never reads created_at - so on
+        its own it proves nothing about the fingerprint. The second half is
+        the one with teeth: it hands the compiler the rows back to front,
+        which is the only ordering the hash can actually see.
         """
         for value in ('zeta', 'alpha', 'mu'):
             self.add_memory(f'Fact {value}')
         forward = compile_brand_brain(self.brand1)['brain_version']
 
-        rows = list(BrandMemory.objects.order_by('id'))
-        stamps = [row.created_at for row in rows]
-        for row, stamp in zip(rows, reversed(stamps)):
-            BrandMemory.objects.filter(pk=row.pk).update(created_at=stamp)
+        # Compared against the order that was ACTUALLY in force, not against
+        # id order: `order_by('id')` on a uuid4 primary key is a random
+        # permutation, so the old assertion coincided with insertion order
+        # roughly one run in six and failed on its own precondition. Stamps
+        # are assigned rather than reversed for the same reason - nothing
+        # here should depend on what the clock did.
+        natural_before = [r.pk for r in BrandMemory.objects.all()]
+        for offset, pk in enumerate(natural_before):
+            BrandMemory.objects.filter(pk=pk).update(
+                created_at=FIXED_TIME + timedelta(minutes=offset)
+            )
         self.assertNotEqual(
             [r.pk for r in BrandMemory.objects.all()],
-            [r.pk for r in rows],
+            natural_before,
             "the natural ordering did not actually change",
         )
-
         self.assertEqual(forward, compile_brand_brain(self.brand1)['brain_version'])
+
+        handed = [m.pk for m in brand_brain._memories(self.brand1)]
+
+        def backwards(accessor):
+            return lambda brand: list(accessor(brand))[::-1]
+
+        with mock.patch.multiple(
+            brand_brain,
+            _memories=backwards(brand_brain._memories),
+            _rules=backwards(brand_brain._rules),
+            _preferences=backwards(brand_brain._preferences),
+            _signals=backwards(brand_brain._signals),
+        ):
+            self.assertEqual(
+                [m.pk for m in brand_brain._memories(self.brand1)], handed[::-1],
+                "the compiler was not actually handed a different order",
+            )
+            self.assertEqual(
+                forward, compile_brand_brain(self.brand1)['brain_version']
+            )
 
     def test_a_content_change_changes_the_fingerprint(self):
         """Positive control: the hash is not constant."""
@@ -612,7 +666,8 @@ class VerifiedFactPrecedenceTests(BrandBrainTestBase):
     def test_keyed_facts_keep_the_fingerprint_deterministic(self):
         self.add_keyed_fact()
         self.contradicting_signal()
-        first = compile_brand_brain(self.brand1)
-        second = compile_brand_brain(self.brand1)
+        with self.pinned_clock():
+            first = compile_brand_brain(self.brand1)
+            second = compile_brand_brain(self.brand1)
         self.assertEqual(first['brain_version'], second['brain_version'])
         self.assertNotEqual(first['compiled_at'], second['compiled_at'])

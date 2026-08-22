@@ -1,7 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
 import {
-  AlertTriangle,
-  CheckCircle2,
   Clock,
   ExternalLink,
   Loader2,
@@ -17,7 +15,6 @@ import {
   Wand2,
   CheckCircle,
   ArrowLeft,
-  GripVertical,
   Image as ImageIcon,
   Images,
   Phone,
@@ -25,7 +22,7 @@ import {
   Trash2,
   Video,
 } from "lucide-react";
-import { useState, useRef, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -33,7 +30,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -47,10 +44,9 @@ import {
   SectionTitle,
   StatusBadge,
 } from "@/components/marketing/primitives";
-import { DEMO_ACCOUNTS, PUBLISHING_HISTORY } from "@/lib/marketing-data";
 import { cn } from "@/lib/utils";
 import { useBrandSettings } from "@/lib/brand-settings";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiPost } from "@/lib/api";
 
 export const Route = createFileRoute("/_hub/publishing")({
   head: () => ({
@@ -70,15 +66,6 @@ export const Route = createFileRoute("/_hub/publishing")({
   }),
   component: PublishingPage,
 });
-
-type JobState = "queued" | "uploading" | "publishing" | "published" | "failed";
-
-interface Job {
-  id: string;
-  label: string;
-  state: JobState;
-  message?: string | undefined;
-}
 
 type WorkflowStep =
   | "create_or_upload"
@@ -123,10 +110,33 @@ const CONTENT_TYPES: {
   label: string;
   hint: string;
   icon: typeof ImageIcon;
+  available: boolean;
 }[] = [
-  { id: "poster", label: "Poster", hint: "A single still image", icon: ImageIcon },
-  { id: "video", label: "Video", hint: "A short promo clip", icon: Video },
-  { id: "carousel", label: "Carousel", hint: "Multiple ordered slides", icon: Images },
+  {
+    id: "poster",
+    label: "Poster",
+    hint: "A single still image",
+    icon: ImageIcon,
+    available: true,
+  },
+  {
+    // No adapter implements Capability.VIDEO - apps/ai/adapters/base.py declares
+    // generate_video and nothing overrides it - so the video branch reached the
+    // same text-and-poster call as everything else and the result was a still
+    // image named .mp4. Offered as a roadmap tile, not as a capability.
+    id: "video",
+    label: "Video",
+    hint: "Not available yet",
+    icon: Video,
+    available: false,
+  },
+  {
+    id: "carousel",
+    label: "Carousel",
+    hint: "Multiple ordered slides",
+    icon: Images,
+    available: true,
+  },
 ];
 
 const VIDEO_DURATIONS = ["10 seconds", "15 seconds", "30 seconds", "60 seconds"];
@@ -156,6 +166,24 @@ const newSlide = (): CarouselSlide => ({
   description: "",
 });
 
+/** Which flow the shared "AI is working" step is showing, so its copy can be true. */
+type WorkingKind = "generate" | "captions" | "video";
+
+/**
+ * Whether the backend would actually publish to this account.
+ *
+ * The publisher skips any connection with publishing_enabled off
+ * (apps/publishing/views.py) and cannot post to an expired token, so ticking
+ * such a row bought the user a "job created" toast and no post. Both the
+ * checkbox and the pruning effect read this, so they can never disagree.
+ */
+const canPublishTo = (acc: any, isVideoAsset: boolean): boolean => {
+  const status = String(acc?.status ?? "").toUpperCase();
+  const enabled = (acc?.publishing_enabled ?? acc?.publishingEnabled) !== false;
+  const formatMismatch = acc?.platform === "YOUTUBE" && !isVideoAsset;
+  return status === "CONNECTED" && enabled && !formatMismatch;
+};
+
 function PublishingPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState<WorkflowStep>("create_or_upload");
@@ -165,6 +193,12 @@ function PublishingPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [uploadIntention, setUploadIntention] = useState<"reference" | "final" | null>(null);
   const [isGeneratingCaptions, setIsGeneratingCaptions] = useState(false);
+  // Three different flows share the "AI is working" step; without this the
+  // panel told a video uploader we were analysing their image.
+  const [workingKind, setWorkingKind] = useState<WorkingKind>("generate");
+  // Lets the user stop waiting on a queued generation, which otherwise holds
+  // the screen for the full ten-minute polling ceiling.
+  const generationAbort = useRef<AbortController | null>(null);
 
   // Gemini Form State
   const [campaignName, setCampaignName] = useState("");
@@ -216,10 +250,74 @@ function PublishingPage() {
   // Publishing State
   const [selected, setSelected] = useState<string[]>([]);
   const [mode, setMode] = useState<"now" | "schedule">("now");
-  const [jobs, setJobs] = useState<Job[] | null>(null);
+  // Scheduled publishing: the moment is sent to the backend as scheduled_at.
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduleTime, setScheduleTime] = useState("");
   const [running, setRunning] = useState(false);
   const [publishingHistory, setPublishingHistory] = useState<any[]>([]);
-  const [accounts, setAccounts] = useState<any[]>(DEMO_ACCOUNTS);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState(false);
+  const [retrying, setRetrying] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<any[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/marketing/publishing/jobs/");
+      const data = await res.json();
+      if (!Array.isArray(data)) {
+        setHistoryError(true);
+        return;
+      }
+      const historyRows: any[] = [];
+      data.forEach((job: any) => {
+        (job.items ?? []).forEach((item: any) => {
+          historyRows.push({
+            id: item.id,
+            content: "Generated Marketing Post", // No text on asset currently, fallback
+            platform: item.social_connection.platform,
+            account: item.social_connection.account_name || item.social_connection.username,
+            date: new Date(item.queued_at).toLocaleString(),
+            // The platform permalink, so "View" opens the real post rather
+            // than being a button that does nothing.
+            url: item.external_post_url,
+            status: item.status.charAt(0).toUpperCase() + item.status.slice(1).toLowerCase(),
+            postId: item.external_post_id,
+            error: item.error_message,
+          });
+        });
+      });
+      setPublishingHistory(historyRows);
+      setHistoryError(false);
+    } catch (err) {
+      console.error("Failed to load history:", err);
+      // An empty table and a failed fetch used to look identical. They are
+      // not the same thing, and only one of them is worth retrying.
+      setHistoryError(true);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  /**
+   * Re-queues one failed item. The worker skips items already published.
+   *
+   * The retry action is registered on the jobs router with detail=False, so it
+   * lives under .../jobs/items/<id>/retry/. Posting to .../items/<id>/retry/
+   * simply 404s, which is why every retry used to fail.
+   */
+  const retryItem = async (itemId: string) => {
+    setRetrying(itemId);
+    try {
+      await apiPost(`/api/marketing/publishing/jobs/items/${itemId}/retry/`, {});
+      toast.success("Queued for retry.");
+      await loadHistory();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not retry that post.");
+    } finally {
+      setRetrying(null);
+    }
+  };
 
   useEffect(() => {
     // Fetch connected accounts for publishing
@@ -230,45 +328,47 @@ function PublishingPage() {
           setAccounts(data);
         }
       })
-      .catch(console.error);
+      .catch(console.error)
+      .finally(() => setAccountsLoading(false));
 
-    apiFetch("/api/marketing/publishing/jobs/")
-      .then((res) => res.json())
-      .then((data) => {
-        if (Array.isArray(data)) {
-          const historyRows: any[] = [];
-          data.forEach((job: any) => {
-            if (job.items && Array.isArray(job.items)) {
-              job.items.forEach((item: any) => {
-                historyRows.push({
-                  id: item.id,
-                  content: "Generated Marketing Post", // No text on asset currently, fallback
-                  platform: item.social_connection.platform,
-                  account: item.social_connection.account_name || item.social_connection.username,
-                  date: new Date(item.queued_at).toLocaleString(),
-                  status: item.status.charAt(0).toUpperCase() + item.status.slice(1).toLowerCase(),
-                  postId: item.external_post_id,
-                  error: item.error_message,
-                });
-              });
-            }
-          });
-          setPublishingHistory(historyRows);
-        }
-      })
-      .catch((err) => {
-        console.error("Failed to load history:", err);
-        setPublishingHistory([]);
-      });
-  }, []);
+    void loadHistory();
+  }, [loadHistory]);
+
+  const isVideoAsset = asset?.contentType === "video";
+
+  useEffect(() => {
+    // A tick made before the media changed must not survive into the payload.
+    // Swapping a video for a poster leaves the YouTube row disabled but its id
+    // still selected, and the backend then reports success for a post it never
+    // made. Same for a stale selection carried over from an earlier publish.
+    setSelected((prev) => {
+      const next = prev.filter((id) =>
+        accounts.some((a) => a.id === id && canPublishTo(a, isVideoAsset)),
+      );
+      return next.length === prev.length ? prev : next;
+    });
+  }, [accounts, isVideoAsset]);
 
   const toggle = (id: string) =>
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
   const runJobs = async (ids: string[]) => {
     if (ids.length === 0) return;
+    let scheduledAt: string | null = null;
+    if (mode === "schedule") {
+      const when = new Date(`${scheduleDate}T${scheduleTime}`);
+      if (!scheduleDate || !scheduleTime || Number.isNaN(when.getTime())) {
+        toast.error("Pick a date and time to schedule.");
+        return;
+      }
+      if (when.getTime() <= Date.now()) {
+        toast.error("The scheduled time must be in the future.");
+        return;
+      }
+      scheduledAt = when.toISOString();
+    }
     setRunning(true);
-    toast("Publishing started.");
+    toast(mode === "schedule" ? "Scheduling…" : "Publishing started.");
 
     try {
       // Fetch workspaces
@@ -280,42 +380,38 @@ function PublishingPage() {
       const b64Data = asset?.previewUrl || referenceImageBase64;
 
       if (!assetId && b64Data && b64Data.startsWith("data:") && wsId) {
-        try {
-          // Convert base64 data URI to Blob
-          const r = await fetch(b64Data);
-          const blob = await r.blob();
+        // Convert base64 data URI to Blob
+        const r = await fetch(b64Data);
+        const blob = await r.blob();
 
-          // Upload as file
-          const formData = new FormData();
-          formData.append("file", blob, "poster.jpg");
-          formData.append("workspace_id", wsId);
-          formData.append(
-            "source",
-            asset?.source === "gemini" ? "GEMINI_GENERATED" : "MANUAL_UPLOAD",
-          );
+        // Upload as file
+        const formData = new FormData();
+        formData.append("file", blob, "poster.jpg");
+        formData.append("workspace_id", wsId);
+        formData.append(
+          "source",
+          asset?.source === "gemini" ? "GEMINI_GENERATED" : "MANUAL_UPLOAD",
+        );
 
-          const uploadRes = await apiFetch("/api/marketing/assets/upload/", {
-            method: "POST",
-            body: formData,
-          });
-          const uploadData = await uploadRes.json();
-          if (uploadData.success) {
-            assetId = uploadData.data.id;
-          }
-        } catch (e) {
-          console.error("Asset upload failed:", e);
+        const uploadRes = await apiFetch("/api/marketing/assets/upload/", {
+          method: "POST",
+          body: formData,
+        });
+        const uploadData = await uploadRes.json();
+        // Swallowing this used to drop the user into the fallback below and
+        // publish somebody else's artwork, so it has to surface.
+        if (!uploadData.success) {
+          throw new Error(uploadData.message || "Could not upload the image for this post.");
         }
-      }
-
-      if (!assetId) {
-        // Fallback for MVP if no image is available
-        const asRes = await apiFetch("/api/marketing/assets/");
-        const asData = await asRes.json();
-        assetId = Array.isArray(asData) && asData.length > 0 ? asData[0].id : null;
+        assetId = uploadData.data.id;
       }
 
       if (!wsId || !assetId) {
-        throw new Error("Missing workspace or failed to upload asset.");
+        // There used to be a fallback here that picked the first row out of
+        // /assets/ when this post had no image. MarketingAsset declares no
+        // ordering, so it published an arbitrary earlier asset to live
+        // accounts under this caption. Refusing is the only safe answer.
+        throw new Error("There is no image to publish. Generate or upload one first.");
       }
 
       // Build the caption from the asset's generated/manual content
@@ -331,6 +427,7 @@ function PublishingPage() {
           workspace_id: wsId,
           asset_id: assetId,
           publish_mode: mode === "now" ? "NOW" : "SCHEDULED",
+          ...(scheduledAt ? { scheduled_at: scheduledAt } : {}),
           caption,
           social_connection_ids: ids,
           ...(asset?.contentItemId ? { content_item_id: asset.contentItemId } : {}),
@@ -340,7 +437,14 @@ function PublishingPage() {
       const data = await res.json();
 
       if (data.success) {
-        toast.success("Publishing job executed successfully.");
+        toast.success(
+          mode === "schedule"
+            ? "Scheduled. It will publish at the chosen time."
+            : "Publishing job created.",
+        );
+        // The run is over; carrying these ticks back to step one would put
+        // them on the next post as well.
+        setSelected([]);
       } else {
         toast.error(data.message || "Failed to publish.");
       }
@@ -349,7 +453,8 @@ function PublishingPage() {
       toast.error(err.message || "Network error while publishing.");
     } finally {
       setRunning(false);
-      setStep("create_or_upload"); // Reset or show history
+      await loadHistory();
+      setStep("create_or_upload");
     }
   };
 
@@ -359,17 +464,19 @@ function PublishingPage() {
    * The request row is the progress record: it moves PENDING -> GENERATING ->
    * COMPLETED, and the result is fetched once it lands. Polling stops at the
    * ceiling rather than forever, so a stuck worker surfaces as an error
-   * instead of a spinner nobody can escape.
+   * instead of a spinner nobody can escape. The signal is the escape hatch
+   * before that ceiling — ten minutes is a long time to trap someone.
    */
-  const pollGeneration = async (generationId: string) => {
+  const pollGeneration = async (generationId: string, signal: AbortSignal) => {
     const started = Date.now();
     const CEILING_MS = 10 * 60 * 1000;
     const EVERY_MS = 3000;
 
     while (Date.now() - started < CEILING_MS) {
       await new Promise((resolve) => setTimeout(resolve, EVERY_MS));
+      if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
 
-      const res = await apiFetch(`/api/marketing/gemini/${generationId}/`);
+      const res = await apiFetch(`/api/marketing/gemini/${generationId}/`, { signal });
       const json = await res.json();
       const request = json.data ?? json;
 
@@ -378,7 +485,9 @@ function PublishingPage() {
       }
       if (request?.status !== "COMPLETED") continue;
 
-      const resultRes = await apiFetch(`/api/marketing/gemini/${generationId}/results/`);
+      const resultRes = await apiFetch(`/api/marketing/gemini/${generationId}/results/`, {
+        signal,
+      });
       const resultJson = await resultRes.json();
       const result = resultJson.data ?? {};
       const metadata = result.metadata ?? {};
@@ -396,7 +505,15 @@ function PublishingPage() {
     throw new Error("Generation is taking longer than expected. Check back shortly.");
   };
 
+  /** Stops the wait. Anything already queued keeps running on the server. */
+  const cancelGeneration = () => {
+    generationAbort.current?.abort();
+  };
+
   const handleGenerate = async () => {
+    const controller = new AbortController();
+    generationAbort.current = controller;
+    setWorkingKind("generate");
     setStep("gemini_generating");
     try {
       // Video and multi-slide carousels run long enough to hit a gateway
@@ -411,6 +528,7 @@ function PublishingPage() {
       const res = await apiFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           campaignName,
           product,
@@ -420,54 +538,44 @@ function PublishingPage() {
           offer,
           brandTone,
           referenceImageBase64,
-          // Content type and its extras — backend fields still to be added.
+          // contentType and slides are read and persisted on both the sync and
+          // the async path. The video settings, the derived slideCount and the
+          // logo/phone overlay keys that used to ride along here were read by
+          // nothing — the views build their brief from an explicit allowlist —
+          // so they are no longer sent and their controls are disabled above.
           contentType,
-          ...(contentType === "video"
-            ? {
-                videoDuration,
-                videoAspectRatio: videoAspect,
-                videoStyle,
-                videoScript,
-              }
-            : {}),
           ...(contentType === "carousel"
             ? {
-                slideCount: slides.length,
                 slides: slides.map((s, i) => ({
                   position: i + 1,
                   description: s.description.trim() || slidePlaceholder(i),
                 })),
               }
             : {}),
-          // Poster overlays
-          includeLogo: includeLogo && hasLogo,
-          logoUrl: includeLogo && hasLogo ? brand.logoUrl : "",
-          includePhoneNumber: includePhone && !!phoneOverride.trim(),
-          phoneNumber: includePhone ? phoneOverride.trim() : "",
         }),
       });
       const json = await res.json();
       if (!json.success) {
         throw new Error(json.message || "Generation failed");
       }
-      const d = background ? await pollGeneration(json.data.generationId) : json.data;
+      const d = background
+        ? await pollGeneration(json.data.generationId, controller.signal)
+        : json.data;
 
       // The backend returns one image today. For a carousel, keep the ordered
       // slide plan and attach any per-slide images it does send back.
       const returnedSlides: string[] = Array.isArray(d.slideImageUrls) ? d.slideImageUrls : [];
 
-      const label =
-        contentType === "video" ? "Video" : contentType === "carousel" ? "Carousel" : "Poster";
+      // Only poster and carousel can be generated, so the produced file is
+      // always a still. Naming it .mp4 was the last place the UI still claimed
+      // a clip had been made.
+      const label = contentType === "carousel" ? "Carousel" : "Poster";
 
       setAsset({
-        name: `${campaignName || "Untitled"} ${label}.${contentType === "video" ? "mp4" : "jpg"}`,
-        type: contentType === "video" ? "MP4" : "JPG",
+        name: `${campaignName || "Untitled"} ${label}.jpg`,
+        type: "JPG",
         dimensions:
-          contentType === "video"
-            ? videoAspect
-            : contentType === "carousel"
-              ? `1080×1080 · ${slides.length} slides`
-              : "1080×1350",
+          contentType === "carousel" ? `1080×1080 · ${slides.length} slides` : "1080×1350",
         created: new Date().toLocaleDateString("en-GB", {
           day: "2-digit",
           month: "short",
@@ -496,14 +604,26 @@ function PublishingPage() {
       });
       setStep("preview");
     } catch (err: any) {
+      if (err?.name === "AbortError") {
+        toast("Stopped waiting. Anything already queued keeps running.");
+        setStep("gemini_form");
+        return;
+      }
       console.error("Gemini generation error:", err);
       toast.error(err.message || "Failed to generate content. Please try again.");
       setStep("gemini_form");
+    } finally {
+      generationAbort.current = null;
     }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const input = e.target;
+    const file = input.files?.[0];
+    // Cleared straight away, not on success: an input still holding the same
+    // file fires no change event, so re-picking a file after removing it or
+    // after a failed upload used to do nothing at all.
+    input.value = "";
     if (!file) return;
 
     const isVideo = file.type.startsWith("video/");
@@ -515,6 +635,7 @@ function PublishingPage() {
       }
 
       setIsGeneratingCaptions(true);
+      setWorkingKind("video");
       setStep("gemini_generating");
       try {
         // Fetch workspaces
@@ -603,14 +724,20 @@ function PublishingPage() {
             if (d.occasion) setOccasion(d.occasion);
             if (d.brandTone) setBrandTone(d.brandTone);
             toast.success("AI auto-filled your campaign details!");
+          } else {
+            // apiFetch does not throw on a non-2xx, so a failed analysis used
+            // to stop the spinner and leave the form blank with no explanation.
+            toast.error(json.message || "Could not read that image. Fill the brief in yourself.");
           }
         } catch (e) {
           console.error("Failed to analyze image", e);
+          toast.error("Could not read that image. Fill the brief in yourself.");
         } finally {
           setIsAnalyzing(false);
         }
       } else if (uploadIntention === "final") {
         setIsGeneratingCaptions(true);
+        setWorkingKind("captions");
         setStep("gemini_generating"); // Re-use the loading step
         try {
           const res = await apiFetch("/api/marketing/gemini/generate-captions/", {
@@ -654,9 +781,14 @@ function PublishingPage() {
     reader.readAsDataURL(file);
   };
 
-  const failedIds = (jobs ?? []).filter((j) => j.state === "failed").map((j) => j.id);
-  const publishedCount = (jobs ?? []).filter((j) => j.state === "published").length;
-  const complete = !!jobs && !running;
+  const workingMessage =
+    workingKind === "captions"
+      ? "Reading your poster to write the caption and hashtags."
+      : workingKind === "video"
+        ? "Uploading your video and watching it to write the caption."
+        : referenceImageBase64
+          ? "Analysing your reference image to craft the marketing asset."
+          : `Drafting your ${contentType} from the campaign brief.`;
 
   return (
     <div>
@@ -665,11 +797,6 @@ function PublishingPage() {
         title="Publishing"
         subtitle="Create or upload your marketing content, select your social channels, and publish everywhere from one place."
         backTo="/"
-        actions={
-          <Button variant="outline" onClick={() => toast("Draft saved.")}>
-            Save Draft
-          </Button>
-        }
       />
 
       <div className="grid gap-6">
@@ -793,13 +920,19 @@ function PublishingPage() {
                       <button
                         key={ct.id}
                         type="button"
-                        onClick={() => setContentType(ct.id)}
+                        disabled={!ct.available}
+                        title={
+                          ct.available ? undefined : `${ct.label} generation is not available yet.`
+                        }
+                        onClick={() => ct.available && setContentType(ct.id)}
                         aria-pressed={active}
                         className={cn(
                           "flex items-center gap-3 rounded-xl border p-4 text-left transition-colors",
                           active
                             ? "border-[#7C3AED] bg-[#7C3AED]/5"
                             : "border-border hover:bg-secondary/60",
+                          !ct.available &&
+                            "cursor-not-allowed opacity-60 hover:bg-transparent",
                         )}
                       >
                         <span
@@ -858,15 +991,23 @@ function PublishingPage() {
               {/* VIDEO-ONLY FIELDS */}
               {contentType === "video" && (
                 <div className="mt-8 rounded-xl border border-border p-5">
-                  <div className="flex items-center gap-2">
-                    <Video className="size-4 text-[#7C3AED]" />
-                    <h3 className="text-sm font-semibold text-foreground">Video settings</h3>
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <Video className="size-4 text-[#7C3AED]" />
+                      <h3 className="text-sm font-semibold text-foreground">Video settings</h3>
+                    </div>
+                    {/* The generator reads none of these, so they are shown as
+                        the intended shape of the feature rather than pretended
+                        to work. Nothing here is sent with the brief. */}
+                    <span className="shrink-0 rounded-full border border-border bg-secondary/60 px-2.5 py-0.5 text-xs text-muted-foreground">
+                      Not available yet
+                    </span>
                   </div>
 
                   <div className="mt-4 grid gap-5 sm:grid-cols-3">
                     <div className="space-y-2">
                       <Label>Duration</Label>
-                      <Select value={videoDuration} onValueChange={setVideoDuration}>
+                      <Select value={videoDuration} onValueChange={setVideoDuration} disabled>
                         <SelectTrigger className="w-full">
                           <SelectValue />
                         </SelectTrigger>
@@ -881,7 +1022,7 @@ function PublishingPage() {
                     </div>
                     <div className="space-y-2">
                       <Label>Aspect ratio</Label>
-                      <Select value={videoAspect} onValueChange={setVideoAspect}>
+                      <Select value={videoAspect} onValueChange={setVideoAspect} disabled>
                         <SelectTrigger className="w-full">
                           <SelectValue />
                         </SelectTrigger>
@@ -896,7 +1037,7 @@ function PublishingPage() {
                     </div>
                     <div className="space-y-2">
                       <Label>Style</Label>
-                      <Select value={videoStyle} onValueChange={setVideoStyle}>
+                      <Select value={videoStyle} onValueChange={setVideoStyle} disabled>
                         <SelectTrigger className="w-full">
                           <SelectValue />
                         </SelectTrigger>
@@ -915,7 +1056,8 @@ function PublishingPage() {
                     <Label>Script / voiceover notes (optional)</Label>
                     <Textarea
                       rows={3}
-                      placeholder="What should be said or shown, scene by scene. Leave blank to let AI write it."
+                      disabled
+                      placeholder="What should be said or shown, scene by scene."
                       value={videoScript}
                       onChange={(e) => setVideoScript(e.target.value)}
                     />
@@ -948,11 +1090,13 @@ function PublishingPage() {
                         key={slide.id}
                         className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3 rounded-xl border border-border bg-secondary/20 p-3"
                       >
+                        {/* No drag handle here: reordering is the Move buttons
+                            below, and a grip icon only invited a gesture the
+                            list has never supported. */}
                         <div className="flex flex-col items-center gap-1 pt-1">
                           <span className="grid size-7 place-items-center rounded-full bg-[#7C3AED] text-xs font-semibold text-white">
                             {i + 1}
                           </span>
-                          <GripVertical className="size-3.5 text-muted-foreground/50" />
                         </div>
 
                         <div className="min-w-0">
@@ -1013,9 +1157,12 @@ function PublishingPage() {
               {contentType !== "video" && (
                 <div className="mt-8 rounded-xl border border-border p-5">
                   <h3 className="text-sm font-semibold text-foreground">Brand add-ons</h3>
+                  {/* The old copy promised a per-generation override. Only the
+                      brand-level defaults reach the poster; the toggles here
+                      were a local copy that nothing downstream ever read. */}
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Defaults come from your Brand Kit in Settings. Changing them here affects only
-                    this generation.
+                    Follows your Brand Kit default in Settings — a per-generation override is not
+                    available yet.
                   </p>
 
                   <div className="mt-4 space-y-3">
@@ -1039,11 +1186,7 @@ function PublishingPage() {
                           </p>
                         </div>
                       </div>
-                      <Checkbox
-                        checked={includeLogo && hasLogo}
-                        disabled={!hasLogo}
-                        onCheckedChange={(v) => setIncludeLogo(!!v)}
-                      />
+                      <Checkbox checked={includeLogo && hasLogo} disabled />
                     </div>
 
                     <div className="rounded-xl border border-border bg-secondary/20 px-4 py-3">
@@ -1059,15 +1202,13 @@ function PublishingPage() {
                             </p>
                           </div>
                         </div>
-                        <Checkbox
-                          checked={includePhone}
-                          onCheckedChange={(v) => setIncludePhone(!!v)}
-                        />
+                        <Checkbox checked={includePhone} disabled />
                       </div>
                       {includePhone ? (
                         <Input
                           type="tel"
                           className="mt-3"
+                          disabled
                           placeholder="+91 98765 43210"
                           value={phoneOverride}
                           onChange={(e) => setPhoneOverride(e.target.value)}
@@ -1098,9 +1239,12 @@ function PublishingPage() {
           <section className="surface-card p-12 text-center flex flex-col items-center justify-center border border-[#7C3AED]/30 bg-[#F7F3EE] min-h-[400px]">
             <Loader2 className="size-12 animate-spin text-[#7C3AED] mb-6" />
             <h3 className="text-2xl font-semibold text-[#7C3AED]">AI is working...</h3>
-            <p className="mt-3 text-muted-foreground max-w-md text-base">
-              Analyzing your image to craft the perfect marketing asset.
-            </p>
+            <p className="mt-3 text-muted-foreground max-w-md text-base">{workingMessage}</p>
+            {workingKind === "generate" ? (
+              <Button variant="ghost" className="mt-6" onClick={cancelGeneration}>
+                Cancel
+              </Button>
+            ) : null}
           </section>
         )}
 
@@ -1181,7 +1325,9 @@ function PublishingPage() {
               onClick={() => setStep("create_or_upload")}
               className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors w-fit p-2 pr-4 -ml-2 rounded-full hover:bg-secondary/50 text-sm font-medium"
             >
-              <ArrowLeft className="size-4" /> Back to Dashboard
+              {/* Renamed: this rewinds the wizard to step one. The dashboard
+                  link is the one in the page header. */}
+              <ArrowLeft className="size-4" /> Start over
             </button>
             <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
               {/* LEFT: CONTENT PREVIEW */}
@@ -1345,47 +1491,68 @@ function PublishingPage() {
                 <section className="surface-card p-5 sm:p-8 animate-in fade-in slide-in-from-bottom-4">
                   <p className="label-eyebrow text-primary">SELECT WHERE TO PUBLISH</p>
                   <div className="mt-4 space-y-2">
-                    {accounts.map((acc) => {
-                      const s = (acc.status || "").toUpperCase();
-                      const isYoutube = acc.platform === "YOUTUBE";
-                      const isVideo = asset?.contentType === "video";
-                      const isFormatMismatch = isYoutube && !isVideo;
+                    {accountsLoading ? (
+                      <p className="flex items-center gap-2 rounded-xl border border-dashed border-border px-3 py-6 text-sm text-muted-foreground">
+                        <Loader2 className="size-4 animate-spin" /> Loading your connected
+                        accounts…
+                      </p>
+                    ) : accounts.length === 0 ? (
+                      <p className="rounded-xl border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
+                        No social accounts connected yet. Connect one first and it will appear here.
+                      </p>
+                    ) : (
+                      accounts.map((acc) => {
+                        const isYoutube = acc.platform === "YOUTUBE";
+                        const isFormatMismatch = isYoutube && !isVideoAsset;
+                        const publishingOff =
+                          (acc.publishing_enabled ?? acc.publishingEnabled) === false;
 
-                      const disabled =
-                        (s !== "CONNECTED" && s !== "TOKEN_EXPIRED") || isFormatMismatch;
-                      return (
-                        <label
-                          key={acc.id}
-                          className={cn(
-                            "grid grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-border px-3 py-3",
-                            selected.includes(acc.id) && "border-primary bg-primary/5",
-                            disabled && "opacity-60 cursor-not-allowed",
-                          )}
-                          title={isFormatMismatch ? "YouTube only supports video uploads" : ""}
-                        >
-                          <Checkbox
-                            checked={selected.includes(acc.id)}
-                            disabled={disabled}
-                            onCheckedChange={() => toggle(acc.id)}
-                          />
-                          <PlatformIcon platform={acc.platform} className="size-9" />
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm font-medium text-foreground">
-                              {acc.accountName || acc.account_name}
+                        const disabled = !canPublishTo(acc, isVideoAsset);
+                        return (
+                          <label
+                            key={acc.id}
+                            className={cn(
+                              "grid grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-border px-3 py-3",
+                              selected.includes(acc.id) && "border-primary bg-primary/5",
+                              disabled && "opacity-60 cursor-not-allowed",
+                            )}
+                            title={
+                              isFormatMismatch
+                                ? "YouTube only supports video uploads"
+                                : publishingOff
+                                  ? "Publishing is switched off for this account"
+                                  : ""
+                            }
+                          >
+                            <Checkbox
+                              checked={selected.includes(acc.id)}
+                              disabled={disabled}
+                              onCheckedChange={() => toggle(acc.id)}
+                            />
+                            <PlatformIcon platform={acc.platform} className="size-9" />
+                            <span className="min-w-0">
+                              <span className="block truncate text-sm font-medium text-foreground">
+                                {acc.accountName || acc.account_name}
+                              </span>
+                              <span className="block truncate text-xs text-muted-foreground">
+                                {acc.username}
+                                {isFormatMismatch && (
+                                  <span className="ml-2 text-destructive text-[10px] font-semibold uppercase">
+                                    Video Only
+                                  </span>
+                                )}
+                                {publishingOff && (
+                                  <span className="ml-2 text-destructive text-[10px] font-semibold uppercase">
+                                    Publishing Off
+                                  </span>
+                                )}
+                              </span>
                             </span>
-                            <span className="block truncate text-xs text-muted-foreground">
-                              {acc.username}
-                              {isFormatMismatch && (
-                                <span className="ml-2 text-destructive text-[10px] font-semibold uppercase">
-                                  Video Only
-                                </span>
-                              )}
-                            </span>
-                          </span>
-                          <StatusBadge status={acc.status} className="justify-self-end" />
-                        </label>
-                      );
-                    })}
+                            <StatusBadge status={acc.status} className="justify-self-end" />
+                          </label>
+                        );
+                      })
+                    )}
                   </div>
 
                   <p className="mt-3 text-sm text-muted-foreground">
@@ -1408,33 +1575,31 @@ function PublishingPage() {
                     <div className="mt-4 grid gap-3 sm:grid-cols-3">
                       <div>
                         <Label className="text-xs tracking-wide uppercase">Date</Label>
-                        <Input type="date" className="mt-1.5" defaultValue="2026-08-12" />
+                        <Input
+                          type="date"
+                          className="mt-1.5"
+                          value={scheduleDate}
+                          onChange={(e) => setScheduleDate(e.target.value)}
+                        />
                       </div>
                       <div>
                         <Label className="text-xs tracking-wide uppercase">Time</Label>
-                        <Input type="time" className="mt-1.5" defaultValue="10:30" />
+                        <Input
+                          type="time"
+                          className="mt-1.5"
+                          value={scheduleTime}
+                          onChange={(e) => setScheduleTime(e.target.value)}
+                        />
                       </div>
-                      <div>
-                        <Label className="text-xs tracking-wide uppercase">Timezone</Label>
-                        <Select defaultValue="Asia/Kolkata">
-                          <SelectTrigger className="mt-1.5 w-full">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {["Asia/Kolkata", "Asia/Dubai", "Europe/London"].map((tz) => (
-                              <SelectItem key={tz} value={tz}>
-                                {tz}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
+                      <p className="self-end pb-2 text-xs text-muted-foreground">
+                        In your local time zone ({Intl.DateTimeFormat().resolvedOptions().timeZone}
+                        ).
+                      </p>
                     </div>
                   ) : null}
 
                   <p className="mt-4 text-xs text-muted-foreground">
-                    Allowed publishing hours, daily limits, paused accounts and token validity are
-                    checked before each job is created.
+                    Only connected accounts with publishing enabled can be selected.
                   </p>
 
                   <Button
@@ -1477,9 +1642,20 @@ function PublishingPage() {
                 </tr>
               </thead>
               <tbody>
+                {historyLoading || publishingHistory.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                      {historyLoading
+                        ? "Loading recent activity…"
+                        : historyError
+                          ? "Could not load your publishing activity. Refresh to try again."
+                          : "Nothing published yet. Your posts will be listed here."}
+                    </td>
+                  </tr>
+                ) : null}
                 {publishingHistory.map((row, i) => (
                   <tr key={i} className="border-b border-border/70 last:border-0">
-                    <td className="max-w-[220px] truncate px-4 py-3 font-medium">{row.asset}</td>
+                    <td className="max-w-[220px] truncate px-4 py-3 font-medium">{row.content}</td>
                     <td className="px-4 py-3">{row.platform}</td>
                     <td className="px-4 py-3">{row.account}</td>
                     <td className="px-4 py-3 whitespace-nowrap">{row.date}</td>
@@ -1501,13 +1677,23 @@ function PublishingPage() {
                     </td>
                     <td className="px-4 py-3 text-right whitespace-nowrap">
                       {row.status === "Failed" ? (
-                        <Button size="sm" variant="outline" onClick={() => toast("Retrying…")}>
-                          <RotateCcw className="size-4" /> Retry
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={retrying === row.id}
+                          onClick={() => retryItem(row.id)}
+                        >
+                          <RotateCcw className="size-4" />
+                          {retrying === row.id ? "Retrying…" : "Retry"}
+                        </Button>
+                      ) : row.status === "Published" && row.url ? (
+                        <Button size="sm" variant="ghost" asChild>
+                          <a href={row.url} target="_blank" rel="noreferrer">
+                            <ExternalLink className="size-4" /> View
+                          </a>
                         </Button>
                       ) : row.status === "Published" ? (
-                        <Button size="sm" variant="ghost">
-                          <ExternalLink className="size-4" /> View
-                        </Button>
+                        <span className="text-xs text-muted-foreground">Published</span>
                       ) : (
                         <span className="text-xs text-muted-foreground">
                           <Clock className="mr-1 inline size-3" /> Waiting
@@ -1520,11 +1706,20 @@ function PublishingPage() {
             </table>
           </div>
           <div className="divide-y divide-border lg:hidden">
+            {historyLoading || publishingHistory.length === 0 ? (
+              <p className="p-6 text-center text-sm text-muted-foreground">
+                {historyLoading
+                  ? "Loading recent activity…"
+                  : historyError
+                    ? "Could not load your publishing activity. Refresh to try again."
+                    : "Nothing published yet. Your posts will be listed here."}
+              </p>
+            ) : null}
             {publishingHistory.map((row, i) => (
               <div key={i} className="p-4">
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
                   <p className="min-w-0 truncate text-sm font-medium text-foreground">
-                    {row.asset}
+                    {row.content}
                   </p>
                   <StatusBadge
                     status={row.status}
@@ -1540,80 +1735,15 @@ function PublishingPage() {
                 <p className="mt-1 text-xs text-muted-foreground">
                   {row.platform} · {row.account} · {row.date}
                 </p>
-                {row.error !== "—" ? (
-                  <p className="mt-2 text-xs text-destructive">{row.error}</p>
-                ) : null}
+                {/* error_message is null on everything that did not fail, and
+                    null !== "—" put an empty red line on every card. */}
+                {row.error ? <p className="mt-2 text-xs text-destructive">{row.error}</p> : null}
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* JOB PROGRESS MODAL */}
-      <Dialog open={!!jobs} onOpenChange={(o) => !o && !running && setJobs(null)}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="tracking-[0.08em] uppercase">
-              {complete ? "Publication Complete" : "Publishing Content"}
-            </DialogTitle>
-          </DialogHeader>
-          <ul className="space-y-2">
-            {(jobs ?? []).map((job) => (
-              <li
-                key={job.id}
-                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-border px-3 py-2.5"
-              >
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium text-foreground">
-                    {job.label}
-                  </span>
-                  {job.message ? (
-                    <span className="block text-xs text-destructive">{job.message}</span>
-                  ) : null}
-                </span>
-                <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                  {job.state === "published" ? (
-                    <>
-                      <CheckCircle2 className="size-4 text-success" /> Published
-                    </>
-                  ) : job.state === "failed" ? (
-                    <>
-                      <AlertTriangle className="size-4 text-gold" /> Failed
-                    </>
-                  ) : (
-                    <>
-                      <Loader2 className="size-4 animate-spin text-primary" />
-                      {job.state === "uploading"
-                        ? "Uploading..."
-                        : job.state === "publishing"
-                          ? "Publishing..."
-                          : "Queued"}
-                    </>
-                  )}
-                </span>
-              </li>
-            ))}
-          </ul>
-          {complete ? (
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-              <p className="text-sm text-muted-foreground">
-                <span className="font-semibold text-foreground">{publishedCount}</span> Published ·
-                <span className="font-semibold text-foreground"> {failedIds.length}</span> Failed
-              </p>
-              <div className="flex gap-2">
-                {failedIds.length ? (
-                  <Button size="sm" variant="outline" onClick={() => runJobs(failedIds)}>
-                    <RotateCcw className="size-4" /> Retry Failed
-                  </Button>
-                ) : null}
-                <Button size="sm" onClick={() => setJobs(null)}>
-                  Done
-                </Button>
-              </div>
-            </div>
-          ) : null}
-        </DialogContent>
-      </Dialog>
       {/* FULL SIZE IMAGE MODAL */}
       <Dialog open={showFullImage} onOpenChange={setShowFullImage}>
         <DialogContent className="max-w-[90vw] md:max-w-3xl lg:max-w-4xl p-1 bg-transparent border-none shadow-none">

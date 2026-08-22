@@ -10,6 +10,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 
+from apps.brands.services.brand_brain import rebuild_brand_brain_safely
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.permissions import (
     HasWorkspaceRole,
@@ -117,6 +118,7 @@ class BrandPreferenceViewSet(
             )
         preference.state = BrandPreference.State.RETIRED
         preference.save(update_fields=['state', 'updated_at'])
+        rebuild_brand_brain_safely(preference.brand)
         return APIResponse(
             success=True,
             message="Preference retired. It no longer influences generation.",
@@ -175,6 +177,9 @@ class BrandRuleViewSet(
                 error={"code": "LEARNING_CONFLICT", "message": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # An explicit rule outranks everything learned; the snapshot that
+        # generation reads must carry it immediately.
+        rebuild_brand_brain_safely(rule.brand)
         return APIResponse(
             success=True,
             data=BrandRuleSerializer(
@@ -193,6 +198,7 @@ class BrandRuleViewSet(
                 status=status.HTTP_400_BAD_REQUEST,
             )
         deactivate_rule(rule=rule, user=request.user)
+        rebuild_brand_brain_safely(rule.brand)
         return APIResponse(
             success=True,
             message="Rule deactivated. It no longer constrains generation.",

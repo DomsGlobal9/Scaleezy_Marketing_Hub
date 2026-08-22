@@ -1,3 +1,8 @@
+/**
+ * Static vocabulary for the social accounts screens: platform metadata and
+ * status tones. No demo rows live here any more — every list in the app is
+ * loaded from the API and shows a truthful empty state when there is nothing.
+ */
 export type Platform =
   "facebook" | "instagram" | "linkedin" | "x" | "tiktok" | "youtube" | "google-business";
 
@@ -16,7 +21,7 @@ export type AccountStatus =
 
 export type StatusTone = "success" | "warning" | "danger" | "neutral";
 
-export function statusTone(status: AccountStatus): StatusTone {
+export function statusTone(status: AccountStatus | string): StatusTone {
   switch (status) {
     case "Connected":
       return "success";
@@ -42,6 +47,8 @@ export interface PlatformMeta {
   accountTypeOptions: string[];
   requiredPermissions: string[];
   optionalPermissions: string[];
+  /** Whether the backend has an OAuth adapter for it today. */
+  supported: boolean;
 }
 
 export const PLATFORMS: PlatformMeta[] = [
@@ -53,6 +60,7 @@ export const PLATFORMS: PlatformMeta[] = [
     requiredPermissions: ["Publish content", "Upload media", "Check publishing status"],
     optionalPermissions: ["Read comments", "Read analytics"],
     fields: ["Page ID", "Page name", "Page URL", "Page role"],
+    supported: true,
   },
   {
     id: "instagram",
@@ -62,6 +70,7 @@ export const PLATFORMS: PlatformMeta[] = [
     requiredPermissions: ["Publish content", "Upload media", "Check publishing status"],
     optionalPermissions: ["Read comments", "Read analytics"],
     fields: ["Instagram User ID", "Username", "Account type", "Connected Facebook Page"],
+    supported: true,
   },
   {
     id: "linkedin",
@@ -71,6 +80,7 @@ export const PLATFORMS: PlatformMeta[] = [
     requiredPermissions: ["Publish content", "Upload image / video", "Check publishing status"],
     optionalPermissions: ["Read analytics"],
     fields: ["Organization Page ID", "Organization name", "Page URL", "Content role"],
+    supported: true,
   },
   {
     id: "x",
@@ -80,6 +90,7 @@ export const PLATFORMS: PlatformMeta[] = [
     requiredPermissions: ["Create post", "Upload media"],
     optionalPermissions: ["Read analytics"],
     fields: ["User ID", "Username", "Display name", "API plan", "Rate-limit status"],
+    supported: true,
   },
   {
     id: "youtube",
@@ -89,6 +100,7 @@ export const PLATFORMS: PlatformMeta[] = [
     requiredPermissions: ["Video upload", "Check publishing status"],
     optionalPermissions: ["Read analytics"],
     fields: ["Channel ID", "Channel name", "Default privacy", "Default category"],
+    supported: true,
   },
   {
     id: "google-business",
@@ -98,110 +110,6 @@ export const PLATFORMS: PlatformMeta[] = [
     requiredPermissions: ["Local post", "Image upload", "Post status"],
     optionalPermissions: ["Administrator access"],
     fields: ["Location ID", "Business name", "Business address", "Google Maps URL"],
-  },
-];
-
-export interface SocialAccount {
-  id: string;
-  platform: Platform;
-  status: AccountStatus;
-  accountName: string;
-  username: string;
-  accountType: string;
-  profileUrl: string;
-  externalId: string;
-  connectedBy: string;
-  connectedEmail: string;
-  role: string;
-  permissions: string[];
-  tokenStatus: string;
-  lastVerified: string;
-  lastPublished: string;
-  connectedAt: string;
-  lastError?: string | undefined;
-  publishingEnabled: boolean;
-  isDefault: boolean;
-  platformDetails: { label: string; value: string }[];
-  settings: {
-    timezone: string;
-    allowedStart: string;
-    allowedEnd: string;
-    dailyLimit: number;
-    automaticRetry: boolean;
-    comments: boolean;
-    analytics: boolean;
-    paused: boolean;
-  };
-}
-
-const baseSettings = {
-  timezone: "Asia/Kolkata",
-  allowedStart: "09:00",
-  allowedEnd: "21:00",
-  dailyLimit: 5,
-  automaticRetry: true,
-  comments: false,
-  analytics: true,
-  paused: false,
-};
-
-export const DEMO_ACCOUNTS: SocialAccount[] = [];
-
-export interface MediaAsset {
-  id: string;
-  name: string;
-  type: string;
-  created: string;
-  ratio: string;
-  tone: string;
-  campaign: string;
-}
-
-export const MEDIA_ASSETS: MediaAsset[] = [];
-
-export const PUBLISHING_HISTORY: any[] = [];
-
-export const AUDIT_LOGS: any[] = [];
-
-export const PERMISSION_MATRIX = [
-  {
-    role: "Viewer",
-    view: true,
-    create: false,
-    edit: false,
-    approve: false,
-    publish: false,
-    disconnect: false,
-    admin: false,
-  },
-  {
-    role: "Marketing Executive",
-    view: true,
-    create: true,
-    edit: true,
-    approve: false,
-    publish: false,
-    disconnect: false,
-    admin: false,
-  },
-  {
-    role: "Marketing Manager",
-    view: true,
-    create: true,
-    edit: true,
-    approve: true,
-    publish: true,
-    disconnect: false,
-    admin: false,
-  },
-  {
-    role: "Workspace Admin",
-    view: true,
-    create: true,
-    edit: true,
-    approve: true,
-    publish: true,
-    disconnect: true,
-    admin: true,
+    supported: false,
   },
 ];

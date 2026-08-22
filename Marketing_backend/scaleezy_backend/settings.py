@@ -98,15 +98,37 @@ WSGI_APPLICATION = 'scaleezy_backend.wsgi.application'
 
 
 # Database
-DATABASES = {
-    'default': env.db('DATABASE_URL', default=f'sqlite:///{BASE_DIR}/db.sqlite3')
-}
+#
+# Production must never fall back to SQLite: a deploy that loses DATABASE_URL
+# would boot, create an empty local file database and serve 200s against it,
+# which is silent data loss dressed as uptime. The fallback is kept only where
+# it is genuinely wanted — local development (DEBUG) and the test runner — or
+# where an operator opts in explicitly for a throwaway environment.
+_RUNNING_TESTS = 'test' in sys.argv
+_DATABASE_URL = env('DATABASE_URL', default='')
+if _DATABASE_URL:
+    DATABASES = {'default': env.db_url('DATABASE_URL')}
+elif DEBUG or _RUNNING_TESTS or env.bool('ALLOW_SQLITE_FALLBACK', default=False):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
+else:
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured(
+        "DATABASE_URL is not set and DEBUG is off. Production requires the real "
+        "database; set DATABASE_URL (or ALLOW_SQLITE_FALLBACK=True for a local "
+        "non-debug experiment)."
+    )
 
 # Run the suite against a disposable in-memory SQLite database.
 # Without this, `manage.py test` creates and drops a real database on the shared
 # Supabase instance — slow, and the connection pooler holds sessions open which
 # makes the teardown DROP fail.
-if 'test' in sys.argv:
+if _RUNNING_TESTS:
     DATABASES['default'] = {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': ':memory:',
@@ -204,6 +226,17 @@ TASKS = {
 
 # API Keys & Third-party configs
 GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
+
+# Generation with no credential used to return canned copy, which the router
+# then logged as a successful Gemini call and the API persisted as a real
+# ContentItem - fabricated marketing copy, indistinguishable from the genuine
+# article, sitting in a review queue. Mock output is now an explicit opt-in.
+#
+# Forced off outside DEBUG and the test runner rather than merely defaulting
+# off: the whole point is that production cannot fabricate content, and a
+# stray environment variable must not be able to switch that back on. Ignored
+# rather than raised so a typo cannot take the site down.
+GEMINI_MOCK_MODE = env.bool('GEMINI_MOCK_MODE', default=False) and (DEBUG or _RUNNING_TESTS)
 
 # Force reload
 SUPABASE_URL = env('SUPABASE_URL', default='')

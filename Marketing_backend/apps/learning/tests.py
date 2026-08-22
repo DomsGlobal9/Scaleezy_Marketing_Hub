@@ -6,6 +6,8 @@ into treating one opinion as brand law, or into leaking across a tenant
 boundary. Negative assertions run through `apps.common.testing`, so every
 rejection also proves the database did not move.
 """
+from datetime import datetime, timedelta, timezone as dt_timezone
+
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db.utils import IntegrityError
@@ -41,6 +43,10 @@ from .services import (
 )
 
 User = get_user_model()
+
+# A stamp of our own, for the places where an assertion would otherwise rest
+# on how finely the host clock ticks.
+FIXED_TIME = datetime(2026, 1, 1, 9, 0, tzinfo=dt_timezone.utc)
 
 EVENTS_URL = '/api/marketing/learning-events/'
 PREFERENCES_URL = '/api/marketing/brand-preferences/'
@@ -231,6 +237,16 @@ class PreferenceThresholdTests(LearningTestBase):
         events = [self.make_event(dedupe_key=f'l{i}') for i in range(2)]
         for event in events:
             preference = self.reinforce(event)
+
+        # Both lineage paths order by created_at alone, so two rows created in
+        # one clock tick tie and SQLite falls back to the pk index - random
+        # UUID order. Space them by hand so the assertion is about lineage.
+        for offset, event in enumerate(events):
+            stamp = FIXED_TIME + timedelta(minutes=offset)
+            LearningEvent.objects.filter(pk=event.pk).update(created_at=stamp)
+            PreferenceEvidence.objects.filter(
+                preference=preference, learning_event=event
+            ).update(created_at=stamp)
 
         self.assertEqual(
             [e.pk for e in preference_evidence_events(preference)],
