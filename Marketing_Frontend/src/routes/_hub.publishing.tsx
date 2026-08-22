@@ -110,10 +110,33 @@ const CONTENT_TYPES: {
   label: string;
   hint: string;
   icon: typeof ImageIcon;
+  available: boolean;
 }[] = [
-  { id: "poster", label: "Poster", hint: "A single still image", icon: ImageIcon },
-  { id: "video", label: "Video", hint: "A short promo clip", icon: Video },
-  { id: "carousel", label: "Carousel", hint: "Multiple ordered slides", icon: Images },
+  {
+    id: "poster",
+    label: "Poster",
+    hint: "A single still image",
+    icon: ImageIcon,
+    available: true,
+  },
+  {
+    // No adapter implements Capability.VIDEO - apps/ai/adapters/base.py declares
+    // generate_video and nothing overrides it - so the video branch reached the
+    // same text-and-poster call as everything else and the result was a still
+    // image named .mp4. Offered as a roadmap tile, not as a capability.
+    id: "video",
+    label: "Video",
+    hint: "Not available yet",
+    icon: Video,
+    available: false,
+  },
+  {
+    id: "carousel",
+    label: "Carousel",
+    hint: "Multiple ordered slides",
+    icon: Images,
+    available: true,
+  },
 ];
 
 const VIDEO_DURATIONS = ["10 seconds", "15 seconds", "30 seconds", "60 seconds"];
@@ -543,20 +566,16 @@ function PublishingPage() {
       // slide plan and attach any per-slide images it does send back.
       const returnedSlides: string[] = Array.isArray(d.slideImageUrls) ? d.slideImageUrls : [];
 
-      const label =
-        contentType === "video" ? "Video" : contentType === "carousel" ? "Carousel" : "Poster";
+      // Only poster and carousel can be generated, so the produced file is
+      // always a still. Naming it .mp4 was the last place the UI still claimed
+      // a clip had been made.
+      const label = contentType === "carousel" ? "Carousel" : "Poster";
 
       setAsset({
-        name: `${campaignName || "Untitled"} ${label}.${contentType === "video" ? "mp4" : "jpg"}`,
-        type: contentType === "video" ? "MP4" : "JPG",
+        name: `${campaignName || "Untitled"} ${label}.jpg`,
+        type: "JPG",
         dimensions:
-          contentType === "video"
-            ? // The aspect ratio picker no longer reaches the generator, so
-              // naming a ratio here would assert a size nothing honoured.
-              "As generated"
-            : contentType === "carousel"
-              ? `1080×1080 · ${slides.length} slides`
-              : "1080×1350",
+          contentType === "carousel" ? `1080×1080 · ${slides.length} slides` : "1080×1350",
         created: new Date().toLocaleDateString("en-GB", {
           day: "2-digit",
           month: "short",
@@ -901,13 +920,19 @@ function PublishingPage() {
                       <button
                         key={ct.id}
                         type="button"
-                        onClick={() => setContentType(ct.id)}
+                        disabled={!ct.available}
+                        title={
+                          ct.available ? undefined : `${ct.label} generation is not available yet.`
+                        }
+                        onClick={() => ct.available && setContentType(ct.id)}
                         aria-pressed={active}
                         className={cn(
                           "flex items-center gap-3 rounded-xl border p-4 text-left transition-colors",
                           active
                             ? "border-[#7C3AED] bg-[#7C3AED]/5"
                             : "border-border hover:bg-secondary/60",
+                          !ct.available &&
+                            "cursor-not-allowed opacity-60 hover:bg-transparent",
                         )}
                       >
                         <span
