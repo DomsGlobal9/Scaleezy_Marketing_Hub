@@ -227,6 +227,17 @@ TASKS = {
 # API Keys & Third-party configs
 GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
 
+# Generation with no credential used to return canned copy, which the router
+# then logged as a successful Gemini call and the API persisted as a real
+# ContentItem - fabricated marketing copy, indistinguishable from the genuine
+# article, sitting in a review queue. Mock output is now an explicit opt-in.
+#
+# Forced off outside DEBUG and the test runner rather than merely defaulting
+# off: the whole point is that production cannot fabricate content, and a
+# stray environment variable must not be able to switch that back on. Ignored
+# rather than raised so a typo cannot take the site down.
+GEMINI_MOCK_MODE = env.bool('GEMINI_MOCK_MODE', default=False) and (DEBUG or _RUNNING_TESTS)
+
 # Force reload
 SUPABASE_URL = env('SUPABASE_URL', default='')
 SUPABASE_SERVICE_ROLE_KEY = env('SUPABASE_SERVICE_ROLE_KEY', default='')

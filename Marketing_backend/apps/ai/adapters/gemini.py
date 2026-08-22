@@ -37,7 +37,10 @@ class GeminiAdapter(AIProviderAdapter):
         return GeminiGeneratorService
 
     def generate_text(self, brief: Dict[str, Any]) -> Dict[str, Any]:
-        result = self._service().generate_marketing_content(brief)
+        # self.credentials is this workspace's own key when it saved one, and
+        # empty otherwise; the service falls back to the server key and raises
+        # if there is neither.
+        result = self._service().generate_marketing_content(brief, api_key=self.credentials)
         return {
             'headline': result.get('postTitle', ''),
             'caption': result.get('postDescription', ''),
@@ -48,7 +51,7 @@ class GeminiAdapter(AIProviderAdapter):
     def generate_image(self, brief: Dict[str, Any]) -> Dict[str, Any]:
         # Gemini returns copy and imagery from one call, so image generation
         # reuses it and picks out the poster.
-        result = self._service().generate_marketing_content(brief)
+        result = self._service().generate_marketing_content(brief, api_key=self.credentials)
         url = result.get('posterImageUrl', '')
         if not url:
             raise AIProviderError("Gemini returned no image.")
@@ -58,7 +61,8 @@ class GeminiAdapter(AIProviderAdapter):
         b64 = brief.get('reference_image_base64') or brief.get('referenceImageBase64', '')
         if not b64:
             raise AIProviderError("No image supplied for analysis.")
-        return {'analysis': self._service().analyze_reference_image(b64)}
+        return {'analysis': self._service().analyze_reference_image(
+            b64, api_key=self.credentials)}
 
     #: Embedding model, separate from the generation model.
     embedding_model = 'text-embedding-004'
@@ -70,7 +74,7 @@ class GeminiAdapter(AIProviderAdapter):
 
         model = self.config.get('embedding_model') or self.embedding_model
         try:
-            response = self._service()._get_client().models.embed_content(
+            response = self._service()._get_client(self.credentials).models.embed_content(
                 model=model, contents=text
             )
             vector = list(response.embeddings[0].values)

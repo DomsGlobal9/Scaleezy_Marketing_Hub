@@ -9,6 +9,15 @@ from google import genai
 from google.genai import types
 
 
+class GeminiNotConfigured(RuntimeError):
+    """No Gemini credential is available, so nothing can be generated.
+
+    Raised rather than returning placeholder copy. The router treats it as a
+    provider failure, which is the truth: a generation that never reached a
+    provider did not happen, and must not be recorded as though it did.
+    """
+
+
 class GeminiGeneratorService:
     """
     Two-step pipeline:
@@ -20,9 +29,25 @@ class GeminiGeneratorService:
     TEXT_MODEL = 'gemini-2.5-flash'
     IMAGE_MODEL = 'gemini-3.1-flash-image'
 
-    @staticmethod
-    def _get_client():
-        return genai.Client(api_key=settings.GEMINI_API_KEY)
+    @classmethod
+    def _resolve_api_key(cls, api_key: str = '') -> str:
+        """The workspace's own key, else the server's, else nothing doing.
+
+        A tenant that saved its own key in Settings must be able to use it -
+        that credential reached the database and then went nowhere, because
+        every call here read the server setting directly.
+        """
+        key = (api_key or '').strip() or getattr(settings, 'GEMINI_API_KEY', '')
+        if not key:
+            raise GeminiNotConfigured(
+                "No Gemini API key is configured for this workspace or for the "
+                "server, so Gemini cannot be called."
+            )
+        return key
+
+    @classmethod
+    def _get_client(cls, api_key: str = ''):
+        return genai.Client(api_key=cls._resolve_api_key(api_key))
         
     @staticmethod
     def _parse_base64_image(b64_string: str):
@@ -40,7 +65,7 @@ class GeminiGeneratorService:
             return None, None
 
     @classmethod
-    def analyze_reference_image(cls, b64_img: str) -> dict:
+    def analyze_reference_image(cls, b64_img: str, api_key: str = '') -> dict:
         """
         Extracts recommended form fields (Campaign, Product, Occasion, Tone) 
         from a reference image.
@@ -48,7 +73,7 @@ class GeminiGeneratorService:
         if not b64_img:
             return {}
             
-        client = cls._get_client()
+        client = cls._get_client(api_key)
         mime_type, img_bytes = cls._parse_base64_image(b64_img)
         
         if not mime_type or not img_bytes:
@@ -242,12 +267,12 @@ Return ONLY a valid JSON object with these exact keys:
         )
 
     @classmethod
-    def generate_text_and_image_prompt(cls, request_data: dict) -> dict:
+    def generate_text_and_image_prompt(cls, request_data: dict, api_key: str = '') -> dict:
         """
         Step 1: Use the text model to generate captions + image prompt.
         If a reference_image_base64 is provided, it analyzes the image too.
         """
-        client = cls._get_client()
+        client = cls._get_client(api_key)
 
         campaign = request_data.get('campaign_name', '')
         product = request_data.get('product', '')
@@ -334,12 +359,13 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         return parsed
 
     @classmethod
-    def generate_poster_image(cls, image_prompt: str, reference_image_base64: str = "") -> str:
+    def generate_poster_image(cls, image_prompt: str, reference_image_base64: str = "",
+                              api_key: str = '') -> str:
         """
         Step 2: Send the AI-generated image prompt to the image model.
         Also send the original reference image if provided.
         """
-        client = cls._get_client()
+        client = cls._get_client(api_key)
         
         # We ONLY pass the text prompt to the image model. 
         # The reference image was already analyzed in Step 1 to create this highly detailed prompt.
@@ -365,21 +391,35 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         return ""
 
     @classmethod
-    def generate_marketing_content(cls, request_data: dict) -> dict:
-        if not settings.GEMINI_API_KEY:
-            campaign = request_data.get('campaign_name', 'Mock Campaign')
-            return {
-                "postTitle": f"{campaign} Announcement",
-                "postDescription": f"Exciting news! We are launching {campaign}. Stay tuned!",
-                "postHashtags": "#Launch #ExcitingNews",
-                "posterImageUrl": request_data.get('reference_image_base64', ''),
-                "imagePrompt": "",
-                "generated_text": f"Generated content for {campaign}",
-                "metadata": {"mocked": True}
-            }
+    def _mock_content(cls, request_data: dict) -> dict:
+        """Placeholder copy, for local work without a key. Never reachable
+        unless GEMINI_MOCK_MODE was deliberately switched on."""
+        campaign = request_data.get('campaign_name', 'Mock Campaign')
+        return {
+            "postTitle": f"{campaign} Announcement",
+            "postDescription": f"Exciting news! We are launching {campaign}. Stay tuned!",
+            "postHashtags": "#Launch #ExcitingNews",
+            "posterImageUrl": request_data.get('reference_image_base64', ''),
+            "imagePrompt": "",
+            "generated_text": f"Generated content for {campaign}",
+            "metadata": {"mocked": True}
+        }
+
+    @classmethod
+    def generate_marketing_content(cls, request_data: dict, api_key: str = '') -> dict:
+        # Checked before the credential, not as a fallback for the lack of one:
+        # mock mode is a deliberate choice, and tying it to "no key" is exactly
+        # how placeholder copy reached production as a real ContentItem.
+        if getattr(settings, 'GEMINI_MOCK_MODE', False):
+            return cls._mock_content(request_data)
+
+        # Raises GeminiNotConfigured when neither the workspace nor the server
+        # has a key, so the router records a failed attempt and nothing is
+        # persisted.
+        api_key = cls._resolve_api_key(api_key)
 
         # Step 1: Generate text content + image prompt
-        text_result = cls.generate_text_and_image_prompt(request_data)
+        text_result = cls.generate_text_and_image_prompt(request_data, api_key=api_key)
         image_prompt = text_result.get("imagePrompt", "")
 
         # Step 2: Generate poster image from the AI-crafted prompt
@@ -388,7 +428,8 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
             if image_prompt:
                 poster_url = cls.generate_poster_image(
                     image_prompt=image_prompt,
-                    reference_image_base64=request_data.get('reference_image_base64', '')
+                    reference_image_base64=request_data.get('reference_image_base64', ''),
+                    api_key=api_key,
                 )
         except Exception as e:
             print(f"[Gemini] Step 2 failed: {e}")
