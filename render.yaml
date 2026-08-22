@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
 # Render blueprint for the Scaleezy Marketing Hub backend.
 #
 # Connect this repository in the Render dashboard (New -> Blueprint) and it
@@ -40,3 +41,62 @@ services:
         sync: false
       - key: CORS_ALLOWED_ORIGINS
         sync: false
+
+  # The database task backend is durable, but queued publishing and generation
+  # work only moves while this process is polling it. Keep exactly one worker:
+  # row-level claiming already protects against duplicates, and one Starter
+  # instance is sufficient for the core launch loop.
+  - type: worker
+    name: scaleezy-worker
+    runtime: python
+    rootDir: Marketing_backend
+    plan: starter
+    numInstances: 1
+    buildCommand: pip install -r requirements.txt
+    startCommand: python manage.py run_tasks --interval 5
+    # run_tasks finishes its current pass after SIGTERM. Give uploads and
+    # provider calls the platform maximum grace period before forced shutdown.
+    maxShutdownDelaySeconds: 300
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.7
+      - key: DEBUG
+        value: "False"
+      # Reuse the web service's Render-managed values. This keeps both
+      # processes on the same database and cryptographic identity without
+      # exposing or duplicating secrets in the repository.
+      - key: DJANGO_SECRET_KEY
+        fromService:
+          type: web
+          name: scaleezy-backend
+          envVarKey: DJANGO_SECRET_KEY
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: scaleezy-backend
+          envVarKey: DATABASE_URL
+      - key: FERNET_SECRET_KEY
+        fromService:
+          type: web
+          name: scaleezy-backend
+          envVarKey: FERNET_SECRET_KEY
+      - key: SUPABASE_URL
+        fromService:
+          type: web
+          name: scaleezy-backend
+          envVarKey: SUPABASE_URL
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        fromService:
+          type: web
+          name: scaleezy-backend
+          envVarKey: SUPABASE_SERVICE_ROLE_KEY
+      - key: GEMINI_API_KEY
+        fromService:
+          type: web
+          name: scaleezy-backend
+          envVarKey: GEMINI_API_KEY
+      - key: OPENAI_API_KEY
+        fromService:
+          type: web
+          name: scaleezy-backend
+          envVarKey: OPENAI_API_KEY

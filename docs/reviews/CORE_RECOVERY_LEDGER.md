@@ -19,7 +19,7 @@ Statuses are evidence-based: **PASS**, **FAIL**, **BLOCKED**, or **N/A**.
 | Brand Brain correction | P1 | PASS | Editing an authoritative Brand field recompiles the derived brain; the version and later generation context change together. | PR4 | Completed through source-owned records; derived state remains read-only. | `CoreProductLifecycleTests.test_a_new_tenant_goes_from_signup_to_a_generated_result_unaided` passed. |
 | Calibration and learning | P1 | NOT VERIFIED | PR6/learning modules and tests exist; full later-generation influence needs proof. | PR3/PR6 | Repair only broken continuity or client scoping. | Two-client influence/non-contamination test. |
 | Settings boundary | P1 | PASS | Settings contains workspace, access, plan and security only; AI credentials/routing are absent and live in the guarded Admin module. | PR6 | Completed compatibly. | Settings/Admin browser boundary smoke passed. |
-| Full core loop | P0 | BLOCKED | The complete code path, tenancy, RBAC, durable media, review/publish integrity and provider redundancy contracts pass together. Production promotion is blocked because the Render blueprint has no `run_tasks` worker, so queued generation/publishing cannot execute live. | Cross-cutting | P0 code gate complete; deploy the existing worker without changing PR0–PR6 ownership; keep PR7 closed. | Final 690-test backend suite and frontend gates passed. Deploy worker, then run one credentialed AI generation and one connected social publish smoke. |
+| Full core loop | P0 | BLOCKED | The complete code path, tenancy, RBAC, durable media, review/publish integrity and provider redundancy contracts pass together. The Render blueprint now defines one durable `run_tasks` worker with shared production secrets and graceful shutdown; production sync and a live job have not yet been observed. | Cross-cutting | Sync the approved worker without changing PR0–PR6 ownership; keep PR7 closed. | Final 690-test backend suite and frontend gates passed. Confirm the worker is live, then run one credentialed AI generation and one connected social publish smoke. |
 
 ## Recovery log
 
@@ -62,3 +62,10 @@ Update this section after each vertical slice with named tests and exact results
 - Final backend gate: **690 passed, 0 failed** in 1166.904 seconds. Migration drift check **PASS**; Django check **PASS** apart from the expected local placeholder-secret warning.
 - Final frontend gate: TypeScript **PASS**; substantive ESLint across all 21 changed TypeScript files **PASS with zero warnings**; production client/SSR/Nitro build **PASS**.
 - Release position: **P0 CODE GATE PASS; PRODUCTION PROMOTION BLOCKED** until Render runs `manage.py run_tasks` and the post-deploy credentialed AI/social smoke succeeds. Knowledge processing, Inspiration analysis and calibration-to-next-generation proof remain explicit P1 work; PR7 remains closed.
+
+### 2026-08-23 — Render worker deployment configuration
+
+- Added one Starter background worker running the existing durable `manage.py run_tasks` command every five seconds. It reuses the web service's Render-managed database, encryption, storage and AI credentials through cross-service references; no secret is duplicated or committed.
+- Added a 300-second shutdown allowance so the worker can finish an in-flight provider call or publish after `SIGTERM`, matching the command's graceful-stop contract.
+- Verification: YAML parse **PASS**; current official Render Blueprint schema **PASS**; worker command discovery/help **PASS**; focused durable-jobs and publishing suite **35 passed, 0 failed**; diff check **PASS**.
+- Release position remains **PRODUCTION PROMOTION BLOCKED** until the Blueprint is synced on Render, the worker reports healthy polling, and the credentialed AI/social smoke succeeds. PR7 remains closed.
