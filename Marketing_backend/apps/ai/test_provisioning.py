@@ -1,0 +1,150 @@
+"""
+Default AI routing for a new tenant.
+
+The defect this exists to close: a workspace created through the API had no
+provider and no route, so its first Create returned 503 and stayed that way
+until a developer ran a management command. So what matters here is that the
+service produces a routable workspace, that running it again is not different
+from running it once, that it copies no secret into the database, and that it
+cannot take a workspace creation down with it.
+"""
+from unittest.mock import patch
+
+from django.test import TestCase
+
+from apps.ai.models import (
+    AIProvider,
+    Capability,
+    Strategy,
+    WorkspaceAIProvider,
+    WorkspaceAIRoute,
+)
+from apps.ai.provisioning import ensure_default_ai_routing, resolve_default_provider
+from apps.workspaces.models import MarketingWorkspace
+
+
+class EnsureDefaultAIRoutingTests(TestCase):
+    def setUp(self):
+        self.workspace = MarketingWorkspace.objects.create(
+            customer_id='c1', workspace_name='One'
+        )
+        self.provider, _ = AIProvider.objects.get_or_create(
+            key='gemini',
+            defaults={
+                'display_name': 'Google Gemini',
+                'capabilities': ['TEXT', 'IMAGE', 'IMAGE_ANALYSIS', 'EMBEDDING'],
+            },
+        )
+
+    def test_it_creates_an_enabled_provider_and_both_routes(self):
+        self.assertTrue(ensure_default_ai_routing(self.workspace))
+
+        workspace_provider = WorkspaceAIProvider.objects.get(
+            workspace=self.workspace, provider=self.provider
+        )
+        self.assertTrue(workspace_provider.enabled)
+
+        routes = {
+            route.capability: route
+            for route in WorkspaceAIRoute.objects.filter(workspace=self.workspace)
+        }
+        self.assertEqual(set(routes), {Capability.TEXT, Capability.IMAGE})
+        for route in routes.values():
+            self.assertTrue(route.enabled)
+            self.assertEqual(route.priority, 100)
+            self.assertEqual(route.strategy, Strategy.FAILOVER)
+
+    def test_no_credential_is_copied_into_the_database(self):
+        """The adapter falls back to the server key. A key per tenant is one
+        more copy of the secret and one more thing to rotate."""
+        ensure_default_ai_routing(self.workspace)
+        self.assertEqual(
+            WorkspaceAIProvider.objects.get(workspace=self.workspace).credentials_encrypted,
+            '',
+        )
+
+    def test_running_it_again_changes_nothing(self):
+        ensure_default_ai_routing(self.workspace)
+        before = sorted(
+            WorkspaceAIRoute.objects.filter(workspace=self.workspace).values_list(
+                'pk', 'capability', 'priority', 'enabled'
+            )
+        )
+
+        self.assertTrue(ensure_default_ai_routing(self.workspace))
+
+        self.assertEqual(
+            WorkspaceAIProvider.objects.filter(workspace=self.workspace).count(), 1
+        )
+        self.assertEqual(
+            sorted(
+                WorkspaceAIRoute.objects.filter(workspace=self.workspace).values_list(
+                    'pk', 'capability', 'priority', 'enabled'
+                )
+            ),
+            before,
+        )
+
+    def test_a_provider_row_someone_switched_off_is_re_enabled(self):
+        WorkspaceAIProvider.objects.create(
+            workspace=self.workspace, provider=self.provider, enabled=False
+        )
+        ensure_default_ai_routing(self.workspace)
+        self.assertTrue(
+            WorkspaceAIProvider.objects.get(workspace=self.workspace).enabled
+        )
+
+    def test_it_touches_only_the_workspace_it_was_given(self):
+        neighbour = MarketingWorkspace.objects.create(
+            customer_id='c2', workspace_name='Two'
+        )
+        ensure_default_ai_routing(self.workspace)
+
+        self.assertFalse(WorkspaceAIRoute.objects.filter(workspace=neighbour).exists())
+        self.assertFalse(WorkspaceAIProvider.objects.filter(workspace=neighbour).exists())
+
+    def test_a_catalogue_row_with_no_adapter_is_never_routed(self):
+        """Routing it would look configured and behave like a 503, because
+        `registry.build()` drops a candidate it has no code for."""
+        AIProvider.objects.create(
+            key='nonesuch', display_name='Nonesuch',
+            capabilities=['TEXT', 'IMAGE'], unit_cost=0,
+        )
+        self.assertEqual(resolve_default_provider().key, 'gemini')
+
+        ensure_default_ai_routing(self.workspace)
+        self.assertEqual(
+            set(
+                WorkspaceAIRoute.objects.filter(workspace=self.workspace).values_list(
+                    'provider__key', flat=True
+                )
+            ),
+            {'gemini'},
+        )
+
+    def test_the_global_kill_switch_is_respected(self):
+        AIProvider.objects.update(is_available=False)
+
+        self.assertIsNone(resolve_default_provider())
+        self.assertFalse(ensure_default_ai_routing(self.workspace))
+        self.assertFalse(WorkspaceAIRoute.objects.exists())
+
+    def test_a_provisioning_failure_is_reported_and_not_raised(self):
+        with patch(
+            'apps.ai.provisioning.provision_ai_routing', side_effect=RuntimeError('boom')
+        ):
+            self.assertFalse(ensure_default_ai_routing(self.workspace))
+        self.assertFalse(WorkspaceAIRoute.objects.exists())
+
+    def test_the_router_can_then_actually_resolve_a_candidate(self):
+        from apps.ai.router import AIRouter
+
+        self.assertEqual(AIRouter(self.workspace)._candidates(Capability.TEXT), [])
+
+        ensure_default_ai_routing(self.workspace)
+
+        for capability in (Capability.TEXT, Capability.IMAGE):
+            with self.subTest(capability=capability):
+                candidates = AIRouter(self.workspace)._candidates(capability)
+                self.assertEqual(len(candidates), 1)
+                self.assertEqual(candidates[0]['route'].provider.key, 'gemini')

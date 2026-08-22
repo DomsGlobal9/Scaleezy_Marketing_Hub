@@ -139,6 +139,25 @@ class DeterminismTests(BrandBrainTestBase):
         second = compile_brand_brain(self.brand1)
         self.assertEqual(first['brain_version'], second['brain_version'])
 
+    def test_the_brands_description_and_audience_are_compiled_and_fingerprinted(self):
+        """They are hashed inputs, not decoration: editing either must move the
+        brain_version, or a consumer caching on it would keep the old copy."""
+        before = compile_brand_brain(self.brand1)
+        self.assertEqual(before['identity']['description'], '')
+        self.assertEqual(before['audiences']['stated'], '')
+
+        self.brand1.description = 'A single-origin roastery on the Malabar coast.'
+        self.brand1.audience = 'Office managers buying for a team of twenty.'
+        self.brand1.save(update_fields=['description', 'audience'])
+
+        after = compile_brand_brain(self.brand1)
+        self.assertEqual(after['identity']['description'], self.brand1.description)
+        self.assertEqual(after['audiences']['stated'], self.brand1.audience)
+        self.assertNotEqual(before['brain_version'], after['brain_version'])
+        self.assertEqual(
+            after['brain_version'], compile_brand_brain(self.brand1)['brain_version']
+        )
+
     def test_compiled_at_changes_without_changing_the_fingerprint(self):
         self.add_memory('Ships in 48 hours')
         with self.pinned_clock():

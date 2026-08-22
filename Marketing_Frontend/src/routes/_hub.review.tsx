@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   Brain,
   CheckCircle2,
@@ -235,8 +235,13 @@ function ReviewPage() {
       ) : items.length === 0 ? (
         <EmptyState
           icon={FileImage}
-          title="Nothing here"
-          description="Generated content appears here for approval before it can be published."
+          title="No content to review yet"
+          description="Generated content lands here for approval before it can be published."
+          action={
+            <Button asChild>
+              <Link to="/publishing">Create your first content</Link>
+            </Button>
+          }
         />
       ) : (
         <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">

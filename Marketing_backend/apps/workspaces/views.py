@@ -4,6 +4,7 @@ from rest_framework import status, viewsets
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.ai.provisioning import ensure_default_ai_routing
 from apps.audit.models import AuditLog
 from apps.common.mixins import WorkspaceScopedMixin
 from rest_framework.permissions import IsAuthenticated
@@ -53,6 +54,12 @@ class MarketingWorkspaceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             user=self.request.user,
             defaults={'role': WorkspaceMember.Role.OWNER},
         )
+        # A workspace with no AI route 503s on its first Create, so provisioning
+        # is part of creating one rather than something an operator remembers to
+        # run afterwards. Deliberately after the OWNER row: membership is what
+        # makes the workspace reachable at all, and it must not wait on routing.
+        # The service swallows its own failures — the workspace still exists.
+        ensure_default_ai_routing(workspace)
         logger.info(
             "Workspace %s created by user %s", workspace.pk, self.request.user.pk
         )

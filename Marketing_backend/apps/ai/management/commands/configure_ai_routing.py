@@ -5,10 +5,12 @@ Provision the minimum viable AI routing for a workspace.
     manage.py configure_ai_routing --apply
 
 A workspace with no route gets a 503 from every Create, because
-`AIRouter._candidates()` has nothing to select. That is a configuration gap,
-not a code one, so it is fixed with a command rather than a migration: routing
-is an operational decision per tenant, and a migration would impose one on
-every environment that runs it.
+`AIRouter._candidates()` has nothing to select. New workspaces now provision
+themselves on creation via `apps.ai.provisioning.ensure_default_ai_routing`,
+so this command is the repair tool: it backfills workspaces that predate that,
+re-enables what an operator switched off, and routes a provider other than the
+default one the service picks. The writes themselves are that same service, so
+there is one place where routing gets created and one place to change it.
 
 CREDENTIALS ARE NOT REQUIRED, AND BY DEFAULT NOT TOUCHED.
 `registry.build()` constructs an adapter whether or not a workspace credential
@@ -24,19 +26,17 @@ same Fernet helper the OAuth tokens use. The value is never printed, never
 logged and never returned to a client - only whether one is present.
 """
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
-from apps.ai.models import AIProvider, Capability, Strategy, WorkspaceAIProvider, WorkspaceAIRoute
+from apps.ai.models import AIProvider, Capability, WorkspaceAIProvider, WorkspaceAIRoute
+from apps.ai.provisioning import (
+    DEFAULT_PRIORITY,
+    DEFAULT_STRATEGY,
+    REQUIRED_CAPABILITIES,
+    provider_serves,
+    provision_ai_routing,
+)
 from apps.ai.registry import get_adapter_class
 from apps.workspaces.models import MarketingWorkspace
-
-#: The capabilities a workspace needs routed before Create works end to end.
-#: TEXT alone produces copy with no poster; the generation accelerator asks for
-#: both and keeps whichever succeeds.
-REQUIRED_CAPABILITIES = (Capability.TEXT, Capability.IMAGE)
-
-DEFAULT_PRIORITY = 100
-DEFAULT_STRATEGY = Strategy.FAILOVER
 
 
 class Command(BaseCommand):
@@ -105,8 +105,7 @@ class Command(BaseCommand):
         #    code that cannot serve it.
         declared = {str(c) for c in (getattr(adapter_class, 'capabilities', ()) or ())}
         unsupported = [
-            c for c in capabilities
-            if not provider.supports(c) or (declared and c not in declared)
+            c for c in capabilities if not provider_serves(provider, adapter_class, [c])
         ]
         if unsupported:
             raise CommandError(
@@ -173,57 +172,21 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ write
 
     def _configure(self, workspace, provider, capabilities, priority, credential, apply_changes):
-        changes = []
-        label = f'{workspace.workspace_name} ({workspace.pk})'
-
-        with transaction.atomic():
-            wp = WorkspaceAIProvider.objects.filter(
-                workspace=workspace, provider=provider
-            ).first()
-
-            if wp is None:
-                changes.append(f'{label}: create WorkspaceAIProvider (enabled)')
-                if apply_changes:
-                    wp = WorkspaceAIProvider.objects.create(
-                        workspace=workspace, provider=provider, enabled=True,
-                    )
-            elif not wp.enabled:
-                changes.append(f'{label}: enable existing WorkspaceAIProvider')
-                if apply_changes:
-                    wp.enabled = True
-                    wp.save(update_fields=['enabled', 'updated_at'])
-
-            if credential and wp is not None:
-                # Encrypted with the same helper that protects OAuth tokens.
-                # Only the fact of a credential is ever reported, never its value.
-                from apps.social_accounts.utils.encryption import encrypt_token
-
-                changes.append(f'{label}: store workspace credential (encrypted)')
-                if apply_changes:
-                    wp.credentials_encrypted = encrypt_token(credential)
-                    wp.save(update_fields=['credentials_encrypted', 'updated_at'])
-
-            for capability in capabilities:
-                route = WorkspaceAIRoute.objects.filter(
-                    workspace=workspace, capability=capability, provider=provider
-                ).first()
-                if route is None:
-                    changes.append(f'{label}: route {capability} -> {provider.key}')
-                    if apply_changes:
-                        WorkspaceAIRoute.objects.create(
-                            workspace=workspace, capability=capability, provider=provider,
-                            priority=priority, enabled=True, strategy=DEFAULT_STRATEGY,
-                        )
-                elif not route.enabled:
-                    changes.append(f'{label}: re-enable {capability} route')
-                    if apply_changes:
-                        route.enabled = True
-                        route.save(update_fields=['enabled'])
+        """Reporting only. The writes belong to apps.ai.provisioning, which is
+        also what workspace creation calls — one writer, so the command and the
+        automatic path cannot drift into provisioning different things."""
+        changes = provision_ai_routing(
+            workspace, provider,
+            capabilities=capabilities, priority=priority,
+            credential=credential, apply=apply_changes,
+        )
 
         for change in changes:
             self.stdout.write(f'  {"+" if apply_changes else "~"} {change}')
         if not changes:
-            self.stdout.write(f'  = {label}: already correct')
+            self.stdout.write(
+                f'  = {workspace.workspace_name} ({workspace.pk}): already correct'
+            )
         return changes
 
     # ----------------------------------------------------------------- verify

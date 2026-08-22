@@ -4,9 +4,11 @@ Phase 1 — workspace membership, RBAC and queryset scoping.
 The critical assertions here are the negative ones: a member of workspace A
 must not be able to read, or even enumerate, workspace B.
 """
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory, TestCase
-from rest_framework.test import APIRequestFactory, force_authenticate
+from rest_framework.test import APIRequestFactory, APITestCase, force_authenticate
 
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.permissions import (
@@ -227,3 +229,79 @@ class QuerysetScopingTests(TestCase):
         WorkspaceMember.objects.create(workspace=self.ws_a, user=staff)
         results = list(self._view_for(staff).get_queryset())
         self.assertEqual(results, [self.asset_a])
+
+
+class WorkspaceCreationProvisionsAIRoutingTests(APITestCase):
+    """A workspace with no AI route 503s on its first Create.
+
+    Provisioning used to be a management command someone had to remember, so
+    every new tenant arrived broken. These assert it now happens as part of
+    creating one — and that it can never be the reason a workspace fails to
+    exist.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='newcomer', password='pw')
+        self.client.force_authenticate(user=self.user)
+
+    def create_workspace(self, name='Fresh'):
+        return self.client.post(
+            '/api/marketing/workspaces/',
+            {'workspace_name': name, 'timezone': 'UTC', 'default_language': 'en'},
+            format='json',
+        )
+
+    def test_creating_a_workspace_routes_text_and_image(self):
+        from apps.ai.models import Capability, WorkspaceAIProvider, WorkspaceAIRoute
+        from apps.ai.router import AIRouter
+
+        response = self.create_workspace()
+        self.assertEqual(response.status_code, 201, response.data)
+
+        workspace = MarketingWorkspace.objects.get(workspace_name='Fresh')
+        self.assertEqual(
+            set(
+                WorkspaceAIRoute.objects.filter(workspace=workspace).values_list(
+                    'capability', flat=True
+                )
+            ),
+            {Capability.TEXT, Capability.IMAGE},
+        )
+        workspace_provider = WorkspaceAIProvider.objects.get(workspace=workspace)
+        self.assertTrue(workspace_provider.enabled)
+        self.assertEqual(workspace_provider.credentials_encrypted, '')
+        # The whole point: the first Create resolves a provider instead of 503ing.
+        self.assertTrue(AIRouter(workspace)._candidates(Capability.TEXT))
+
+    def test_the_owner_membership_exists_before_routing_is_attempted(self):
+        seen = {}
+
+        def record(workspace, **kwargs):
+            seen['role'] = (
+                WorkspaceMember.objects.filter(workspace=workspace, user=self.user)
+                .values_list('role', flat=True)
+                .first()
+            )
+            return True
+
+        with patch('apps.workspaces.views.ensure_default_ai_routing', side_effect=record):
+            self.create_workspace()
+
+        self.assertEqual(seen['role'], WorkspaceMember.Role.OWNER)
+
+    def test_a_provisioning_failure_still_creates_the_workspace(self):
+        from apps.ai.models import WorkspaceAIRoute
+
+        with patch(
+            'apps.ai.provisioning.provision_ai_routing', side_effect=RuntimeError('boom')
+        ):
+            response = self.create_workspace('Resilient')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        workspace = MarketingWorkspace.objects.get(workspace_name='Resilient')
+        self.assertTrue(
+            WorkspaceMember.objects.filter(
+                workspace=workspace, user=self.user, role=WorkspaceMember.Role.OWNER
+            ).exists()
+        )
+        self.assertFalse(WorkspaceAIRoute.objects.filter(workspace=workspace).exists())

@@ -29,7 +29,10 @@ from apps.brands.services.brand_brain import (
 )
 
 #: Context payload shape. Bump when a consumer must notice a change.
-CONTEXT_SCHEMA_VERSION = 1
+#: 2 adds the brand's own description and stated audience. The bump is also the
+#: invalidation: it is part of the cache key, so cuts made before the fields
+#: existed stop being addressed instead of serving a context missing them.
+CONTEXT_SCHEMA_VERSION = 2
 
 
 class TaskType:
@@ -177,6 +180,9 @@ def build_generation_context(
         'brand_identity': {
             'name': identity.get('name', ''),
             'industry': identity.get('industry', ''),
+            # Not task-gated: what the brand actually is bears on copy, imagery
+            # and video alike, and a model that does not know it invents one.
+            'description': identity.get('description', ''),
             'tagline': identity.get('tagline', ''),
             'cta_keyword': identity.get('cta_keyword', ''),
             'canon': identity.get('canon', [])[:MAX_ITEMS],
@@ -196,10 +202,11 @@ def build_generation_context(
         'audience': _section(
             brain, profile, 'audience',
             {
+                'stated': audiences.get('stated', ''),
                 'pains': audiences.get('pains', [])[:MAX_ITEMS],
                 'objections': audiences.get('objections', [])[:MAX_ITEMS],
             },
-            {'pains': [], 'objections': []},
+            {'stated': '', 'pains': [], 'objections': []},
         ),
         'voice': _section(
             brain, profile, 'voice',
@@ -268,8 +275,15 @@ def context_as_brief(context):
         lines.append(f"Brand: {identity['name']}")
     if identity['industry']:
         lines.append(f"Industry: {identity['industry']}")
+    # In the prose, not only in `structured`: an adapter that reads the brief as
+    # a paragraph would otherwise never see what the brand is or who it is for,
+    # which is the whole reason those fields are collected.
+    if identity.get('description'):
+        lines.append(f"About: {identity['description']}")
     if identity['tagline']:
         lines.append(f"Tagline: {identity['tagline']}")
+    if context['audience'].get('stated'):
+        lines.append(f"Audience: {context['audience']['stated']}")
     if context['voice']['tone']:
         lines.append(f"Voice: {context['voice']['tone']}")
     for truth in context['verified_truth']:

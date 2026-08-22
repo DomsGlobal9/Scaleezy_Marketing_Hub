@@ -138,6 +138,39 @@ class GatewayTests(ContextTestBase):
         self.assertEqual(copy['inspiration_signals'], [])
         self.assertTrue(image['inspiration_signals'])
 
+    def test_the_brands_own_description_and_audience_reach_the_context(self):
+        """Fields collected in the settings form are orphan UI until they are
+        in the payload a provider actually receives."""
+        self.brand1.description = 'A single-origin roastery on the Malabar coast.'
+        self.brand1.audience = 'Office managers buying coffee for a team of twenty.'
+        self.brand1.save(update_fields=['description', 'audience'])
+        rebuild_brand_brain(self.brand1)
+
+        copy = build_generation_context(self.workspace1, self.brand1, TaskType.COPY)
+        self.assertEqual(copy['brand_identity']['description'], self.brand1.description)
+        self.assertEqual(copy['audience']['stated'], self.brand1.audience)
+
+        # And in the prose brief, not only the structured block - an adapter
+        # that reads the paragraph would otherwise never see them.
+        brief = context_as_brief(copy)
+        self.assertIn(f'About: {self.brand1.description}', brief['brand_context'])
+        self.assertIn(f'Audience: {self.brand1.audience}', brief['brand_context'])
+
+    def test_the_description_travels_with_every_task_but_the_audience_does_not(self):
+        self.brand1.description = 'A single-origin roastery on the Malabar coast.'
+        self.brand1.audience = 'Office managers buying coffee for a team of twenty.'
+        self.brand1.save(update_fields=['description', 'audience'])
+        rebuild_brand_brain(self.brand1)
+
+        for task in TaskType.ALL:
+            with self.subTest(task=task):
+                context = build_generation_context(self.workspace1, self.brand1, task)
+                self.assertEqual(
+                    context['brand_identity']['description'], self.brand1.description
+                )
+        image = build_generation_context(self.workspace1, self.brand1, TaskType.IMAGE)
+        self.assertEqual(image['audience']['stated'], '')
+
     def test_context_is_deterministic_for_a_brain_and_task(self):
         self.furnish()
         first = build_generation_context(self.workspace1, self.brand1, TaskType.COPY)

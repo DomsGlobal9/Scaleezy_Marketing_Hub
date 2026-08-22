@@ -19,6 +19,7 @@ import {
   Image as ImageIcon,
   Lightbulb,
   Loader2,
+  Package,
   RefreshCw,
   Scale,
   Sparkles,
@@ -47,6 +48,7 @@ import {
 import { InspirationsPanel } from "@/components/marketing/inspirations-panel";
 import { KnowledgePanel } from "@/components/marketing/knowledge-panel";
 import { PageHeader, SectionTitle } from "@/components/marketing/primitives";
+import { ProductsAudiencePanel } from "@/components/marketing/products-audience-panel";
 import { TeachScaleezy } from "@/components/marketing/teach-scaleezy";
 import {
   BRAND_MASTER_TABS,
@@ -1167,7 +1169,12 @@ function BrandMasterPage() {
       ) : !brandId || !overview ? (
         <Empty
           title="No brand yet"
-          hint="Scaleezy creates a brand for your workspace the first time you open Brand Master. Refresh to try again."
+          hint="Every client gets a brand. Run the guided setup and this page fills in as you go."
+          action={
+            <Button asChild>
+              <Link to="/onboarding">Start client setup</Link>
+            </Button>
+          }
         />
       ) : (
         <Tabs
@@ -1181,6 +1188,9 @@ function BrandMasterPage() {
             </TabsTrigger>
             <TabsTrigger value="basics" className="gap-1.5">
               <IdCard className="size-3.5" /> Brand basics
+            </TabsTrigger>
+            <TabsTrigger value="products" className="gap-1.5">
+              <Package className="size-3.5" /> Products &amp; Audience
             </TabsTrigger>
             <TabsTrigger value="knowledge" className="gap-1.5">
               <BookOpen className="size-3.5" /> Knowledge
@@ -1225,6 +1235,9 @@ function BrandMasterPage() {
           </TabsContent>
           <TabsContent value="basics">
             <BrandBasicsPanel onSaved={refresh} />
+          </TabsContent>
+          <TabsContent value="products">
+            <ProductsAudiencePanel onSaved={refresh} />
           </TabsContent>
           <TabsContent value="knowledge">
             <KnowledgePanel brandId={brandId} onChanged={refresh} />
