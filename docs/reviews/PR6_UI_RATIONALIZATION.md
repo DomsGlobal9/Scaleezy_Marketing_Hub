@@ -97,5 +97,12 @@ configuration. Everything removed either saved nowhere or belonged elsewhere.
   facts/signals are captured by hand.
 - **Google Business Profile** is listed with no Connect action — no OAuth
   adapter exists.
-- **`src/components/ui/form.tsx`** fails typecheck against react-hook-form
-  7.85 (pre-existing, unrelated, no route imports it).
+- **`src/components/ui/form.tsx` was removed.** It failed typecheck because
+  `react-hook-form@7.85.0` declares `"files": ["dist"]` but its `dist/*.d.ts`
+  re-export from a sibling `src/` the tarball does not contain; with
+  `skipLibCheck: true` those re-exports resolve to nothing, so the module
+  appeared to export no members. Nothing imported the component and it was the
+  only importer of `react-hook-form`, so deleting it fixes the typecheck
+  without touching a lockfile. `react-hook-form` and `@hookform/resolvers`
+  remain declared but unused: removing them would desynchronise `package.json`
+  from `bun.lock` and `package-lock.json` and break `npm ci` on Vercel.
