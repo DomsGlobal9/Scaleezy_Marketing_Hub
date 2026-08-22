@@ -29,6 +29,7 @@ the adapter's job, later.
 """
 import hashlib
 import json
+import logging
 
 from django.db import transaction
 from django.utils import timezone
@@ -38,6 +39,8 @@ from apps.knowledge.models import BrandMemory, BrandSource
 from apps.learning.models import BrandPreference, BrandRule, LearningScope
 
 #: Bump when the shape changes in a way a consumer must notice.
+logger = logging.getLogger(__name__)
+
 SCHEMA_VERSION = 1
 
 # Precedence, highest authority first. The number is what gets compared, so a
@@ -477,3 +480,25 @@ def rebuild_brand_brain(brand):
     brand.creative_brain = brain
     brand.save(update_fields=['creative_brain', 'updated_at'])
     return brain
+
+
+def rebuild_brand_brain_safely(brand):
+    """Recompile after an intelligence change, without letting the recompile
+    cost the user the change itself.
+
+    Confirming a fact, stating a preference, archiving a source or stating a
+    rule all alter what the brain should say; this keeps the persisted
+    snapshot - the one generation reads and readiness scores - current the
+    moment they land. Best-effort on purpose: the record is the truth and the
+    snapshot can always be rebuilt, so a compile failure is logged, never
+    raised back into the request that made the change.
+    """
+    if brand is None:
+        return None
+    try:
+        return rebuild_brand_brain(brand)
+    except Exception:
+        logger.exception(
+            "Could not rebuild Brand Brain for brand %s", getattr(brand, 'pk', None)
+        )
+        return None

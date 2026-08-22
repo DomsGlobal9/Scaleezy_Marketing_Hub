@@ -5,15 +5,22 @@ One job: notice when a reviewer objects to the same thing twice, and turn that
 into a rule the generator obeys next time.
 
     embed -> find similar past feedback -> extract the pattern
-          -> append the rule to Brand.creative_brain -> feed it into the prompt
+          -> LEARNED soft rule in the learning fabric -> Brand Brain -> prompt
+
+The last two steps used to be one: the rule was written straight onto
+`Brand.creative_brain`. That column is the COMPILED SNAPSHOT owned by
+`apps.brands.services.brand_brain`, so every recompile silently deleted
+whatever the review loop had learned, and in between recompiles the snapshot's
+`brain_version` no longer described its own contents. Rules now go where every
+other piece of learned intelligence goes - `learning.BrandRule`, LEARNED and
+soft, citing the events it was learned from - and the compiler picks them up
+like anything else.
 
 Rules live on the brand, not on the workspace, because taste is a property of
 the brand and a workspace can hold several.
 """
 import logging
 from typing import Any, Dict, List
-
-from django.utils import timezone
 
 from .embeddings import cosine, embed
 from .models import Feedback, FeedbackElement
@@ -173,14 +180,41 @@ class TrainingEngine:
         }
 
     # -- rules ------------------------------------------------------------
+    def _supporting_feedback(self, pattern: Dict[str, Any], key: str) -> List[Feedback]:
+        """This feedback plus the past rows that raised the same element.
+
+        The rows are the evidence; their LearningEvents are what the rule
+        actually cites, so "why does this rule exist" resolves to specific
+        reviews rather than to a number.
+        """
+        ids = [
+            match['id']
+            for match in pattern.get('similar_feedback') or []
+            if key in (match.get('shared_elements') or [])
+        ]
+        rows = [self.feedback]
+        if ids:
+            rows.extend(
+                Feedback.objects.filter(
+                    workspace_id=self.feedback.workspace_id, pk__in=ids
+                )
+            )
+        return rows
+
     def _apply_rules(self, pattern: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Writes the earned rules onto Brand.creative_brain.
+        Turns a repeated objection into a LEARNED soft rule in the fabric.
 
         Nothing is written for a first-time complaint -- that is the whole
         point of MIN_OCCURRENCES. Rules are keyed by element, so a third
         rejection sharpens the existing rule instead of adding a duplicate.
+        The Brand Brain is recompiled afterwards so the next generation is cut
+        from a snapshot that already contains the rule.
         """
+        from apps.brands.services.brand_brain import rebuild_brand_brain_safely
+        from apps.learning.adapters import events_for_feedback
+        from apps.learning.services import LearningError, upsert_learned_rule
+
         feedback = self.feedback
         brand = feedback.brand
         if brand is None or not feedback.is_corrective or not pattern.get('is_pattern'):
@@ -191,57 +225,60 @@ class TrainingEngine:
             return []
 
         labels = element_labels(recurring)
-        brain = brand.creative_brain if isinstance(brand.creative_brain, dict) else {}
-        rules = brain.get('rules')
-        if not isinstance(rules, list):
-            rules = []
-        by_element = {r.get('element'): r for r in rules if isinstance(r, dict)}
-
         instruction = (feedback.fix_request or feedback.feedback_text or '').strip()
-        now = timezone.now().isoformat()
         written = []
 
         for key in recurring:
             meta = labels.get(key, {})
             label = meta.get('label') or key.replace('_', ' ')
             group = meta.get('group', '')
-            seen = pattern['element_counts'].get(key, MIN_OCCURRENCES)
+            occurrences = max(
+                int(pattern['element_counts'].get(key, MIN_OCCURRENCES)), MIN_OCCURRENCES
+            )
+            text = self._rule_text(label, instruction, occurrences)
+            support = self._supporting_feedback(pattern, key)
 
-            rule = by_element.get(key) or {
-                'element': key,
-                'created_at': now,
-                'source_feedback_ids': [],
-            }
-            rule['label'] = label
-            rule['group'] = group or rule.get('group', '')
-            rule['occurrences'] = max(seen, int(rule.get('occurrences') or 0) + 1)
-            rule['verdict'] = feedback.verdict
-            rule['text'] = self._rule_text(label, instruction, rule['occurrences'])
-            rule['updated_at'] = now
+            try:
+                rule = upsert_learned_rule(
+                    workspace=feedback.workspace,
+                    brand=brand,
+                    key=f'review:{key}',
+                    text=text,
+                    evidence_events=events_for_feedback(support),
+                    # Confidence grows with corroboration but never reaches
+                    # certainty: this is still an inference.
+                    confidence=min(0.9, 0.5 + 0.1 * (occurrences - MIN_OCCURRENCES)),
+                    structured={
+                        'source': 'review_feedback',
+                        'element': key,
+                        'label': label,
+                        'group': group,
+                        'occurrences': occurrences,
+                        'category': REVIEW_CLAIM_CATEGORY,
+                        'attribute': key,
+                        'value': text,
+                        'source_feedback_ids': sorted({str(r.pk) for r in support})[:20],
+                    },
+                )
+            except LearningError as exc:
+                # Honest silence beats a rule with nothing behind it.
+                logger.info(
+                    "Training: no rule for %s on brand %s - %s", key, brand.pk, exc
+                )
+                continue
 
-            ids = rule.get('source_feedback_ids') or []
-            if str(feedback.pk) not in ids:
-                ids.append(str(feedback.pk))
-            rule['source_feedback_ids'] = ids[-20:]
-
-            by_element[key] = rule
             written.append({
                 'element': key,
-                'text': rule['text'],
-                'occurrences': rule['occurrences'],
+                'text': rule.text,
+                'occurrences': occurrences,
             })
 
-        brand.creative_brain = {
-            **brain,
-            'rules': sorted(by_element.values(), key=lambda r: -int(r.get('occurrences') or 0)),
-            'updated_at': now,
-        }
-        brand.save(update_fields=['creative_brain', 'updated_at'])
-
-        logger.info(
-            "Training: brand %s learned %d rule(s) from feedback %s",
-            brand.pk, len(written), feedback.pk,
-        )
+        if written:
+            rebuild_brand_brain_safely(brand)
+            logger.info(
+                "Training: brand %s learned %d rule(s) from feedback %s",
+                brand.pk, len(written), feedback.pk,
+            )
         return written
 
     @staticmethod
@@ -250,16 +287,38 @@ class TrainingEngine:
         return f"{base} {instruction}".strip() if instruction else base
 
 
+#: Claim category for a rule inferred from review feedback. Its own category
+#: so a review objection about "logo placement" cannot collide with a stated
+#: visual preference keyed the same way.
+REVIEW_CLAIM_CATEGORY = 'REVIEW'
+
+
 # -- read side ------------------------------------------------------------
-def rules_for_prompt(brand, limit: int = 12) -> List[str]:
-    """The learned rules, as plain instruction lines for the generator."""
+def learned_rules(brand):
+    """Active rules this engine has inferred for a brand, freshest first."""
+    from apps.learning.models import BrandRule
+
     if brand is None:
         return []
-    brain = brand.creative_brain if isinstance(brand.creative_brain, dict) else {}
-    rules = brain.get('rules')
-    if not isinstance(rules, list):
-        return []
-    return [str(r['text']) for r in rules[:limit] if isinstance(r, dict) and r.get('text')]
+    return [
+        rule
+        for rule in BrandRule.objects.filter(
+            workspace_id=brand.workspace_id, brand=brand,
+            origin=BrandRule.Origin.LEARNED, is_active=True,
+        ).order_by('-updated_at')
+        if isinstance(rule.structured, dict)
+        and rule.structured.get('source') == 'review_feedback'
+    ]
+
+
+def rules_for_prompt(brand, limit: int = 12) -> List[str]:
+    """The learned rules, as plain instruction lines.
+
+    Reads the fabric, not the compiled snapshot. Generation itself goes
+    through the Context Gateway, which reads the same rules out of the Brand
+    Brain; this stays for callers that want the raw lines.
+    """
+    return [rule.text for rule in learned_rules(brand)[:limit] if rule.text]
 
 
 def training_report(workspace, brand=None) -> Dict[str, Any]:
@@ -284,10 +343,21 @@ def training_report(workspace, brand=None) -> Dict[str, Any]:
     labels = element_labels(list(element_counts))
     top = sorted(element_counts.items(), key=lambda kv: -kv[1])[:10]
 
-    brain = {}
-    if brand is not None and isinstance(brand.creative_brain, dict):
-        brain = brand.creative_brain
-    rules = brain.get('rules')
+    inferred = learned_rules(brand)
+    rules = [
+        {
+            'element': rule.structured.get('element', ''),
+            'label': rule.structured.get('label', ''),
+            'group': rule.structured.get('group', ''),
+            'text': rule.text,
+            'occurrences': rule.structured.get('occurrences', 0),
+            'evidence_event_ids': rule.evidence_event_ids,
+        }
+        for rule in inferred
+    ]
+    rules_updated_at = (
+        max(rule.updated_at for rule in inferred).isoformat() if inferred else ''
+    )
 
     return {
         'total_feedback': sum(totals.values()),
@@ -303,6 +373,6 @@ def training_report(workspace, brand=None) -> Dict[str, Any]:
         ],
         'brand': str(brand.pk) if brand else None,
         'brand_name': brand.name if brand else '',
-        'rules': rules if isinstance(rules, list) else [],
-        'rules_updated_at': brain.get('updated_at', ''),
+        'rules': rules,
+        'rules_updated_at': rules_updated_at,
     }

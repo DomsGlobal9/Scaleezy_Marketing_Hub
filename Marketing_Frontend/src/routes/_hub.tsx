@@ -23,7 +23,7 @@ export const Route = createFileRoute("/_hub")({
   // The guard below reads localStorage, which does not exist during SSR.
   // Without ssr:false the server would evaluate beforeLoad as "signed out" and
   // the client would never re-run it, bouncing signed-in users to /login on
-  // every refresh. This cascades to all five hub pages and nothing else —
+  // every refresh. This cascades to every hub page and nothing else —
   // /privacy and /terms are root siblings and stay server-rendered.
   ssr: false,
   beforeLoad: ({ context, location, preload }) => {
@@ -47,7 +47,6 @@ export const Route = createFileRoute("/_hub")({
 const NAV = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
   { to: "/brand-master", label: "Brand Master", icon: Brain },
-  { to: "/onboarding", label: "Brand Setup", icon: Sparkles },
   { to: "/accounts", label: "Social Media Accounts", icon: Share2 },
   { to: "/publishing", label: "Publishing", icon: Send },
   { to: "/review", label: "Review", icon: CheckCircle2 },
@@ -174,13 +173,7 @@ function HubLayout() {
         <div className="mt-8 flex-1">
           <NavList />
         </div>
-        <div className="rounded-xl border border-border bg-secondary/60 p-3">
-          <p className="text-xs font-medium text-foreground">Shared Intelligence Layer</p>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            CRM, Inventory, Analytics, Finance and Try-On signals feed this hub.
-          </p>
-        </div>
-        <div className="mt-2">
+        <div>
           <SignOutButton />
         </div>
       </aside>

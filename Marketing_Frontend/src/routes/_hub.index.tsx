@@ -1,342 +1,295 @@
-import { useState, useEffect } from "react";
+/**
+ * Overview — where the work stands today.
+ *
+ * Everything on this page is a real count or a real state: the brand's
+ * readiness from Brand Master, the pipeline from the content, publishing and
+ * account tables. Nothing decorative, and every tile opens the screen that
+ * owns the number.
+ */
+import { useEffect, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
+  AlertTriangle,
   ArrowRight,
-  BarChart3,
   CalendarClock,
-  CircleDollarSign,
-  Coins,
-  Heart,
-  Layers,
+  CheckCircle2,
+  GraduationCap,
   Megaphone,
-  Package,
-  Plus,
-  Repeat,
   Send,
   Share2,
   Sparkles,
-  Users,
+  type LucideIcon,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { PageHeader, SectionTitle, StatCard } from "@/components/marketing/primitives";
-import { apiFetch } from "@/lib/api";
+import { Progress } from "@/components/ui/progress";
+import { Skeleton } from "@/components/ui/skeleton";
+import { PageHeader, SectionTitle } from "@/components/marketing/primitives";
+import { api } from "@/lib/api";
+import {
+  READINESS_COPY,
+  fetchCurrentBrand,
+  fetchOverview,
+  tabForReadinessKey,
+  type BrandMasterOverview,
+} from "@/lib/brand-master";
 
 export const Route = createFileRoute("/_hub/")({
   head: () => ({
     meta: [
-      { title: "Marketing Overview — Scaleezy Marketing Hub" },
+      { title: "Overview — Scaleezy Marketing Hub" },
       {
         name: "description",
-        content:
-          "Marketing KPIs, campaign intelligence and connected data sources for your apparel brand.",
-      },
-      { property: "og:title", content: "Marketing Overview — Scaleezy Marketing Hub" },
-      {
-        property: "og:description",
-        content: "Turn customer intelligence into personalized campaigns and measurable growth.",
+        content: "Brand readiness, the content pipeline and connected channels.",
       },
     ],
   }),
   component: OverviewPage,
 });
 
-const ICON_MAP: Record<string, any> = {
-  Megaphone,
-  CalendarClock,
-  Share2,
+interface Kpi {
+  key: string;
+  label: string;
+  value: number;
+  icon: string;
+  hint?: string | null;
+  accent?: "gold";
+}
+
+const ICON_MAP: Record<string, LucideIcon> = {
+  CheckCircle2,
   Send,
-  Users,
-  Heart,
-  Repeat,
-  CircleDollarSign,
+  CalendarClock,
+  Megaphone,
+  AlertTriangle,
+  Share2,
 };
 
-const SOURCES = [
-  {
-    name: "CRM",
-    icon: Users,
-    points: ["Customer behavior", "Purchase history", "Customer segmentation"],
-  },
-  {
-    name: "Inventory",
-    icon: Package,
-    points: ["Stock availability", "Fast-moving products", "Dead-stock opportunities"],
-  },
-  {
-    name: "Analytics",
-    icon: BarChart3,
-    points: ["Campaign performance", "Conversions", "Engagement"],
-  },
-  {
-    name: "Finance",
-    icon: Coins,
-    points: ["Campaign ROI", "Revenue impact", "Budget intelligence"],
-  },
-];
-
-const QUICK_ACTIONS = [
-  {
-    label: "Create Campaign",
-    description: "Build an audience-led campaign",
-    icon: Megaphone,
-    to: "/publishing",
-  },
-  {
-    label: "Publish Content",
-    description: "Send approved assets live",
-    icon: Send,
-    to: "/publishing",
-  },
-  {
-    label: "Connect Social Account",
-    description: "Add a new channel securely",
-    icon: Share2,
-    to: "/accounts",
-  },
-  {
-    label: "View Analytics",
-    description: "Track reach and conversions",
-    icon: BarChart3,
-    to: "/analytics",
-  },
-] as const;
+/** Which screen owns each pipeline number. */
+const KPI_ROUTE: Record<string, "/review" | "/publishing" | "/accounts"> = {
+  awaiting_review: "/review",
+  approved: "/review",
+  scheduled: "/publishing",
+  published: "/publishing",
+  failed: "/publishing",
+  connected_accounts: "/accounts",
+};
 
 function OverviewPage() {
-  const [kpis, setKpis] = useState<any[]>([]);
+  const [kpis, setKpis] = useState<Kpi[] | null>(null);
+  const [kpiError, setKpiError] = useState<string | null>(null);
+  const [overview, setOverview] = useState<BrandMasterOverview | null>(null);
+  const [brandError, setBrandError] = useState<string | null>(null);
 
   useEffect(() => {
-    apiFetch('/api/marketing/analytics/kpis/')
-      .then(res => res.json())
-      .then(data => {
-        if (data.kpis) {
-          const mappedKpis = data.kpis.map((kpi: any) => ({
-            ...kpi,
-            icon: ICON_MAP[kpi.icon] || Megaphone
-          }));
-          setKpis(mappedKpis);
-        }
+    let cancelled = false;
+    api<{ kpis: Kpi[] }>("/api/marketing/analytics/kpis/")
+      .then((data) => {
+        if (!cancelled) setKpis(data.kpis ?? []);
       })
-      .catch(console.error);
+      .catch((e: unknown) => {
+        if (!cancelled)
+          setKpiError(e instanceof Error ? e.message : "Could not load the pipeline.");
+      });
+    fetchCurrentBrand()
+      .then((brand) => fetchOverview(brand.id))
+      .then((data) => {
+        if (!cancelled) setOverview(data);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setBrandError(e instanceof Error ? e.message : "Could not load the brand.");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
     <div>
       <PageHeader
         eyebrow="Marketing Hub"
-        title="AI-Driven Marketing Automation"
-        subtitle="Turn customer intelligence into personalized campaigns and measurable growth."
+        title="Overview"
+        subtitle="Teach Scaleezy your brand, create on-brand content, review it, publish it — and let every decision make the next one better."
         actions={
           <>
             <Button asChild variant="outline">
-              <Link to="/publishing">
-                <Plus className="size-4" /> Create Campaign
+              <Link to="/brand-master" search={{ tab: "teach" }}>
+                <GraduationCap className="size-4" /> Teach Scaleezy
               </Link>
             </Button>
             <Button asChild>
               <Link to="/publishing">
-                <Send className="size-4" /> Publish
+                <Sparkles className="size-4" /> Create content
               </Link>
             </Button>
           </>
         }
       />
 
-      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {kpis.map((kpi) => (
-          <StatCard key={kpi.label} {...kpi} />
-        ))}
-      </section>
-
-      <section className="mt-10">
-        <div className="surface-card overflow-hidden">
-          <div className="border-b border-border px-6 py-5">
-            <p className="label-eyebrow">Smart Marketing Intelligence</p>
-            <h2 className="mt-2 text-2xl font-semibold tracking-tight">
-              Signals become personalized marketing action
-            </h2>
-          </div>
-          <div className="grid gap-6 px-6 py-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
-            <div>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {[
-                  "CRM & Behavior Data",
-                  "Real-Time Inventory",
-                  "Seasonality Trends",
-                  "Geographic Insights",
-                ].map((input) => (
-                  <div
-                    key={input}
-                    className="rounded-xl border border-border bg-secondary/50 px-4 py-3 text-sm font-medium text-foreground"
-                  >
-                    {input}
-                  </div>
-                ))}
-              </div>
-              <div className="mt-4 flex flex-col items-center gap-3">
-                <span className="text-muted-foreground">↓</span>
-                <div className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-dark px-4 py-3 text-sm font-semibold tracking-[0.14em] text-brand-dark-foreground uppercase">
-                  <Sparkles className="size-4 text-gold" /> Scaleezy Intelligence
-                </div>
-                <span className="text-muted-foreground">↓</span>
-                <div className="w-full rounded-xl border border-primary/25 bg-primary/8 px-4 py-3 text-center text-sm font-semibold text-primary">
-                  Personalized Marketing Action
-                </div>
-              </div>
-            </div>
-            <div className="rounded-xl border border-border bg-secondary/40 p-5">
-              <p className="label-eyebrow">Example insight</p>
-              <p className="mt-3 font-display text-lg leading-relaxed text-foreground">
-                “Customers from Hyderabad who purchased bridal wear above ₹25,000 can be targeted
-                with premium festive collection campaigns based on regional and pricing
-                preferences.”
-              </p>
-              <div className="mt-5 flex flex-wrap gap-2">
-                {["CRM-powered", "Inventory-aware", "Finance-informed"].map((tag) => (
-                  <span
-                    key={tag}
-                    className="rounded-full border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground"
-                  >
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
+      <section className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+        <BrandCard overview={overview} error={brandError} />
+        <div className="surface-card p-6">
+          <p className="label-eyebrow">How Scaleezy works</p>
+          <ol className="mt-3 space-y-2 text-sm">
+            {[
+              [
+                "Teach",
+                "Brand basics, knowledge, inspirations and your taste go into Brand Master.",
+                "/brand-master",
+              ],
+              [
+                "Create",
+                "Generation reads the compiled Brand Brain through the Context Gateway.",
+                "/publishing",
+              ],
+              ["Review", "Approve, reject or send back. Every decision is evidence.", "/review"],
+              [
+                "Publish",
+                "Approved content goes out through your connected accounts.",
+                "/publishing",
+              ],
+            ].map(([step, detail, to]) => (
+              <li key={step} className="flex items-start gap-3">
+                <span className="mt-0.5 w-16 shrink-0 text-xs font-semibold tracking-wide text-foreground uppercase">
+                  {step}
+                </span>
+                <Link
+                  to={to as "/brand-master"}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  {detail}
+                </Link>
+              </li>
+            ))}
+          </ol>
         </div>
       </section>
 
       <section className="mt-10">
         <SectionTitle
-          label="Connected Intelligence"
-          title="Marketing learns from every connected data source"
-          description="These modules are read-only data inputs to the Marketing Hub."
+          label="Pipeline"
+          title="Where the work stands"
+          description="Live counts. Each opens the screen that owns it."
         />
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {SOURCES.map((source) => (
-            <div key={source.name} className="surface-card p-5">
-              <span className="grid size-9 place-items-center rounded-lg bg-gold/15 text-gold">
-                <source.icon className="size-4.5" strokeWidth={1.75} />
-              </span>
-              <h3 className="mt-4 text-base font-semibold text-foreground">{source.name}</h3>
-              <ul className="mt-3 space-y-1.5 text-sm text-muted-foreground">
-                {source.points.map((point) => (
-                  <li key={point} className="flex items-start gap-2">
-                    <span className="mt-1.5 size-1 rounded-full bg-primary" />
-                    {point}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-
-        <div className="surface-card mt-4 p-6">
-          <div className="grid items-center gap-6 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
-            <ul className="space-y-2">
-              {["CRM", "Inventory", "Analytics", "Finance", "Try-On"].map((mod) => (
-                <li
-                  key={mod}
-                  className="flex items-center justify-between rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm text-foreground"
-                >
-                  {mod}
-                  <ArrowRight className="size-4 text-gold" />
-                </li>
-              ))}
-            </ul>
-            <div className="hidden h-full w-px bg-border md:block" />
-            <div className="rounded-xl bg-brand-dark px-5 py-6 text-center">
-              <p className="font-display text-xl font-semibold text-brand-dark-foreground">
-                Marketing Hub
-              </p>
-              <p className="mt-2 text-xs tracking-[0.16em] text-gold uppercase">
-                Shared Intelligence Data Layer
-              </p>
-              <p className="mt-3 text-xs leading-relaxed text-brand-dark-foreground/70">
-                Conceptual integration only — no other module UI is exposed here.
-              </p>
-            </div>
+        {kpiError ? (
+          <p className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+            {kpiError}
+          </p>
+        ) : kpis === null ? (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-28 rounded-xl" />
+            ))}
           </div>
-        </div>
-      </section>
-
-      <section className="mt-10">
-        <SectionTitle label="Quick Actions" title="Move faster on today's marketing work" />
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {QUICK_ACTIONS.map((action) => (
-            <Link
-              key={action.label}
-              to={action.to}
-              className="surface-card group flex items-start gap-3 p-5 transition-transform duration-200 hover:-translate-y-0.5"
-            >
-              <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
-                <action.icon className="size-4.5" strokeWidth={1.75} />
-              </span>
-              <span className="min-w-0">
-                <span className="block text-sm font-semibold text-foreground">{action.label}</span>
-                <span className="mt-1 block text-xs text-muted-foreground">
-                  {action.description}
-                </span>
-              </span>
-            </Link>
-          ))}
-        </div>
-      </section>
-
-      <section className="mt-10">
-        <SectionTitle label="Campaigns" title="Active campaign performance" />
-        <div className="grid gap-4 lg:grid-cols-2">
-          {[
-            {
-              name: "Festive Premium Revival",
-              audience: "High-value bridal buyers · Hyderabad, Chennai",
-              reach: "14.2K",
-              conv: "312",
-              roi: "4.1x",
-            },
-            {
-              name: "Monsoon Kurta Clearance",
-              audience: "Repeat buyers · Slow-moving inventory",
-              reach: "10.6K",
-              conv: "196",
-              roi: "3.2x",
-            },
-          ].map((c) => (
-            <div key={c.name} className="surface-card p-5">
-              <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
-                <div className="min-w-0">
-                  <h3 className="truncate text-base font-semibold text-foreground">{c.name}</h3>
-                  <p className="mt-1 text-sm text-muted-foreground">{c.audience}</p>
-                </div>
-                <span className="shrink-0 rounded-full border border-success/25 bg-success/10 px-2.5 py-0.5 text-xs font-medium text-success">
-                  Active
-                </span>
-              </div>
-              <dl className="mt-5 grid grid-cols-3 gap-3">
-                {[
-                  ["Reach", c.reach],
-                  ["Conversions", c.conv],
-                  ["ROI", c.roi],
-                ].map(([k, v]) => (
-                  <div
-                    key={k}
-                    className="rounded-lg border border-border bg-secondary/50 px-3 py-2"
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {kpis.map((kpi) => {
+              const Icon = ICON_MAP[kpi.icon] ?? Megaphone;
+              const to = KPI_ROUTE[kpi.key] ?? "/publishing";
+              return (
+                <Link
+                  key={kpi.key}
+                  to={to}
+                  className="surface-card group flex items-start gap-4 p-5 transition-transform duration-200 hover:-translate-y-0.5"
+                >
+                  <span
+                    className={`grid size-10 shrink-0 place-items-center rounded-lg ${kpi.accent === "gold" ? "bg-gold/15 text-gold" : "bg-primary/10 text-primary"}`}
                   >
-                    <dt className="text-[0.625rem] tracking-widest text-muted-foreground uppercase">
-                      {k}
-                    </dt>
-                    <dd className="mt-1 text-lg font-semibold text-foreground">{v}</dd>
-                  </div>
-                ))}
-              </dl>
-            </div>
-          ))}
-        </div>
-        <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
-          <Layers className="size-4 text-gold" />
-          Campaign data blends CRM segments, inventory availability and finance ROI signals.
-        </div>
+                    <Icon className="size-5" strokeWidth={1.75} />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block font-display text-3xl leading-none font-semibold text-foreground">
+                      {kpi.value}
+                    </span>
+                    <span className="mt-1.5 block text-sm font-medium text-foreground">
+                      {kpi.label}
+                    </span>
+                    {kpi.hint ? (
+                      <span className="mt-0.5 block text-xs text-muted-foreground">{kpi.hint}</span>
+                    ) : null}
+                  </span>
+                </Link>
+              );
+            })}
+          </div>
+        )}
       </section>
+    </div>
+  );
+}
+
+function BrandCard({
+  overview,
+  error,
+}: {
+  overview: BrandMasterOverview | null;
+  error: string | null;
+}) {
+  if (error) {
+    return (
+      <div className="surface-card p-6">
+        <p className="label-eyebrow">Brand</p>
+        <p className="mt-3 text-sm text-destructive">{error}</p>
+      </div>
+    );
+  }
+  if (!overview) {
+    return (
+      <div className="surface-card p-6">
+        <Skeleton className="h-5 w-32" />
+        <Skeleton className="mt-4 h-10 w-48" />
+        <Skeleton className="mt-4 h-3 w-full" />
+        <Skeleton className="mt-6 h-9 w-40" />
+      </div>
+    );
+  }
+  const { brand, readiness } = overview;
+  const copy = READINESS_COPY[readiness.readiness_level];
+  const target = tabForReadinessKey(readiness.recommended_next_action.key);
+  const low = readiness.readiness_level === "STARTING" || readiness.readiness_level === "LEARNING";
+
+  return (
+    <div className="surface-card p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="label-eyebrow">Brand</p>
+          <h2 className="mt-1 truncate font-display text-2xl font-semibold tracking-tight">
+            {brand.name}
+          </h2>
+          <p className="text-sm text-muted-foreground">{brand.industry || "No industry set"}</p>
+        </div>
+        <span className="rounded-full border border-border bg-secondary/60 px-2.5 py-1 text-xs font-medium">
+          {copy.label}
+        </span>
+      </div>
+      <div className="mt-5 flex items-baseline gap-2">
+        <span className="font-display text-4xl leading-none font-semibold">
+          {readiness.readiness_score}
+        </span>
+        <span className="text-sm text-muted-foreground">/ 100 brand readiness</span>
+      </div>
+      <Progress value={readiness.readiness_score} className="mt-3" />
+      <p className="mt-3 text-sm text-foreground">{readiness.recommended_next_action.label}</p>
+      <p className="text-xs text-muted-foreground">{readiness.recommended_next_action.detail}</p>
+      <div className="mt-5 flex flex-wrap gap-2">
+        {target === "create" ? (
+          <Button asChild size="sm">
+            <Link to="/publishing">
+              Create content <ArrowRight className="size-4" />
+            </Link>
+          </Button>
+        ) : (
+          <Button asChild size="sm" variant={low ? "default" : "outline"}>
+            <Link to="/brand-master" search={{ tab: target }}>
+              {low ? "Continue teaching Scaleezy" : "Do this next"}{" "}
+              <ArrowRight className="size-4" />
+            </Link>
+          </Button>
+        )}
+        <Button asChild size="sm" variant="ghost">
+          <Link to="/brand-master">Open Brand Master</Link>
+        </Button>
+      </div>
     </div>
   );
 }

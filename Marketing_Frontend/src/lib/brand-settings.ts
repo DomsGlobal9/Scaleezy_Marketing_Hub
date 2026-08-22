@@ -3,7 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, apiFetch } from "@/lib/api";
 
 /**
- * Brand kit — the identity stamped onto generated posters.
+ * Brand basics — identity, logo and the poster defaults the layout engine
+ * reads.
  *
  * Server-backed. This used to live in localStorage, which meant the brand kit
  * was lost on a browser change and invisible to the server that actually
@@ -20,7 +21,7 @@ export interface BrandSettings {
   /** Default for the "show phone number on poster" option in the generator. */
   showPhoneOnPosters: boolean;
 
-  // Wider brand identity, editable in Settings.
+  // Wider brand identity, editable in Brand Master.
   name: string;
   industry: string;
   tagline: string;
@@ -104,16 +105,21 @@ const toPayload = (patch: Partial<BrandSettings>) => {
  * Loads the workspace's brand and exposes an optimistic `update`.
  *
  * Text fields are debounced so typing a tagline does not fire a request per
- * keystroke; toggles save immediately.
+ * keystroke; toggles save immediately. `onSaved` fires after the backend has
+ * genuinely accepted a change, so a parent can refresh whatever depends on
+ * the brand (readiness, the Brand Brain) without guessing when.
  */
-export function useBrandSettings() {
+export function useBrandSettings(options: { onSaved?: () => void } = {}) {
   const [settings, setSettings] = useState<BrandSettings>(DEFAULT_BRAND_SETTINGS);
   const [brandId, setBrandId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const pending = useRef<Partial<BrandSettings>>({});
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onSaved = useRef(options.onSaved);
+  onSaved.current = options.onSaved;
 
   useEffect(() => {
     let cancelled = false;
@@ -143,6 +149,7 @@ export function useBrandSettings() {
     const patch = pending.current;
     pending.current = {};
     if (!brandId || Object.keys(patch).length === 0) return;
+    setSaving(true);
     try {
       const updated = await api<BrandDto>(`/api/marketing/brands/${brandId}/`, {
         method: "PATCH",
@@ -150,8 +157,11 @@ export function useBrandSettings() {
       });
       setSettings(toSettings(updated));
       setError(null);
+      onSaved.current?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save brand.");
+    } finally {
+      setSaving(false);
     }
   }, [brandId]);
 
@@ -187,6 +197,7 @@ export function useBrandSettings() {
         throw new Error(json?.error?.message || json?.message || "Logo upload failed.");
       }
       setSettings(toSettings(json.data as BrandDto));
+      onSaved.current?.();
     },
     [brandId],
   );
@@ -195,8 +206,12 @@ export function useBrandSettings() {
     if (!brandId) return;
     const res = await apiFetch(`/api/marketing/brands/${brandId}/logo/`, { method: "DELETE" });
     const json = await res.json().catch(() => null);
-    if (res.ok && json?.data) setSettings(toSettings(json.data as BrandDto));
+    if (!res.ok || json?.success === false) {
+      throw new Error(json?.error?.message || json?.message || "Could not remove the logo.");
+    }
+    if (json?.data) setSettings(toSettings(json.data as BrandDto));
+    onSaved.current?.();
   }, [brandId]);
 
-  return { settings, update, uploadLogo, removeLogo, loading, error, brandId };
+  return { settings, update, flush, uploadLogo, removeLogo, loading, saving, error, brandId };
 }

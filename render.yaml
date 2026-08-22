@@ -13,7 +13,11 @@ services:
     # Migrations run in the build, not the start command: an app that boots
     # before its schema exists serves 500s until someone notices, and the
     # migrations from PR1-PR6 are additive and idempotent.
-    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate
+    # production_integrity runs after migrate and fails the build (non-zero
+    # exit) if the live schema, migrations, DB engine or required
+    # configuration are not what the code expects - a deploy that would
+    # serve 500s is stopped before it replaces the one that works.
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate && python manage.py production_integrity
     startCommand: gunicorn scaleezy_backend.wsgi:application --workers 2 --timeout 120
     envVars:
       - key: PYTHON_VERSION

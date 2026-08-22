@@ -14,6 +14,7 @@ from apps.common.permissions import (
 )
 from apps.common.responses import APIResponse
 from apps.workspaces.models import WorkspaceMember
+from apps.brands.services.brand_brain import rebuild_brand_brain_safely
 from apps.marketing.services.storage import StorageError, SupabaseStorageService
 from .models import BrandSource, BrandMemory
 from .serializers import BrandSourceSerializer, BrandMemorySerializer, BrandSourceUploadSerializer
@@ -57,8 +58,10 @@ class BrandSourceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         
         source.status = BrandSource.SourceStatus.ARCHIVED
         source.save(update_fields=['status'])
-        
-        # Here we might also enqueue a task to cascade revocation to memories
+
+        # Memories from an archived source stop influencing the brain on the
+        # next compile (PR1-010); compile now so the snapshot reflects it.
+        rebuild_brand_brain_safely(source.brand)
         return APIResponse(success=True, message="Source archived successfully")
 
     @action(
@@ -93,8 +96,10 @@ class BrandSourceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         source = BrandSource.objects.create(
             workspace=workspace,
             brand_id=brand_id,
-            source_type=BrandSource.SourceType.DOCUMENT,
-            title=file_obj.name,
+            source_type=serializer.validated_data.get(
+                'source_type', BrandSource.SourceType.DOCUMENT
+            ),
+            title=(serializer.validated_data.get('title') or file_obj.name)[:255],
             file_url=stored['url'],
             storage_path=stored['path'],
             mime_type=mime_type,
@@ -146,6 +151,8 @@ class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         memory = self.get_object()
         memory.status = BrandMemory.MemoryStatus.CONFIRMED
         memory.save(update_fields=['status'])
+        # A confirmed fact is intelligence; the snapshot must carry it.
+        rebuild_brand_brain_safely(memory.brand)
         return APIResponse(success=True, message="Memory confirmed")
 
     @action(detail=True, methods=['post'])
@@ -153,4 +160,5 @@ class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         memory = self.get_object()
         memory.status = BrandMemory.MemoryStatus.REJECTED
         memory.save(update_fields=['status'])
+        rebuild_brand_brain_safely(memory.brand)
         return APIResponse(success=True, message="Memory rejected")

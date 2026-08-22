@@ -21,6 +21,7 @@ from apps.common.permissions import (
     get_request_workspace,
 )
 from apps.common.responses import APIResponse
+from apps.brands.services.brand_brain import rebuild_brand_brain_safely
 from apps.marketing.services.storage import StorageError, SupabaseStorageService
 from apps.workspaces.models import WorkspaceMember
 
@@ -91,6 +92,8 @@ class BrandInspirationViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
         inspiration.archived_by = request.user
         inspiration.archived_at = timezone.now()
         inspiration.save(update_fields=['lifecycle_status', 'archived_by', 'archived_at'])
+        # Its signals left the eligible set; the snapshot must stop citing them.
+        rebuild_brand_brain_safely(inspiration.brand)
         return APIResponse(
             success=True,
             message="Inspiration archived. It is no longer eligible for retrieval.",
@@ -206,6 +209,8 @@ class InspirationSignalViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
         # and it is confirmed by definition. The service also retires whatever
         # preference this one replaces, so the attribute never has two.
         record_user_signal(serializer, user=self.request.user)
+        # A stated preference is explicit intelligence: compile it in now.
+        rebuild_brand_brain_safely(serializer.instance.inspiration.brand)
 
     def destroy(self, request, *args, **kwargs):
         return APIResponse(
@@ -236,6 +241,7 @@ class InspirationSignalViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
                 error={"code": "PREFERENCE_CONFLICT", "message": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        rebuild_brand_brain_safely(signal.inspiration.brand)
         superseded = signal.supersedes.first()
         message = "Signal confirmed."
         if superseded is not None:
@@ -267,6 +273,7 @@ class InspirationSignalViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
                 error={"code": "PREFERENCE_CONFLICT", "message": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        rebuild_brand_brain_safely(signal.inspiration.brand)
         return APIResponse(
             success=True,
             message="Signal rejected. It is no longer eligible for retrieval.",

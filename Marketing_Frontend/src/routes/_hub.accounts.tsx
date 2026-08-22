@@ -1,23 +1,32 @@
+/**
+ * Social Media Accounts — connections the backend actually holds.
+ *
+ * Every row comes from /social-accounts/; every button calls the endpoint
+ * that owns the action (OAuth connect, verify, PATCH publishing/default,
+ * disconnect). Controls the backend has no persistence for — per-account
+ * hours, limits, comment access — were removed rather than left saving into
+ * React state.
+ */
 import { createFileRoute } from "@tanstack/react-router";
 import {
   AlertTriangle,
   CheckCircle2,
   Link2,
+  Loader2,
   PauseCircle,
+  PlayCircle,
   Plus,
   RefreshCw,
   Settings2,
   ShieldCheck,
   Unplug,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -39,7 +48,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { apiFetch } from "@/lib/api";
 import {
   Select,
   SelectContent,
@@ -47,19 +55,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { api, apiFetch, apiPost } from "@/lib/api";
 import {
+  EmptyState,
   PageHeader,
   PlatformIcon,
   SectionTitle,
   StatusBadge,
 } from "@/components/marketing/primitives";
-import {
-  AUDIT_LOGS,
-  DEMO_ACCOUNTS,
-  PLATFORMS,
-  type PlatformMeta,
-  type SocialAccount,
-} from "@/lib/marketing-data";
+import { PLATFORMS, type PlatformMeta } from "@/lib/marketing-data";
 
 export const Route = createFileRoute("/_hub/accounts")({
   head: () => ({
@@ -67,53 +71,174 @@ export const Route = createFileRoute("/_hub/accounts")({
       { title: "Social Media Accounts — Scaleezy Marketing Hub" },
       {
         name: "description",
-        content:
-          "Securely connect and manage Facebook, Instagram, LinkedIn, X, TikTok, YouTube and Google Business accounts.",
-      },
-      { property: "og:title", content: "Social Media Accounts — Scaleezy Marketing Hub" },
-      {
-        property: "og:description",
-        content:
-          "Connect social accounts securely with official OAuth and manage publishing access.",
+        content: "Securely connect and manage the social accounts Scaleezy publishes to.",
       },
     ],
   }),
   component: AccountsPage,
 });
 
-type ConnectStep = "type" | "authorizing" | "select" | "permissions";
+/** A SocialConnection row as the API returns it. */
+interface Connection {
+  id: string;
+  platform: string;
+  account_type: string | null;
+  external_account_id: string;
+  account_name: string;
+  username: string | null;
+  profile_url: string | null;
+  profile_image_url: string | null;
+  status: string;
+  publishing_enabled: boolean;
+  is_default_account: boolean;
+  last_verified_at: string | null;
+  last_published_at: string | null;
+  last_error: string | null;
+  connected_at: string;
+  reauthorization_required: boolean;
+}
+
+interface AuditRow {
+  id: string;
+  date: string;
+  user: string;
+  platform: string;
+  account: string;
+  action: string;
+  previous_state: string | null;
+  next_state: string | null;
+  result: string;
+  error: string | null;
+}
+
+const ATTENTION = new Set([
+  "TOKEN_EXPIRED",
+  "REAUTHORIZATION_REQUIRED",
+  "PERMISSION_MISSING",
+  "REVOKED",
+  "CONNECTION_FAILED",
+]);
+
+const statusLabel = (status: string) =>
+  status
+    .toLowerCase()
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+
+const platformId = (platform: string) => platform.toLowerCase().replaceAll("_", "-");
+
+const fmtDate = (value: string | null | undefined) =>
+  value ? new Date(value).toLocaleString() : "—";
+
+async function workspaceId(): Promise<string | null> {
+  const rows = await api<Array<{ id: string }>>("/api/marketing/workspaces/");
+  return Array.isArray(rows) && rows.length > 0 ? (rows[0]?.id ?? null) : null;
+}
+
+/** Starts the official OAuth flow; the browser leaves for the platform. */
+async function startOAuth(platform: string) {
+  const wsId = await workspaceId();
+  if (!wsId) throw new Error("No workspace found for this account.");
+  const data = await apiPost<{ authorization_url?: string }>(
+    "/api/marketing/social-accounts/connect/",
+    { workspace_id: wsId, platform: platform.toUpperCase().replaceAll("-", "_") },
+  );
+  if (!data?.authorization_url)
+    throw new Error("The platform did not return an authorization URL.");
+  window.location.href = data.authorization_url;
+}
 
 function AccountsPage() {
-  const [accounts, setAccounts] = useState<SocialAccount[]>(DEMO_ACCOUNTS);
+  const [accounts, setAccounts] = useState<Connection[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [connectPlatform, setConnectPlatform] = useState<PlatformMeta | null>(null);
-  const [manageAccount, setManageAccount] = useState<SocialAccount | null>(null);
-  const [disconnectTarget, setDisconnectTarget] = useState<SocialAccount | null>(null);
+  const [manageId, setManageId] = useState<string | null>(null);
+  const [disconnectTarget, setDisconnectTarget] = useState<Connection | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
 
-  useEffect(() => {
-    apiFetch('/api/marketing/social-accounts/')
-      .then(res => res.json())
-      .then(data => {
-        if (Array.isArray(data)) {
-          setAccounts(data);
-        }
-      })
-      .catch(console.error);
+  const load = useCallback(async () => {
+    try {
+      const rows = await api<Connection[]>("/api/marketing/social-accounts/");
+      setAccounts(Array.isArray(rows) ? rows : []);
+      setLoadError(null);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Could not load accounts.");
+      setAccounts([]);
+    }
   }, []);
 
-  const summary = useMemo(() => {
-    const connected = accounts.filter((a) => a.status === "Connected").length;
-    const enabled = accounts.filter((a) => a.publishingEnabled && a.status === "Connected").length;
-    const attention = accounts.filter((a) =>
-      ["Token Expired", "Reauthorization Required", "Permission Missing", "Revoked"].includes(
-        a.status,
-      ),
-    ).length;
-    const paused = accounts.filter((a) => a.settings?.paused).length;
-    return { connected, enabled, attention, paused };
-  }, [accounts]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
-  const update = (id: string, patch: Partial<SocialAccount>) =>
-    setAccounts((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+  const list = accounts ?? [];
+  const summary = useMemo(
+    () => ({
+      connected: list.filter((a) => a.status === "CONNECTED").length,
+      enabled: list.filter((a) => a.publishing_enabled && a.status === "CONNECTED").length,
+      attention: list.filter((a) => ATTENTION.has(a.status) || a.reauthorization_required).length,
+      paused: list.filter((a) => !a.publishing_enabled && a.status === "CONNECTED").length,
+    }),
+    [list],
+  );
+
+  const patch = async (
+    account: Connection,
+    body: Partial<Pick<Connection, "publishing_enabled" | "is_default_account">>,
+  ) => {
+    setBusy(account.id);
+    try {
+      await api(`/api/marketing/social-accounts/${account.id}/`, { method: "PATCH", body });
+      await load();
+      toast.success("Saved.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not save.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const verify = async (account: Connection) => {
+    setBusy(account.id);
+    try {
+      await apiPost(`/api/marketing/social-accounts/${account.id}/verify/`, {});
+      toast.success("Connection verified.");
+    } catch (e) {
+      toast.error(
+        e instanceof Error ? e.message : "Verification failed — reauthorization required.",
+      );
+    } finally {
+      await load();
+      setBusy(null);
+    }
+  };
+
+  const reconnect = async (account: Connection) => {
+    setBusy(account.id);
+    try {
+      await startOAuth(account.platform);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not start reconnection.");
+      setBusy(null);
+    }
+  };
+
+  const disconnect = async (account: Connection) => {
+    setBusy(account.id);
+    try {
+      await apiPost(`/api/marketing/social-accounts/${account.id}/disconnect/`, {});
+      toast.success("Account disconnected.");
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to disconnect.");
+    } finally {
+      setBusy(null);
+      setDisconnectTarget(null);
+    }
+  };
+
+  const manageAccount = list.find((a) => a.id === manageId) ?? null;
 
   return (
     <div>
@@ -123,7 +248,7 @@ function AccountsPage() {
         subtitle="Connect your social accounts securely and publish approved marketing content from Scaleezy."
         backTo="/"
         actions={
-          <Button onClick={() => setConnectPlatform(PLATFORMS[0] ?? null)}>
+          <Button onClick={() => setConnectPlatform(PLATFORMS.find((p) => p.supported) ?? null)}>
             <Plus className="size-4" /> Connect Account
           </Button>
         }
@@ -139,13 +264,15 @@ function AccountsPage() {
 
       <section className="grid grid-cols-2 gap-4 xl:grid-cols-4">
         {[
-          { label: "Connected Accounts", value: summary.connected, tone: "success" as const },
-          { label: "Publishing Enabled", value: summary.enabled, tone: "success" as const },
-          { label: "Needs Attention", value: summary.attention, tone: "warning" as const },
-          { label: "Publishing Paused", value: summary.paused, tone: "neutral" as const },
+          { label: "Connected Accounts", value: summary.connected },
+          { label: "Publishing Enabled", value: summary.enabled },
+          { label: "Needs Attention", value: summary.attention },
+          { label: "Publishing Paused", value: summary.paused },
         ].map((item) => (
           <div key={item.label} className="surface-card p-5">
-            <p className="text-2xl font-semibold text-foreground">{item.value}</p>
+            <p className="text-2xl font-semibold text-foreground">
+              {accounts === null ? "—" : item.value}
+            </p>
             <p className="mt-1 text-xs tracking-wide text-muted-foreground uppercase">
               {item.label}
             </p>
@@ -159,99 +286,134 @@ function AccountsPage() {
           title="Your connected accounts"
           description="Account details are retrieved automatically after authorization."
         />
-        <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
-          {accounts.map((account) => (
-            <article key={account.id} className="surface-card p-5">
-              <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3">
-                <PlatformIcon platform={account.platform} />
-                <div className="min-w-0">
-                  <h3 className="truncate text-base font-semibold text-foreground">
-                    {account.accountName}
-                  </h3>
-                  <p className="truncate text-sm text-muted-foreground">
-                    {account.username} · {account.accountType}
-                  </p>
-                  <StatusBadge status={account.status} className="mt-2" />
-                </div>
-              </div>
-
-              <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                {[
-                  ["Connected by", account.connectedBy],
-                  ["Role", account.role],
-                  ["Token", account.tokenStatus],
-                  ["Last verified", account.lastVerified],
-                  ["Last published", account.lastPublished],
-                  ["Connected on", account.connectedAt],
-                ].map(([k, v]) => (
-                  <div key={k} className="min-w-0">
-                    <dt className="tracking-wide text-muted-foreground uppercase">{k}</dt>
-                    <dd className="truncate font-medium text-foreground">{v}</dd>
+        {loadError ? (
+          <p className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+            {loadError}
+          </p>
+        ) : accounts === null ? (
+          <p className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" /> Loading accounts…
+          </p>
+        ) : list.length === 0 ? (
+          <EmptyState
+            icon={Link2}
+            title="No accounts connected"
+            description="Connect a channel below. Publishing needs at least one connected account."
+          />
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+            {list.map((account) => {
+              const needsReauth =
+                ATTENTION.has(account.status) ||
+                account.reauthorization_required ||
+                account.status === "DISCONNECTED";
+              return (
+                <article key={account.id} className="surface-card p-5">
+                  <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3">
+                    <PlatformIcon platform={platformId(account.platform)} />
+                    <div className="min-w-0">
+                      <h3 className="truncate text-base font-semibold text-foreground">
+                        {account.account_name}
+                      </h3>
+                      <p className="truncate text-sm text-muted-foreground">
+                        {account.username
+                          ? `@${account.username.replace(/^@/, "")}`
+                          : account.external_account_id}
+                        {account.account_type ? ` · ${account.account_type}` : ""}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <StatusBadge status={statusLabel(account.status)} />
+                        {account.is_default_account ? (
+                          <span className="rounded-full border border-border bg-secondary/60 px-2 py-0.5 text-xs text-muted-foreground">
+                            Default
+                          </span>
+                        ) : null}
+                        {!account.publishing_enabled && account.status === "CONNECTED" ? (
+                          <span className="rounded-full border border-border bg-secondary/60 px-2 py-0.5 text-xs text-muted-foreground">
+                            Publishing paused
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
                   </div>
-                ))}
-              </dl>
 
-              <div className="mt-4 flex flex-wrap gap-1.5">
-                {(account.permissions || []).map((p) => (
-                  <span
-                    key={p}
-                    className="inline-flex items-center gap-1 rounded-full border border-border bg-secondary/60 px-2 py-0.5 text-xs text-muted-foreground"
-                  >
-                    <CheckCircle2 className="size-3 text-success" /> {p}
-                  </span>
-                ))}
-              </div>
+                  <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                    {[
+                      ["Connected on", fmtDate(account.connected_at)],
+                      ["Last verified", fmtDate(account.last_verified_at)],
+                      ["Last published", fmtDate(account.last_published_at)],
+                      ["Account ID", account.external_account_id],
+                    ].map(([k, v]) => (
+                      <div key={k} className="min-w-0">
+                        <dt className="tracking-wide text-muted-foreground uppercase">{k}</dt>
+                        <dd className="truncate font-medium text-foreground">{v}</dd>
+                      </div>
+                    ))}
+                  </dl>
 
-              {account.lastError ? (
-                <p className="mt-3 flex items-start gap-2 rounded-lg border border-gold/30 bg-gold/8 px-3 py-2 text-xs text-foreground">
-                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-gold" />
-                  {account.lastError}
-                </p>
-              ) : null}
+                  {account.last_error ? (
+                    <p className="mt-3 flex items-start gap-2 rounded-lg border border-gold/30 bg-gold/8 px-3 py-2 text-xs text-foreground">
+                      <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-gold" />
+                      {account.last_error}
+                    </p>
+                  ) : null}
 
-              <div className="mt-5 flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" onClick={() => setManageAccount(account)}>
-                  <Settings2 className="size-4" /> Manage
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    update(account.id, {
-                      status: "Connected",
-                      tokenStatus: "Healthy",
-                      publishingEnabled: true,
-                      lastError: undefined,
-                    });
-                    toast.success(`${account.accountName} reconnected.`);
-                  }}
-                >
-                  <RefreshCw className="size-4" /> Reconnect
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    const paused = !account.settings?.paused;
-                    update(account.id, { settings: { ...account.settings, paused } });
-                    toast(paused ? "Publishing paused." : "Publishing resumed.");
-                  }}
-                >
-                  <PauseCircle className="size-4" />
-                  {account.settings?.paused ? "Resume" : "Pause"} Publishing
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-destructive hover:text-destructive"
-                  onClick={() => setDisconnectTarget(account)}
-                >
-                  <Unplug className="size-4" /> Disconnect
-                </Button>
-              </div>
-            </article>
-          ))}
-        </div>
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setManageId(account.id)}>
+                      <Settings2 className="size-4" /> Manage
+                    </Button>
+                    {needsReauth ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy === account.id}
+                        onClick={() => reconnect(account)}
+                      >
+                        <RefreshCw className="size-4" /> Reconnect
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy === account.id}
+                        onClick={() => verify(account)}
+                      >
+                        <RefreshCw className="size-4" /> Verify
+                      </Button>
+                    )}
+                    {account.status === "CONNECTED" ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy === account.id}
+                        onClick={() =>
+                          patch(account, { publishing_enabled: !account.publishing_enabled })
+                        }
+                      >
+                        {account.publishing_enabled ? (
+                          <PauseCircle className="size-4" />
+                        ) : (
+                          <PlayCircle className="size-4" />
+                        )}
+                        {account.publishing_enabled ? "Pause" : "Resume"} Publishing
+                      </Button>
+                    ) : null}
+                    {account.status !== "DISCONNECTED" ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => setDisconnectTarget(account)}
+                      >
+                        <Unplug className="size-4" /> Disconnect
+                      </Button>
+                    ) : null}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       <section className="mt-10">
@@ -262,7 +424,9 @@ function AccountsPage() {
         />
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {PLATFORMS.map((platform) => {
-            const existing = accounts.find((a) => a.platform.toLowerCase() === platform.id.toLowerCase());
+            const existing = list.find(
+              (a) => platformId(a.platform) === platform.id && a.status !== "DISCONNECTED",
+            );
             if (existing) return null;
             return (
               <div key={platform.id} className="surface-card p-5">
@@ -276,22 +440,16 @@ function AccountsPage() {
                   </div>
                 </div>
                 <div className="mt-4 flex items-center justify-between gap-3">
-                  <StatusBadge status={existing ? existing.status : "Not Connected"} />
-                  <Button
-                    size="sm"
-                    variant={existing ? "outline" : "default"}
-                    onClick={() =>
-                      existing ? setManageAccount(existing) : setConnectPlatform(platform)
-                    }
-                  >
-                    {existing ? (
-                      "Manage"
-                    ) : (
-                      <>
-                        <Link2 className="size-4" /> Connect Account
-                      </>
-                    )}
-                  </Button>
+                  <StatusBadge
+                    status={platform.supported ? "Not Connected" : "Platform Unavailable"}
+                  />
+                  {platform.supported ? (
+                    <Button size="sm" onClick={() => setConnectPlatform(platform)}>
+                      <Link2 className="size-4" /> Connect Account
+                    </Button>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">Not available yet</span>
+                  )}
                 </div>
                 <ul className="mt-4 space-y-1 text-xs text-muted-foreground">
                   {platform.fields.slice(0, 3).map((f) => (
@@ -308,60 +466,43 @@ function AccountsPage() {
         <SectionTitle
           label="Account Activity"
           title="Audit log"
-          description="Every connection, permission and token event is recorded."
+          description="Publishing and connection events recorded for this workspace."
         />
         <AuditTable />
       </section>
 
-      <ConnectDialog
-        platform={connectPlatform}
-        onClose={() => setConnectPlatform(null)}
-        onConnected={(name) => {
-          setConnectPlatform(null);
-          toast.success(`${name} connected successfully.`);
-        }}
-      />
+      <ConnectDialog platform={connectPlatform} onClose={() => setConnectPlatform(null)} />
 
       <ManageSheet
         account={manageAccount}
-        onClose={() => setManageAccount(null)}
-        onChange={(patch) => manageAccount && update(manageAccount.id, patch)}
+        busy={busy === manageAccount?.id}
+        onClose={() => setManageId(null)}
+        onPatch={(body) => manageAccount && patch(manageAccount, body)}
+        onVerify={() => manageAccount && verify(manageAccount)}
+        onReconnect={() => manageAccount && reconnect(manageAccount)}
+        onDisconnect={() => {
+          if (manageAccount) setDisconnectTarget(manageAccount);
+          setManageId(null);
+        }}
       />
 
       <AlertDialog open={!!disconnectTarget} onOpenChange={(o) => !o && setDisconnectTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Disconnect {disconnectTarget?.accountName}?</AlertDialogTitle>
+            <AlertDialogTitle>Disconnect {disconnectTarget?.account_name}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Disconnecting this account will stop future publishing from Scaleezy. You can
-              reconnect later.
+              Disconnecting this account stops future publishing from Scaleezy and clears its
+              tokens. You can reconnect later.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => {
-                if (disconnectTarget) {
-                  fetch(
-                    import.meta.env.VITE_API_URL +
-                      `/api/marketing/social-accounts/${disconnectTarget.id}/disconnect/`,
-                    { method: "POST", headers: { "Content-Type": "application/json" } },
-                  )
-                    .then((res) => res.json())
-                    .then((data) => {
-                      if (data.success) {
-                        setAccounts((prev) =>
-                          prev.filter((a) => a.id !== disconnectTarget.id),
-                        );
-                        toast.success("Account disconnected.");
-                      } else {
-                        toast.error(data.message || "Failed to disconnect.");
-                      }
-                    })
-                    .catch(() => toast.error("Network error while disconnecting."));
-                }
-                setDisconnectTarget(null);
+              disabled={!!busy}
+              onClick={(e) => {
+                e.preventDefault();
+                if (disconnectTarget) void disconnect(disconnectTarget);
               }}
             >
               Disconnect
@@ -374,13 +515,34 @@ function AccountsPage() {
 }
 
 function AuditTable() {
+  const [rows, setRows] = useState<AuditRow[] | null>(null);
   const [platform, setPlatform] = useState("all");
   const [user, setUser] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch("/api/marketing/settings/")
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled) setRows(Array.isArray(data?.audit_logs) ? data.audit_logs : []);
+      })
+      .catch(() => {
+        if (!cancelled) setRows([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const platforms = useMemo(
+    () => Array.from(new Set((rows ?? []).map((r) => r.platform).filter(Boolean))).sort(),
+    [rows],
+  );
   const query = user.trim().toLowerCase();
-  const rows = AUDIT_LOGS.filter(
+  const visible = (rows ?? []).filter(
     (r) =>
       (platform === "all" || r.platform === platform) &&
-      (!query || r.user.toLowerCase().includes(query)),
+      (!query || (r.user ?? "").toLowerCase().includes(query)),
   );
 
   return (
@@ -392,7 +554,7 @@ function AuditTable() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All platforms</SelectItem>
-            {["Instagram", "Facebook", "LinkedIn", "X"].map((p) => (
+            {platforms.map((p) => (
               <SelectItem key={p} value={p}>
                 {p}
               </SelectItem>
@@ -407,89 +569,95 @@ function AuditTable() {
         />
       </div>
 
-      {rows.length === 0 ? (
+      {rows === null ? (
+        <p className="px-4 py-10 text-center text-sm text-muted-foreground">Loading…</p>
+      ) : visible.length === 0 ? (
         <p className="px-4 py-10 text-center text-sm text-muted-foreground">
-          No audit events match these filters.
+          {rows.length === 0 ? "No events recorded yet." : "No audit events match these filters."}
         </p>
       ) : null}
 
-      <div className="hidden overflow-x-auto lg:block">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border text-left text-xs tracking-wide text-muted-foreground uppercase">
-              {[
-                "Date & Time",
-                "User",
-                "Platform",
-                "Account",
-                "Action",
-                "Previous",
-                "New",
-                "Result",
-                "Error",
-              ].map((h) => (
-                <th key={h} className="px-4 py-3 font-medium whitespace-nowrap">
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, i) => (
-              <tr key={i} className="border-b border-border/70 last:border-0">
-                <td className="px-4 py-3 whitespace-nowrap">{row.date}</td>
-                <td className="px-4 py-3 whitespace-nowrap">{row.user}</td>
-                <td className="px-4 py-3">{row.platform}</td>
-                <td className="px-4 py-3">{row.account}</td>
-                <td className="px-4 py-3">{row.action}</td>
-                <td className="px-4 py-3 text-muted-foreground">{row.previous}</td>
-                <td className="px-4 py-3">{row.next}</td>
-                <td className="px-4 py-3">
+      {visible.length > 0 ? (
+        <>
+          <div className="hidden overflow-x-auto lg:block">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-left text-xs tracking-wide text-muted-foreground uppercase">
+                  {[
+                    "Date & Time",
+                    "User",
+                    "Platform",
+                    "Account",
+                    "Action",
+                    "Previous",
+                    "New",
+                    "Result",
+                    "Error",
+                  ].map((h) => (
+                    <th key={h} className="px-4 py-3 font-medium whitespace-nowrap">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((row) => (
+                  <tr key={row.id} className="border-b border-border/70 last:border-0">
+                    <td className="px-4 py-3 whitespace-nowrap">{fmtDate(row.date)}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">{row.user}</td>
+                    <td className="px-4 py-3">{row.platform}</td>
+                    <td className="px-4 py-3">{row.account}</td>
+                    <td className="px-4 py-3">{row.action}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{row.previous_state ?? "—"}</td>
+                    <td className="px-4 py-3">{row.next_state ?? "—"}</td>
+                    <td className="px-4 py-3">
+                      <StatusBadge
+                        status={row.result}
+                        tone={row.result === "Success" ? "success" : "danger"}
+                      />
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{row.error ?? ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="divide-y divide-border lg:hidden">
+            {visible.map((row) => (
+              <div key={row.id} className="p-4">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+                  <p className="min-w-0 truncate text-sm font-medium text-foreground">
+                    {row.action}
+                  </p>
                   <StatusBadge
                     status={row.result}
                     tone={row.result === "Success" ? "success" : "danger"}
                   />
-                </td>
-                <td className="px-4 py-3 text-muted-foreground">{row.error}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="divide-y divide-border lg:hidden">
-        {rows.map((row, i) => (
-          <div key={i} className="p-4">
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-              <p className="min-w-0 truncate text-sm font-medium text-foreground">{row.action}</p>
-              <StatusBadge
-                status={row.result}
-                tone={row.result === "Success" ? "success" : "danger"}
-              />
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">{row.date}</p>
-            <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
-              {[
-                ["User", row.user],
-                ["Platform", row.platform],
-                ["Account", row.account],
-              ].map(([k, v]) => (
-                <div key={k} className="min-w-0">
-                  <dt className="text-muted-foreground uppercase">{k}</dt>
-                  <dd className="truncate text-foreground">{v}</dd>
                 </div>
-              ))}
-              {/* Status needs the full row — "Previous → New" overflows a half-width cell. */}
-              <div className="col-span-2 min-w-0">
-                <dt className="text-muted-foreground uppercase">Status</dt>
-                <dd className="text-foreground">
-                  {row.previous} → {row.next}
-                </dd>
+                <p className="mt-1 text-xs text-muted-foreground">{fmtDate(row.date)}</p>
+                <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  {[
+                    ["User", row.user],
+                    ["Platform", row.platform],
+                    ["Account", row.account],
+                  ].map(([k, v]) => (
+                    <div key={k} className="min-w-0">
+                      <dt className="text-muted-foreground uppercase">{k}</dt>
+                      <dd className="truncate text-foreground">{v}</dd>
+                    </div>
+                  ))}
+                  <div className="col-span-2 min-w-0">
+                    <dt className="text-muted-foreground uppercase">Status</dt>
+                    <dd className="text-foreground">
+                      {row.previous_state ?? "—"} → {row.next_state ?? "—"}
+                    </dd>
+                  </div>
+                </dl>
               </div>
-            </dl>
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -497,46 +665,29 @@ function AuditTable() {
 function ConnectDialog({
   platform,
   onClose,
-  onConnected,
 }: {
   platform: PlatformMeta | null;
   onClose: () => void;
-  onConnected: (name: string) => void;
 }) {
-  const [step, setStep] = useState<ConnectStep>("type");
-  const [accountType, setAccountType] = useState<string>("");
-  const [selected, setSelected] = useState<string>("");
-  const authorizeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [authorizing, setAuthorizing] = useState(false);
 
-  const clearAuthorizeTimer = () => {
-    if (authorizeTimer.current !== null) {
-      clearTimeout(authorizeTimer.current);
-      authorizeTimer.current = null;
+  const start = async () => {
+    if (!platform) return;
+    setAuthorizing(true);
+    try {
+      await startOAuth(platform.id);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to start connection.");
+      setAuthorizing(false);
     }
   };
-
-  useEffect(() => clearAuthorizeTimer, []);
-
-  const reset = () => {
-    // Without this, closing mid-authorization lets the pending timer advance the
-    // step, so reopening the dialog starts on "select" instead of "type".
-    clearAuthorizeTimer();
-    setStep("type");
-    setAccountType("");
-    setSelected("");
-  };
-
-  const available = [
-    { id: "opt-1", name: "Scaleezy Fashion", handle: "@scaleezyfashion" },
-    { id: "opt-2", name: "Scaleezy Couture", handle: "@scaleezycouture" },
-  ];
 
   return (
     <Dialog
       open={!!platform}
       onOpenChange={(o) => {
         if (!o) {
-          reset();
+          setAuthorizing(false);
           onClose();
         }
       }}
@@ -550,129 +701,32 @@ function ConnectDialog({
             You'll authorize on {platform?.name}'s official page. Scaleezy never sees your password.
           </DialogDescription>
         </DialogHeader>
-
-        {step === "type" && platform ? (
+        {platform ? (
           <div className="space-y-4">
-            <Label className="text-xs tracking-wide uppercase">Account type</Label>
-            <RadioGroup value={accountType} onValueChange={setAccountType} className="gap-2">
-              {platform.accountTypeOptions.map((opt) => (
-                <label
-                  key={opt}
-                  className="flex cursor-pointer items-center gap-3 rounded-xl border border-border px-4 py-3 text-sm has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
-                >
-                  <RadioGroupItem value={opt} />
-                  {opt}
-                </label>
-              ))}
-            </RadioGroup>
-            <DialogFooter>
-              <Button
-                disabled={!accountType || step === "authorizing"}
-                onClick={() => {
-                  setStep("authorizing");
-
-                  // Let's implement this properly:
-                  apiFetch("/api/marketing/workspaces/")
-                    .then(res => res.json())
-                    .then(data => {
-                        const wsId = Array.isArray(data) && data.length > 0 ? data[0].id : null;
-                        return apiFetch("/api/marketing/social-accounts/connect/", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                                workspace_id: wsId,
-                                platform: platform.id.toUpperCase()
-                            })
-                        });
-                    })
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.success && data.data.authorization_url) {
-                            window.location.href = data.data.authorization_url;
-                        } else {
-                            toast.error(data.message || data.error?.message || "Failed to start connection");
-                            setStep("type");
-                        }
-                    })
-                    .catch(err => {
-                        console.error(err);
-                        toast.error("Network error");
-                        setStep("type");
-                    });
-                }}
-              >
-                Continue with {platform.name}
-              </Button>
-            </DialogFooter>
-          </div>
-        ) : null}
-
-        {step === "authorizing" ? (
-          <div className="flex flex-col items-center gap-3 py-10 text-sm text-muted-foreground">
-            <RefreshCw className="size-6 animate-spin text-primary" />
-            Connecting… redirecting to the official authorization page
-          </div>
-        ) : null}
-
-        {step === "select" ? (
-          <div className="space-y-4">
-            <p className="label-eyebrow">Select account</p>
-            <RadioGroup value={selected} onValueChange={setSelected} className="gap-2">
-              {available.map((acc) => (
-                <label
-                  key={acc.id}
-                  className="flex cursor-pointer items-center gap-3 rounded-xl border border-border px-4 py-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
-                >
-                  <RadioGroupItem value={acc.id} />
-                  <span className="grid size-9 place-items-center rounded-full bg-secondary text-xs font-semibold">
-                    {acc.name.charAt(0)}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium text-foreground">
-                      {acc.name}
-                    </span>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      {acc.handle} · {accountType}
-                    </span>
-                  </span>
-                </label>
-              ))}
-            </RadioGroup>
-            <DialogFooter>
-              <Button disabled={!selected} onClick={() => setStep("permissions")}>
-                Continue
-              </Button>
-            </DialogFooter>
-          </div>
-        ) : null}
-
-        {step === "permissions" && platform ? (
-          <div className="space-y-4">
-            <p className="label-eyebrow">Permissions requested</p>
-            <ul className="space-y-2">
-              {platform.requiredPermissions.map((p) => (
-                <li key={p} className="flex items-center gap-2 text-sm text-foreground">
-                  <CheckCircle2 className="size-4 text-success" /> {p}
-                </li>
-              ))}
-            </ul>
-            <Separator />
-            <p className="text-xs tracking-wide text-muted-foreground uppercase">Optional</p>
-            <div className="space-y-2">
-              {platform.optionalPermissions.map((p) => (
-                <label key={p} className="flex items-center gap-2 text-sm text-foreground">
-                  <Checkbox /> {p}
-                </label>
-              ))}
+            <div>
+              <p className="label-eyebrow">Permissions requested</p>
+              <ul className="mt-2 space-y-2">
+                {platform.requiredPermissions.map((p) => (
+                  <li key={p} className="flex items-center gap-2 text-sm text-foreground">
+                    <CheckCircle2 className="size-4 text-success" /> {p}
+                  </li>
+                ))}
+              </ul>
             </div>
+            <Separator />
+            <p className="text-xs text-muted-foreground">
+              The account type ({platform.accountTypeOptions.join(" or ")}) and its details are read
+              from {platform.name} after you authorize.
+            </p>
             <DialogFooter>
-              <Button
-                onClick={() => {
-                  reset();
-                  onConnected(platform.name);
-                }}
-              >
-                Connect Account
+              <Button disabled={authorizing} onClick={start}>
+                {authorizing ? (
+                  <>
+                    <RefreshCw className="size-4 animate-spin" /> Redirecting to {platform.name}…
+                  </>
+                ) : (
+                  <>Continue with {platform.name}</>
+                )}
               </Button>
             </DialogFooter>
           </div>
@@ -684,40 +738,55 @@ function ConnectDialog({
 
 function ManageSheet({
   account,
+  busy,
   onClose,
-  onChange,
+  onPatch,
+  onVerify,
+  onReconnect,
+  onDisconnect,
 }: {
-  account: SocialAccount | null;
+  account: Connection | null;
+  busy: boolean;
   onClose: () => void;
-  onChange: (patch: Partial<SocialAccount>) => void;
+  onPatch: (body: Partial<Pick<Connection, "publishing_enabled" | "is_default_account">>) => void;
+  onVerify: () => void;
+  onReconnect: () => void;
+  onDisconnect: () => void;
 }) {
   if (!account) return null;
-  const s = account.settings;
-  const setSetting = (patch: Partial<SocialAccount["settings"]>) =>
-    onChange({ settings: { ...s, ...patch } });
-
   return (
     <Sheet open onOpenChange={(o) => !o && onClose()}>
       <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">
         <SheetHeader>
-          <SheetTitle className="tracking-[0.08em] uppercase">{account.accountName}</SheetTitle>
+          <SheetTitle className="tracking-[0.08em] uppercase">{account.account_name}</SheetTitle>
         </SheetHeader>
         <div className="space-y-6 px-4 pb-8">
           <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
-            <PlatformIcon platform={account.platform} />
+            <PlatformIcon platform={platformId(account.platform)} />
             <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-foreground">{account.username}</p>
-              <p className="truncate text-xs text-muted-foreground">{account.accountType}</p>
+              <p className="truncate text-sm font-medium text-foreground">
+                {account.username ?? account.external_account_id}
+              </p>
+              <p className="truncate text-xs text-muted-foreground">
+                {account.account_type ?? statusLabel(account.platform)} ·{" "}
+                {statusLabel(account.status)}
+              </p>
             </div>
           </div>
 
           <div className="rounded-xl border border-border p-4">
-            <p className="label-eyebrow">Platform details</p>
+            <p className="label-eyebrow">Details</p>
             <dl className="mt-3 space-y-2 text-xs">
-              {(account.platformDetails || []).map((d) => (
-                <div key={d.label} className="grid grid-cols-2 gap-2">
-                  <dt className="text-muted-foreground">{d.label}</dt>
-                  <dd className="truncate text-right text-foreground">{d.value}</dd>
+              {[
+                ["Account ID", account.external_account_id],
+                ["Profile", account.profile_url ?? "—"],
+                ["Connected", fmtDate(account.connected_at)],
+                ["Last verified", fmtDate(account.last_verified_at)],
+                ["Last published", fmtDate(account.last_published_at)],
+              ].map(([k, v]) => (
+                <div key={k} className="grid grid-cols-2 gap-2">
+                  <dt className="text-muted-foreground">{k}</dt>
+                  <dd className="truncate text-right text-foreground">{v}</dd>
                 </div>
               ))}
             </dl>
@@ -725,97 +794,40 @@ function ManageSheet({
 
           <div className="space-y-4">
             <p className="label-eyebrow">Publishing</p>
-            {[
-              [
-                "Publishing enabled",
-                account.publishingEnabled,
-                (v: boolean) => onChange({ publishingEnabled: v }),
-              ],
-              [
-                "Set as default account",
-                account.isDefault,
-                (v: boolean) => onChange({ isDefault: v }),
-              ],
-              [
-                "Automatic retry",
-                s.automaticRetry,
-                (v: boolean) => setSetting({ automaticRetry: v }),
-              ],
-              ["Comments access", s.comments, (v: boolean) => setSetting({ comments: v })],
-              ["Analytics access", s.analytics, (v: boolean) => setSetting({ analytics: v })],
-              ["Publishing paused", s.paused, (v: boolean) => setSetting({ paused: v })],
-            ].map(([label, value, fn]) => (
-              <div key={label as string} className="flex items-center justify-between gap-4">
-                <Label className="text-sm font-normal">{label as string}</Label>
-                <Switch checked={value as boolean} onCheckedChange={fn as (v: boolean) => void} />
-              </div>
-            ))}
-          </div>
-
-          <div className="grid gap-3">
-            <div>
-              <Label className="text-xs tracking-wide uppercase">Timezone</Label>
-              <Select value={s.timezone} onValueChange={(v) => setSetting({ timezone: v })}>
-                <SelectTrigger className="mt-1.5 w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {["Asia/Kolkata", "Asia/Dubai", "Europe/London", "America/New_York"].map((tz) => (
-                    <SelectItem key={tz} value={tz}>
-                      {tz}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="flex items-center justify-between gap-4">
+              <Label className="text-sm font-normal">Publishing enabled</Label>
+              <Switch
+                checked={account.publishing_enabled}
+                disabled={busy || account.status !== "CONNECTED"}
+                onCheckedChange={(v) => onPatch({ publishing_enabled: v })}
+              />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label className="text-xs tracking-wide uppercase">Allowed from</Label>
-                <Input
-                  type="time"
-                  className="mt-1.5"
-                  value={s.allowedStart}
-                  onChange={(e) => setSetting({ allowedStart: e.target.value })}
-                />
-              </div>
-              <div>
-                <Label className="text-xs tracking-wide uppercase">Allowed until</Label>
-                <Input
-                  type="time"
-                  className="mt-1.5"
-                  value={s.allowedEnd}
-                  onChange={(e) => setSetting({ allowedEnd: e.target.value })}
-                />
-              </div>
-            </div>
-            <div>
-              <Label className="text-xs tracking-wide uppercase">Daily publishing limit</Label>
-              <Input
-                type="number"
-                min={1}
-                className="mt-1.5"
-                value={s.dailyLimit}
-                onChange={(e) => setSetting({ dailyLimit: Number(e.target.value) })}
+            <div className="flex items-center justify-between gap-4">
+              <Label className="text-sm font-normal">Default account for this platform</Label>
+              <Switch
+                checked={account.is_default_account}
+                disabled={busy}
+                onCheckedChange={(v) => onPatch({ is_default_account: v })}
               />
             </div>
           </div>
 
           <Separator />
           <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => toast.success("Reconnection started.")}
-            >
-              <RefreshCw className="size-4" /> Reconnect Account
+            <Button variant="outline" size="sm" disabled={busy} onClick={onVerify}>
+              <RefreshCw className="size-4" /> Verify connection
+            </Button>
+            <Button variant="outline" size="sm" disabled={busy} onClick={onReconnect}>
+              <Link2 className="size-4" /> Reconnect
             </Button>
             <Button
               variant="outline"
               size="sm"
               className="text-destructive"
-              onClick={() => toast("Access revoked.")}
+              disabled={busy}
+              onClick={onDisconnect}
             >
-              Revoke Access
+              <Unplug className="size-4" /> Disconnect
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">

@@ -25,7 +25,7 @@ import {
   Trash2,
   Video,
 } from "lucide-react";
-import { useState, useRef, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -47,10 +47,9 @@ import {
   SectionTitle,
   StatusBadge,
 } from "@/components/marketing/primitives";
-import { DEMO_ACCOUNTS, PUBLISHING_HISTORY } from "@/lib/marketing-data";
 import { cn } from "@/lib/utils";
 import { useBrandSettings } from "@/lib/brand-settings";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiPost } from "@/lib/api";
 
 export const Route = createFileRoute("/_hub/publishing")({
   head: () => ({
@@ -216,10 +215,57 @@ function PublishingPage() {
   // Publishing State
   const [selected, setSelected] = useState<string[]>([]);
   const [mode, setMode] = useState<"now" | "schedule">("now");
+  // Scheduled publishing: the moment is sent to the backend as scheduled_at.
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduleTime, setScheduleTime] = useState("");
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [running, setRunning] = useState(false);
   const [publishingHistory, setPublishingHistory] = useState<any[]>([]);
-  const [accounts, setAccounts] = useState<any[]>(DEMO_ACCOUNTS);
+  const [retrying, setRetrying] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<any[]>([]);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/marketing/publishing/jobs/");
+      const data = await res.json();
+      if (!Array.isArray(data)) return;
+      const historyRows: any[] = [];
+      data.forEach((job: any) => {
+        (job.items ?? []).forEach((item: any) => {
+          historyRows.push({
+            id: item.id,
+            content: "Generated Marketing Post", // No text on asset currently, fallback
+            platform: item.social_connection.platform,
+            account: item.social_connection.account_name || item.social_connection.username,
+            date: new Date(item.queued_at).toLocaleString(),
+            // The platform permalink, so "View" opens the real post rather
+            // than being a button that does nothing.
+            url: item.external_post_url,
+            status: item.status.charAt(0).toUpperCase() + item.status.slice(1).toLowerCase(),
+            postId: item.external_post_id,
+            error: item.error_message,
+          });
+        });
+      });
+      setPublishingHistory(historyRows);
+    } catch (err) {
+      console.error("Failed to load history:", err);
+    }
+  }, []);
+
+  /** Re-queues one failed item. The worker skips items already published. */
+  const retryItem = async (itemId: string) => {
+    setRetrying(itemId);
+    try {
+      await apiPost(`/api/marketing/publishing/items/${itemId}/retry/`, {});
+      toast.success("Queued for retry.");
+      await loadHistory();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not retry that post.");
+    } finally {
+      setRetrying(null);
+    }
+  };
 
   useEffect(() => {
     // Fetch connected accounts for publishing
@@ -232,43 +278,29 @@ function PublishingPage() {
       })
       .catch(console.error);
 
-    apiFetch("/api/marketing/publishing/jobs/")
-      .then((res) => res.json())
-      .then((data) => {
-        if (Array.isArray(data)) {
-          const historyRows: any[] = [];
-          data.forEach((job: any) => {
-            if (job.items && Array.isArray(job.items)) {
-              job.items.forEach((item: any) => {
-                historyRows.push({
-                  id: item.id,
-                  content: "Generated Marketing Post", // No text on asset currently, fallback
-                  platform: item.social_connection.platform,
-                  account: item.social_connection.account_name || item.social_connection.username,
-                  date: new Date(item.queued_at).toLocaleString(),
-                  status: item.status.charAt(0).toUpperCase() + item.status.slice(1).toLowerCase(),
-                  postId: item.external_post_id,
-                  error: item.error_message,
-                });
-              });
-            }
-          });
-          setPublishingHistory(historyRows);
-        }
-      })
-      .catch((err) => {
-        console.error("Failed to load history:", err);
-        setPublishingHistory([]);
-      });
-  }, []);
+    void loadHistory();
+  }, [loadHistory]);
 
   const toggle = (id: string) =>
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
   const runJobs = async (ids: string[]) => {
     if (ids.length === 0) return;
+    let scheduledAt: string | null = null;
+    if (mode === "schedule") {
+      const when = new Date(`${scheduleDate}T${scheduleTime}`);
+      if (!scheduleDate || !scheduleTime || Number.isNaN(when.getTime())) {
+        toast.error("Pick a date and time to schedule.");
+        return;
+      }
+      if (when.getTime() <= Date.now()) {
+        toast.error("The scheduled time must be in the future.");
+        return;
+      }
+      scheduledAt = when.toISOString();
+    }
     setRunning(true);
-    toast("Publishing started.");
+    toast(mode === "schedule" ? "Scheduling…" : "Publishing started.");
 
     try {
       // Fetch workspaces
@@ -331,6 +363,7 @@ function PublishingPage() {
           workspace_id: wsId,
           asset_id: assetId,
           publish_mode: mode === "now" ? "NOW" : "SCHEDULED",
+          ...(scheduledAt ? { scheduled_at: scheduledAt } : {}),
           caption,
           social_connection_ids: ids,
           ...(asset?.contentItemId ? { content_item_id: asset.contentItemId } : {}),
@@ -340,7 +373,11 @@ function PublishingPage() {
       const data = await res.json();
 
       if (data.success) {
-        toast.success("Publishing job executed successfully.");
+        toast.success(
+          mode === "schedule"
+            ? "Scheduled. It will publish at the chosen time."
+            : "Publishing job created.",
+        );
       } else {
         toast.error(data.message || "Failed to publish.");
       }
@@ -349,7 +386,8 @@ function PublishingPage() {
       toast.error(err.message || "Network error while publishing.");
     } finally {
       setRunning(false);
-      setStep("create_or_upload"); // Reset or show history
+      await loadHistory();
+      setStep("create_or_upload");
     }
   };
 
@@ -665,11 +703,6 @@ function PublishingPage() {
         title="Publishing"
         subtitle="Create or upload your marketing content, select your social channels, and publish everywhere from one place."
         backTo="/"
-        actions={
-          <Button variant="outline" onClick={() => toast("Draft saved.")}>
-            Save Draft
-          </Button>
-        }
       />
 
       <div className="grid gap-6">
@@ -1408,33 +1441,31 @@ function PublishingPage() {
                     <div className="mt-4 grid gap-3 sm:grid-cols-3">
                       <div>
                         <Label className="text-xs tracking-wide uppercase">Date</Label>
-                        <Input type="date" className="mt-1.5" defaultValue="2026-08-12" />
+                        <Input
+                          type="date"
+                          className="mt-1.5"
+                          value={scheduleDate}
+                          onChange={(e) => setScheduleDate(e.target.value)}
+                        />
                       </div>
                       <div>
                         <Label className="text-xs tracking-wide uppercase">Time</Label>
-                        <Input type="time" className="mt-1.5" defaultValue="10:30" />
+                        <Input
+                          type="time"
+                          className="mt-1.5"
+                          value={scheduleTime}
+                          onChange={(e) => setScheduleTime(e.target.value)}
+                        />
                       </div>
-                      <div>
-                        <Label className="text-xs tracking-wide uppercase">Timezone</Label>
-                        <Select defaultValue="Asia/Kolkata">
-                          <SelectTrigger className="mt-1.5 w-full">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {["Asia/Kolkata", "Asia/Dubai", "Europe/London"].map((tz) => (
-                              <SelectItem key={tz} value={tz}>
-                                {tz}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
+                      <p className="self-end pb-2 text-xs text-muted-foreground">
+                        In your local time zone ({Intl.DateTimeFormat().resolvedOptions().timeZone}
+                        ).
+                      </p>
                     </div>
                   ) : null}
 
                   <p className="mt-4 text-xs text-muted-foreground">
-                    Allowed publishing hours, daily limits, paused accounts and token validity are
-                    checked before each job is created.
+                    Only connected accounts with publishing enabled can be selected.
                   </p>
 
                   <Button
@@ -1501,13 +1532,23 @@ function PublishingPage() {
                     </td>
                     <td className="px-4 py-3 text-right whitespace-nowrap">
                       {row.status === "Failed" ? (
-                        <Button size="sm" variant="outline" onClick={() => toast("Retrying…")}>
-                          <RotateCcw className="size-4" /> Retry
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={retrying === row.id}
+                          onClick={() => retryItem(row.id)}
+                        >
+                          <RotateCcw className="size-4" />
+                          {retrying === row.id ? "Retrying…" : "Retry"}
+                        </Button>
+                      ) : row.status === "Published" && row.url ? (
+                        <Button size="sm" variant="ghost" asChild>
+                          <a href={row.url} target="_blank" rel="noreferrer">
+                            <ExternalLink className="size-4" /> View
+                          </a>
                         </Button>
                       ) : row.status === "Published" ? (
-                        <Button size="sm" variant="ghost">
-                          <ExternalLink className="size-4" /> View
-                        </Button>
+                        <span className="text-xs text-muted-foreground">Published</span>
                       ) : (
                         <span className="text-xs text-muted-foreground">
                           <Clock className="mr-1 inline size-3" /> Waiting

@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import {
+  AlertTriangle,
+  CalendarClock,
+  Share2,
   BarChart3,
   CircleDollarSign,
   Eye,
@@ -50,8 +53,6 @@ export const Route = createFileRoute("/_hub/analytics")({
   }),
   component: AnalyticsPage,
 });
-
-
 
 const axis = {
   stroke: "var(--muted-foreground)",
@@ -105,11 +106,21 @@ function AnalyticsPage() {
   const [trend, setTrend] = useState<any[]>([]);
   const [platformPerf, setPlatformPerf] = useState<any[]>([]);
   const [roi, setRoi] = useState<any[]>([]);
+  const [kpis, setKpis] = useState<Array<{
+    key: string;
+    label: string;
+    value: number;
+    hint?: string | null;
+  }> | null>(null);
 
   useEffect(() => {
-    apiFetch('/api/marketing/analytics/dashboard/')
-      .then(res => res.json())
-      .then(data => {
+    apiFetch("/api/marketing/analytics/kpis/")
+      .then((res) => res.json())
+      .then((data) => setKpis(Array.isArray(data?.kpis) ? data.kpis : []))
+      .catch(() => setKpis([]));
+    apiFetch("/api/marketing/analytics/dashboard/")
+      .then((res) => res.json())
+      .then((data) => {
         if (data.trend) setTrend(data.trend);
         if (data.platform_perf) setPlatformPerf(data.platform_perf);
         if (data.roi) setRoi(data.roi);
@@ -122,54 +133,46 @@ function AnalyticsPage() {
       <PageHeader
         eyebrow="Marketing Hub"
         title="Analytics"
-        subtitle="Understand how your marketing performs across connected channels."
+        subtitle="Publishing activity now, platform performance as metrics are ingested."
         backTo="/"
       />
 
-      <div className="mb-6 flex flex-wrap gap-2">
-        {[
-          { label: "Last 30 days", options: ["Last 7 days", "Last 30 days", "Last 90 days"] },
-          {
-            label: "All platforms",
-            options: ["All platforms", "Instagram", "Facebook", "LinkedIn"],
-          },
-          {
-            label: "All campaigns",
-            options: ["All campaigns", "Festive Premium Revival", "Monsoon Kurta Clearance"],
-          },
-          {
-            label: "All accounts",
-            options: ["All accounts", "@scaleezyfashion", "Scaleezy Fashion India"],
-          },
-        ].map((filter) => (
-          <Select key={filter.label} defaultValue={filter.label}>
-            <SelectTrigger className="w-[180px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {filter.options.map((o) => (
-                <SelectItem key={o} value={o}>
-                  {o}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ))}
-      </div>
-
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Total Reach" value="24.8K" icon={Eye} hint="Last 30 days" />
-        <StatCard label="Engagement" value="1,686" icon={Heart} accent="gold" />
-        <StatCard label="Clicks" value="4,396" icon={MousePointerClick} />
-        <StatCard label="Conversions" value="264" icon={Target} accent="gold" />
-        <StatCard label="Published Posts" value="126" icon={Send} />
-        <StatCard label="Campaign Performance" value="+18.4%" icon={BarChart3} accent="gold" />
-        <StatCard label="Marketing ROI" value="3.8x" icon={CircleDollarSign} />
-        <StatCard label="Engagement Rate" value="6.8%" icon={Heart} accent="gold" />
+        {(kpis ?? [])
+          .filter((k) => ["published", "scheduled", "failed", "connected_accounts"].includes(k.key))
+          .map((k) => (
+            <StatCard
+              key={k.key}
+              label={k.label}
+              value={String(k.value)}
+              icon={
+                k.key === "connected_accounts"
+                  ? Share2
+                  : k.key === "failed"
+                    ? AlertTriangle
+                    : k.key === "scheduled"
+                      ? CalendarClock
+                      : Send
+              }
+              {...(k.hint ? { hint: k.hint } : {})}
+              loading={kpis === null}
+            />
+          ))}
       </section>
 
+      {trend.length === 0 && platformPerf.length === 0 && roi.length === 0 ? (
+        <div className="mt-6 rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
+          <p className="font-medium text-foreground">No performance data yet.</p>
+          <p className="mt-1">
+            Reach, engagement, clicks, conversions and ROI appear here once platform metrics are
+            ingested for this workspace. Nothing is estimated in the meantime — the counts above are
+            real publishing activity.
+          </p>
+        </div>
+      ) : null}
+
       <section className="mt-10 grid gap-4 xl:grid-cols-2">
-        <ChartCard title="Reach over time" source="CRM-powered">
+        <ChartCard title="Reach over time" source="Daily metrics">
           <AreaChart data={trend}>
             <defs>
               <linearGradient id="reachFill" x1="0" y1="0" x2="0" y2="1">
@@ -191,7 +194,7 @@ function AnalyticsPage() {
           </AreaChart>
         </ChartCard>
 
-        <ChartCard title="Engagement over time" source="Try-On influenced">
+        <ChartCard title="Engagement over time" source="Daily metrics">
           <LineChart data={trend}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
             <XAxis dataKey="month" {...axis} />
@@ -207,7 +210,7 @@ function AnalyticsPage() {
           </LineChart>
         </ChartCard>
 
-        <ChartCard title="Platform Performance" source="API data">
+        <ChartCard title="Platform Performance" source="Platform metrics">
           <BarChart data={platformPerf}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
             <XAxis dataKey="month" {...axis} />
@@ -217,7 +220,7 @@ function AnalyticsPage() {
           </BarChart>
         </ChartCard>
 
-        <ChartCard title="Platform comparison" source="Inventory-powered">
+        <ChartCard title="Platform comparison" source="Platform metrics">
           <BarChart data={platformPerf} layout="vertical" margin={{ left: 20 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
             <XAxis type="number" {...axis} tickFormatter={compact} />
@@ -227,7 +230,7 @@ function AnalyticsPage() {
           </BarChart>
         </ChartCard>
 
-        <ChartCard title="Conversion trend" source="CRM-powered">
+        <ChartCard title="Conversion trend" source="Daily metrics">
           <LineChart data={trend}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
             <XAxis dataKey="month" {...axis} />
@@ -243,7 +246,7 @@ function AnalyticsPage() {
           </LineChart>
         </ChartCard>
 
-        <ChartCard title="Campaign ROI" source="Finance-informed">
+        <ChartCard title="Campaign ROI" source="Campaign ROI">
           {/* Campaign names are too long to sit side by side on an X axis — they
               collided even at desktop width — so they run down the Y axis instead. */}
           <BarChart data={roi} layout="vertical" margin={{ left: 20 }}>
@@ -260,7 +263,7 @@ function AnalyticsPage() {
         <SectionTitle
           label="Campaign Performance"
           title="Platform performance"
-          description="CRM audience · Inventory availability · Marketing engagement · Revenue impact"
+          description="Per-platform reach, engagement, clicks, conversions and ROI from ingested metrics."
         />
         <div className="surface-card overflow-hidden">
           <div className="hidden overflow-x-auto lg:block">

@@ -75,6 +75,16 @@ class BrandSourceUploadSerializer(serializers.Serializer):
         queryset=Brand.objects.all(), # Overridden dynamically
         required=True
     )
+    # A transcript uploaded as a PDF is still a transcript. The caller may say
+    # what the file IS; the default keeps the pre-existing behaviour.
+    source_type = serializers.ChoiceField(
+        choices=BrandSource.SourceType.choices,
+        required=False,
+        default=BrandSource.SourceType.DOCUMENT,
+    )
+    title = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, default=''
+    )
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

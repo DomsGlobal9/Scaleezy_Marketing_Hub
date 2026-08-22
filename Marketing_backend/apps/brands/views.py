@@ -17,7 +17,11 @@ from apps.marketing.services.storage import StorageError, SupabaseStorageService
 from apps.workspaces.models import WorkspaceMember
 
 from .models import Brand
-from .services.brand_brain import compile_brand_brain, rebuild_brand_brain
+from .services.brand_brain import (
+    compile_brand_brain,
+    rebuild_brand_brain,
+    rebuild_brand_brain_safely,
+)
 from .serializers import BrandLogoUploadSerializer, BrandSerializer
 
 logger = logging.getLogger(__name__)
@@ -87,6 +91,12 @@ class BrandViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             created_by=self.request.user,
         )
 
+    def perform_update(self, serializer):
+        # Name, industry, tagline, tone and CTA are the brain's identity and
+        # voice sections; the snapshot generation reads must follow an edit.
+        brand = serializer.save()
+        rebuild_brand_brain_safely(brand)
+
     @action(detail=False, methods=['get'])
     def current(self, request):
         """
@@ -136,6 +146,7 @@ class BrandViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 'logo_url', 'logo_storage_path', 'logo_file_name',
                 'show_logo_on_posters', 'updated_at',
             ])
+            rebuild_brand_brain_safely(brand)
             return APIResponse(success=True, data=BrandSerializer(brand).data)
 
         serializer = BrandLogoUploadSerializer(data=request.data)
@@ -177,4 +188,5 @@ class BrandViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'show_logo_on_posters', 'updated_at',
         ])
         logger.info("Logo uploaded for brand %s by user %s", brand.pk, request.user.pk)
+        rebuild_brand_brain_safely(brand)
         return APIResponse(success=True, data=BrandSerializer(brand).data)
