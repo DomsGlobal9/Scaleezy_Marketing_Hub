@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { FeedbackTagPicker, useFeedbackElements } from "@/components/marketing/feedback-tags";
 import { PosterStudio, useLayoutCatalogue } from "@/components/marketing/poster-studio";
@@ -161,6 +162,35 @@ function ReviewPage() {
     }
   };
 
+  const updateDraft = (id: string, patch: Partial<Pick<ContentItem, "headline" | "caption" | "hashtags">>) => {
+    setItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  };
+
+  const saveDraft = async (item: ContentItem, submit = false) => {
+    setBusy(item.id);
+    try {
+      await api<ContentItem>(`/api/marketing/content/${item.id}/`, {
+        method: "PATCH",
+        body: {
+          headline: item.headline,
+          caption: item.caption,
+          hashtags: item.hashtags,
+        },
+      });
+      if (submit) {
+        await apiPost(`/api/marketing/content/${item.id}/submit/`, {});
+        toast.success("Submitted for review.");
+      } else {
+        toast.success("Draft saved.");
+      }
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save this draft.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -235,8 +265,17 @@ function ReviewPage() {
       ) : items.length === 0 ? (
         <EmptyState
           icon={FileImage}
-          title="Nothing here"
-          description="Generated content appears here for approval before it can be published."
+          title={tab === "DRAFT" ? "No saved drafts" : "Nothing here"}
+          description={
+            tab === "DRAFT"
+              ? "Create or upload content, save it, and it will remain here when you return."
+              : "Content appears here after it has been submitted for this review stage."
+          }
+          action={
+            tab === "DRAFT" ? (
+              <Button onClick={() => window.location.assign("/publishing")}>Create content</Button>
+            ) : undefined
+          }
         />
       ) : (
         <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
@@ -264,7 +303,7 @@ function ReviewPage() {
                   {new Date(item.created_at).toLocaleDateString()}
                 </p>
 
-                {item.caption ? (
+                {item.caption && item.status !== "DRAFT" ? (
                   <p className="mt-3 line-clamp-3 text-sm text-muted-foreground">{item.caption}</p>
                 ) : null}
 
@@ -273,6 +312,75 @@ function ReviewPage() {
                     <span className="font-medium text-foreground">Reviewer note:</span>{" "}
                     {item.review_note}
                   </p>
+                ) : null}
+
+                {item.status === "DRAFT" ? (
+                  <div className="mt-4 space-y-3 border-t border-border pt-4">
+                    <div className="space-y-1.5">
+                      <label htmlFor={`draft-headline-${item.id}`} className="text-xs font-medium">
+                        Headline
+                      </label>
+                      <Input
+                        id={`draft-headline-${item.id}`}
+                        value={item.headline}
+                        disabled={busy === item.id}
+                        onChange={(event) => updateDraft(item.id, { headline: event.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label htmlFor={`draft-caption-${item.id}`} className="text-xs font-medium">
+                        Caption
+                      </label>
+                      <Textarea
+                        id={`draft-caption-${item.id}`}
+                        rows={4}
+                        value={item.caption}
+                        disabled={busy === item.id}
+                        onChange={(event) => updateDraft(item.id, { caption: event.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label htmlFor={`draft-hashtags-${item.id}`} className="text-xs font-medium">
+                        Hashtags
+                      </label>
+                      <Textarea
+                        id={`draft-hashtags-${item.id}`}
+                        rows={2}
+                        value={item.hashtags}
+                        disabled={busy === item.id}
+                        onChange={(event) => updateDraft(item.id, { hashtags: event.target.value })}
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy === item.id}
+                        onClick={() => void saveDraft(item)}
+                      >
+                        {busy === item.id ? <Loader2 className="size-4 animate-spin" /> : null}
+                        Save draft
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={busy === item.id}
+                        onClick={() => void saveDraft(item, true)}
+                      >
+                        Submit for review
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {item.status === "APPROVED" ? (
+                  <Button
+                    className="mt-4 w-full"
+                    onClick={() =>
+                      window.location.assign(`/publishing?content_item_id=${encodeURIComponent(item.id)}`)
+                    }
+                  >
+                    Publish approved version
+                  </Button>
                 ) : null}
 
                 {layouts.length > 0 ? (

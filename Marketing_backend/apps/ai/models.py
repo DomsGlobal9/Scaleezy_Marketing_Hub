@@ -17,7 +17,9 @@ class Capability(models.TextChoices):
     TEXT = 'TEXT', 'Copy (headline, caption, hashtags)'
     IMAGE = 'IMAGE', 'Image generation'
     IMAGE_ANALYSIS = 'IMAGE_ANALYSIS', 'Image analysis'
+    IMAGE_CAPTION = 'IMAGE_CAPTION', 'Image caption generation'
     VIDEO = 'VIDEO', 'Video generation'
+    VIDEO_ANALYSIS = 'VIDEO_ANALYSIS', 'Video analysis'
     EMBEDDING = 'EMBEDDING', 'Text embedding (feedback similarity)'
 
 
@@ -110,7 +112,7 @@ class WorkspaceAIRoute(models.Model):
     """
     Which providers serve which capability, in what order.
 
-    This is what expresses "images go to OpenAI, copy stays on Gemini".
+    This expresses independent, ordered provider sets for every capability.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

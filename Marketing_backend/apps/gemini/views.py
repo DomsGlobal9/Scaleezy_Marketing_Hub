@@ -14,7 +14,6 @@ from apps.common.permissions import (
 )
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.responses import APIResponse
-from .services.generator import GeminiGeneratorService
 from django.utils import timezone
 
 
@@ -274,57 +273,13 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         the alternative is rewriting the client every time a provider's
         result shape differs.
         """
-        from apps.brands.models import Brand
-        from apps.context.services.generation import generate_copy_and_image
+        from apps.context.services.generation import generate_marketing_payload
 
-        brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
-        if brand is None:
-            # No brand, no brand context - fall back to a plain routed TEXT
-            # dispatch rather than failing a workspace that has not finished
-            # setup.
-            from apps.ai.models import Capability
-            from apps.ai.router import AIRouter
-
-            text = AIRouter(workspace).dispatch(Capability.TEXT, request_data)
-            raw = text.get('raw') or {}
-            return {
-                'provider': text.get('provider', ''),
-                'provider_name': text.get('provider_name', ''),
-                'brain_version': '',
-                'trace': {'capabilities': {'TEXT': {'status': 'OK'}}},
-                'payload': {
-                    'postTitle': text.get('headline') or raw.get('postTitle', ''),
-                    'postDescription': text.get('caption') or raw.get('postDescription', ''),
-                    'postHashtags': text.get('hashtags') or raw.get('postHashtags', ''),
-                    'posterImageUrl': raw.get('posterImageUrl', ''),
-                    'metadata': raw.get('metadata', {}),
-                },
-            }
-
-        outcome = generate_copy_and_image(
-            workspace, brand, request_data,
+        return generate_marketing_payload(
+            workspace,
+            request_data,
             instruction=str(request_data.get('campaign_name', ''))[:500],
         )
-        text = outcome['text'] or {}
-        image = outcome['image'] or {}
-        raw = text.get('raw') or {}
-        if not text:
-            failure = outcome['trace']['capabilities'].get('TEXT', {})
-            raise RuntimeError(failure.get('error', 'Generation produced no copy.'))
-
-        return {
-            'provider': text.get('provider', ''),
-            'provider_name': text.get('provider_name', ''),
-            'brain_version': outcome['trace'].get('brain_version', ''),
-            'trace': outcome['trace'],
-            'payload': {
-                'postTitle': text.get('headline') or raw.get('postTitle', ''),
-                'postDescription': text.get('caption') or raw.get('postDescription', ''),
-                'postHashtags': text.get('hashtags') or raw.get('postHashtags', ''),
-                'posterImageUrl': image.get('image_url', ''),
-                'metadata': raw.get('metadata', {}),
-            },
-        }
 
     @action(detail=False, methods=['post'], url_path='generate-async')
     def generate_async(self, request):
@@ -387,7 +342,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 'generationId': str(generation.id),
                 'taskId': task_result.id,
                 'status': generation.status,
-                'pollUrl': f"/api/marketing/gemini/{generation.id}/",
+                'pollUrl': f"/api/marketing/ai-generation/{generation.id}/",
             },
             status=status.HTTP_202_ACCEPTED,
         )
@@ -398,12 +353,20 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             b64_image = request.data.get('referenceImageBase64', '')
             if not b64_image:
                 return APIResponse(success=False, message="No image provided", status=400)
-                
-            analysis = GeminiGeneratorService.analyze_reference_image(b64_image)
-            return APIResponse(success=True, data=analysis, status=200)
+
+            from apps.ai.models import Capability
+            from apps.ai.router import AIRouter
+
+            workspace, error = get_request_workspace(request)
+            if error:
+                return error
+            routed = AIRouter(workspace).dispatch(
+                Capability.IMAGE_ANALYSIS,
+                {'reference_image_base64': b64_image},
+            )
+            return APIResponse(success=True, data=routed.get('analysis', routed), status=200)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logger.exception("Image analysis failed")
             return APIResponse(success=False, message=str(e), status=500)
 
     @action(detail=False, methods=['post'], url_path='generate-captions')
@@ -413,11 +376,19 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             if not b64_image:
                 return APIResponse(success=False, message="No image provided", status=400)
                 
-            captions = GeminiGeneratorService.generate_captions_only(b64_image)
-            return APIResponse(success=True, data=captions, status=200)
+            from apps.ai.models import Capability
+            from apps.ai.router import AIRouter
+
+            workspace, error = get_request_workspace(request)
+            if error:
+                return error
+            routed = AIRouter(workspace).dispatch(
+                Capability.IMAGE_CAPTION,
+                {'reference_image_base64': b64_image},
+            )
+            return APIResponse(success=True, data=routed.get('captions', routed), status=200)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logger.exception("Image caption generation failed")
             return APIResponse(success=False, message=str(e), status=500)
 
     @action(detail=False, methods=['post'], url_path='analyze-video')
@@ -439,11 +410,19 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                     success=False, message="Asset not found.", status=status.HTTP_404_NOT_FOUND
                 )
 
-            analysis = GeminiGeneratorService.analyze_video(asset_id)
-            return APIResponse(success=True, data=analysis, status=200)
+            from apps.ai.models import Capability
+            from apps.ai.router import AIRouter
+
+            workspace, error = get_request_workspace(request)
+            if error:
+                return error
+            routed = AIRouter(workspace).dispatch(
+                Capability.VIDEO_ANALYSIS,
+                {'asset_id': str(asset_id)},
+            )
+            return APIResponse(success=True, data=routed.get('analysis', routed), status=200)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logger.exception("Video analysis failed")
             return APIResponse(success=False, message=str(e), status=500)
 
     @action(detail=True, methods=['get'])

@@ -16,6 +16,22 @@ class ContentItemSerializer(serializers.ModelSerializer):
             'reviewed_by', 'reviewed_at', 'created_by', 'created_at', 'updated_at',
         ]
 
+    def validate(self, attrs):
+        request = self.context.get('request')
+        if request is None:
+            return attrs
+
+        from apps.common.permissions import resolve_workspace_id
+
+        workspace_id = resolve_workspace_id(request)
+        for field in ('brand', 'asset'):
+            value = attrs.get(field)
+            if value is not None and str(value.workspace_id) != str(workspace_id):
+                raise serializers.ValidationError(
+                    {field: "This object does not belong to the selected client."}
+                )
+        return attrs
+
 
 class ReviewActionSerializer(serializers.Serializer):
     """

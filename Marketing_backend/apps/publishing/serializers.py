@@ -21,6 +21,7 @@ class PublishingJobSerializer(serializers.ModelSerializer):
 class CreatePublishingJobSerializer(serializers.Serializer):
     workspace_id = serializers.UUIDField()
     asset_id = serializers.UUIDField()
+    content_item_id = serializers.UUIDField()
     publish_mode = serializers.ChoiceField(choices=PublishingJob.PublishMode.choices)
     scheduled_at = serializers.DateTimeField(required=False, allow_null=True)
     timezone = serializers.CharField(required=False, default="UTC")

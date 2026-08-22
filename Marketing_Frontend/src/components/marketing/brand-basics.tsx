@@ -9,7 +9,7 @@
  * readiness once the backend has actually accepted a change.
  */
 import { ImagePlus, Loader2, Phone, Trash2 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -24,9 +24,10 @@ import { cn } from "@/lib/utils";
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 
 export function BrandBasicsPanel({ onSaved }: { onSaved?: () => void }) {
-  const { settings, update, uploadLogo, removeLogo, loading, saving, error } = useBrandSettings({
-    ...(onSaved ? { onSaved } : {}),
-  });
+  const { settings, update, flush, uploadLogo, removeLogo, loading, saving, saveState, error } =
+    useBrandSettings({
+      ...(onSaved ? { onSaved } : {}),
+    });
   const logoInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const { layouts } = useLayoutCatalogue();
@@ -82,9 +83,19 @@ export function BrandBasicsPanel({ onSaved }: { onSaved?: () => void }) {
           title="Identity"
           description="What the brand is called and how it speaks. Saved as you type."
           action={
-            saving ? (
+            saving || saveState === "saving" ? (
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Loader2 className="size-3.5 animate-spin" /> Saving…
+              </span>
+            ) : saveState === "failed" ? (
+              <Button variant="ghost" size="sm" onClick={() => void flush()}>
+                Save failed — retry
+              </Button>
+            ) : saveState === "pending" ? (
+              <span className="text-xs text-muted-foreground">Unsaved changes</span>
+            ) : saveState === "saved" ? (
+              <span className="text-xs text-muted-foreground" role="status">
+                Saved
               </span>
             ) : null
           }
@@ -288,8 +299,10 @@ function Field({
 }) {
   return (
     <div className={className}>
-      <Label className="text-xs tracking-wide uppercase">{label}</Label>
-      <div className="mt-1.5">{children}</div>
+      <Label className="block text-xs tracking-wide uppercase">
+        <span>{label}</span>
+        <div className="mt-1.5 normal-case tracking-normal">{children}</div>
+      </Label>
       {hint ? <p className="mt-1.5 text-xs text-muted-foreground">{hint}</p> : null}
     </div>
   );
@@ -308,13 +321,27 @@ function Toggle({
   disabled?: boolean;
   onChange: (value: boolean) => void;
 }) {
+  const id = useId();
+  const hintId = `${id}-hint`;
   return (
     <div className="flex items-center justify-between gap-4 rounded-xl border border-border px-4 py-3">
       <div className="min-w-0">
-        <Label className="text-sm font-normal">{label}</Label>
-        {hint ? <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p> : null}
+        <Label htmlFor={id} className="text-sm font-normal">
+          {label}
+        </Label>
+        {hint ? (
+          <p id={hintId} className="mt-0.5 text-xs text-muted-foreground">
+            {hint}
+          </p>
+        ) : null}
       </div>
-      <Switch checked={checked} disabled={disabled} onCheckedChange={onChange} />
+      <Switch
+        id={id}
+        checked={checked}
+        disabled={disabled}
+        aria-describedby={hint ? hintId : undefined}
+        onCheckedChange={onChange}
+      />
     </div>
   );
 }

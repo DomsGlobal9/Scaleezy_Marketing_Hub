@@ -56,6 +56,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api, apiFetch, apiPost } from "@/lib/api";
+import { readActiveWorkspaceId } from "@/lib/workspace";
 import {
   EmptyState,
   PageHeader,
@@ -132,8 +133,7 @@ const fmtDate = (value: string | null | undefined) =>
   value ? new Date(value).toLocaleString() : "—";
 
 async function workspaceId(): Promise<string | null> {
-  const rows = await api<Array<{ id: string }>>("/api/marketing/workspaces/");
-  return Array.isArray(rows) && rows.length > 0 ? (rows[0]?.id ?? null) : null;
+  return readActiveWorkspaceId();
 }
 
 /** Starts the official OAuth flow; the browser leaves for the platform. */
@@ -172,7 +172,7 @@ function AccountsPage() {
     void load();
   }, [load]);
 
-  const list = accounts ?? [];
+  const list = useMemo(() => accounts ?? [], [accounts]);
   const summary = useMemo(
     () => ({
       connected: list.filter((a) => a.status === "CONNECTED").length,

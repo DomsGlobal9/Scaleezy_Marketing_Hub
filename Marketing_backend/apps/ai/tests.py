@@ -184,6 +184,14 @@ class AIConsoleAPITests(APITestCase):
             defaults={'display_name': 'Fake', 'capabilities': [Capability.TEXT],
                       'is_available': True},
         )
+        self.better_provider, _ = AIProvider.objects.update_or_create(
+            key='better',
+            defaults={
+                'display_name': 'Better',
+                'capabilities': [Capability.TEXT, Capability.IMAGE],
+                'is_available': True,
+            },
+        )
 
         self.admin = User.objects.create_user(username='admin2', password='pw')
         WorkspaceMember.objects.create(
@@ -246,6 +254,17 @@ class AIConsoleAPITests(APITestCase):
         )
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_editor_cannot_read_provider_or_routing_administration(self):
+        self.as_(self.editor)
+
+        for url in (
+            '/api/marketing/ai/catalogue/',
+            '/api/marketing/ai/providers/',
+            '/api/marketing/ai/routes/',
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, status.HTTP_403_FORBIDDEN)
+
     def test_provider_config_is_workspace_scoped(self):
         WorkspaceAIProvider.objects.create(workspace=self.other, provider=self.provider)
         self.as_(self.admin)
@@ -260,6 +279,113 @@ class AIConsoleAPITests(APITestCase):
             format='json',
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_route_set_replace_is_atomic_when_a_provider_is_not_enabled(self):
+        WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.provider, enabled=True
+        )
+        original = WorkspaceAIRoute.objects.create(
+            workspace=self.ws,
+            capability=Capability.TEXT,
+            provider=self.provider,
+            priority=10,
+        )
+        self.as_(self.admin)
+
+        with patch(
+            'apps.ai.views.all_adapters',
+            return_value={'fake': FakeAdapter, 'better': BetterAdapter},
+        ):
+            res = self.client.post(
+                '/api/marketing/ai/routes/replace-set/',
+                {
+                    'capability': Capability.TEXT,
+                    'routes': [
+                        {'provider': str(self.better_provider.id), 'priority': 10},
+                    ],
+                    'strategy': Strategy.FAILOVER,
+                },
+                format='json',
+            )
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertTrue(WorkspaceAIRoute.objects.filter(pk=original.pk).exists())
+
+    def test_route_set_preserves_multiple_providers_and_their_priority(self):
+        WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.provider, enabled=True
+        )
+        WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.better_provider, enabled=True
+        )
+        WorkspaceAIRoute.objects.create(
+            workspace=self.ws,
+            capability=Capability.TEXT,
+            provider=self.provider,
+            priority=10,
+        )
+        self.as_(self.admin)
+
+        with patch(
+            'apps.ai.views.all_adapters',
+            return_value={'fake': FakeAdapter, 'better': BetterAdapter},
+        ):
+            res = self.client.post(
+                '/api/marketing/ai/routes/replace-set/',
+                {
+                    'capability': Capability.TEXT,
+                    'routes': [
+                        {'provider': str(self.better_provider.id), 'priority': 10},
+                        {'provider': str(self.provider.id), 'priority': 20},
+                    ],
+                    'strategy': Strategy.FAILOVER,
+                },
+                format='json',
+            )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        routes = list(WorkspaceAIRoute.objects.filter(
+            workspace=self.ws, capability=Capability.TEXT
+        ).order_by('priority'))
+        self.assertEqual(len(routes), 2)
+        self.assertEqual(
+            [(route.provider, route.priority, route.strategy) for route in routes],
+            [
+                (self.better_provider, 10, Strategy.FAILOVER),
+                (self.provider, 20, Strategy.FAILOVER),
+            ],
+        )
+
+    def test_route_set_rejects_duplicates_without_changing_existing_routes(self):
+        WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.provider, enabled=True
+        )
+        original = WorkspaceAIRoute.objects.create(
+            workspace=self.ws,
+            capability=Capability.TEXT,
+            provider=self.provider,
+            priority=10,
+        )
+        self.as_(self.admin)
+
+        res = self.client.post(
+            '/api/marketing/ai/routes/replace-set/',
+            {
+                'capability': Capability.TEXT,
+                'routes': [
+                    {'provider': str(self.provider.id), 'priority': 10},
+                    {'provider': str(self.provider.id), 'priority': 20},
+                ],
+                'strategy': Strategy.FAILOVER,
+            },
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            list(WorkspaceAIRoute.objects.filter(workspace=self.ws)),
+            [original],
+        )
 
     def test_resolved_shows_what_the_router_would_do(self):
         self.as_(self.admin)

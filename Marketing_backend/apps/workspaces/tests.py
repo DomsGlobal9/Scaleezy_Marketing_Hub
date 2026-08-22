@@ -16,6 +16,8 @@ from apps.common.permissions import (
     resolve_workspace_id,
 )
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
+from apps.ai.models import AIProvider, Capability, WorkspaceAIProvider, WorkspaceAIRoute
+from apps.brands.models import Brand
 
 User = get_user_model()
 
@@ -193,7 +195,7 @@ class QuerysetScopingTests(TestCase):
             workspace=self.ws_b, file_name='b.jpg', source='MANUAL_UPLOAD'
         )
 
-    def _view_for(self, user):
+    def _view_for(self, user, workspace=None):
         from apps.marketing.models import MarketingAsset
 
         class Base:
@@ -204,7 +206,8 @@ class QuerysetScopingTests(TestCase):
             pass
 
         view = View()
-        request = RequestFactory().get('/api/assets/')
+        headers = {'HTTP_X_WORKSPACE_ID': str(workspace.id)} if workspace else {}
+        request = RequestFactory().get('/api/assets/', **headers)
         request.user = user
         view.request = request
         return view
@@ -213,17 +216,92 @@ class QuerysetScopingTests(TestCase):
         results = list(self._view_for(self.alice).get_queryset())
         self.assertEqual(results, [self.asset_a])
 
+    def test_multi_client_user_sees_only_the_selected_workspace(self):
+        WorkspaceMember.objects.create(workspace=self.ws_b, user=self.alice)
+
+        results = list(self._view_for(self.alice, self.ws_a).get_queryset())
+
+        self.assertEqual(results, [self.asset_a])
+
+    def test_multi_client_request_without_selection_fails_closed(self):
+        WorkspaceMember.objects.create(workspace=self.ws_b, user=self.alice)
+
+        results = list(self._view_for(self.alice).get_queryset())
+
+        self.assertEqual(results, [])
+
     def test_user_with_no_membership_sees_nothing(self):
         nobody = User.objects.create_user(username='nobody', password='p')
         self.assertEqual(list(self._view_for(nobody).get_queryset()), [])
 
     def test_staff_does_not_bypass_tenant_isolation(self):
-        """Staff users should not see all workspaces; they must be explicit members."""
+        """Staff users still need an explicit membership for tenant data."""
         staff = User.objects.create_user(username='staff', password='p', is_staff=True)
-        # Without membership, they see nothing
         self.assertEqual(len(list(self._view_for(staff).get_queryset())), 0)
-        
-        # When added to a workspace, they see ONLY that workspace's data
+
         WorkspaceMember.objects.create(workspace=self.ws_a, user=staff)
         results = list(self._view_for(staff).get_queryset())
         self.assertEqual(results, [self.asset_a])
+
+
+class ClientBootstrapTests(TestCase):
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='owner', password='p')
+        self.client.force_authenticate(self.user)
+        self.provider = AIProvider.objects.update_or_create(
+            key='gemini',
+            defaults={
+                'display_name': 'Google Gemini',
+                'capabilities': [Capability.TEXT, Capability.IMAGE],
+                'default_model': 'gemini-test',
+                'is_available': True,
+            },
+        )[0]
+
+    def test_add_client_atomically_bootstraps_owner_brand_and_ai(self):
+        response = self.client.post(
+            '/api/marketing/workspaces/',
+            {'workspace_name': 'Client A', 'timezone': 'Asia/Kolkata'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        workspace = MarketingWorkspace.objects.get(workspace_name='Client A')
+        self.assertTrue(WorkspaceMember.objects.filter(
+            workspace=workspace, user=self.user, role=WorkspaceMember.Role.OWNER
+        ).exists())
+        self.assertTrue(Brand.objects.filter(
+            workspace=workspace, name='Client A', is_default=True
+        ).exists())
+        workspace_provider = WorkspaceAIProvider.objects.get(
+            workspace=workspace, enabled=True
+        )
+        self.assertTrue(
+            workspace_provider.provider.supports(Capability.TEXT)
+            and workspace_provider.provider.supports(Capability.IMAGE)
+        )
+        self.assertEqual(
+            set(WorkspaceAIRoute.objects.filter(
+                workspace=workspace,
+                provider=workspace_provider.provider,
+                enabled=True,
+            ).values_list('capability', flat=True)),
+            {Capability.TEXT, Capability.IMAGE},
+        )
+
+    def test_add_client_rolls_back_when_platform_ai_is_unavailable(self):
+        # Provisioning is capability-based and may choose any installed
+        # provider. Make the whole catalogue unavailable rather than assuming
+        # a particular vendor must be selected.
+        AIProvider.objects.update(is_available=False)
+
+        response = self.client.post(
+            '/api/marketing/workspaces/', {'workspace_name': 'Broken'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(MarketingWorkspace.objects.filter(workspace_name='Broken').exists())
+        self.assertFalse(WorkspaceMember.objects.filter(user=self.user).exists())

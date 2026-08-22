@@ -1,5 +1,6 @@
 import logging
 
+from django.db import transaction
 from rest_framework import status, viewsets
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -13,6 +14,8 @@ from apps.common.permissions import (
     get_request_workspace,
 )
 from apps.common.responses import APIResponse
+from apps.ai.provisioning import AIProvisioningError, provision_default_ai
+from apps.brands.models import Brand
 
 from .models import MarketingWorkspace, WorkspaceMember
 from .serializers import AuditLogSerializer, MarketingWorkspaceSerializer
@@ -44,17 +47,47 @@ class MarketingWorkspaceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             return [IsAuthenticated()]
         return super().get_permissions()
 
-    def perform_create(self, serializer):
-        # Whoever creates a workspace owns it, otherwise the creator would be
-        # locked out of the row they just made by the scoping filter.
-        workspace = serializer.save()
-        WorkspaceMember.objects.get_or_create(
-            workspace=workspace,
-            user=self.request.user,
-            defaults={'role': WorkspaceMember.Role.OWNER},
-        )
-        logger.info(
-            "Workspace %s created by user %s", workspace.pk, self.request.user.pk
+    def create(self, request, *args, **kwargs):
+        """Create a usable client, not an orphan tenant row.
+
+        Membership, default brand and AI policy commit together. If platform
+        AI is not deploy-ready the request fails honestly and leaves no client
+        behind for the user to repair through Settings or an operator shell.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            with transaction.atomic():
+                workspace = serializer.save()
+                WorkspaceMember.objects.create(
+                    workspace=workspace,
+                    user=request.user,
+                    role=WorkspaceMember.Role.OWNER,
+                )
+                Brand.objects.create(
+                    workspace=workspace,
+                    name=workspace.workspace_name or 'My Brand',
+                    is_default=True,
+                    created_by=request.user,
+                )
+                provision_default_ai(workspace)
+        except AIProvisioningError as exc:
+            logger.error("Client bootstrap rejected: %s", exc)
+            return APIResponse(
+                success=False,
+                message="Client could not be created because platform AI is unavailable.",
+                error={"code": "AI_BOOTSTRAP_UNAVAILABLE", "message": str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        logger.info("Workspace %s created by user %s", workspace.pk, request.user.pk)
+        output = self.get_serializer(workspace)
+        return APIResponse(
+            success=True,
+            message="Client created and ready for onboarding.",
+            data=output.data,
+            status=status.HTTP_201_CREATED,
         )
 
 

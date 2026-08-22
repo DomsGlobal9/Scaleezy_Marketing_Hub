@@ -7,7 +7,7 @@ mixin makes scoping the default rather than something each view remembers.
 """
 import logging
 
-from apps.workspaces.models import WorkspaceMember
+from apps.common.permissions import WorkspaceMismatch, get_membership, resolve_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +23,24 @@ class WorkspaceScopedMixin:
     workspace_field = 'workspace'
 
     def accessible_workspace_ids(self):
+        """Return only the workspace this request explicitly addresses.
+
+        Membership is authorization, not selection. A multi-client user may
+        legitimately belong to A and B, but a page addressed to A must never
+        enumerate B's rows. ``resolve_workspace_id`` keeps the established
+        single-membership fallback while failing closed for ambiguous or
+        mismatched requests.
+        """
         user = self.request.user
         if not user or not user.is_authenticated:
             return []
-        return list(
-            WorkspaceMember.objects.filter(
-                user=user, status=WorkspaceMember.Status.ACTIVE
-            ).values_list('workspace_id', flat=True)
-        )
+        try:
+            workspace_id = resolve_workspace_id(self.request, self)
+        except WorkspaceMismatch:
+            return []
+        if not workspace_id or get_membership(user, workspace_id) is None:
+            return []
+        return [workspace_id]
 
     def get_queryset(self):
         queryset = super().get_queryset()

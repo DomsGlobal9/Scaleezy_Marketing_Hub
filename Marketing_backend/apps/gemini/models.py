@@ -17,7 +17,11 @@ class GeminiGenerationRequest(models.Model):
     workspace = models.ForeignKey(MarketingWorkspace, on_delete=models.CASCADE, related_name='gemini_requests')
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
 
-    prompt_data = models.TextField(blank=True, null=True, help_text="Raw prompt or structure sent to Gemini")
+    prompt_data = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Provider-neutral generation brief",
+    )
     
     campaign_name = models.CharField(max_length=255, blank=True, null=True)
     product = models.CharField(max_length=255, blank=True, null=True)
@@ -31,8 +35,8 @@ class GeminiGenerationRequest(models.Model):
 
     status = models.CharField(max_length=50, choices=Status.choices, default=Status.PENDING)
     
-    provider = models.CharField(max_length=50, default='GOOGLE_GEMINI', editable=False)
-    model = models.CharField(max_length=100, default='gemini-1.5-pro')
+    provider = models.CharField(max_length=50, blank=True, default='', editable=False)
+    model = models.CharField(max_length=100, blank=True, default='')
 
     error_message = models.TextField(blank=True, null=True)
 

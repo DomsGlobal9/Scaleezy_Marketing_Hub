@@ -5,6 +5,7 @@
  * response unwrapping and error handling in three mutually inconsistent ways.
  */
 import { clearSession, readSession, writeSession } from "@/lib/auth";
+import { readActiveWorkspaceId } from "@/lib/workspace";
 
 /**
  * Read once. Every previous call site did `VITE_API_URL + "/api/..."`, which
@@ -175,6 +176,10 @@ export async function api<T = unknown>(path: string, options: ApiOptions = {}): 
   if (token && !finalHeaders.has("Authorization")) {
     finalHeaders.set("Authorization", `Bearer ${token}`);
   }
+  const workspaceId = readActiveWorkspaceId();
+  if (workspaceId && !finalHeaders.has("X-Workspace-Id")) {
+    finalHeaders.set("X-Workspace-Id", workspaceId);
+  }
 
   // `body: undefined` is rejected under exactOptionalPropertyTypes; null is the
   // correct "no body" value for RequestInit.
@@ -244,6 +249,10 @@ export async function apiFetch(
   const token = readSession()?.access;
   if (token && !finalHeaders.has("Authorization")) {
     finalHeaders.set("Authorization", `Bearer ${token}`);
+  }
+  const workspaceId = readActiveWorkspaceId();
+  if (workspaceId && !finalHeaders.has("X-Workspace-Id")) {
+    finalHeaders.set("X-Workspace-Id", workspaceId);
   }
 
   const res = await fetch(buildUrl(path), { ...rest, headers: finalHeaders });

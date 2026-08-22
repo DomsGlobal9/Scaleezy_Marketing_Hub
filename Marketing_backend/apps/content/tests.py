@@ -32,6 +32,9 @@ class ContentReviewTests(APITestCase):
         self.item = ContentItem.objects.create(
             workspace=self.ws, headline='Festive drop', status=ContentItem.Status.PENDING_REVIEW
         )
+        self.asset = MarketingAsset.objects.create(
+            workspace=self.ws, file_name='draft.jpg', source='MANUAL_UPLOAD'
+        )
 
     def as_(self, user, ws=None):
         self.client.force_authenticate(user=user)
@@ -97,12 +100,34 @@ class ContentReviewTests(APITestCase):
         self.assertEqual(self.item.status, ContentItem.Status.PENDING_REVIEW)
 
     def test_editor_can_submit_for_review(self):
-        draft = ContentItem.objects.create(workspace=self.ws, headline='Draft')
+        draft = ContentItem.objects.create(
+            workspace=self.ws, headline='Draft', asset=self.asset
+        )
         self.as_(self.editor)
         res = self.client.post(f'/api/marketing/content/{draft.id}/submit/', {}, format='json')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         draft.refresh_from_db()
         self.assertEqual(draft.status, ContentItem.Status.PENDING_REVIEW)
+
+    def test_draft_without_media_cannot_be_submitted(self):
+        draft = ContentItem.objects.create(workspace=self.ws, headline='No media')
+        self.as_(self.editor)
+
+        res = self.client.post(f'/api/marketing/content/{draft.id}/submit/', {}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error']['code'], 'CONTENT_MEDIA_REQUIRED')
+
+    def test_submitted_content_cannot_be_edited(self):
+        self.as_(self.editor)
+
+        res = self.client.patch(
+            f'/api/marketing/content/{self.item.id}/', {'headline': 'Changed'}, format='json'
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.headline, 'Festive drop')
 
     def test_reject_records_the_note(self):
         self.as_(self.manager)
@@ -162,6 +187,9 @@ class PublishingGateTests(APITestCase):
         self.client.credentials(HTTP_X_WORKSPACE_ID=str(self.ws.id))
 
     def _publish(self, content_item):
+        if content_item.workspace_id == self.ws.id:
+            content_item.asset = self.asset
+            content_item.save(update_fields=['asset'])
         return self.client.post(
             '/api/marketing/publishing/jobs/',
             {
@@ -181,6 +209,41 @@ class PublishingGateTests(APITestCase):
         res = self._publish(draft)
         self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(res.data['error']['code'], 'NOT_APPROVED')
+
+    def test_publish_without_a_content_item_is_rejected(self):
+        res = self.client.post(
+            '/api/marketing/publishing/jobs/',
+            {
+                'workspace_id': str(self.ws.id),
+                'asset_id': str(self.asset.id),
+                'publish_mode': 'NOW',
+                'social_connection_ids': [str(self.conn.id)],
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_approved_content_cannot_publish_a_different_asset(self):
+        approved = ContentItem.objects.create(
+            workspace=self.ws, headline='Yes', status=ContentItem.Status.APPROVED,
+            asset=self.asset,
+        )
+        other_asset = MarketingAsset.objects.create(
+            workspace=self.ws, file_name='other.jpg', source='MANUAL_UPLOAD'
+        )
+        res = self.client.post(
+            '/api/marketing/publishing/jobs/',
+            {
+                'workspace_id': str(self.ws.id),
+                'asset_id': str(other_asset.id),
+                'content_item_id': str(approved.id),
+                'publish_mode': 'NOW',
+                'social_connection_ids': [str(self.conn.id)],
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error']['code'], 'CONTENT_ASSET_MISMATCH')
 
     def test_rejected_content_cannot_be_published(self):
         rejected = ContentItem.objects.create(

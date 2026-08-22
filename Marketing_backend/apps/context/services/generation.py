@@ -33,7 +33,7 @@ CAPABILITY_FOR_TASK = {
     TaskType.COPY: Capability.TEXT,
     TaskType.IMAGE: Capability.IMAGE,
     TaskType.VIDEO: Capability.VIDEO,
-    TaskType.IMAGE_ANALYSIS: Capability.TEXT,
+    TaskType.IMAGE_ANALYSIS: Capability.IMAGE_ANALYSIS,
 }
 
 
@@ -224,6 +224,61 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
             raise NoProviderConfigured(failure.get('error', 'No provider routed.'))
 
     return {'text': text, 'image': image, 'trace': trace}
+
+
+def generate_marketing_payload(workspace, brief, *, instruction=''):
+    """Return the legacy marketing payload without choosing a vendor.
+
+    This is the shared boundary used by both foreground and queued generation.
+    Product code asks for TEXT and IMAGE; only AIRouter and adapters know which
+    provider supplies them.
+    """
+    from apps.brands.models import Brand
+
+    brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
+    if brand is None:
+        text = AIRouter(workspace).dispatch(Capability.TEXT, brief)
+        raw = text.get('raw') or {}
+        return {
+            'provider': text.get('provider', ''),
+            'provider_name': text.get('provider_name', ''),
+            'brain_version': '',
+            'trace': {'capabilities': {Capability.TEXT: {'status': 'OK'}}},
+            'payload': {
+                'postTitle': text.get('headline') or raw.get('postTitle', ''),
+                'postDescription': text.get('caption') or raw.get('postDescription', ''),
+                'postHashtags': text.get('hashtags') or raw.get('postHashtags', ''),
+                'posterImageUrl': raw.get('posterImageUrl', ''),
+                'metadata': raw.get('metadata', {}),
+            },
+        }
+
+    outcome = generate_copy_and_image(
+        workspace,
+        brand,
+        brief,
+        instruction=instruction or str(brief.get('campaign_name', ''))[:500],
+    )
+    text = outcome['text'] or {}
+    image = outcome['image'] or {}
+    raw = text.get('raw') or {}
+    if not text:
+        failure = outcome['trace']['capabilities'].get(Capability.TEXT, {})
+        raise OutputRejected(failure.get('error', 'Generation produced no copy.'))
+
+    return {
+        'provider': text.get('provider', ''),
+        'provider_name': text.get('provider_name', ''),
+        'brain_version': outcome['trace'].get('brain_version', ''),
+        'trace': outcome['trace'],
+        'payload': {
+            'postTitle': text.get('headline') or raw.get('postTitle', ''),
+            'postDescription': text.get('caption') or raw.get('postDescription', ''),
+            'postHashtags': text.get('hashtags') or raw.get('postHashtags', ''),
+            'posterImageUrl': image.get('image_url', ''),
+            'metadata': raw.get('metadata', {}),
+        },
+    }
 
 
 def retry_image(workspace, brand, brief_extra, *, instruction=''):

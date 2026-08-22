@@ -115,6 +115,9 @@ export function useBrandSettings(options: { onSaved?: () => void } = {}) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<"idle" | "pending" | "saving" | "saved" | "failed">(
+    "idle",
+  );
 
   const pending = useRef<Partial<BrandSettings>>({});
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -137,39 +140,65 @@ export function useBrandSettings(options: { onSaved?: () => void } = {}) {
       });
     return () => {
       cancelled = true;
-      if (timer.current) clearTimeout(timer.current);
     };
   }, []);
 
-  const flush = useCallback(async () => {
+  const flush = useCallback(async ({ keepalive = false }: { keepalive?: boolean } = {}) => {
     if (timer.current) {
       clearTimeout(timer.current);
       timer.current = null;
     }
     const patch = pending.current;
     pending.current = {};
-    if (!brandId || Object.keys(patch).length === 0) return;
+    if (Object.keys(patch).length === 0) return;
+    if (!brandId) {
+      pending.current = { ...patch, ...pending.current };
+      setSaveState("pending");
+      return;
+    }
     setSaving(true);
+    setSaveState("saving");
     try {
       const updated = await api<BrandDto>(`/api/marketing/brands/${brandId}/`, {
         method: "PATCH",
         body: toPayload(patch),
+        keepalive,
       });
-      setSettings(toSettings(updated));
+      // New keystrokes may have arrived while this request was in flight.
+      // The server response is canonical for the submitted patch, while the
+      // still-pending patch remains the user's newest visible intent.
+      setSettings({ ...toSettings(updated), ...pending.current });
       setError(null);
+      setSaveState(Object.keys(pending.current).length ? "pending" : "saved");
       onSaved.current?.();
     } catch (e) {
+      // A failed optimistic save must remain queued. Newer changes win for
+      // the same field, and the visible Failed state prevents fake success.
+      pending.current = { ...patch, ...pending.current };
       setError(e instanceof Error ? e.message : "Could not save brand.");
+      setSaveState("failed");
     } finally {
       setSaving(false);
     }
   }, [brandId]);
+
+  useEffect(() => {
+    const persistBeforeLeaving = () => {
+      if (Object.keys(pending.current).length > 0) void flush({ keepalive: true });
+    };
+    window.addEventListener("pagehide", persistBeforeLeaving);
+    return () => {
+      window.removeEventListener("pagehide", persistBeforeLeaving);
+      persistBeforeLeaving();
+    };
+  }, [flush]);
 
   const update = useCallback(
     (patch: Partial<BrandSettings>, { immediate = false } = {}) => {
       // Optimistic: the UI reflects the change straight away.
       setSettings((prev) => ({ ...prev, ...patch }));
       pending.current = { ...pending.current, ...patch };
+      setSaveState("pending");
 
       if (timer.current) clearTimeout(timer.current);
       if (immediate) {
@@ -213,5 +242,16 @@ export function useBrandSettings(options: { onSaved?: () => void } = {}) {
     onSaved.current?.();
   }, [brandId]);
 
-  return { settings, update, flush, uploadLogo, removeLogo, loading, saving, error, brandId };
+  return {
+    settings,
+    update,
+    flush,
+    uploadLogo,
+    removeLogo,
+    loading,
+    saving,
+    saveState,
+    error,
+    brandId,
+  };
 }

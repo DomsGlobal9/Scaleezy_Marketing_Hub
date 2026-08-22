@@ -3,6 +3,7 @@ from django.db import models
 from apps.workspaces.models import MarketingWorkspace
 from apps.marketing.models import MarketingAsset
 from apps.social_accounts.models import SocialConnection
+from apps.content.models import ContentItem
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -25,6 +26,12 @@ class PublishingJob(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(MarketingWorkspace, on_delete=models.CASCADE, related_name='publishing_jobs')
     asset = models.ForeignKey(MarketingAsset, on_delete=models.CASCADE, related_name='publishing_jobs')
+    # Nullable only for pre-recovery history. Every new API-created job must
+    # name the approved durable content version it publishes.
+    content_item = models.ForeignKey(
+        ContentItem, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='publishing_jobs',
+    )
     
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_publishing_jobs')
 

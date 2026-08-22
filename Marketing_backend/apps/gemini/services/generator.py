@@ -113,14 +113,14 @@ Return ONLY a valid JSON object with these exact keys:
             return {}
 
     @classmethod
-    def generate_captions_only(cls, b64_img: str) -> dict:
+    def generate_captions_only(cls, b64_img: str, api_key: str = '') -> dict:
         """
         Takes a final poster image and writes engaging captions and hashtags for it.
         """
         if not b64_img:
             return {}
             
-        client = cls._get_client()
+        client = cls._get_client(api_key)
         mime_type, img_bytes = cls._parse_base64_image(b64_img)
         
         if not mime_type or not img_bytes:
@@ -162,7 +162,7 @@ Return ONLY a valid JSON object with these exact keys:
             return {}
 
     @classmethod
-    def analyze_video(cls, asset_id: str) -> dict:
+    def analyze_video(cls, asset_id: str, api_key: str = '') -> dict:
         """
         Downloads the video asset, uploads it to Gemini, and generates captions.
         """
@@ -176,7 +176,7 @@ Return ONLY a valid JSON object with these exact keys:
         if not asset.file_url:
             raise Exception("Video has no file URL.")
 
-        client = cls._get_client()
+        client = cls._get_client(api_key)
         
         # Download the video locally to upload to Gemini File API
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp4")

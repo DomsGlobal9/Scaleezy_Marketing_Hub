@@ -37,41 +37,76 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if denied:
             return denied
 
-        # Review gate: when the request names a content item, it must have been
-        # approved. Nothing reaches a real audience without a human decision.
-        content_item = None
-        content_item_id = request.data.get('content_item_id')
-        if content_item_id:
-            from apps.content.models import ContentItem
+        # Review gate is mandatory for every media source. Optional content
+        # ids let manual uploads bypass approval entirely.
+        from apps.content.models import ContentItem
 
-            content_item = ContentItem.objects.filter(
-                id=content_item_id, workspace_id=data['workspace_id']
-            ).first()
-            if content_item is None:
-                return APIResponse(
-                    success=False, message="Content not found.",
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-            if not content_item.is_publishable:
-                return APIResponse(
-                    success=False,
-                    message="This content has not been approved for publishing.",
-                    error={
-                        "code": "NOT_APPROVED",
-                        "message": f"Content is {content_item.get_status_display()}.",
-                    },
-                    status=status.HTTP_409_CONFLICT,
-                )
+        content_item = ContentItem.objects.filter(
+            id=data['content_item_id'], workspace_id=data['workspace_id']
+        ).first()
+        if content_item is None:
+            return APIResponse(
+                success=False, message="Content not found.",
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if not content_item.is_publishable:
+            return APIResponse(
+                success=False,
+                message="This content has not been approved for publishing.",
+                error={
+                    "code": "NOT_APPROVED",
+                    "message": f"Content is {content_item.get_status_display()}.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         try:
             workspace = MarketingWorkspace.objects.get(id=data['workspace_id'])
             asset = MarketingAsset.objects.get(id=data['asset_id'], workspace=workspace)
+            if content_item.asset_id != asset.id:
+                return APIResponse(
+                    success=False,
+                    message="The approved content does not own this media asset.",
+                    error={
+                        "code": "CONTENT_ASSET_MISMATCH",
+                        "message": "Submit the exact saved content version and media for review.",
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            requested_connection_ids = set(data['social_connection_ids'])
+            connections = list(
+                SocialConnection.objects.filter(
+                    id__in=requested_connection_ids,
+                    workspace=workspace,
+                )
+            )
+            if len(connections) != len(requested_connection_ids):
+                return APIResponse(
+                    success=False,
+                    message="One or more selected social accounts are unavailable for this client.",
+                    error={"code": "INVALID_SOCIAL_ACCOUNT", "message": "Selection rejected."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            unavailable = [
+                connection for connection in connections
+                if not connection.publishing_enabled
+                or connection.status != SocialConnection.Status.CONNECTED
+            ]
+            if unavailable:
+                return APIResponse(
+                    success=False,
+                    message="Reconnect or enable every selected account before publishing.",
+                    error={"code": "SOCIAL_ACCOUNT_NOT_READY", "message": "Selection rejected."},
+                    status=status.HTTP_409_CONFLICT,
+                )
             
             # Atomic transaction as requested by user
             with transaction.atomic():
                 job = PublishingJob.objects.create(
                     workspace=workspace,
                     asset=asset,
+                    content_item=content_item,
                     publish_mode=data['publish_mode'],
                     scheduled_at=data.get('scheduled_at'),
                     timezone=data.get('timezone', 'UTC'),
@@ -80,19 +115,7 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                     created_by=request.user if request.user.is_authenticated else None
                 )
                 
-                connections = SocialConnection.objects.filter(
-                    id__in=data['social_connection_ids'],
-                    workspace=workspace
-                )
-                
-                if not connections.exists():
-                    raise ValueError("No valid social connections selected.")
-                    
                 for connection in connections:
-                    # Basic validation
-                    if not connection.publishing_enabled:
-                        continue
-                        
                     PublishingJobItem.objects.create(
                         publishing_job=job,
                         social_connection=connection,

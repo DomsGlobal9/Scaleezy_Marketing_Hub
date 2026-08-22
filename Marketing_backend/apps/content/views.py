@@ -47,6 +47,17 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             raise PermissionDenied("No accessible workspace for this request.")
         serializer.save(workspace=workspace, created_by=self.request.user)
 
+    def update(self, request, *args, **kwargs):
+        item = self.get_object()
+        if item.status != ContentItem.Status.DRAFT:
+            return APIResponse(
+                success=False,
+                message="Only a draft can be edited. Open a new revision first.",
+                error={"code": "CONTENT_LOCKED", "message": item.get_status_display()},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().update(request, *args, **kwargs)
+
     # ── review workflow ──────────────────────────────────────────────────
     def _review(self, request, new_status, require_manager=True):
         item = self.get_object()
@@ -113,6 +124,21 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def submit(self, request, pk=None):
         """Move a draft into the review queue. Any editor may do this."""
+        item = self.get_object()
+        if item.status != ContentItem.Status.DRAFT:
+            return APIResponse(
+                success=False,
+                message="Only a draft can be submitted for review.",
+                error={"code": "INVALID_CONTENT_TRANSITION", "message": item.get_status_display()},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if item.asset_id is None:
+            return APIResponse(
+                success=False,
+                message="Attach the final media before submitting for review.",
+                error={"code": "CONTENT_MEDIA_REQUIRED", "message": "No media asset attached."},
+                status=status.HTTP_409_CONFLICT,
+            )
         item, error = self._review(
             request, ContentItem.Status.PENDING_REVIEW, require_manager=False
         )
@@ -120,11 +146,27 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
+        item = self.get_object()
+        if item.status != ContentItem.Status.PENDING_REVIEW:
+            return APIResponse(
+                success=False,
+                message="Only content pending review can be approved.",
+                error={"code": "INVALID_CONTENT_TRANSITION", "message": item.get_status_display()},
+                status=status.HTTP_409_CONFLICT,
+            )
         item, error = self._review(request, ContentItem.Status.APPROVED)
         return error or APIResponse(success=True, data=ContentItemSerializer(item).data)
 
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
+        item = self.get_object()
+        if item.status != ContentItem.Status.PENDING_REVIEW:
+            return APIResponse(
+                success=False,
+                message="Only content pending review can be rejected.",
+                error={"code": "INVALID_CONTENT_TRANSITION", "message": item.get_status_display()},
+                status=status.HTTP_409_CONFLICT,
+            )
         item, error = self._review(request, ContentItem.Status.REJECTED)
         return error or APIResponse(success=True, data=ContentItemSerializer(item).data)
 
@@ -134,6 +176,14 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         Mark as needing edits and open a new version, so the original survives
         as a record of what was rejected and why.
         """
+        item = self.get_object()
+        if item.status != ContentItem.Status.PENDING_REVIEW:
+            return APIResponse(
+                success=False,
+                message="Only content pending review can be sent back for edits.",
+                error={"code": "INVALID_CONTENT_TRANSITION", "message": item.get_status_display()},
+                status=status.HTTP_409_CONFLICT,
+            )
         item, error = self._review(request, ContentItem.Status.NEEDS_EDITS)
         if error:
             return error

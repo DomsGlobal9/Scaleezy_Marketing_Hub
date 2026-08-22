@@ -111,6 +111,15 @@ def execute_publishing_job(job_id: str):
         job.status = PublishingJob.Status.FAILED
     job.save()
 
+    if all_success and job.content_item_id:
+        from apps.content.models import ContentItem
+
+        ContentItem.objects.filter(
+            id=job.content_item_id,
+            workspace_id=job.workspace_id,
+            status=ContentItem.Status.APPROVED,
+        ).update(status=ContentItem.Status.PUBLISHED, updated_at=timezone.now())
+
 
 def _publish_to_x(item: PublishingJobItem, job: PublishingJob):
     """Publish to X/Twitter."""

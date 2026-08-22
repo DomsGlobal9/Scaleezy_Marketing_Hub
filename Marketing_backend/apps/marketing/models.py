@@ -13,7 +13,9 @@ class MarketingAsset(models.Model):
         OTHER_SUPPORTED_ASSET = 'OTHER_SUPPORTED_ASSET', 'Other Supported Asset'
 
     class Source(models.TextChoices):
-        GEMINI_GENERATED = 'GEMINI_GENERATED', 'Gemini Generated'
+        AI_GENERATED = 'AI_GENERATED', 'AI generated'
+        # Kept as a historical value so existing rows remain readable.
+        GEMINI_GENERATED = 'GEMINI_GENERATED', 'Legacy AI generated'
         MANUAL_UPLOAD = 'MANUAL_UPLOAD', 'Manual Upload'
         # Composed server-side by the layout engine from the brand's own
         # palette, fonts and photograph — neither generated nor uploaded.
@@ -35,7 +37,12 @@ class MarketingAsset(models.Model):
     duration = models.IntegerField(blank=True, null=True, help_text="Duration in seconds for video")
 
     source = models.CharField(max_length=50, choices=Source.choices)
-    generation_id = models.CharField(max_length=255, blank=True, null=True, help_text="Reference to GeminiGenerationResult if applicable")
+    generation_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Reference to the provider-neutral generation result, if applicable",
+    )
 
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_marketing_assets')
     

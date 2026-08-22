@@ -1,5 +1,6 @@
 import logging
 
+from django.db import transaction
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
@@ -23,6 +24,7 @@ from .serializers import (
     AIUsageLogSerializer,
     WorkspaceAIProviderSerializer,
     WorkspaceAIRouteSerializer,
+    ReplaceWorkspaceAIRouteSetSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,7 +36,8 @@ class AIProviderCatalogueView(APIView):
     vocabularies the console needs to render its controls.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsWorkspaceMember, HasWorkspaceRole]
+    required_read_role = WorkspaceMember.Role.ADMIN
 
     def get(self, request):
         installed = set(all_adapters())
@@ -65,7 +68,7 @@ class WorkspaceAIProviderViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     requires_workspace = False
     # Provider credentials are a spend and security decision, not an editing one.
     required_role = WorkspaceMember.Role.ADMIN
-    required_read_role = WorkspaceMember.Role.MANAGER
+    required_read_role = WorkspaceMember.Role.ADMIN
 
     def _workspace(self):
         workspace, error = get_request_workspace(self.request)
@@ -96,13 +99,87 @@ class WorkspaceAIRouteViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsWorkspaceMember, HasWorkspaceRole]
     requires_workspace = False
     required_role = WorkspaceMember.Role.ADMIN
-    required_read_role = WorkspaceMember.Role.MANAGER
+    required_read_role = WorkspaceMember.Role.ADMIN
 
     def perform_create(self, serializer):
         workspace, error = get_request_workspace(self.request)
         if error:
             raise PermissionDenied("No accessible workspace for this request.")
         serializer.save(workspace=workspace)
+
+    @action(detail=False, methods=['post'], url_path='replace-set')
+    def replace_set(self, request):
+        """Atomically replace the ordered provider set for one capability.
+
+        One capability may have multiple providers. Priority defines failover
+        order; BEST_OF and ROUND_ROBIN consume the same set. The entire set is
+        validated before any existing route is changed.
+        """
+        workspace, error = get_request_workspace(request)
+        if error:
+            return error
+
+        payload = ReplaceWorkspaceAIRouteSetSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        data = payload.validated_data
+        capability = data['capability']
+        members = data['routes']
+
+        for member in members:
+            provider = member['provider']
+            adapter = all_adapters().get(provider.key)
+            declared = {str(value) for value in (getattr(adapter, 'capabilities', ()) or ())}
+            if (
+                not provider.is_available
+                or adapter is None
+                or not provider.supports(capability)
+                or capability not in declared
+            ):
+                return APIResponse(
+                    success=False,
+                    message="That provider cannot serve this capability.",
+                    error={"code": "INVALID_AI_ROUTE", "message": capability},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not WorkspaceAIProvider.objects.filter(
+                workspace=workspace, provider=provider, enabled=True
+            ).exists():
+                return APIResponse(
+                    success=False,
+                    message="Enable the provider before routing work to it.",
+                    error={"code": "PROVIDER_NOT_ENABLED", "message": provider.display_name},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+        with transaction.atomic():
+            existing = WorkspaceAIRoute.objects.select_for_update().filter(
+                workspace=workspace, capability=capability
+            )
+            keep = []
+            for member in members:
+                provider = member['provider']
+                route, _created = WorkspaceAIRoute.objects.update_or_create(
+                    workspace=workspace,
+                    capability=capability,
+                    provider=provider,
+                    defaults={
+                        'priority': member['priority'],
+                        'strategy': data['strategy'],
+                        'enabled': True,
+                    },
+                )
+                keep.append(route.pk)
+            existing.exclude(pk__in=keep).delete()
+
+        routes = WorkspaceAIRoute.objects.filter(
+            workspace=workspace, capability=capability
+        ).select_related('provider').order_by('priority')
+
+        return APIResponse(
+            success=True,
+            data=WorkspaceAIRouteSerializer(routes, many=True).data,
+            message="AI route set updated.",
+        )
 
     @action(detail=False, methods=['get'])
     def resolved(self, request):

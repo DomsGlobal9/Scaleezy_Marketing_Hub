@@ -45,8 +45,14 @@ class AIProviderAdapter(ABC):
     def analyze_image(self, brief: Dict[str, Any]) -> Dict[str, Any]:
         raise AIProviderError(f"{self.key} does not support image analysis.")
 
+    def generate_image_captions(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        raise AIProviderError(f"{self.key} does not support image caption generation.")
+
     def generate_video(self, brief: Dict[str, Any]) -> Dict[str, Any]:
         raise AIProviderError(f"{self.key} does not support video generation.")
+
+    def analyze_video(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        raise AIProviderError(f"{self.key} does not support video analysis.")
 
     def generate_embedding(self, brief: Dict[str, Any]) -> Dict[str, Any]:
         raise AIProviderError(f"{self.key} does not support embeddings.")
@@ -75,6 +81,8 @@ class AIProviderAdapter(ABC):
             Capability.TEXT: self.generate_text,
             Capability.IMAGE: self.generate_image,
             Capability.IMAGE_ANALYSIS: self.analyze_image,
+            Capability.IMAGE_CAPTION: self.generate_image_captions,
             Capability.VIDEO: self.generate_video,
+            Capability.VIDEO_ANALYSIS: self.analyze_video,
             Capability.EMBEDDING: self.generate_embedding,
         }[capability](brief)

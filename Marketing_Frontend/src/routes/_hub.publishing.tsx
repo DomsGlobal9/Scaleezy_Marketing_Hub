@@ -46,7 +46,8 @@ import {
 } from "@/components/marketing/primitives";
 import { cn } from "@/lib/utils";
 import { useBrandSettings } from "@/lib/brand-settings";
-import { apiFetch, apiPost } from "@/lib/api";
+import { api, apiFetch, apiPost } from "@/lib/api";
+import { readActiveWorkspaceId } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub/publishing")({
   head: () => ({
@@ -69,8 +70,8 @@ export const Route = createFileRoute("/_hub/publishing")({
 
 type WorkflowStep =
   | "create_or_upload"
-  | "gemini_form"
-  | "gemini_generating"
+  | "ai_form"
+  | "ai_generating"
   | "manual_upload"
   | "preview"
   | "publish_setup";
@@ -86,23 +87,72 @@ interface CarouselSlide {
 }
 
 interface DraftAsset {
-  id?: string;
+  id?: string | undefined;
   /** ContentItem row the backend persisted for this generation. */
-  contentItemId?: string;
+  contentItemId?: string | undefined;
   name: string;
   type: string;
   dimensions: string;
   created: string;
-  source: "gemini" | "upload";
+  source: "ai" | "upload";
   contentType: ContentType;
-  campaign?: string;
-  tone?: string;
+  campaign?: string | undefined;
+  tone?: string | undefined;
   postTitle: string;
   postDescription: string;
   postHashtags: string;
-  previewUrl?: string;
+  previewUrl?: string | undefined;
   /** Populated for carousels — one entry per slide, in order. */
   slides?: CarouselSlide[];
+}
+
+interface ContentItemDto {
+  id: string;
+  asset: string | null;
+  headline: string;
+  caption: string;
+  hashtags: string;
+  preview_url: string;
+  content_format: "POSTER" | "CAROUSEL" | "VIDEO";
+  status: string;
+  ai_provider: string;
+  slides?: Array<{ position?: number; description?: string; preview_url?: string }>;
+}
+
+interface PublishingAccount {
+  id: string;
+  platform: string;
+  status: string;
+  publishing_enabled?: boolean;
+  publishingEnabled?: boolean;
+  account_name?: string;
+  username?: string;
+}
+
+interface PublishingJobItemDto {
+  id: string;
+  social_connection: PublishingAccount;
+  queued_at: string;
+  external_post_url?: string;
+  external_post_id?: string;
+  status: string;
+  error_message?: string;
+}
+
+interface PublishingJobDto {
+  items?: PublishingJobItemDto[];
+}
+
+interface PublishingHistoryRow {
+  id: string;
+  content: string;
+  platform: string;
+  account: string;
+  date: string;
+  url?: string | undefined;
+  status: string;
+  postId?: string | undefined;
+  error?: string | undefined;
 }
 
 const CONTENT_TYPES: {
@@ -177,10 +227,10 @@ type WorkingKind = "generate" | "captions" | "video";
  * such a row bought the user a "job created" toast and no post. Both the
  * checkbox and the pruning effect read this, so they can never disagree.
  */
-const canPublishTo = (acc: any, isVideoAsset: boolean): boolean => {
-  const status = String(acc?.status ?? "").toUpperCase();
-  const enabled = (acc?.publishing_enabled ?? acc?.publishingEnabled) !== false;
-  const formatMismatch = acc?.platform === "YOUTUBE" && !isVideoAsset;
+const canPublishTo = (acc: PublishingAccount, isVideoAsset: boolean): boolean => {
+  const status = String(acc.status ?? "").toUpperCase();
+  const enabled = (acc.publishing_enabled ?? acc.publishingEnabled) !== false;
+  const formatMismatch = acc.platform === "YOUTUBE" && !isVideoAsset;
   return status === "CONNECTED" && enabled && !formatMismatch;
 };
 
@@ -188,6 +238,8 @@ function PublishingPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState<WorkflowStep>("create_or_upload");
   const [asset, setAsset] = useState<DraftAsset | null>(null);
+  const [contentSaving, setContentSaving] = useState(false);
+  const [contentLocked, setContentLocked] = useState(false);
   const [showFullImage, setShowFullImage] = useState(false);
   const [referenceImageBase64, setReferenceImageBase64] = useState<string>("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -200,7 +252,7 @@ function PublishingPage() {
   // the screen for the full ten-minute polling ceiling.
   const generationAbort = useRef<AbortController | null>(null);
 
-  // Gemini Form State
+  // AI brief state
   const [campaignName, setCampaignName] = useState("");
   const [product, setProduct] = useState("");
   const [audience, setAudience] = useState("");
@@ -254,11 +306,11 @@ function PublishingPage() {
   const [scheduleDate, setScheduleDate] = useState("");
   const [scheduleTime, setScheduleTime] = useState("");
   const [running, setRunning] = useState(false);
-  const [publishingHistory, setPublishingHistory] = useState<any[]>([]);
+  const [publishingHistory, setPublishingHistory] = useState<PublishingHistoryRow[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState(false);
   const [retrying, setRetrying] = useState<string | null>(null);
-  const [accounts, setAccounts] = useState<any[]>([]);
+  const [accounts, setAccounts] = useState<PublishingAccount[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
 
   const loadHistory = useCallback(async () => {
@@ -269,14 +321,17 @@ function PublishingPage() {
         setHistoryError(true);
         return;
       }
-      const historyRows: any[] = [];
-      data.forEach((job: any) => {
-        (job.items ?? []).forEach((item: any) => {
+      const historyRows: PublishingHistoryRow[] = [];
+      (data as PublishingJobDto[]).forEach((job) => {
+        (job.items ?? []).forEach((item) => {
           historyRows.push({
             id: item.id,
             content: "Generated Marketing Post", // No text on asset currently, fallback
             platform: item.social_connection.platform,
-            account: item.social_connection.account_name || item.social_connection.username,
+            account:
+              item.social_connection.account_name ||
+              item.social_connection.username ||
+              "Connected account",
             date: new Date(item.queued_at).toLocaleString(),
             // The platform permalink, so "View" opens the real post rather
             // than being a button that does nothing.
@@ -334,6 +389,60 @@ function PublishingPage() {
     void loadHistory();
   }, [loadHistory]);
 
+  useEffect(() => {
+    const contentId = new URLSearchParams(window.location.search).get("content_item_id");
+    if (!contentId) return;
+
+    let cancelled = false;
+    void api<ContentItemDto>(`/api/marketing/content/${contentId}/`)
+      .then((item) => {
+        if (cancelled) return;
+        if (item.status !== "APPROVED") {
+          throw new Error(`Content is ${item.status.replaceAll("_", " ").toLowerCase()}, not approved.`);
+        }
+        const mappedType: ContentType =
+          item.content_format === "VIDEO"
+            ? "video"
+            : item.content_format === "CAROUSEL"
+              ? "carousel"
+              : "poster";
+        setAsset({
+          id: item.asset ?? undefined,
+          contentItemId: item.id,
+          name: item.headline || "Approved content",
+          type: mappedType === "video" ? "VIDEO" : "IMAGE",
+          dimensions: "Approved version",
+          created: "Ready to publish",
+          source: item.ai_provider ? "ai" : "upload",
+          contentType: mappedType,
+          campaign: item.headline,
+          postTitle: item.headline,
+          postDescription: item.caption,
+          postHashtags: item.hashtags,
+          previewUrl: item.preview_url || undefined,
+          ...(mappedType === "carousel" && Array.isArray(item.slides)
+            ? {
+                slides: item.slides.map((slide, index) => ({
+                  id: `saved-slide-${index}`,
+                  description: slide.description ?? "",
+                  previewUrl: slide.preview_url,
+                })),
+              }
+            : {}),
+        });
+        setContentLocked(true);
+        setStep("publish_setup");
+      })
+      .catch((error: unknown) => {
+        toast.error(error instanceof Error ? error.message : "Could not open approved content.");
+        window.history.replaceState(null, "", "/publishing");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const isVideoAsset = asset?.contentType === "video";
 
   useEffect(() => {
@@ -351,6 +460,98 @@ function PublishingPage() {
 
   const toggle = (id: string) =>
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  const ensureDraftAsset = async (draft: DraftAsset): Promise<string> => {
+    if (draft.id) return draft.id;
+    const workspaceId = readActiveWorkspaceId();
+    if (!workspaceId) throw new Error("Select a client before saving content.");
+    if (!draft.previewUrl) throw new Error("Attach or generate media before saving this draft.");
+
+    if (draft.previewUrl.startsWith("data:")) {
+      const blob = await (await fetch(draft.previewUrl)).blob();
+      const form = new FormData();
+      form.append("file", blob, draft.name || "content-media");
+      form.append("workspace_id", workspaceId);
+      form.append("source", draft.source === "ai" ? "AI_GENERATED" : "MANUAL_UPLOAD");
+      const response = await apiFetch("/api/marketing/assets/upload/", {
+        method: "POST",
+        body: form,
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.success === false || !payload?.data?.id) {
+        throw new Error(payload?.message || "Could not save the media asset.");
+      }
+      return String(payload.data.id);
+    }
+
+    const saved = await api<{ id: string }>("/api/marketing/assets/", {
+      method: "POST",
+      body: {
+        file_name: draft.name || "content-media",
+        file_url: draft.previewUrl,
+        asset_type: draft.contentType === "video" ? "VIDEO" : "IMAGE",
+        source: draft.source === "ai" ? "AI_GENERATED" : "MANUAL_UPLOAD",
+      },
+    });
+    if (!saved.id) throw new Error("The media was saved without an id.");
+    return saved.id;
+  };
+
+  const saveContentDraft = async ({ submit = false }: { submit?: boolean } = {}) => {
+    if (!asset || contentLocked) return;
+    setContentSaving(true);
+    try {
+      const assetId = await ensureDraftAsset(asset);
+      const contentFormat =
+        asset.contentType === "video"
+          ? "VIDEO"
+          : asset.contentType === "carousel"
+            ? "CAROUSEL"
+            : "POSTER";
+      const body = {
+        asset: assetId,
+        content_format: contentFormat,
+        headline: asset.postTitle,
+        caption: asset.postDescription,
+        hashtags: asset.postHashtags,
+        preview_url: asset.previewUrl ?? "",
+        slides: (asset.slides ?? []).map((slide, index) => ({
+          position: index + 1,
+          description: slide.description,
+          preview_url: slide.previewUrl ?? "",
+        })),
+      };
+
+      let contentId = asset.contentItemId;
+      if (contentId) {
+        await api<ContentItemDto>(`/api/marketing/content/${contentId}/`, {
+          method: "PATCH",
+          body,
+        });
+      } else {
+        const created = await api<ContentItemDto>("/api/marketing/content/", {
+          method: "POST",
+          body,
+        });
+        contentId = created.id;
+      }
+
+      if (!contentId) throw new Error("The draft was saved without a content id.");
+      setAsset({ ...asset, id: assetId, contentItemId: contentId });
+
+      if (submit) {
+        await apiPost(`/api/marketing/content/${contentId}/submit/`, {});
+        toast.success("Submitted for review.");
+        window.location.assign("/review");
+      } else {
+        toast.success("Draft saved. You can reopen it from Review → Drafts.");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save this draft.");
+    } finally {
+      setContentSaving(false);
+    }
+  };
 
   const runJobs = async (ids: string[]) => {
     if (ids.length === 0) return;
@@ -371,47 +572,11 @@ function PublishingPage() {
     toast(mode === "schedule" ? "Scheduling…" : "Publishing started.");
 
     try {
-      // Fetch workspaces
-      const wsRes = await apiFetch("/api/marketing/workspaces/");
-      const wsData = await wsRes.json();
-      const wsId = Array.isArray(wsData) && wsData.length > 0 ? wsData[0].id : null;
-
-      let assetId = asset?.id || null;
-      const b64Data = asset?.previewUrl || referenceImageBase64;
-
-      if (!assetId && b64Data && b64Data.startsWith("data:") && wsId) {
-        // Convert base64 data URI to Blob
-        const r = await fetch(b64Data);
-        const blob = await r.blob();
-
-        // Upload as file
-        const formData = new FormData();
-        formData.append("file", blob, "poster.jpg");
-        formData.append("workspace_id", wsId);
-        formData.append(
-          "source",
-          asset?.source === "gemini" ? "GEMINI_GENERATED" : "MANUAL_UPLOAD",
-        );
-
-        const uploadRes = await apiFetch("/api/marketing/assets/upload/", {
-          method: "POST",
-          body: formData,
-        });
-        const uploadData = await uploadRes.json();
-        // Swallowing this used to drop the user into the fallback below and
-        // publish somebody else's artwork, so it has to surface.
-        if (!uploadData.success) {
-          throw new Error(uploadData.message || "Could not upload the image for this post.");
-        }
-        assetId = uploadData.data.id;
-      }
-
-      if (!wsId || !assetId) {
-        // There used to be a fallback here that picked the first row out of
-        // /assets/ when this post had no image. MarketingAsset declares no
-        // ordering, so it published an arbitrary earlier asset to live
-        // accounts under this caption. Refusing is the only safe answer.
-        throw new Error("There is no image to publish. Generate or upload one first.");
+      const wsId = readActiveWorkspaceId();
+      const assetId = asset?.id ?? null;
+      const contentItemId = asset?.contentItemId ?? null;
+      if (!wsId || !assetId || !contentItemId || !contentLocked) {
+        throw new Error("Open an approved saved version from Review before publishing.");
       }
 
       // Build the caption from the asset's generated/manual content
@@ -430,7 +595,7 @@ function PublishingPage() {
           ...(scheduledAt ? { scheduled_at: scheduledAt } : {}),
           caption,
           social_connection_ids: ids,
-          ...(asset?.contentItemId ? { content_item_id: asset.contentItemId } : {}),
+          content_item_id: contentItemId,
         }),
       });
 
@@ -448,9 +613,9 @@ function PublishingPage() {
       } else {
         toast.error(data.message || "Failed to publish.");
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      toast.error(err.message || "Network error while publishing.");
+      toast.error(err instanceof Error ? err.message : "Network error while publishing.");
     } finally {
       setRunning(false);
       await loadHistory();
@@ -476,7 +641,7 @@ function PublishingPage() {
       await new Promise((resolve) => setTimeout(resolve, EVERY_MS));
       if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
 
-      const res = await apiFetch(`/api/marketing/gemini/${generationId}/`, { signal });
+      const res = await apiFetch(`/api/marketing/ai-generation/${generationId}/`, { signal });
       const json = await res.json();
       const request = json.data ?? json;
 
@@ -485,7 +650,7 @@ function PublishingPage() {
       }
       if (request?.status !== "COMPLETED") continue;
 
-      const resultRes = await apiFetch(`/api/marketing/gemini/${generationId}/results/`, {
+      const resultRes = await apiFetch(`/api/marketing/ai-generation/${generationId}/results/`, {
         signal,
       });
       const resultJson = await resultRes.json();
@@ -498,7 +663,7 @@ function PublishingPage() {
         postHashtags: metadata.postHashtags ?? "",
         posterImageUrl: result.generated_asset_url ?? "",
         metadata,
-        contentItemId: null,
+        contentItemId: metadata.contentItemId ?? null,
       };
     }
 
@@ -514,7 +679,7 @@ function PublishingPage() {
     const controller = new AbortController();
     generationAbort.current = controller;
     setWorkingKind("generate");
-    setStep("gemini_generating");
+    setStep("ai_generating");
     try {
       // Video and multi-slide carousels run long enough to hit a gateway
       // timeout on the synchronous endpoint, and when they do the work is
@@ -522,8 +687,8 @@ function PublishingPage() {
       // polled; a poster still comes back in one request.
       const background = contentType === "video" || contentType === "carousel";
       const endpoint = background
-        ? "/api/marketing/gemini/generate-async/"
-        : "/api/marketing/gemini/generate/";
+        ? "/api/marketing/ai-generation/generate-async/"
+        : "/api/marketing/ai-generation/generate/";
 
       const res = await apiFetch(endpoint, {
         method: "POST",
@@ -581,7 +746,7 @@ function PublishingPage() {
           month: "short",
           year: "numeric",
         }),
-        source: "gemini",
+        source: "ai",
         contentType,
         campaign: campaignName,
         tone: "from-[#F7F3EE] to-[#7C3AED]/20",
@@ -603,15 +768,17 @@ function PublishingPage() {
           : {}),
       });
       setStep("preview");
-    } catch (err: any) {
-      if (err?.name === "AbortError") {
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") {
         toast("Stopped waiting. Anything already queued keeps running.");
-        setStep("gemini_form");
+        setStep("ai_form");
         return;
       }
-      console.error("Gemini generation error:", err);
-      toast.error(err.message || "Failed to generate content. Please try again.");
-      setStep("gemini_form");
+      console.error("AI generation error:", err);
+      toast.error(
+        err instanceof Error ? err.message : "Failed to generate content. Please try again.",
+      );
+      setStep("ai_form");
     } finally {
       generationAbort.current = null;
     }
@@ -636,12 +803,9 @@ function PublishingPage() {
 
       setIsGeneratingCaptions(true);
       setWorkingKind("video");
-      setStep("gemini_generating");
+      setStep("ai_generating");
       try {
-        // Fetch workspaces
-        const wsRes = await apiFetch("/api/marketing/workspaces/");
-        const wsData = await wsRes.json();
-        const wsId = Array.isArray(wsData) && wsData.length > 0 ? wsData[0].id : null;
+        const wsId = readActiveWorkspaceId();
         if (!wsId) throw new Error("No workspace found.");
 
         const formData = new FormData();
@@ -660,7 +824,7 @@ function PublishingPage() {
         const fileUrl = uploadData.data.file_url;
 
         // Analyze video
-        const analyzeRes = await apiFetch("/api/marketing/gemini/analyze-video/", {
+        const analyzeRes = await apiFetch("/api/marketing/ai-generation/analyze-video/", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ asset_id: assetId }),
@@ -708,10 +872,10 @@ function PublishingPage() {
       setReferenceImageBase64(base64String);
 
       if (uploadIntention === "reference") {
-        setStep("gemini_form");
+        setStep("ai_form");
         setIsAnalyzing(true);
         try {
-          const res = await apiFetch("/api/marketing/gemini/analyze-image/", {
+          const res = await apiFetch("/api/marketing/ai-generation/analyze-image/", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ referenceImageBase64: base64String }),
@@ -738,9 +902,9 @@ function PublishingPage() {
       } else if (uploadIntention === "final") {
         setIsGeneratingCaptions(true);
         setWorkingKind("captions");
-        setStep("gemini_generating"); // Re-use the loading step
+        setStep("ai_generating"); // Re-use the loading step
         try {
-          const res = await apiFetch("/api/marketing/gemini/generate-captions/", {
+          const res = await apiFetch("/api/marketing/ai-generation/generate-captions/", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ referenceImageBase64: base64String }),
@@ -811,7 +975,7 @@ function PublishingPage() {
               <button
                 onClick={() => {
                   setReferenceImageBase64("");
-                  setStep("gemini_form");
+                  setStep("ai_form");
                 }}
                 className="group relative flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-[#7C3AED]/20 bg-[#F7F3EE] p-8 text-center transition-all hover:border-[#7C3AED] hover:shadow-md"
               >
@@ -853,7 +1017,7 @@ function PublishingPage() {
         )}
 
         {/* STEP 1A: GEMINI FORM */}
-        {step === "gemini_form" && (
+        {step === "ai_form" && (
           <section className="surface-card overflow-hidden">
             <div className="border-b border-[#7C3AED]/10 bg-[#F7F3EE] p-5 sm:px-8 sm:py-6">
               <div className="flex items-center gap-4">
@@ -1161,7 +1325,7 @@ function PublishingPage() {
                       brand-level defaults reach the poster; the toggles here
                       were a local copy that nothing downstream ever read. */}
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Follows your Brand Kit default in Settings — a per-generation override is not
+                    Follows the poster defaults in Brand Master — a per-generation override is not
                     available yet.
                   </p>
 
@@ -1224,7 +1388,7 @@ function PublishingPage() {
                   onClick={handleGenerate}
                   className="bg-[#7C3AED] hover:bg-[#6D28D9] text-white gap-2"
                 >
-                  <Sparkles className="size-4" /> Generate with Gemini
+                  <Sparkles className="size-4" /> Generate with AI
                 </Button>
                 <Button variant="ghost" onClick={() => setStep("create_or_upload")}>
                   Cancel
@@ -1235,7 +1399,7 @@ function PublishingPage() {
         )}
 
         {/* STEP 1A: GEMINI GENERATING */}
-        {step === "gemini_generating" && (
+        {step === "ai_generating" && (
           <section className="surface-card p-12 text-center flex flex-col items-center justify-center border border-[#7C3AED]/30 bg-[#F7F3EE] min-h-[400px]">
             <Loader2 className="size-12 animate-spin text-[#7C3AED] mb-6" />
             <h3 className="text-2xl font-semibold text-[#7C3AED]">AI is working...</h3>
@@ -1375,7 +1539,7 @@ function PublishingPage() {
                   </div>
 
                   <div className="p-6">
-                    {asset.source === "gemini" ? (
+                    {asset.source === "ai" ? (
                       <div className="inline-flex items-center gap-2 rounded-full bg-[#7C3AED]/10 px-3 py-1.5 text-xs font-medium text-[#7C3AED] mb-5">
                         <Sparkles className="size-3.5" /> Generated with AI
                       </div>
@@ -1399,24 +1563,30 @@ function PublishingPage() {
 
                     <div className="space-y-4 pt-4 border-t border-border">
                       <div className="space-y-2">
-                        <Label>Post Title</Label>
+                        <Label htmlFor="content-post-title">Post Title</Label>
                         <Input
+                          id="content-post-title"
                           value={asset.postTitle}
+                          disabled={contentLocked}
                           onChange={(e) => setAsset({ ...asset, postTitle: e.target.value })}
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label>Post Description / Caption</Label>
+                        <Label htmlFor="content-post-caption">Post Description / Caption</Label>
                         <Textarea
+                          id="content-post-caption"
                           rows={4}
                           value={asset.postDescription}
+                          disabled={contentLocked}
                           onChange={(e) => setAsset({ ...asset, postDescription: e.target.value })}
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label>Hashtags</Label>
+                        <Label htmlFor="content-post-hashtags">Hashtags</Label>
                         <Input
+                          id="content-post-hashtags"
                           value={asset.postHashtags}
+                          disabled={contentLocked}
                           onChange={(e) => setAsset({ ...asset, postHashtags: e.target.value })}
                         />
                       </div>
@@ -1457,32 +1627,51 @@ function PublishingPage() {
                       </div>
                     ) : null}
 
-                    <div className="flex flex-wrap gap-2 pt-6 mt-6 border-t border-border">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          setStep(asset.source === "gemini" ? "gemini_form" : "manual_upload")
-                        }
-                      >
-                        <Edit3 className="mr-2 size-4" /> Edit / Replace Media
-                      </Button>
-                      {asset.source === "gemini" && (
-                        <Button variant="outline" size="sm" onClick={handleGenerate}>
-                          <RefreshCw className="mr-2 size-4" /> Regenerate All
+                    {!contentLocked ? (
+                      <div className="flex flex-wrap gap-2 pt-6 mt-6 border-t border-border">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            setStep(asset.source === "ai" ? "ai_form" : "manual_upload")
+                          }
+                        >
+                          <Edit3 className="mr-2 size-4" /> Edit / Replace Media
                         </Button>
-                      )}
-                    </div>
+                        {asset.source === "ai" && (
+                          <Button variant="outline" size="sm" onClick={handleGenerate}>
+                            <RefreshCw className="mr-2 size-4" /> Regenerate All
+                          </Button>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="mt-6 rounded-xl border border-emerald-500/25 bg-emerald-500/8 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
+                        This is the approved version. Its copy and media are locked while publishing.
+                      </p>
+                    )}
                   </div>
                 </div>
 
-                {step === "preview" && (
-                  <Button
-                    className="mt-8 w-full text-lg h-14"
-                    onClick={() => setStep("publish_setup")}
-                  >
-                    Continue to Publishing
-                  </Button>
+                {step === "preview" && !contentLocked && (
+                  <div className="mt-8 grid gap-3 sm:grid-cols-2">
+                    <Button
+                      variant="outline"
+                      className="h-12"
+                      disabled={contentSaving}
+                      onClick={() => void saveContentDraft()}
+                    >
+                      {contentSaving ? <Loader2 className="size-4 animate-spin" /> : null}
+                      Save draft
+                    </Button>
+                    <Button
+                      className="h-12"
+                      disabled={contentSaving}
+                      onClick={() => void saveContentDraft({ submit: true })}
+                    >
+                      {contentSaving ? <Loader2 className="size-4 animate-spin" /> : null}
+                      Submit for review
+                    </Button>
+                  </div>
                 )}
               </section>
 
@@ -1532,7 +1721,7 @@ function PublishingPage() {
                             <PlatformIcon platform={acc.platform} className="size-9" />
                             <span className="min-w-0">
                               <span className="block truncate text-sm font-medium text-foreground">
-                                {acc.accountName || acc.account_name}
+                                {acc.account_name || acc.username || "Connected account"}
                               </span>
                               <span className="block truncate text-xs text-muted-foreground">
                                 {acc.username}

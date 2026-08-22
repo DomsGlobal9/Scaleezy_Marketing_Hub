@@ -1,8 +1,9 @@
-import { CheckCircle2, Loader2, Plug, XCircle } from "lucide-react";
+import { ArrowDown, ArrowUp, CheckCircle2, Loader2, Plug, XCircle } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -53,7 +54,7 @@ interface RouteRow {
 /**
  * Two tiers, matching how the decisions actually split:
  *   1. Providers — which AIs this customer has switched on, and their keys.
- *   2. Routing   — which provider serves which task, and how.
+ *   2. Routing   — the ordered provider set serving each capability, and how.
  */
 export function AIProvidersPanel() {
   const [catalogue, setCatalogue] = useState<CatalogueProvider[]>([]);
@@ -156,22 +157,21 @@ export function AIProvidersPanel() {
     }
   };
 
-  const setRoute = async (capability: string, providerId: string) => {
-    const existing = routes.filter((r) => r.capability === capability);
+  const replaceRouteSet = async (
+    capability: string,
+    providerIds: string[],
+    strategy: string,
+  ) => {
     setBusy(capability);
     try {
-      // One provider per capability from this UI. Multi-provider ordering and
-      // BEST_OF racing are supported by the API and the admin.
-      for (const r of existing) {
-        await api(`/api/marketing/ai/routes/${r.id}/`, { method: "DELETE" });
-      }
-      if (providerId !== "none") {
-        await apiPost("/api/marketing/ai/routes/", {
-          capability,
-          provider: providerId,
-          priority: 10,
-        });
-      }
+      await apiPost("/api/marketing/ai/routes/replace-set/", {
+        capability,
+        strategy,
+        routes: providerIds.map((provider, index) => ({
+          provider,
+          priority: (index + 1) * 10,
+        })),
+      });
       await load();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not update routing.");
@@ -180,20 +180,29 @@ export function AIProvidersPanel() {
     }
   };
 
-  const setStrategy = async (capability: string, strategy: string) => {
-    const rows = routes.filter((r) => r.capability === capability);
-    if (!rows.length) return;
-    setBusy(capability);
-    try {
-      for (const r of rows) {
-        await api(`/api/marketing/ai/routes/${r.id}/`, { method: "PATCH", body: { strategy } });
-      }
-      await load();
-    } catch {
-      toast.error("Could not update strategy.");
-    } finally {
-      setBusy(null);
-    }
+  const toggleRouteProvider = (capability: string, providerId: string, enabled: boolean) => {
+    const rows = routes
+      .filter((route) => route.capability === capability)
+      .sort((a, b) => a.priority - b.priority);
+    const current = rows.map((route) => route.provider);
+    const next = enabled
+      ? [...current.filter((id) => id !== providerId), providerId]
+      : current.filter((id) => id !== providerId);
+    void replaceRouteSet(capability, next, rows[0]?.strategy ?? "FAILOVER");
+  };
+
+  const moveRouteProvider = (capability: string, providerId: string, direction: -1 | 1) => {
+    const rows = routes
+      .filter((route) => route.capability === capability)
+      .sort((a, b) => a.priority - b.priority);
+    const ids = rows.map((route) => route.provider);
+    const from = ids.indexOf(providerId);
+    const to = from + direction;
+    if (from < 0 || to < 0 || to >= ids.length) return;
+    const next = [...ids];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved!);
+    void replaceRouteSet(capability, next, rows[0]?.strategy ?? "FAILOVER");
   };
 
   if (loading) {
@@ -241,6 +250,7 @@ export function AIProvidersPanel() {
                   <Switch
                     checked={!!wp?.enabled}
                     disabled={busy === p.id || !p.adapter_installed}
+                    aria-label={`${wp?.enabled ? "Disable" : "Enable"} ${p.display_name}`}
                     onCheckedChange={(v) => toggleProvider(p, v)}
                   />
                 </div>
@@ -249,6 +259,7 @@ export function AIProvidersPanel() {
                   <Input
                     type="password"
                     className="h-9 w-full max-w-xs"
+                    aria-label={`${p.display_name} API key`}
                     placeholder={wp?.has_credentials ? "•••••••• (saved)" : "API key"}
                     value={keys[p.id] ?? ""}
                     onChange={(e) => setKeys((k) => ({ ...k, [p.id]: e.target.value }))}
@@ -281,62 +292,128 @@ export function AIProvidersPanel() {
       <div>
         <p className="label-eyebrow">Routing</p>
         <p className="mt-1 mb-4 text-xs text-muted-foreground">
-          Choose which provider handles each task. Copy and images can use different AIs.
+          Assign one or more providers to each capability, then order their failover priority.
         </p>
         <div className="space-y-3">
           {capabilities.map((cap) => {
-            const rows = routes.filter((r) => r.capability === cap.value);
-            const eligible = catalogue.filter(
-              (p) => p.capabilities.includes(cap.value) && connectedFor(p.id)?.enabled,
+            const rows = routes
+              .filter((r) => r.capability === cap.value)
+              .sort((a, b) => a.priority - b.priority);
+            const capable = catalogue.filter(
+              (p) =>
+                p.is_available &&
+                p.adapter_installed &&
+                p.capabilities.includes(cap.value),
             );
+            const enabledCount = capable.filter((p) => connectedFor(p.id)?.enabled).length;
             return (
               <div
                 key={cap.value}
-                className="grid gap-3 rounded-xl border border-border p-4 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center"
+                className="rounded-xl border border-border p-4"
               >
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-foreground">{cap.label}</p>
-                  {!eligible.length ? (
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground">{cap.label}</p>
                     <p className="mt-0.5 text-xs text-muted-foreground">
-                      No enabled provider can serve this yet.
+                      {rows.length
+                        ? `${rows.length} provider${rows.length === 1 ? "" : "s"} routed. Failover follows the order below.`
+                        : enabledCount
+                          ? "Select one or more providers for this capability."
+                          : "No enabled provider can serve this yet."}
                     </p>
-                  ) : null}
+                  </div>
+
+                  <Select
+                    value={rows[0]?.strategy ?? "FAILOVER"}
+                    disabled={busy === cap.value || !rows.length}
+                    onValueChange={(strategy) =>
+                      void replaceRouteSet(
+                        cap.value,
+                        rows.map((row) => row.provider),
+                        strategy,
+                      )
+                    }
+                  >
+                    <SelectTrigger className="w-full sm:w-[190px]" aria-label={`${cap.label} strategy`}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {strategies.map((strategy) => (
+                        <SelectItem key={strategy.value} value={strategy.value}>
+                          {strategy.value === "BEST_OF"
+                            ? "Best of (costs N×)"
+                            : strategy.label.split("—")[0]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
 
-                <Select
-                  value={rows[0]?.provider ?? "none"}
-                  disabled={busy === cap.value || !eligible.length}
-                  onValueChange={(v) => setRoute(cap.value, v)}
-                >
-                  <SelectTrigger className="w-[190px]">
-                    <SelectValue placeholder="Not routed" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Not routed</SelectItem>
-                    {eligible.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.display_name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                <Select
-                  value={rows[0]?.strategy ?? "FAILOVER"}
-                  disabled={busy === cap.value || !rows.length}
-                  onValueChange={(v) => setStrategy(cap.value, v)}
-                >
-                  <SelectTrigger className="w-[150px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {strategies.map((s) => (
-                      <SelectItem key={s.value} value={s.value}>
-                        {s.value === "BEST_OF" ? "Best of (costs N×)" : s.label.split("—")[0]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {capable.length ? (
+                  <div className="mt-4 space-y-2">
+                    {capable.map((provider) => {
+                      const routeIndex = rows.findIndex((row) => row.provider === provider.id);
+                      const selected = routeIndex >= 0;
+                      const enabled = !!connectedFor(provider.id)?.enabled;
+                      return (
+                        <div
+                          key={provider.id}
+                          className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-border bg-background px-3 py-2.5"
+                        >
+                          <Checkbox
+                            id={`${cap.value}-${provider.id}`}
+                            checked={selected}
+                            disabled={busy === cap.value || (!enabled && !selected)}
+                            onCheckedChange={(value) =>
+                              toggleRouteProvider(cap.value, provider.id, value === true)
+                            }
+                          />
+                          <Label
+                            htmlFor={`${cap.value}-${provider.id}`}
+                            className="min-w-0 cursor-pointer text-sm font-normal"
+                          >
+                            <span className="block truncate">{provider.display_name}</span>
+                            {selected ? (
+                              <span className="block text-xs text-muted-foreground">
+                                Priority {routeIndex + 1}{enabled ? "" : " · provider disabled"}
+                              </span>
+                            ) : !enabled ? (
+                              <span className="block text-xs text-muted-foreground">
+                                Enable this provider above before routing to it.
+                              </span>
+                            ) : null}
+                          </Label>
+                          {selected ? (
+                            <div className="flex gap-1">
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                className="size-8"
+                                aria-label={`Move ${provider.display_name} up`}
+                                disabled={busy === cap.value || routeIndex === 0}
+                                onClick={() => moveRouteProvider(cap.value, provider.id, -1)}
+                              >
+                                <ArrowUp className="size-4" />
+                              </Button>
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                className="size-8"
+                                aria-label={`Move ${provider.display_name} down`}
+                                disabled={busy === cap.value || routeIndex === rows.length - 1}
+                                onClick={() => moveRouteProvider(cap.value, provider.id, 1)}
+                              >
+                                <ArrowDown className="size-4" />
+                              </Button>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </div>
             );
           })}

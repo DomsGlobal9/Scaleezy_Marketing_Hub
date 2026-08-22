@@ -1,6 +1,13 @@
 from rest_framework import serializers
 
-from .models import AIProvider, AIUsageLog, WorkspaceAIProvider, WorkspaceAIRoute
+from .models import (
+    AIProvider,
+    AIUsageLog,
+    Capability,
+    Strategy,
+    WorkspaceAIProvider,
+    WorkspaceAIRoute,
+)
 
 
 class AIProviderSerializer(serializers.ModelSerializer):
@@ -63,6 +70,29 @@ class WorkspaceAIRouteSerializer(serializers.ModelSerializer):
                 {'provider': f"{provider.display_name} cannot serve {capability}."}
             )
         return attrs
+
+
+class WorkspaceAIRouteMemberSerializer(serializers.Serializer):
+    provider = serializers.PrimaryKeyRelatedField(queryset=AIProvider.objects.all())
+    priority = serializers.IntegerField(min_value=0)
+
+
+class ReplaceWorkspaceAIRouteSetSerializer(serializers.Serializer):
+    capability = serializers.ChoiceField(choices=Capability.choices)
+    routes = WorkspaceAIRouteMemberSerializer(many=True, allow_empty=True)
+    strategy = serializers.ChoiceField(
+        choices=Strategy.choices,
+        default=Strategy.FAILOVER,
+    )
+
+    def validate_routes(self, routes):
+        provider_ids = [route['provider'].id for route in routes]
+        if len(provider_ids) != len(set(provider_ids)):
+            raise serializers.ValidationError("A provider can appear only once per capability.")
+        priorities = [route['priority'] for route in routes]
+        if len(priorities) != len(set(priorities)):
+            raise serializers.ValidationError("Route priorities must be unique.")
+        return routes
 
 
 class AIUsageLogSerializer(serializers.ModelSerializer):

@@ -36,6 +36,11 @@ class LinkedInAdapterTests(TestCase):
 
     def setUp(self):
         self.adapter = LinkedInAdapter()
+        # OAuth unit tests must not depend on whichever credentials happen to
+        # exist in the developer or CI environment.
+        self.adapter.client_id = 'linkedin-test-client'
+        self.adapter.client_secret = 'linkedin-test-secret'
+        self.adapter.redirect_uri = 'https://example.test/linkedin/callback'
         # Clear cache between tests
         cache.clear()
 

@@ -1,5 +1,5 @@
 /**
- * Settings — workspace, account, provider and security configuration only.
+ * Settings — workspace, account and security configuration only.
  *
  * Brand identity lives in Brand Master. Everything here reads and writes a
  * real backend record: the workspace row, the AI provider/routing tables,
@@ -16,7 +16,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader, StatusBadge } from "@/components/marketing/primitives";
-import { AIProvidersPanel } from "@/components/marketing/ai-providers-panel";
 import { UsagePanel } from "@/components/marketing/usage-panel";
 import { api, apiFetch } from "@/lib/api";
 
@@ -24,7 +23,7 @@ export const Route = createFileRoute("/_hub/settings")({
   head: () => ({
     meta: [
       { title: "Settings — Scaleezy Marketing Hub" },
-      { name: "description", content: "Workspace, AI providers, plan usage and security." },
+      { name: "description", content: "Workspace, plan usage and security." },
     ],
   }),
   component: SettingsPage,
@@ -159,7 +158,7 @@ function SettingsPage() {
       <PageHeader
         eyebrow="Marketing Hub"
         title="Settings"
-        subtitle="Workspace, AI providers, plan usage and security. Brand identity and intelligence live in Brand Master."
+        subtitle="Workspace, plan usage and security. Brand identity and intelligence live in Brand Master."
         backTo="/"
       />
 
@@ -229,9 +228,6 @@ function SettingsPage() {
           <UsagePanel />
         </Panel>
 
-        <Panel label="AI" title="Providers & routing">
-          <AIProvidersPanel />
-        </Panel>
       </div>
 
       <div className="mt-6">

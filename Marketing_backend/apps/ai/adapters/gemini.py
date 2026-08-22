@@ -26,6 +26,8 @@ class GeminiAdapter(AIProviderAdapter):
         Capability.TEXT,
         Capability.IMAGE,
         Capability.IMAGE_ANALYSIS,
+        Capability.IMAGE_CAPTION,
+        Capability.VIDEO_ANALYSIS,
         Capability.EMBEDDING,
     )
     default_model = 'gemini-1.5-pro'
@@ -63,6 +65,22 @@ class GeminiAdapter(AIProviderAdapter):
             raise AIProviderError("No image supplied for analysis.")
         return {'analysis': self._service().analyze_reference_image(
             b64, api_key=self.credentials)}
+
+    def generate_image_captions(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        b64 = brief.get('reference_image_base64') or brief.get('referenceImageBase64', '')
+        if not b64:
+            raise AIProviderError("No image supplied for caption generation.")
+        return {'captions': self._service().generate_captions_only(
+            b64, api_key=self.credentials
+        )}
+
+    def analyze_video(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        asset_id = brief.get('asset_id')
+        if not asset_id:
+            raise AIProviderError("No asset supplied for video analysis.")
+        return {'analysis': self._service().analyze_video(
+            asset_id, api_key=self.credentials
+        )}
 
     #: Embedding model, separate from the generation model.
     embedding_model = 'text-embedding-004'

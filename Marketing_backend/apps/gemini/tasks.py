@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 def generate_content(request_id: str):
     """Runs one generation and records the outcome on the request row."""
     from apps.gemini.models import GeminiGenerationRequest, GeminiGenerationResult
-    from apps.gemini.services.generator import GeminiGeneratorService
+    from apps.context.services.generation import generate_marketing_payload
 
     try:
         request = GeminiGenerationRequest.objects.select_related('workspace').get(
@@ -46,7 +46,8 @@ def generate_content(request_id: str):
         brief = {}
 
     try:
-        result_data = GeminiGeneratorService.generate_marketing_content(brief)
+        routed = generate_marketing_payload(request.workspace, brief)
+        result_data = routed['payload']
     except Exception as exc:
         logger.exception("Generation %s failed", request_id)
         request.status = GeminiGenerationRequest.Status.FAILED
@@ -54,6 +55,8 @@ def generate_content(request_id: str):
         request.save(update_fields=['status', 'error_message'])
         # Re-raised so the worker records the traceback and can retry.
         raise
+
+    content_item = _persist(request, brief, result_data, routed['provider'])
 
     GeminiGenerationResult.objects.update_or_create(
         request=request,
@@ -63,16 +66,19 @@ def generate_content(request_id: str):
             'metadata': {
                 'postTitle': result_data.get('postTitle', ''),
                 'postHashtags': result_data.get('postHashtags', ''),
+                'provider': routed['provider'],
+                'provider_name': routed['provider_name'],
+                'brain_version': routed['brain_version'],
                 'completed_at': timezone.now().isoformat(),
+                'contentItemId': str(content_item.id) if content_item else None,
             },
         },
     )
 
-    content_item = _persist(request, brief, result_data)
-
     request.status = GeminiGenerationRequest.Status.COMPLETED
+    request.provider = routed['provider']
     request.completed_at = timezone.now()
-    request.save(update_fields=['status', 'completed_at'])
+    request.save(update_fields=['status', 'provider', 'completed_at'])
 
     return {
         'request': str(request.id),
@@ -80,7 +86,7 @@ def generate_content(request_id: str):
     }
 
 
-def _persist(request, brief, result_data):
+def _persist(request, brief, result_data, provider_key):
     """
     Mirrors the synchronous path's persistence so a background generation
     produces exactly the same ContentItem a foreground one would.
@@ -109,7 +115,7 @@ def _persist(request, brief, result_data):
             cta=(brief.get('offer') or '')[:255],
             preview_url=(result_data.get('posterImageUrl') or '')[:1000],
             slides=slides if isinstance(slides, list) else [],
-            ai_provider='GOOGLE_GEMINI',
+            ai_provider=(provider_key or 'UNKNOWN')[:100],
             ai_prompt=str(brief)[:5000],
             created_by=request.user,
         )

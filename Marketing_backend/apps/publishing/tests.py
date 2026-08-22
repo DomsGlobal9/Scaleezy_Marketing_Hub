@@ -4,6 +4,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from apps.marketing.models import MarketingAsset
+from apps.content.models import ContentItem
 from apps.publishing.models import PublishingJob, PublishingJobItem
 from apps.publishing.services import execute_publishing_job
 from apps.social_accounts.models import SocialConnection
@@ -65,6 +66,22 @@ class ExecuteJobTests(TestCase):
 
         self.job.refresh_from_db()
         self.assertEqual(self.job.status, PublishingJob.Status.PUBLISHED)
+
+    def test_successful_job_marks_its_approved_content_published(self):
+        content = ContentItem.objects.create(
+            workspace=self.ws,
+            asset=self.asset,
+            status=ContentItem.Status.APPROVED,
+            headline='Approved version',
+        )
+        self.job.content_item = content
+        self.job.save(update_fields=['content_item'])
+        self.item('X', 'x1', status=PublishingJobItem.Status.PUBLISHED)
+
+        execute_publishing_job(str(self.job.id))
+
+        content.refresh_from_db()
+        self.assertEqual(content.status, ContentItem.Status.PUBLISHED)
 
     def test_a_partial_result_is_reported_as_partial(self):
         self.item('X', 'x1', status=PublishingJobItem.Status.PUBLISHED)

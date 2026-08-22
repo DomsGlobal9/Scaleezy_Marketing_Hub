@@ -68,6 +68,10 @@ class LinkedInAdapter(SocialPlatformAdapter):
 
     def _rest_headers(self, access_token: str) -> Dict[str, str]:
         """Standard headers for LinkedIn REST API calls."""
+        if not (access_token or '').strip():
+            raise LinkedInAuthenticationError(
+                "A LinkedIn access token is required before publishing or reading account data."
+            )
         return {
             "Authorization": f"Bearer {access_token}",
             "LinkedIn-Version": self.api_version,
