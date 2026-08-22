@@ -1,40 +1,22 @@
-import { useState, useEffect } from "react";
+/**
+ * Analytics — the publishing activity that is real, and the performance
+ * surface that does not exist yet.
+ *
+ * The six charts and the per-platform table read DailyMetric,
+ * PlatformPerformance and CampaignROI. Nothing in the product writes to those
+ * three tables, so each one could only ever draw an empty framed chart under a
+ * provenance badge — which reads as measured zero performance rather than as a
+ * capability that was never built. They stay on the page as disabled
+ * placeholders so its intended shape is still legible, and the dashboard
+ * request that fed them is no longer sent.
+ */
+import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import {
-  AlertTriangle,
-  CalendarClock,
-  Share2,
-  BarChart3,
-  CircleDollarSign,
-  Eye,
-  Heart,
-  MousePointerClick,
-  Send,
-  Target,
-} from "lucide-react";
-import {
-  Area,
-  AreaChart,
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import { AlertTriangle, CalendarClock, Send, Share2 } from "lucide-react";
 
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader, SectionTitle, StatCard } from "@/components/marketing/primitives";
-import { apiFetch } from "@/lib/api";
+import { api } from "@/lib/api";
 
 export const Route = createFileRoute("/_hub/analytics")({
   head: () => ({
@@ -54,78 +36,58 @@ export const Route = createFileRoute("/_hub/analytics")({
   component: AnalyticsPage,
 });
 
-const axis = {
-  stroke: "var(--muted-foreground)",
-  fontSize: 12,
-  tickLine: false,
-  axisLine: false,
-};
+interface Kpi {
+  key: string;
+  label: string;
+  value: number;
+  hint?: string | null;
+}
 
-// Long numeric ticks get dropped by recharts when they collide, which leaves a
-// misleading non-uniform axis (0, 3000, 6000, 12000). Compact labels all fit.
-const compact = (value: number) =>
-  value >= 1000 ? `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}k` : String(value);
+/** The performance charts this page is designed around, in their intended order. */
+const PLANNED_CHARTS = [
+  "Reach over time",
+  "Engagement over time",
+  "Platform Performance",
+  "Platform comparison",
+  "Conversion trend",
+  "Campaign ROI",
+];
 
-const tooltipStyle = {
-  contentStyle: {
-    borderRadius: 12,
-    border: "1px solid var(--border)",
-    background: "var(--card)",
-    fontSize: 12,
-    color: "var(--foreground)",
-  },
-};
+const UNAVAILABLE = "Not available yet";
 
-function ChartCard({
-  title,
-  source,
-  children,
-}: {
-  title: string;
-  source: string;
-  children: React.ReactNode;
-}) {
+function ChartPlaceholder({ title }: { title: string }) {
   return (
     <div className="surface-card p-5">
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
-        <h3 className="truncate text-sm font-semibold text-foreground">{title}</h3>
-        <span className="shrink-0 rounded-full border border-border bg-secondary/60 px-2.5 py-0.5 text-xs text-muted-foreground">
-          {source}
+        <h3 className="truncate text-sm font-semibold text-muted-foreground">{title}</h3>
+        <span className="shrink-0 rounded-full border border-border px-2.5 py-0.5 text-xs text-muted-foreground">
+          {UNAVAILABLE}
         </span>
       </div>
-      <div className="mt-4 h-56 w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          {children as React.ReactElement}
-        </ResponsiveContainer>
-      </div>
+      <div className="mt-4 h-32 w-full rounded-lg border border-dashed border-border" />
     </div>
   );
 }
 
 function AnalyticsPage() {
-  const [trend, setTrend] = useState<any[]>([]);
-  const [platformPerf, setPlatformPerf] = useState<any[]>([]);
-  const [roi, setRoi] = useState<any[]>([]);
-  const [kpis, setKpis] = useState<Array<{
-    key: string;
-    label: string;
-    value: number;
-    hint?: string | null;
-  }> | null>(null);
+  const [kpis, setKpis] = useState<Kpi[] | null>(null);
+  const [kpiError, setKpiError] = useState<string | null>(null);
 
   useEffect(() => {
-    apiFetch("/api/marketing/analytics/kpis/")
-      .then((res) => res.json())
-      .then((data) => setKpis(Array.isArray(data?.kpis) ? data.kpis : []))
-      .catch(() => setKpis([]));
-    apiFetch("/api/marketing/analytics/dashboard/")
-      .then((res) => res.json())
+    let cancelled = false;
+    // A failed load used to be flattened into an empty array, so a 403 or a 500
+    // looked exactly like a workspace that has published nothing.
+    api<{ kpis: Kpi[] }>("/api/marketing/analytics/kpis/")
       .then((data) => {
-        if (data.trend) setTrend(data.trend);
-        if (data.platform_perf) setPlatformPerf(data.platform_perf);
-        if (data.roi) setRoi(data.roi);
+        if (!cancelled) setKpis(data.kpis ?? []);
       })
-      .catch(console.error);
+      .catch((e: unknown) => {
+        if (!cancelled)
+          setKpiError(e instanceof Error ? e.message : "Could not load publishing activity.");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
@@ -137,133 +99,62 @@ function AnalyticsPage() {
         backTo="/"
       />
 
-      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {(kpis ?? [])
-          .filter((k) => ["published", "scheduled", "failed", "connected_accounts"].includes(k.key))
-          .map((k) => (
-            <StatCard
-              key={k.key}
-              label={k.label}
-              value={String(k.value)}
-              icon={
-                k.key === "connected_accounts"
-                  ? Share2
-                  : k.key === "failed"
-                    ? AlertTriangle
-                    : k.key === "scheduled"
-                      ? CalendarClock
-                      : Send
-              }
-              {...(k.hint ? { hint: k.hint } : {})}
-              loading={kpis === null}
-            />
-          ))}
-      </section>
+      {kpiError ? (
+        <p className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+          {kpiError}
+        </p>
+      ) : (
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {kpis === null
+            ? // The skeleton has to stand in for the cards, not sit inside them:
+              // mapping over a null result yields nothing to carry a loading prop.
+              Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-28 rounded-xl" />
+              ))
+            : kpis
+                .filter((k) =>
+                  ["published", "scheduled", "failed", "connected_accounts"].includes(k.key),
+                )
+                .map((k) => (
+                  <StatCard
+                    key={k.key}
+                    label={k.label}
+                    value={String(k.value)}
+                    icon={
+                      k.key === "connected_accounts"
+                        ? Share2
+                        : k.key === "failed"
+                          ? AlertTriangle
+                          : k.key === "scheduled"
+                            ? CalendarClock
+                            : Send
+                    }
+                    {...(k.hint ? { hint: k.hint } : {})}
+                  />
+                ))}
+        </section>
+      )}
 
-      {trend.length === 0 && platformPerf.length === 0 && roi.length === 0 ? (
-        <div className="mt-6 rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
-          <p className="font-medium text-foreground">No performance data yet.</p>
-          <p className="mt-1">
-            Reach, engagement, clicks, conversions and ROI appear here once platform metrics are
-            ingested for this workspace. Nothing is estimated in the meantime — the counts above are
-            real publishing activity.
-          </p>
-        </div>
-      ) : null}
+      <div className="mt-6 rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
+        <p className="font-medium text-foreground">Performance reporting is not available yet.</p>
+        <p className="mt-1">
+          Reach, engagement, clicks, conversions and ROI need a metrics source, and none is
+          connected to this workspace. Nothing is estimated in the meantime — the counts above are
+          real publishing activity.
+        </p>
+      </div>
 
       <section className="mt-10 grid gap-4 xl:grid-cols-2">
-        <ChartCard title="Reach over time" source="Daily metrics">
-          <AreaChart data={trend}>
-            <defs>
-              <linearGradient id="reachFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="var(--primary)" stopOpacity={0.35} />
-                <stop offset="100%" stopColor="var(--primary)" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-            <XAxis dataKey="month" {...axis} />
-            <YAxis {...axis} width={44} />
-            <Tooltip {...tooltipStyle} />
-            <Area
-              type="monotone"
-              dataKey="reach"
-              stroke="var(--primary)"
-              strokeWidth={2}
-              fill="url(#reachFill)"
-            />
-          </AreaChart>
-        </ChartCard>
-
-        <ChartCard title="Engagement over time" source="Daily metrics">
-          <LineChart data={trend}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-            <XAxis dataKey="month" {...axis} />
-            <YAxis {...axis} width={44} />
-            <Tooltip {...tooltipStyle} />
-            <Line
-              type="monotone"
-              dataKey="engagement"
-              stroke="var(--gold)"
-              strokeWidth={2}
-              dot={false}
-            />
-          </LineChart>
-        </ChartCard>
-
-        <ChartCard title="Platform Performance" source="Platform metrics">
-          <BarChart data={platformPerf}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-            <XAxis dataKey="month" {...axis} />
-            <YAxis {...axis} width={44} />
-            <Tooltip {...tooltipStyle} />
-            <Bar dataKey="posts" fill="var(--primary)" radius={[6, 6, 0, 0]} maxBarSize={34} />
-          </BarChart>
-        </ChartCard>
-
-        <ChartCard title="Platform comparison" source="Platform metrics">
-          <BarChart data={platformPerf} layout="vertical" margin={{ left: 20 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
-            <XAxis type="number" {...axis} tickFormatter={compact} />
-            <YAxis type="category" dataKey="platform" {...axis} width={100} />
-            <Tooltip {...tooltipStyle} />
-            <Bar dataKey="reach" fill="var(--gold)" radius={[0, 6, 6, 0]} maxBarSize={18} />
-          </BarChart>
-        </ChartCard>
-
-        <ChartCard title="Conversion trend" source="Daily metrics">
-          <LineChart data={trend}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-            <XAxis dataKey="month" {...axis} />
-            <YAxis {...axis} width={44} />
-            <Tooltip {...tooltipStyle} />
-            <Line
-              type="monotone"
-              dataKey="conversions"
-              stroke="var(--primary)"
-              strokeWidth={2}
-              dot={false}
-            />
-          </LineChart>
-        </ChartCard>
-
-        <ChartCard title="Campaign ROI" source="Campaign ROI">
-          {/* Campaign names are too long to sit side by side on an X axis — they
-              collided even at desktop width — so they run down the Y axis instead. */}
-          <BarChart data={roi} layout="vertical" margin={{ left: 20 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
-            <XAxis type="number" {...axis} />
-            <YAxis type="category" dataKey="campaign" {...axis} width={130} />
-            <Tooltip {...tooltipStyle} />
-            <Bar dataKey="roi" fill="var(--primary)" radius={[0, 6, 6, 0]} maxBarSize={22} />
-          </BarChart>
-        </ChartCard>
+        {PLANNED_CHARTS.map((title) => (
+          <ChartPlaceholder key={title} title={title} />
+        ))}
       </section>
 
       <section className="mt-10">
         <SectionTitle
           label="Campaign Performance"
           title="Platform performance"
-          description="Per-platform reach, engagement, clicks, conversions and ROI from ingested metrics."
+          description="Per-platform reach, engagement, clicks, conversions and ROI, once a metrics source is connected."
         />
         <div className="surface-card overflow-hidden">
           <div className="hidden overflow-x-auto lg:block">
@@ -278,41 +169,16 @@ function AnalyticsPage() {
                 </tr>
               </thead>
               <tbody>
-                {platformPerf.map((row) => (
-                  <tr key={row.platform} className="border-b border-border/70 last:border-0">
-                    <td className="px-4 py-3 font-medium text-foreground">{row.platform}</td>
-                    <td className="px-4 py-3">{row.reach.toLocaleString("en-IN")}</td>
-                    <td className="px-4 py-3">{row.engagement}</td>
-                    <td className="px-4 py-3">{row.clicks}</td>
-                    <td className="px-4 py-3">{row.conversions}</td>
-                    <td className="px-4 py-3 font-semibold text-primary">{row.roi}</td>
-                  </tr>
-                ))}
+                <tr>
+                  <td colSpan={6} className="px-4 py-6 text-sm text-muted-foreground">
+                    {UNAVAILABLE} — nothing ingests per-platform metrics.
+                  </td>
+                </tr>
               </tbody>
             </table>
           </div>
-          <div className="divide-y divide-border lg:hidden">
-            {platformPerf.map((row) => (
-              <div key={row.platform} className="p-4">
-                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-                  <p className="truncate text-sm font-semibold text-foreground">{row.platform}</p>
-                  <span className="text-sm font-semibold text-primary">{row.roi}</span>
-                </div>
-                <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                  {[
-                    ["Reach", row.reach.toLocaleString("en-IN")],
-                    ["Engagement", String(row.engagement)],
-                    ["Clicks", String(row.clicks)],
-                    ["Conversions", String(row.conversions)],
-                  ].map(([k, v]) => (
-                    <div key={k}>
-                      <dt className="text-muted-foreground uppercase">{k}</dt>
-                      <dd className="text-foreground">{v}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </div>
-            ))}
+          <div className="p-4 text-sm text-muted-foreground lg:hidden">
+            {UNAVAILABLE} — nothing ingests per-platform metrics.
           </div>
         </div>
       </section>
