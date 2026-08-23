@@ -1,9 +1,10 @@
 """
 Unique client code, and the client lifecycle status.
 
-`client_code` is added without its unique constraint, backfilled for every
-existing workspace, and only then made unique — the only order that works on
-a populated table.
+`client_code` is added without an index or unique constraint, backfilled for
+every existing workspace, and only then made unique — the only order that
+works on a populated table, and the only order that creates PostgreSQL's
+"_like" index once rather than twice.
 
 `status` defaults to ACTIVE, so every existing client keeps behaving exactly
 as it did.
@@ -40,10 +41,16 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        # Added WITHOUT an index on purpose. Adding it indexed and then altering
+        # it to unique made Django's PostgreSQL schema editor create the
+        # varchar_pattern_ops "_like" index twice under the same name
+        # (relation "..._client_code_..._like" already exists) — a failure
+        # SQLite never shows. Unique, below, creates the one index this column
+        # needs, after the backfill has made every value distinct.
         migrations.AddField(
             model_name='marketingworkspace',
             name='client_code',
-            field=models.CharField(blank=True, db_index=True, default='', max_length=32),
+            field=models.CharField(blank=True, default='', max_length=32),
         ),
         migrations.AddField(
             model_name='marketingworkspace',
