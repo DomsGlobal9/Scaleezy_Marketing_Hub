@@ -8,6 +8,7 @@
  * as a credit line rather than as the content.
  */
 import { ExternalLink, FileText, Image as ImageIcon, Link2, Quote, Video } from "lucide-react";
+import { useState } from "react";
 
 import type { LibraryEntryFields, LibraryKind } from "@/lib/platform";
 import { cn } from "@/lib/utils";
@@ -29,7 +30,7 @@ const KIND_ICON: Record<LibraryKind, typeof Link2> = {
 };
 
 export function asKind(value: string | undefined | null): LibraryKind {
-  return value && value in KIND_LABEL ? (value as LibraryKind) : "LINK";
+  return value && Object.hasOwn(KIND_LABEL, value) ? (value as LibraryKind) : "LINK";
 }
 
 export function KindBadge({ kind, className }: { kind: string; className?: string }) {
@@ -70,6 +71,11 @@ export function LibraryEntryPreview({
 }) {
   const kind = asKind(entry.kind);
   const title = entry.title || entry.file_name || "Library entry";
+  const [expanded, setExpanded] = useState(false);
+  const longText = kind === "TEXT" && (entry.body ?? "").length > 320;
+  // The extension, not the mime type: "vnd.openxmlformats-officedocument
+  // .wordprocessingml.document" is 58 characters and bursts the card.
+  const extension = (entry.file_name || "").split(".").pop()?.toUpperCase() ?? "";
 
   return (
     <div className={cn("mt-2 space-y-1.5", className)}>
@@ -79,19 +85,27 @@ export function LibraryEntryPreview({
             src={entry.file_url}
             alt={title}
             loading="lazy"
-            className="h-44 w-full rounded-lg border border-border bg-secondary object-cover"
+            className="h-44 w-full rounded-lg border border-border bg-secondary object-contain"
           />
         </a>
       ) : null}
 
       {kind === "VIDEO" && entry.file_url ? (
-        <video
-          src={entry.file_url}
-          controls
-          preload="metadata"
-          playsInline
-          className="h-44 w-full rounded-lg border border-border bg-black object-contain"
-        />
+        <>
+          <video
+            src={entry.file_url}
+            controls
+            preload="metadata"
+            playsInline
+            className="h-44 w-full rounded-lg border border-border bg-black object-contain"
+          />
+          {/* Not every browser plays every container (MOV in Firefox), so the
+              file stays one click away whatever the player does. */}
+          <SourceLine
+            url={entry.file_url}
+            label={`Open video · ${entry.file_name || extension || "file"}`}
+          />
+        </>
       ) : null}
 
       {kind === "FILE" && entry.file_url ? (
@@ -103,16 +117,27 @@ export function LibraryEntryPreview({
         >
           <FileText className="size-4 shrink-0 text-muted-foreground" strokeWidth={1.75} />
           <span className="min-w-0 flex-1 truncate">{entry.file_name || "Open file"}</span>
-          <span className="shrink-0 text-[0.625rem] text-muted-foreground uppercase">
-            {entry.mime_type?.split("/").pop() ?? ""}
-          </span>
+          <span className="shrink-0 text-[0.625rem] text-muted-foreground uppercase">{extension}</span>
         </a>
       ) : null}
 
       {kind === "TEXT" ? (
-        <blockquote className="line-clamp-6 rounded-lg border-l-2 border-gold/70 bg-secondary/50 px-3 py-2 text-sm whitespace-pre-wrap text-foreground">
-          {entry.body}
-        </blockquote>
+        <div className="rounded-lg border-l-2 border-gold/70 bg-secondary/50 px-3 py-2">
+          <blockquote
+            className={cn("text-sm whitespace-pre-wrap text-foreground", !expanded && "line-clamp-6")}
+          >
+            {entry.body}
+          </blockquote>
+          {longText ? (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="mt-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+            >
+              {expanded ? "Show less" : "Show all"}
+            </button>
+          ) : null}
+        </div>
       ) : null}
 
       {kind === "LINK" && entry.reference_url ? (

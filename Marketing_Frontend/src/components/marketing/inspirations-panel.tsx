@@ -15,6 +15,7 @@ import {
   Link2,
   Loader2,
   Plus,
+  Quote,
   Upload,
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
@@ -474,7 +475,7 @@ function InspirationCard({
               target="_blank"
               rel="noreferrer"
               className="grid size-24 shrink-0 place-items-center rounded-lg border text-muted-foreground hover:text-foreground"
-              title={inspiration.file_url}
+              title={inspiration.file_name ?? inspiration.file_url}
             >
               <FileText className="size-5" />
             </a>
@@ -488,7 +489,11 @@ function InspirationCard({
             </a>
           ) : (
             <span className="grid size-24 shrink-0 place-items-center rounded-lg border border-dashed text-muted-foreground">
-              <Link2 className="size-5" />
+              {inspiration.inspiration_type === "TEXT" ? (
+                <Quote className="size-5" />
+              ) : (
+                <Link2 className="size-5" />
+              )}
             </span>
           )}
           <div className="min-w-0 flex-1">
@@ -533,7 +538,7 @@ function InspirationCard({
               )}
             </div>
             {inspiration.annotation ? (
-              <p className="mt-2 text-sm">“{inspiration.annotation}”</p>
+              <p className="mt-2 text-sm whitespace-pre-wrap">“{inspiration.annotation}”</p>
             ) : null}
             {inspiration.usage_scope === "SPECIFIC_ELEMENTS" && inspiration.focus_areas.length ? (
               <p className="mt-1 text-xs text-muted-foreground">

@@ -195,8 +195,8 @@ function EditorSheet({
           <SheetHeader>
             <SheetTitle>{item ? "Edit library entry" : "New library entry"}</SheetTitle>
             <SheetDescription>
-              A link, an image, a video, a file or a piece of text — and why the team kept it. The
-              annotation is the part a client is really given.
+              A link, an image, a video, a file or a piece of text — and why the team kept it. Clients
+              get both: the reference itself and the annotation saying why it is good.
             </SheetDescription>
           </SheetHeader>
           <div className="mt-6 space-y-4">
@@ -211,7 +211,10 @@ function EditorSheet({
                       type="button"
                       role="radio"
                       aria-checked={mode === value}
-                      onClick={() => setMode(value)}
+                      onClick={() => {
+                        setMode(value);
+                        setFile(null);
+                      }}
                       className={cn(
                         "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
                         mode === value
@@ -258,14 +261,18 @@ function EditorSheet({
 
             {mode === "UPLOAD" ? (
               item ? (
-                <Field label="File" id="lib-file-current">
+                <Field
+                  label="File"
+                  id="lib-file-current"
+                  hint="The file itself cannot be replaced — retire this entry and upload a new one."
+                >
                   <LibraryEntryPreview entry={item} className="mt-0" />
                 </Field>
               ) : (
                 <Field
                   label="File"
                   id="lib-file"
-                  hint={`Image (PNG, JPG, GIF, WebP, AVIF), video (MP4, WebM, MOV), PDF, text, Word or PowerPoint — up to ${LIBRARY_UPLOAD_MAX_MB} MB.`}
+                  hint={`Image (PNG, JPG, GIF, WebP, AVIF), video (MP4, WebM, MOV), PDF, TXT / Markdown, Word or PowerPoint — up to ${LIBRARY_UPLOAD_MAX_MB} MB. The file itself is publicly reachable by its link from the moment it is uploaded; draft status hides the entry, not the file.`}
                 >
                   <Input
                     id="lib-file"
@@ -294,7 +301,11 @@ function EditorSheet({
             ) : null}
 
             {mode !== "LINK" ? (
-              <Field label="Source URL" id="lib-source" hint="Optional — where it came from, as a credit.">
+              <Field
+                label="Source URL"
+                id="lib-source"
+                hint="Optional — an http(s) link to where it came from, shown as a credit."
+              >
                 <Input
                   id="lib-source"
                   value={form.reference_url}
@@ -432,7 +443,8 @@ function LibraryPage() {
   const retire = (item: PlatformInspiration) =>
     setConfirm({
       title: `Retire "${item.title}"?`,
-      description: "It leaves the library. Copies clients already adopted are theirs and stay.",
+      description:
+        "It leaves the library. Copies clients already adopted are theirs and stay, and an uploaded file stays reachable by its link.",
       confirmLabel: "Retire",
       destructive: true,
       reason: { label: "Reason", placeholder: "Optional — why it is being retired" },
@@ -492,7 +504,7 @@ function LibraryPage() {
         </FilterChip>
         {LIBRARY_KINDS.map((k) => (
           <FilterChip key={k} active={kindFilter === k} onClick={() => setKindFilter(k)}>
-            {KIND_LABEL[k]}s · {kindCounts[k]}
+            {k === "TEXT" ? "Text" : `${KIND_LABEL[k]}s`} · {kindCounts[k]}
           </FilterChip>
         ))}
       </div>
@@ -507,7 +519,9 @@ function LibraryPage() {
         </div>
       ) : visible.length === 0 ? (
         <div className="surface-card p-10 text-center">
-          <p className="font-medium text-foreground">Nothing here yet.</p>
+          <p className="font-medium text-foreground">
+            {filter === "ALL" && kindFilter === "ALL" ? "Nothing here yet." : "Nothing matches."}
+          </p>
           <p className="mt-1 text-sm text-muted-foreground">
             {filter === "ALL" && kindFilter === "ALL"
               ? "Add the first reference the team wants every client to see — a link, an image, a video, a file or a piece of text."

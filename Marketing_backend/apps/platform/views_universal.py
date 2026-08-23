@@ -339,8 +339,14 @@ def _clean_inspiration_fields(data, *, partial, kind, current=None):
         fields[key] = value
 
     if fields.get('reference_url'):
-        parts = urlsplit(fields['reference_url'])
-        if parts.scheme not in ('http', 'https') or not parts.netloc:
+        url = fields['reference_url']
+        parts = urlsplit(url)
+        # urlsplit silently strips embedded tab/CR/LF before parsing, so check
+        # the raw string too: what is stored is what was sent.
+        if (
+            parts.scheme not in ('http', 'https') or not parts.netloc
+            or any(ch.isspace() for ch in url)
+        ):
             return None, "reference_url must be an http(s) URL."
 
     if 'tags' in data:
@@ -350,6 +356,12 @@ def _clean_inspiration_fields(data, *, partial, kind, current=None):
         if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
             return None, "tags must be a list of strings."
         fields['tags'] = [t.strip()[:64] for t in tags if t.strip()]
+
+    # `body` is the content of a TEXT entry and nothing else: on any other
+    # kind it is ignored, like the file columns are, so one content field
+    # stays the rule.
+    if kind != EntryKind.TEXT:
+        fields.pop('body', None)
 
     # The content rule, on what the row would hold after the write.
     merged_url = fields.get('reference_url', getattr(current, 'reference_url', ''))
@@ -456,6 +468,18 @@ class InspirationUploadView(PlatformView):
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
+        # Refuse an oversized body from the declared length, before Django
+        # streams any of it to disk; the per-file check below is the second
+        # line for a body that lied about its length.
+        try:
+            declared = int(request.META.get('CONTENT_LENGTH') or 0)
+        except (TypeError, ValueError):
+            declared = 0
+        if declared > MAX_UPLOAD_BYTES + 64 * 1024:
+            return _bad_request(
+                f"The upload is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+                code='INVALID_UPLOAD',
+            )
         file_obj = request.FILES.get('file')
         if file_obj is None:
             return _bad_request("file is required.", code='INVALID_UPLOAD')
@@ -464,9 +488,13 @@ class InspirationUploadView(PlatformView):
         if error:
             return _bad_request(error, code='INVALID_UPLOAD')
 
-        # One value per key, as the JSON route sees it. A missing title falls
-        # back to the file name, the way the brand-side upload does.
+        # One value per key, as the JSON route sees it — except tags, which a
+        # form may send repeated or as one comma-separated string. A missing
+        # title falls back to the file name, the way the brand-side upload does.
         data = {key: request.data.get(key) for key in request.data}
+        if 'tags' in request.data:
+            repeated = request.data.getlist('tags')
+            data['tags'] = repeated if len(repeated) > 1 else (repeated[0] if repeated else '')
         if not str(data.get('title') or '').strip():
             data['title'] = file_name
         fields, error = _clean_inspiration_fields(data, partial=False, kind=kind)
@@ -541,7 +569,7 @@ class InspirationDetailView(PlatformView):
             inspiration.save(update_fields=list(changes) + ['updated_at'])
         self.audit(
             'PLATFORM_INSPIRATION_EDITED', target=f'inspiration:{inspiration.pk}',
-            detail={'title': inspiration.title, 'changes': changes},
+            detail={'title': inspiration.title, 'kind': inspiration.kind, 'changes': changes},
         )
         return APIResponse(success=True, data=inspiration_payload(inspiration))
 
@@ -573,8 +601,8 @@ class InspirationLifecycleView(PlatformView):
                 inspiration.save(update_fields=['status', 'updated_at'])
             self.audit(
                 'PLATFORM_INSPIRATION_RETIRED', target=f'inspiration:{inspiration.pk}',
-                detail={'title': inspiration.title, 'reason': reason,
-                        'adoption_count': adoption_count(inspiration)},
+                detail={'title': inspiration.title, 'kind': inspiration.kind,
+                        'reason': reason, 'adoption_count': adoption_count(inspiration)},
             )
             return APIResponse(
                 success=True,

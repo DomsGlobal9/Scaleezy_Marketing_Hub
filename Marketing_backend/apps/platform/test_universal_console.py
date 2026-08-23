@@ -366,6 +366,19 @@ class UniversalConsoleTests(TenantFixtureMixin, TestCase):
             )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('larger than', response.json()['error']['message'])
+        # A body that declares itself oversized is refused before it is parsed.
+        response = self.staff_api.post(
+            UPLOAD, {'file': SimpleUploadedFile('big.png', b'1')}, format='multipart',
+            CONTENT_LENGTH=str(30 * 1024 * 1024),
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.json()['error']['code'], 'INVALID_UPLOAD')
+        response = self.staff_api.post(
+            UPLOAD, {'file': SimpleUploadedFile('a.png', b'1'),
+                     'reference_url': 'https://x.test/a\nb'},
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         response = self.staff_api.post(
             UPLOAD, {'file': SimpleUploadedFile('a.png', b'1'), 'reference_url': 'ftp://x.test/a'},
             format='multipart',
@@ -463,3 +476,40 @@ class UniversalConsoleTests(TenantFixtureMixin, TestCase):
         self.assertEqual(adopted.inspiration_type, BrandInspiration.InspirationType.IMAGE)
         self.assertEqual(adopted.file_url, 'https://storage.test/p.png')
         self.assertIsNone(adopted.storage_path)
+
+    def test_a_client_cannot_forge_adoption_provenance_on_its_own_rows(self):
+        """The adoption count every tenant and the console see is computed from
+        a metadata key; a tenant must not be able to mint it on its own rows."""
+        reference = publish_inspiration(PlatformInspiration.objects.create(**INSPIRATION_BODY))
+        headers = workspace_header(self.workspace)
+        own = '/api/marketing/inspirations/'
+        forged = {
+            'brand': str(self.brand.pk), 'title': 'Mine', 'reference_url': 'https://mine.test/',
+            'metadata': {'platform_inspiration_id': str(reference.pk), 'adopted_from_platform': True},
+        }
+        response = self.owner_api.post(own, forged, format='json', **headers)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.content)
+
+        # Free-form metadata still works, and cannot be upgraded afterwards.
+        response = self.owner_api.post(
+            own, {**forged, 'metadata': {'duration_seconds': 15}}, format='json', **headers,
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+        row_id = response.json()['id']
+        response = self.owner_api.patch(
+            f'{own}{row_id}/', {'metadata': {'platform_inspiration_id': str(reference.pk)}},
+            format='json', **headers,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.content)
+        from apps.universal.services import adoption_count
+
+        self.assertEqual(adoption_count(reference), 0)
+
+        # A genuinely adopted row can round-trip its own provenance unchanged.
+        adopted, _ = adopt_inspiration(reference, self.brand, user=self.owner)
+        response = self.owner_api.patch(
+            f'{own}{adopted.pk}/', {'metadata': adopted.metadata, 'annotation': 'Mine now.'},
+            format='json', **headers,
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(adoption_count(reference), 1)

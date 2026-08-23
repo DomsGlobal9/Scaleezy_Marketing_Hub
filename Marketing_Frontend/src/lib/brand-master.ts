@@ -166,6 +166,7 @@ export interface Inspiration {
   reference_url: string | null;
   file_url: string | null;
   mime_type?: string | null;
+  file_name?: string | null;
   external_platform: string;
   usage_scope: string;
   focus_areas: string[];
