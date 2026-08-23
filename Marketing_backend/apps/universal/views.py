@@ -183,14 +183,16 @@ class BrandNoteAcceptView(TenantView):
 # ─────────────────────────────────────────────────────────────── library
 
 class InspirationLibraryView(TenantView):
-    """GET /inspirations/library/?industry= — what this client may browse."""
+    """GET /inspirations/library/?industry=&kind= — what this client may browse."""
 
     def get(self, request):
         workspace = self._workspace()
         industry = str(request.query_params.get('industry', '')).strip()
-        rows = gallery_for(workspace, industry=industry)
+        kind = str(request.query_params.get('kind', '')).strip().upper()
+        rows = gallery_for(workspace, industry=industry, kind=kind)
         return APIResponse(success=True, data={
             'industry': industry,
+            'kind': kind,
             'count': len(rows),
             'inspirations': [
                 inspiration_payload(row, include_curator=False) for row in rows

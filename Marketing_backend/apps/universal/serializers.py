@@ -44,7 +44,14 @@ def inspiration_payload(inspiration, *, include_curator=True):
     payload = {
         'id': str(inspiration.pk),
         'title': inspiration.title,
+        'kind': inspiration.kind,
         'reference_url': inspiration.reference_url,
+        'body': inspiration.body,
+        # The storage path stays server-side: a client renders the public URL
+        # and nothing else needs the bucket coordinates.
+        'file_url': inspiration.file_url,
+        'mime_type': inspiration.mime_type,
+        'file_name': inspiration.file_name,
         'annotation': inspiration.annotation,
         'tags': list(inspiration.tags or []),
         'industry': inspiration.industry,

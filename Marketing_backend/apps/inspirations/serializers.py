@@ -100,6 +100,30 @@ class BrandInspirationSerializer(serializers.ModelSerializer):
     def get_retrieval_eligibility(self, obj):
         return obj.retrieval_eligibility()
 
+    #: Written only by `apps.universal.services.adopt_inspiration`. They are
+    #: what the platform counts adoptions by and dedupes on, so a client must
+    #: not be able to mint them: a row claiming to be adopted from the library
+    #: would inflate a count every other tenant and the console can see.
+    PLATFORM_METADATA_KEYS = frozenset({
+        'adopted_from_platform', 'platform_inspiration_id', 'platform_kind',
+        'adopted_at', 'authority_note',
+    })
+
+    def validate_metadata(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("metadata must be an object.")
+        current = (getattr(self.instance, 'metadata', None) or {})
+        forged = sorted(
+            key for key in value
+            if key in self.PLATFORM_METADATA_KEYS and value[key] != current.get(key)
+        )
+        if forged:
+            raise serializers.ValidationError(
+                f"{', '.join(forged)}: set by the platform when a library "
+                "reference is adopted; not client-writable."
+            )
+        return value
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Scope the relation querysets the same way the upload and signal

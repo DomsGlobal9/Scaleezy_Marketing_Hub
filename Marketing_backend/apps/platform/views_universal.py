@@ -13,12 +13,18 @@ explainable — so the console retires it and publishes a successor that
 `supersedes` it, which keeps the lineage visible.
 """
 import logging
+import os
+import re
 from urllib.parse import urlsplit
 
 from rest_framework import status
+from rest_framework.parsers import FormParser, MultiPartParser
 
 from apps.common.responses import APIResponse
+from apps.marketing.services.storage import StorageError, SupabaseStorageService
 from apps.universal.models import (
+    UPLOAD_KINDS,
+    EntryKind,
     LifecycleStatus,
     PlatformInspiration,
     UniversalScope,
@@ -252,30 +258,96 @@ class StandardLifecycleView(PlatformView):
 
 # ────────────────────────────────────────────────────────── inspirations
 
-INSPIRATION_TEXT_FIELDS = ('title', 'reference_url', 'annotation', 'industry', 'channel')
+INSPIRATION_TEXT_FIELDS = ('title', 'reference_url', 'annotation', 'industry', 'channel', 'body')
+INSPIRATION_LIMITS = {
+    'title': 255, 'reference_url': 1000, 'industry': 100, 'channel': 64, 'body': 20000,
+}
+
+#: The kinds a JSON body may author. Images, videos and files only ever come
+#: through `InspirationUploadView`, which derives the kind from the file and
+#: never takes one from the request, so kind and content cannot disagree.
+AUTHORED_KINDS = (EntryKind.LINK, EntryKind.TEXT)
+
+#: What the upload route accepts, by extension, and the media type each is
+#: stored and served as. Our own table rather than `mimetypes`, which reads
+#: the host's registry / mime.types and so differs between a Windows laptop
+#: and the Linux box the API runs on. Deliberately conservative: the images
+#: and video the library can show inline, and the formats a reference deck or
+#: brief arrives in. SVG is left out because it can carry script.
+UPLOAD_TYPES = {
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif',
+    '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm',
+    '.mov': 'video/quicktime',
+    '.pdf': 'application/pdf', '.txt': 'text/plain', '.md': 'text/markdown',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.ppt': 'application/vnd.ms-powerpoint',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+}
+UPLOAD_ACCEPTED = (
+    "an image (PNG, JPG, GIF, WebP, AVIF), a video (MP4, WebM, MOV), "
+    "a PDF, a text or Markdown file, or a Word / PowerPoint document"
+)
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+#: Where library uploads live in the bucket: `library/platform/<uuid>_<name>`.
+#: Outside every workspace's `<prefix>/<workspace_id>/` namespace by
+#: construction, so no tenant path can ever resolve to a platform object or
+#: the other way round.
+PLATFORM_STORAGE_PREFIX = 'library'
+PLATFORM_STORAGE_OWNER = 'platform'
 
 
-def _clean_inspiration_fields(data, *, partial):
+def _authored_kind(data):
+    """The kind a JSON create asks for. Absent means LINK, as it always did."""
+    raw = str(data.get('kind') or EntryKind.LINK).strip().upper()
+    if raw in UPLOAD_KINDS:
+        return None, (
+            "Images, videos and files are added by uploading them "
+            "(POST /api/platform/inspirations/upload/)."
+        )
+    if raw not in AUTHORED_KINDS:
+        return None, f"kind must be one of {', '.join(AUTHORED_KINDS)}."
+    return raw, None
+
+
+def _clean_inspiration_fields(data, *, partial, kind, current=None):
+    """Validate the authoring fields of a library entry.
+
+    `kind` is what the entry is — on create the requested (or, for an upload,
+    the derived) kind; on PATCH the stored one, which cannot change. The
+    content rule is checked on the merged result, so a PATCH can neither
+    blank a link's URL nor empty a text entry. The file columns are not
+    authoring fields at all: only the upload route ever writes them.
+    """
     fields = {}
     for key in INSPIRATION_TEXT_FIELDS:
         if key not in data:
-            if not partial and key in ('title', 'reference_url'):
-                return None, f"{key} is required."
+            if not partial and key == 'title':
+                return None, "title is required."
             continue
         value = data.get(key)
         if not isinstance(value, str):
             return None, f"{key} must be a string."
         value = value.strip()
-        if key in ('title', 'reference_url') and not value:
-            return None, f"{key} is required."
+        if key == 'title' and not value:
+            return None, "title is required."
+        limit = INSPIRATION_LIMITS.get(key)
+        if limit and len(value) > limit:
+            return None, f"{key} is longer than {limit} characters."
         fields[key] = value
 
-    if 'reference_url' in fields:
-        parts = urlsplit(fields['reference_url'])
-        if parts.scheme not in ('http', 'https') or not parts.netloc:
+    if fields.get('reference_url'):
+        url = fields['reference_url']
+        parts = urlsplit(url)
+        # urlsplit silently strips embedded tab/CR/LF before parsing, so check
+        # the raw string too: what is stored is what was sent.
+        if (
+            parts.scheme not in ('http', 'https') or not parts.netloc
+            or any(ch.isspace() for ch in url)
+        ):
             return None, "reference_url must be an http(s) URL."
-        if len(fields['reference_url']) > 1000:
-            return None, "reference_url is longer than 1000 characters."
 
     if 'tags' in data:
         tags = data.get('tags')
@@ -285,17 +357,68 @@ def _clean_inspiration_fields(data, *, partial):
             return None, "tags must be a list of strings."
         fields['tags'] = [t.strip()[:64] for t in tags if t.strip()]
 
-    if 'title' in fields and len(fields['title']) > 255:
-        return None, "title is longer than 255 characters."
-    if 'industry' in fields and len(fields['industry']) > 100:
-        return None, "industry is longer than 100 characters."
-    if 'channel' in fields and len(fields['channel']) > 64:
-        return None, "channel is longer than 64 characters."
+    # `body` is the content of a TEXT entry and nothing else: on any other
+    # kind it is ignored, like the file columns are, so one content field
+    # stays the rule.
+    if kind != EntryKind.TEXT:
+        fields.pop('body', None)
+
+    # The content rule, on what the row would hold after the write.
+    merged_url = fields.get('reference_url', getattr(current, 'reference_url', ''))
+    merged_body = fields.get('body', getattr(current, 'body', ''))
+    if kind == EntryKind.LINK and not merged_url:
+        return None, "reference_url is required for a link."
+    if kind == EntryKind.TEXT and not merged_body:
+        return None, "body is required for a text entry."
     return fields, None
 
 
+def _safe_filename(name):
+    """A file name that is safe in a storage path and a public URL.
+
+    Keeps letters, digits, dot, dash and underscore; everything else, spaces
+    included, becomes a dash. The extension survives, which matters because
+    it is what the upload is classified by.
+    """
+    base = os.path.basename(str(name or '')).strip()
+    stem, ext = os.path.splitext(base)
+    stem = re.sub(r'[^A-Za-z0-9._-]+', '-', stem).strip('-.') or 'file'
+    ext = re.sub(r'[^A-Za-z0-9]', '', ext.lower())
+    return (stem[:120] + ('.' + ext if ext else ''))[:255]
+
+
+def _classify_upload(file_obj, file_name):
+    """(kind, mime_type, error) for one uploaded file.
+
+    Classified by extension against our own table, not by the Content-Type
+    the browser sent — the extension is what the stored object will be
+    served as, and the allowlist is also the mapping.
+    """
+    if file_obj.size == 0:
+        return None, None, "The file is empty."
+    if file_obj.size > MAX_UPLOAD_BYTES:
+        return None, None, f"The file is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+    mime_type = UPLOAD_TYPES.get(os.path.splitext(file_name)[1].lower())
+    if mime_type is None:
+        return None, None, f"That file type is not accepted. Upload {UPLOAD_ACCEPTED}."
+    if mime_type.startswith('image/'):
+        kind = EntryKind.IMAGE
+    elif mime_type.startswith('video/'):
+        kind = EntryKind.VIDEO
+    else:
+        kind = EntryKind.FILE
+    return kind, mime_type, None
+
+
+def _created(inspiration):
+    return APIResponse(
+        success=True, message=f"Draft '{inspiration.title}' created.",
+        data=inspiration_payload(inspiration), status=status.HTTP_201_CREATED,
+    )
+
+
 class InspirationListView(PlatformView):
-    """GET the library with live adoption counts; POST curates a DRAFT."""
+    """GET the library with live adoption counts; POST curates a LINK or TEXT draft."""
 
     def get(self, request):
         wanted = _status_filter(request)
@@ -314,23 +437,103 @@ class InspirationListView(PlatformView):
 
     def post(self, request):
         data = request.data if isinstance(request.data, dict) else {}
-        fields, error = _clean_inspiration_fields(data, partial=False)
+        kind, error = _authored_kind(data)
         if error:
             return _bad_request(error, code='INVALID_INSPIRATION')
-        inspiration = PlatformInspiration.objects.create(curated_by=request.user, **fields)
+        fields, error = _clean_inspiration_fields(data, partial=False, kind=kind)
+        if error:
+            return _bad_request(error, code='INVALID_INSPIRATION')
+        inspiration = PlatformInspiration.objects.create(
+            curated_by=request.user, kind=kind, **fields,
+        )
         self.audit(
             'PLATFORM_INSPIRATION_CREATED', target=f'inspiration:{inspiration.pk}',
-            detail={'title': inspiration.title, 'url': inspiration.reference_url,
+            detail={'title': inspiration.title, 'kind': inspiration.kind,
+                    'url': inspiration.reference_url,
                     'industry': inspiration.industry, 'channel': inspiration.channel},
         )
-        return APIResponse(
-            success=True, message=f"Draft reference '{inspiration.title}' created.",
-            data=inspiration_payload(inspiration), status=status.HTTP_201_CREATED,
+        return _created(inspiration)
+
+
+class InspirationUploadView(PlatformView):
+    """POST multipart — an image, video or file becomes a DRAFT entry.
+
+    The kind is derived from the file, never read from the form. Everything
+    else (title, annotation, tags, industry, channel, an optional source URL)
+    is validated by the same function the JSON route uses. Nothing is
+    written unless the object is actually in storage: a library entry whose
+    file never arrived would be a dead card in every client's gallery.
+    """
+
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        # Refuse an oversized body from the declared length, before Django
+        # streams any of it to disk; the per-file check below is the second
+        # line for a body that lied about its length.
+        try:
+            declared = int(request.META.get('CONTENT_LENGTH') or 0)
+        except (TypeError, ValueError):
+            declared = 0
+        if declared > MAX_UPLOAD_BYTES + 64 * 1024:
+            return _bad_request(
+                f"The upload is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+                code='INVALID_UPLOAD',
+            )
+        file_obj = request.FILES.get('file')
+        if file_obj is None:
+            return _bad_request("file is required.", code='INVALID_UPLOAD')
+        file_name = _safe_filename(file_obj.name)
+        kind, mime_type, error = _classify_upload(file_obj, file_name)
+        if error:
+            return _bad_request(error, code='INVALID_UPLOAD')
+
+        # One value per key, as the JSON route sees it — except tags, which a
+        # form may send repeated or as one comma-separated string. A missing
+        # title falls back to the file name, the way the brand-side upload does.
+        data = {key: request.data.get(key) for key in request.data}
+        if 'tags' in request.data:
+            repeated = request.data.getlist('tags')
+            data['tags'] = repeated if len(repeated) > 1 else (repeated[0] if repeated else '')
+        if not str(data.get('title') or '').strip():
+            data['title'] = file_name
+        fields, error = _clean_inspiration_fields(data, partial=False, kind=kind)
+        if error:
+            return _bad_request(error, code='INVALID_INSPIRATION')
+
+        # Stored and served as what we classified it as, not as whatever the
+        # browser claimed, so the card renders what the row says it is.
+        file_obj.content_type = mime_type
+        try:
+            stored = SupabaseStorageService.upload_and_describe(
+                PLATFORM_STORAGE_OWNER, file_obj, file_name,
+                prefix=PLATFORM_STORAGE_PREFIX,
+            )
+        except StorageError as exc:
+            return APIResponse(
+                success=False, message=str(exc),
+                error={'code': 'STORAGE_FAILED', 'message': str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        inspiration = PlatformInspiration.objects.create(
+            curated_by=request.user, kind=kind,
+            file_url=stored['url'][:1000], storage_path=stored['path'][:1000],
+            mime_type=mime_type, file_name=file_name,
+            **fields,
         )
+        self.audit(
+            'PLATFORM_INSPIRATION_CREATED', target=f'inspiration:{inspiration.pk}',
+            detail={'title': inspiration.title, 'kind': inspiration.kind,
+                    'file_name': file_name, 'mime_type': mime_type,
+                    'size': file_obj.size, 'url': inspiration.reference_url,
+                    'industry': inspiration.industry, 'channel': inspiration.channel},
+        )
+        return _created(inspiration)
 
 
 class InspirationDetailView(PlatformView):
-    """PATCH edits a reference that is not retired."""
+    """PATCH edits a reference that is not retired. Its kind and file are fixed."""
 
     def patch(self, request, inspiration_id):
         inspiration = (
@@ -345,7 +548,14 @@ class InspirationDetailView(PlatformView):
                 code='INSPIRATION_RETIRED',
             )
         data = request.data if isinstance(request.data, dict) else {}
-        fields, error = _clean_inspiration_fields(data, partial=True)
+        if 'kind' in data and str(data.get('kind') or '').strip().upper() != inspiration.kind:
+            return _bad_request(
+                "kind cannot be changed; add a new entry instead.",
+                code='INVALID_INSPIRATION',
+            )
+        fields, error = _clean_inspiration_fields(
+            data, partial=True, kind=inspiration.kind, current=inspiration,
+        )
         if error:
             return _bad_request(error, code='INVALID_INSPIRATION')
 
@@ -359,7 +569,7 @@ class InspirationDetailView(PlatformView):
             inspiration.save(update_fields=list(changes) + ['updated_at'])
         self.audit(
             'PLATFORM_INSPIRATION_EDITED', target=f'inspiration:{inspiration.pk}',
-            detail={'title': inspiration.title, 'changes': changes},
+            detail={'title': inspiration.title, 'kind': inspiration.kind, 'changes': changes},
         )
         return APIResponse(success=True, data=inspiration_payload(inspiration))
 
@@ -391,8 +601,8 @@ class InspirationLifecycleView(PlatformView):
                 inspiration.save(update_fields=['status', 'updated_at'])
             self.audit(
                 'PLATFORM_INSPIRATION_RETIRED', target=f'inspiration:{inspiration.pk}',
-                detail={'title': inspiration.title, 'reason': reason,
-                        'adoption_count': adoption_count(inspiration)},
+                detail={'title': inspiration.title, 'kind': inspiration.kind,
+                        'reason': reason, 'adoption_count': adoption_count(inspiration)},
             )
             return APIResponse(
                 success=True,

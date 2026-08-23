@@ -1,19 +1,21 @@
 /**
  * The Scaleezy library, as this client may see it.
  *
- * Curated references the platform publishes — a link and an annotation, never
- * re-hosted media. Adopt copies one into the brand's OWN inspirations, where
- * it is treated like anything the client added themselves. The server decides
+ * Curated references the platform publishes — a link, an image, a video, a
+ * file or a piece of text, with Scaleezy's annotation. Adopt copies one into
+ * the brand's OWN inspirations, where it is treated like anything the client
+ * added themselves. The server decides
  * what is visible (published only, and nothing if the client opted out of the
  * universal layer), so an empty gallery is reported as empty rather than
  * padded.
  */
-import { BookMarked, Check, ExternalLink, Loader2, RefreshCw } from "lucide-react";
+import { BookMarked, Check, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Chip, Empty, InlineError, Loading } from "@/components/marketing/brand-master-primitives";
+import { KindBadge, LibraryEntryPreview } from "@/components/marketing/library-entry-preview";
 import { SectionTitle } from "@/components/marketing/primitives";
 import {
   adoptLibraryItem,
@@ -67,7 +69,7 @@ export function LibraryGallery({ brandId, onChanged }: { brandId: string; onChan
       <SectionTitle
         label="Scaleezy library"
         title="References curated by Scaleezy"
-        description="Good work the team keeps for everyone. Adopt one and it becomes part of your own inspirations, with the annotation Scaleezy wrote."
+        description="Good work the team keeps for everyone — links, images, videos, files and text. Adopt one and it becomes part of your own inspirations, with the annotation Scaleezy wrote."
         action={
           <Button variant="ghost" size="sm" onClick={() => void load()} disabled={loading}>
             <RefreshCw className={loading ? "size-4 animate-spin" : "size-4"} /> Refresh
@@ -92,17 +94,10 @@ export function LibraryGallery({ brandId, onChanged }: { brandId: string; onChan
               <article key={item.id} className="flex flex-col rounded-xl border border-border bg-card p-4">
                 <div className="flex items-start gap-2">
                   <BookMarked className="mt-0.5 size-4 shrink-0 text-gold" strokeWidth={1.75} />
-                  <h3 className="min-w-0 font-medium text-foreground">{item.title}</h3>
+                  <h3 className="min-w-0 flex-1 font-medium text-foreground">{item.title}</h3>
+                  <KindBadge kind={item.kind} />
                 </div>
-                <a
-                  href={item.reference_url}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className="mt-1 inline-flex items-center gap-1 truncate text-xs text-muted-foreground hover:text-foreground"
-                >
-                  <ExternalLink className="size-3 shrink-0" />
-                  <span className="truncate">{item.reference_url}</span>
-                </a>
+                <LibraryEntryPreview entry={item} />
                 {item.annotation ? (
                   <p className="mt-3 line-clamp-4 text-sm text-foreground">{item.annotation}</p>
                 ) : (
