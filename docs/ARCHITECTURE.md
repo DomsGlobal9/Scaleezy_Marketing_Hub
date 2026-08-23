@@ -70,6 +70,8 @@ Enums:
 **`ai_usage_logs`** — Tracks provider usage.
 **`gemini_generation_requests`** & **`gemini_generation_results`** — Context-aware orchestration engine specific to Gemini endpoints.
 
+Tenant-owned custom providers are Admin-only. An administrator explicitly supplies the provider name, model, public HTTPS API endpoint, optional encrypted credential, protocol and supported capabilities; Scaleezy does not preselect any of them. OpenAI-compatible endpoints may declare the standard text, image, vision/caption and embedding contracts. A Scaleezy universal JSON endpoint may declare any capability, including video, by accepting `{capability, model, brief}` and returning a normalized result. Custom provider rows are visible only to their owning workspace. Product workflows remain provider-neutral and call only `AIRouter` capabilities.
+
 ### Publishing & Jobs (`apps.publishing` & `apps.jobs`)
 
 **`publishing_jobs`** — one user action. `workspace`, `asset`, `created_by`, `status` (8 choices), `publish_mode` (`NOW`/`SCHEDULED`), `scheduled_at`, `timezone`, `created_at`, `started_at`, `completed_at`.

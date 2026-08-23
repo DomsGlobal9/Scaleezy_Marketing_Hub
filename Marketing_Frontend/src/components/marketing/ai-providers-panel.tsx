@@ -57,6 +57,8 @@ interface CatalogueProvider {
   default_model: string;
   is_available: boolean;
   adapter_installed: boolean;
+  integration_type: "INSTALLED" | "OPENAI_COMPATIBLE" | "SCALEEZY_JSON";
+  base_url: string;
 }
 
 interface Vocab {
@@ -126,6 +128,8 @@ interface RouteDraft {
 interface Paginated<T> {
   results: T[];
 }
+
+const CUSTOM_PROVIDER_VALUE = "__custom_openai_compatible__";
 
 function asRows<T>(value: T[] | Paginated<T>): T[] {
   return Array.isArray(value) ? value : (value.results ?? []);
@@ -209,6 +213,10 @@ export function AIProvidersPanel({
   const [addProviderId, setAddProviderId] = useState("");
   const [addCredential, setAddCredential] = useState("");
   const [addModel, setAddModel] = useState("");
+  const [addCustomName, setAddCustomName] = useState("");
+  const [addBaseUrl, setAddBaseUrl] = useState("");
+  const [addIntegrationType, setAddIntegrationType] = useState("");
+  const [addCapabilities, setAddCapabilities] = useState<string[]>([]);
   const [addEnabled, setAddEnabled] = useState(true);
 
   const buildDrafts = useCallback((caps: Vocab[], rows: RouteRow[]) => {
@@ -281,25 +289,44 @@ export function AIProvidersPanel({
   );
 
   const openAddProvider = () => {
-    setAddProviderId(availableToAdd[0]?.id ?? "");
+    setAddProviderId("");
     setAddCredential("");
     setAddModel("");
+    setAddCustomName("");
+    setAddBaseUrl("");
+    setAddIntegrationType("");
+    setAddCapabilities([]);
     setAddEnabled(true);
     setAddOpen(true);
   };
 
   const addProvider = async () => {
+    const custom = addProviderId === CUSTOM_PROVIDER_VALUE;
     const provider = availableToAdd.find((row) => row.id === addProviderId);
-    if (!provider) return;
+    if (!custom && !provider) return;
     setBusy("add-provider");
     try {
-      await apiPost("/api/marketing/ai/providers/", {
-        provider: provider.id,
-        enabled: addEnabled,
-        credentials: addCredential.trim(),
-        model_override: addModel.trim(),
-      });
-      toast.success(`${provider.display_name} added to this client.`);
+      if (custom) {
+        await apiPost("/api/marketing/ai/providers/custom/", {
+          display_name: addCustomName.trim(),
+          base_url: addBaseUrl.trim(),
+          credentials: addCredential.trim(),
+          model: addModel.trim(),
+          integration_type: addIntegrationType,
+          capabilities: addCapabilities,
+          enabled: addEnabled,
+        });
+      } else if (provider) {
+        await apiPost("/api/marketing/ai/providers/", {
+          provider: provider.id,
+          enabled: addEnabled,
+          credentials: addCredential.trim(),
+          model_override: addModel.trim(),
+        });
+      }
+      toast.success(
+        `${custom ? addCustomName.trim() : provider?.display_name} added to this client.`,
+      );
       setAddOpen(false);
       await load();
     } catch (error) {
@@ -410,6 +437,14 @@ export function AIProvidersPanel({
         ? [...current.filter((id) => id !== providerId), providerId]
         : current.filter((id) => id !== providerId),
     });
+  };
+
+  const toggleAddedCapability = (capability: string, enabled: boolean) => {
+    setAddCapabilities((current) =>
+      enabled
+        ? [...current.filter((value) => value !== capability), capability]
+        : current.filter((value) => value !== capability),
+    );
   };
 
   const moveRouteProvider = (capability: string, providerId: string, direction: -1 | 1) => {
@@ -601,10 +636,10 @@ export function AIProvidersPanel({
       <TabsContent value="providers" className="space-y-5">
         <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
           <div>
-            <p className="label-eyebrow">Installed provider catalogue</p>
+            <p className="label-eyebrow">AI provider catalogue</p>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-              Enable any number of installed AI integrations. There is no two-provider limit;
-              product features continue to request capabilities instead of vendors.
+              Onboard installed or custom AI integrations with the model and credentials you choose.
+              There is no provider limit; product features request capabilities instead of vendors.
             </p>
           </div>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
@@ -622,97 +657,183 @@ export function AIProvidersPanel({
         </div>
 
         <Dialog open={addOpen} onOpenChange={setAddOpen}>
-          <DialogContent>
+          <DialogContent className="max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Add AI provider</DialogTitle>
               <DialogDescription>
-                Add any installed integration to this client. The catalogue and routing policy have
-                no two-provider limit.
+                Choose an installed integration or connect any OpenAI-compatible AI endpoint. You
+                choose the provider and model; Scaleezy does not preselect either.
               </DialogDescription>
             </DialogHeader>
 
-            {!availableToAdd.length ? (
-              <Alert>
-                <CheckCircle2 className="size-4" />
-                <AlertTitle>Every installed provider is already added</AlertTitle>
-                <AlertDescription>
-                  This client already has every integration currently installed on the platform.
-                  Installing another adapter adds it to this catalogue automatically.
-                </AlertDescription>
-              </Alert>
-            ) : (
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="add-ai-provider">Provider</Label>
-                  <Select value={addProviderId} onValueChange={setAddProviderId}>
-                    <SelectTrigger id="add-ai-provider">
-                      <SelectValue placeholder="Choose an installed provider" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {availableToAdd.map((provider) => (
-                        <SelectItem key={provider.id} value={provider.id}>
-                          {provider.display_name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="add-ai-provider">Provider</Label>
+                <Select value={addProviderId} onValueChange={setAddProviderId}>
+                  <SelectTrigger id="add-ai-provider">
+                    <SelectValue placeholder="Choose an installed provider" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={CUSTOM_PROVIDER_VALUE}>
+                      Custom OpenAI-compatible endpoint
+                    </SelectItem>
+                    {availableToAdd.map((provider) => (
+                      <SelectItem key={provider.id} value={provider.id}>
+                        {provider.display_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="add-ai-key">API key</Label>
-                  <Input
-                    id="add-ai-key"
-                    type="password"
-                    autoComplete="new-password"
-                    placeholder="Optional when a platform key is available"
-                    value={addCredential}
-                    onChange={(event) => setAddCredential(event.target.value)}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="add-ai-model">Model override</Label>
-                  <Input
-                    id="add-ai-model"
-                    placeholder="Optional — otherwise uses the provider default"
-                    value={addModel}
-                    onChange={(event) => setAddModel(event.target.value)}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between rounded-lg border border-border p-3">
-                  <div>
-                    <Label htmlFor="enable-added-ai">Enable after adding</Label>
+              {addProviderId === CUSTOM_PROVIDER_VALUE ? (
+                <>
+                  <div className="space-y-2">
+                    <Label htmlFor="add-ai-protocol">API protocol</Label>
+                    <Select
+                      value={addIntegrationType}
+                      onValueChange={(value) => {
+                        setAddIntegrationType(value);
+                        setAddCapabilities((current) =>
+                          value === "OPENAI_COMPATIBLE"
+                            ? current.filter(
+                                (capability) =>
+                                  capability !== "VIDEO" && capability !== "VIDEO_ANALYSIS",
+                              )
+                            : current,
+                        );
+                      }}
+                    >
+                      <SelectTrigger id="add-ai-protocol">
+                        <SelectValue placeholder="Choose the endpoint protocol" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="OPENAI_COMPATIBLE">OpenAI-compatible API</SelectItem>
+                        <SelectItem value="SCALEEZY_JSON">Scaleezy universal JSON API</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="add-ai-name">Provider name</Label>
+                    <Input
+                      id="add-ai-name"
+                      placeholder="Your provider name"
+                      value={addCustomName}
+                      onChange={(event) => setAddCustomName(event.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="add-ai-base-url">API base URL</Label>
+                    <Input
+                      id="add-ai-base-url"
+                      inputMode="url"
+                      placeholder="https://provider.example.com/v1"
+                      value={addBaseUrl}
+                      onChange={(event) => setAddBaseUrl(event.target.value)}
+                    />
                     <p className="text-xs text-muted-foreground">
-                      You can route capabilities after the provider is enabled.
+                      {addIntegrationType === "SCALEEZY_JSON"
+                        ? "Enter the exact public HTTPS endpoint that accepts Scaleezy's capability, model and brief JSON contract."
+                        : "Enter the public HTTPS API base URL, normally ending in /v1."}
                     </p>
                   </div>
-                  <Switch
-                    id="enable-added-ai"
-                    checked={addEnabled}
-                    onCheckedChange={setAddEnabled}
-                  />
-                </div>
+                  <div className="space-y-2">
+                    <Label>Capabilities this AI supports</Label>
+                    <div className="grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-2">
+                      {capabilities.map((capability) => {
+                        const unavailable =
+                          addIntegrationType === "OPENAI_COMPATIBLE" &&
+                          (capability.value === "VIDEO" || capability.value === "VIDEO_ANALYSIS");
+                        return (
+                          <div key={capability.value} className="flex items-start gap-2">
+                            <Checkbox
+                              id={`add-capability-${capability.value}`}
+                              checked={addCapabilities.includes(capability.value)}
+                              disabled={!addIntegrationType || unavailable}
+                              onCheckedChange={(checked) =>
+                                toggleAddedCapability(capability.value, checked === true)
+                              }
+                            />
+                            <Label
+                              htmlFor={`add-capability-${capability.value}`}
+                              className="text-sm font-normal"
+                            >
+                              {capability.label}
+                              {unavailable ? " — use universal JSON" : ""}
+                            </Label>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Select only functions exposed by this endpoint. Each selected function becomes
+                      available in Routing &amp; redundancy; no route is selected automatically.
+                    </p>
+                  </div>
+                </>
+              ) : null}
+
+              <div className="space-y-2">
+                <Label htmlFor="add-ai-key">API key</Label>
+                <Input
+                  id="add-ai-key"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={
+                    addProviderId === CUSTOM_PROVIDER_VALUE
+                      ? "API key or token, if this endpoint requires one"
+                      : "Optional when a platform key is available"
+                  }
+                  value={addCredential}
+                  onChange={(event) => setAddCredential(event.target.value)}
+                />
               </div>
-            )}
+
+              <div className="space-y-2">
+                <Label htmlFor="add-ai-model">Model</Label>
+                <Input
+                  id="add-ai-model"
+                  placeholder="Enter the exact model identifier"
+                  value={addModel}
+                  onChange={(event) => setAddModel(event.target.value)}
+                />
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg border border-border p-3">
+                <div>
+                  <Label htmlFor="enable-added-ai">Enable after adding</Label>
+                  <p className="text-xs text-muted-foreground">
+                    You can route capabilities after the provider is enabled.
+                  </p>
+                </div>
+                <Switch id="enable-added-ai" checked={addEnabled} onCheckedChange={setAddEnabled} />
+              </div>
+            </div>
 
             <DialogFooter>
               <DialogClose asChild>
                 <Button variant="outline">Cancel</Button>
               </DialogClose>
-              {availableToAdd.length ? (
-                <Button
-                  disabled={!addProviderId || busy === "add-provider"}
-                  onClick={() => void addProvider()}
-                >
-                  {busy === "add-provider" ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    <Plus className="size-4" />
-                  )}
-                  Add provider
-                </Button>
-              ) : null}
+              <Button
+                disabled={
+                  !addProviderId ||
+                  !addModel.trim() ||
+                  (addProviderId === CUSTOM_PROVIDER_VALUE &&
+                    (!addCustomName.trim() ||
+                      !addBaseUrl.trim() ||
+                      !addIntegrationType ||
+                      addCapabilities.length === 0)) ||
+                  busy === "add-provider"
+                }
+                onClick={() => void addProvider()}
+              >
+                {busy === "add-provider" ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Plus className="size-4" />
+                )}
+                Add provider
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

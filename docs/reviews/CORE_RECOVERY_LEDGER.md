@@ -93,3 +93,11 @@ Update this section after each vertical slice with named tests and exact results
 - Added an idempotent, additive data migration for Groq, Mistral AI, DeepSeek, OpenRouter and Together AI. It preserves the operator kill switch and creates no workspace configuration or routes.
 - Focused verification: **7 passed, 0 failed**; migration drift check **PASS**.
 - Release position: **P0 DEPLOY RECOVERY CODE GATE PASS; BACKEND DEPLOYMENT REQUIRED**. P1 and PR7 remain closed.
+
+### 2026-08-23 — Manual AI onboarding and complete capability routing
+
+- Root cause: the earlier acceptance gate proved arbitrary ordered provider sets but treated catalogue-backed installation as the complete onboarding contract. The first custom endpoint implementation then hard-coded `TEXT`, leaving manual providers eligible only for Copy despite the PR5 capability-routing requirement.
+- Removed every onboarding default. Admin must explicitly enter provider name, exact model, public HTTPS endpoint, optional key/token, protocol and the capabilities the endpoint actually serves.
+- OpenAI-compatible custom endpoints support their standard text, image, vision/caption and embedding paths. The provider-neutral Scaleezy universal JSON contract supports all seven routing capabilities, including video generation and analysis.
+- Capability declaration and routing remain separate: each declared provider becomes eligible, while Admin explicitly composes each ordered FAILOVER, ROUND_ROBIN or BEST_OF route. No provider or route is chosen silently.
+- Tenant isolation, encrypted credentials, public-endpoint SSRF controls and the frozen AIRouter ownership boundary remain enforced. P1 and PR7 remain closed until this P0 is deployed.

@@ -71,11 +71,26 @@ def all_adapters() -> Dict[str, Type[AIProviderAdapter]]:
     return dict(_registry)
 
 
+def adapter_class_for_provider(provider):
+    """Return the executable protocol class for a catalogue provider row."""
+    from .models import ProviderIntegrationType
+
+    if provider.integration_type == ProviderIntegrationType.OPENAI_COMPATIBLE:
+        from .adapters.openai_compatible import CustomOpenAICompatibleAdapter
+
+        return CustomOpenAICompatibleAdapter
+    if provider.integration_type == ProviderIntegrationType.SCALEEZY_JSON:
+        from .adapters.openai_compatible import ScaleezyJSONAdapter
+
+        return ScaleezyJSONAdapter
+    return get_adapter_class(provider.key)
+
+
 def build(workspace_provider) -> AIProviderAdapter | None:
     """Instantiates the adapter for a WorkspaceAIProvider row."""
     from apps.social_accounts.utils.encryption import decrypt_token
 
-    cls = get_adapter_class(workspace_provider.provider.key)
+    cls = adapter_class_for_provider(workspace_provider.provider)
     if cls is None:
         logger.warning("No adapter installed for %s", workspace_provider.provider.key)
         return None
@@ -89,8 +104,16 @@ def build(workspace_provider) -> AIProviderAdapter | None:
                 "Could not decrypt credentials for %s", workspace_provider.provider.key
             )
 
-    return cls(
+    adapter = cls(
         credentials=credentials,
         model=workspace_provider.model_override or workspace_provider.provider.default_model,
         config=workspace_provider.config or {},
     )
+    if workspace_provider.provider.is_custom:
+        adapter.base_url = workspace_provider.provider.base_url
+        adapter.display_name = workspace_provider.provider.display_name
+        adapter.capabilities = tuple(workspace_provider.provider.capabilities or ())
+        adapter.enforce_public_endpoint = True
+        adapter.allow_anonymous = True
+        adapter.unit_cost = float(workspace_provider.provider.unit_cost)
+    return adapter

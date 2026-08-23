@@ -1,9 +1,13 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
+
+from .endpoint_security import validate_public_https_endpoint
 
 from .models import (
     AIProvider,
     AIUsageLog,
     Capability,
+    ProviderIntegrationType,
     Strategy,
     WorkspaceAIProvider,
     WorkspaceAIRoute,
@@ -14,8 +18,71 @@ class AIProviderSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIProvider
         fields = ['id', 'key', 'display_name', 'capabilities', 'default_model',
-                  'is_available', 'unit_cost', 'docs_url']
+                  'is_available', 'unit_cost', 'docs_url', 'integration_type',
+                  'base_url']
         read_only_fields = fields
+
+
+class CustomWorkspaceAIProviderSerializer(serializers.Serializer):
+    display_name = serializers.CharField(max_length=100, trim_whitespace=True)
+    base_url = serializers.URLField(max_length=500)
+    credentials = serializers.CharField(
+        write_only=True,
+        trim_whitespace=True,
+        required=False,
+        allow_blank=True,
+        default='',
+    )
+    model = serializers.CharField(max_length=100, trim_whitespace=True)
+    integration_type = serializers.ChoiceField(choices=(
+        ProviderIntegrationType.OPENAI_COMPATIBLE,
+        ProviderIntegrationType.SCALEEZY_JSON,
+    ))
+    capabilities = serializers.ListField(
+        child=serializers.ChoiceField(choices=Capability.choices),
+        min_length=1,
+        allow_empty=False,
+    )
+    enabled = serializers.BooleanField(default=True)
+
+    def validate_display_name(self, value):
+        if len(value.strip()) < 2:
+            raise serializers.ValidationError('Enter a provider name.')
+        return value.strip()
+
+    def validate_base_url(self, value):
+        try:
+            return validate_public_https_endpoint(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages[0]) from exc
+
+    def validate_credentials(self, value):
+        return value.strip()
+
+    def validate_model(self, value):
+        if not value.strip():
+            raise serializers.ValidationError('Enter the exact model identifier.')
+        return value.strip()
+
+    def validate(self, attrs):
+        capabilities = list(dict.fromkeys(attrs['capabilities']))
+        if attrs['integration_type'] == ProviderIntegrationType.OPENAI_COMPATIBLE:
+            supported = {
+                Capability.TEXT,
+                Capability.IMAGE,
+                Capability.IMAGE_ANALYSIS,
+                Capability.IMAGE_CAPTION,
+                Capability.EMBEDDING,
+            }
+            if any(value not in supported for value in capabilities):
+                raise serializers.ValidationError({
+                    'capabilities': (
+                        'OpenAI-compatible APIs do not define a standard video contract. '
+                        'Use the Scaleezy universal JSON protocol for video capabilities.'
+                    )
+                })
+        attrs['capabilities'] = capabilities
+        return attrs
 
 
 class WorkspaceAIProviderSerializer(serializers.ModelSerializer):
