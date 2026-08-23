@@ -25,6 +25,19 @@ class Plan(models.Model):
     monthly_generations = models.PositiveIntegerField(
         default=100, help_text="Generations per period. 0 = unlimited."
     )
+    #: Per-capability ceilings, keyed by apps.ai.models.Capability, e.g.
+    #: {"IMAGE": 100, "VIDEO": 10, "TEXT": 500}. A capability that is absent,
+    #: null or 0 is unlimited — so an existing plan with {} behaves exactly as
+    #: it did before this column existed. Separate from monthly_generations,
+    #: which stays as the overall ceiling; whichever binds first wins.
+    #: A dict rather than columns because the capability list is a row in the
+    #: AI catalogue, not a constant — adding VIDEO_ANALYSIS must not need a
+    #: migration.
+    capability_limits = models.JSONField(
+        default=dict, blank=True,
+        help_text='Per-capability ceilings, e.g. {"IMAGE": 100, "VIDEO": 10}. '
+                  'Absent or 0 = unlimited.',
+    )
     #: Spend ceiling across every AI provider, summed from AIUsageLog.
     monthly_spend_cap = models.DecimalField(
         max_digits=10, decimal_places=2, default=0,
@@ -76,6 +89,12 @@ class Subscription(models.Model):
     spend_cap_override = models.DecimalField(
         max_digits=10, decimal_places=2, null=True, blank=True
     )
+    #: Per-capability overrides for THIS client, same shape as
+    #: Plan.capability_limits. This is the dial Super Admin turns to say
+    #: "client A gets 100 posters, client B gets 50 videos" without inventing
+    #: a plan per customer. A key present here wins over the plan; a key
+    #: absent falls through to it.
+    capability_limit_overrides = models.JSONField(default=dict, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -98,6 +117,35 @@ class Subscription(models.Model):
         if self.spend_cap_override is not None:
             return self.spend_cap_override
         return self.plan.monthly_spend_cap
+
+    def limit_for(self, capability) -> int:
+        """This client's ceiling for one capability. 0 = unlimited.
+
+        Override first, then the plan. A malformed value counts as unlimited
+        rather than as zero: a typo in a JSON field must not silently lock a
+        paying customer out of the product.
+        """
+        for source in (self.capability_limit_overrides, self.plan.capability_limits):
+            if not isinstance(source, dict):
+                continue
+            if capability in source:
+                try:
+                    return max(0, int(source[capability] or 0))
+                except (TypeError, ValueError):
+                    return 0
+        return 0
+
+    def all_capability_limits(self) -> dict:
+        """Plan limits with this client's overrides applied, for display."""
+        merged = {}
+        for source in (self.plan.capability_limits, self.capability_limit_overrides):
+            if isinstance(source, dict):
+                for key, value in source.items():
+                    try:
+                        merged[str(key)] = max(0, int(value or 0))
+                    except (TypeError, ValueError):
+                        merged[str(key)] = 0
+        return merged
 
     @property
     def is_active(self) -> bool:

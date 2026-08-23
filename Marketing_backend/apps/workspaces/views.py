@@ -62,9 +62,24 @@ class MarketingWorkspaceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             or 'My Brand'
         )
 
+        # A new client is approved only when the person creating it already
+        # administers an approved client. Otherwise a pending or rejected
+        # customer could open a second workspace and spend from it.
+        approved_creator = WorkspaceMember.objects.filter(
+            user=request.user,
+            status=WorkspaceMember.Status.ACTIVE,
+            role__in=[WorkspaceMember.Role.OWNER, WorkspaceMember.Role.ADMIN],
+            workspace__approval_status=MarketingWorkspace.Approval.APPROVED,
+            workspace__status=MarketingWorkspace.Status.ACTIVE,
+        ).exists()
+        approval = (
+            MarketingWorkspace.Approval.APPROVED if approved_creator
+            else MarketingWorkspace.Approval.PENDING
+        )
+
         try:
             with transaction.atomic():
-                workspace = serializer.save()
+                workspace = serializer.save(approval_status=approval)
                 WorkspaceMember.objects.create(
                     workspace=workspace,
                     user=request.user,
@@ -74,6 +89,9 @@ class MarketingWorkspaceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                     workspace=workspace,
                     name=brand_name,
                     is_default=True,
+                    status=(
+                        Brand.Status.ACTIVE if approved_creator else Brand.Status.PENDING
+                    ),
                     created_by=request.user,
                 )
                 provision_default_ai(workspace)

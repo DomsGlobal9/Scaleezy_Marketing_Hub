@@ -17,10 +17,19 @@ logger = logging.getLogger(__name__)
 
 def due_jobs(now=None):
     now = now or timezone.now()
+    from apps.workspaces.models import MarketingWorkspace
+
+    # A suspended or archived client's schedule must not keep publishing to
+    # the world. Filtered at the source so every caller — the sweep, the
+    # console, a future retry — sees the same set. Archiving also cancels
+    # these jobs outright (apps.workspaces.services.lifecycle); this is the
+    # belt to that braces, and it also covers suspension, which is reversible
+    # and deliberately leaves the schedule intact to resume.
     return PublishingJob.objects.filter(
         status=PublishingJob.Status.SCHEDULED,
         scheduled_at__isnull=False,
         scheduled_at__lte=now,
+        workspace__status=MarketingWorkspace.Status.ACTIVE,
     )
 
 

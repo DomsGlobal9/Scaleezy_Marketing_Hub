@@ -86,9 +86,16 @@ class BrandViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         return APIResponse(success=True, data=brain)
 
     def perform_create(self, serializer):
+        # Status is decided by the client's approval, never by the request: a
+        # customer awaiting approval creating a second brand must not obtain
+        # an ACTIVE one and walk around the spend gate with it.
+        from .services.approval import initial_brand_status
+
+        workspace = self._authorised_workspace()
         serializer.save(
-            workspace=self._authorised_workspace(),
+            workspace=workspace,
             created_by=self.request.user,
+            status=initial_brand_status(workspace),
         )
 
     def perform_update(self, serializer):
@@ -109,16 +116,38 @@ class BrandViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if error:
             return error
 
+        # Exclude archived rather than require ACTIVE: a workspace whose only
+        # brand is PENDING approval must get that brand back, not have a second,
+        # already-approved one silently created around the approval gate.
         brand = (
-            Brand.objects.filter(workspace=workspace, status=Brand.Status.ACTIVE)
+            Brand.objects.filter(workspace=workspace)
+            .exclude(status=Brand.Status.ARCHIVED)
             .order_by('-is_default', 'created_at')
             .first()
         )
+        if brand is None and not workspace.is_approved:
+            # A client that is pending or rejected does not get a fresh brand
+            # minted here. Show them what they actually have — including an
+            # archived (rejected) brand — rather than inventing a new one that
+            # would also collide with the archived brand's name.
+            brand = (
+                Brand.objects.filter(workspace=workspace)
+                .order_by('-is_default', '-created_at')
+                .first()
+            )
         if brand is None:
+            from .services.approval import initial_brand_status
+
+            name = workspace.workspace_name or 'My Brand'
+            if Brand.objects.filter(workspace=workspace, name=name).exists():
+                # The only brands left are archived and one of them already
+                # carries the workspace's name; the unique key is per name.
+                name = f"{name} (new)"
             brand = Brand.objects.create(
                 workspace=workspace,
-                name=workspace.workspace_name or 'My Brand',
+                name=name,
                 is_default=True,
+                status=initial_brand_status(workspace),
                 created_by=request.user,
             )
             logger.info("Created default brand %s for workspace %s", brand.pk, workspace.pk)

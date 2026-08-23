@@ -13,6 +13,7 @@ import uuid
 from django.db import transaction
 from django.utils import timezone
 
+from apps.brands.models import Brand
 from apps.brands.services.brand_brain import rebuild_brand_brain
 from apps.context.services.context_gateway import (
     MOTION_CATEGORIES,
@@ -35,6 +36,27 @@ logger = logging.getLogger(__name__)
 
 class CalibrationError(Exception):
     """The requested calibration step cannot be performed."""
+
+
+class BrandNotApproved(CalibrationError):
+    """Calibration is refused until Scaleezy has approved the brand."""
+
+
+def require_approved_for_calibration(brand):
+    """Raise unless the brand may spend on calibration.
+
+    Lives in the service, not the view, so no other caller can reach the
+    provider with a brand that is still awaiting approval: calibration makes
+    real provider calls and costs real money, and approval is what says that
+    spend is ours to incur.
+    """
+    if brand.status == Brand.Status.PENDING or not brand.workspace.is_approved:
+        raise BrandNotApproved(
+            "This brand is awaiting Scaleezy approval. Calibration unlocks "
+            "once it has been approved."
+        )
+    if brand.status == Brand.Status.ARCHIVED:
+        raise BrandNotApproved("This brand is archived; calibration is unavailable.")
 
 
 # ---------------------------------------------------------------- orchestration
@@ -202,6 +224,8 @@ def generate_calibration_round(workspace, brand, *, user=None):
     latency. The rows are then written atomically, so a half-created round is
     never visible.
     """
+    require_approved_for_calibration(brand)
+
     round_id = uuid.uuid4()
     outcomes = []
     for spec in CALIBRATION_DIRECTIONS:
@@ -385,6 +409,12 @@ def onboarding_summary(brand):
         if latest_round else CalibrationDirection.objects.none()
     )
     return {
+        # The client's approval state, so the product can say "awaiting
+        # Scaleezy approval, calibration unlocks once approved" instead of
+        # letting them discover it by clicking a button that 403s. There is no
+        # mail backend, so this is how approval becomes visible at all.
+        'brand_status': brand.status,
+        'awaiting_approval': brand.status == Brand.Status.PENDING,
         'onboarding': {
             'current_stage': onboarding.current_stage,
             'status': onboarding.status,

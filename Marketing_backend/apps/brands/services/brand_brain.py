@@ -481,10 +481,24 @@ def compile_brand_brain(brand):
 
 @transaction.atomic
 def rebuild_brand_brain(brand):
-    """Compile and persist. Source records are read only."""
+    """Compile and persist. Source records are read only.
+
+    The outcome is recorded on the brand, not only in the log: an operator
+    console cannot query a log line, and "which brands failed to recompile"
+    is one of the few platform-health questions that has to be answerable
+    from the database.
+    """
+    from django.utils import timezone
+
     brain = compile_brand_brain(brand)
     brand.creative_brain = brain
-    brand.save(update_fields=['creative_brain', 'updated_at'])
+    brand.brain_compiled_at = timezone.now()
+    brand.brain_version = str(brain.get('brain_version', ''))[:64]
+    brand.brain_last_error = ''
+    brand.save(update_fields=[
+        'creative_brain', 'brain_compiled_at', 'brain_version',
+        'brain_last_error', 'updated_at',
+    ])
     return brain
 
 
@@ -503,8 +517,22 @@ def rebuild_brand_brain_safely(brand):
         return None
     try:
         return rebuild_brand_brain(brand)
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "Could not rebuild Brand Brain for brand %s", getattr(brand, 'pk', None)
         )
+        # Recorded, not just logged — otherwise a brand whose brain silently
+        # stopped recompiling is indistinguishable from a healthy one, and the
+        # generator goes on serving a stale snapshot nobody knows is stale.
+        # Best-effort: if even this write fails, the caller's change still
+        # stands, which is the whole point of the "safely" variant.
+        try:
+            from django.utils import timezone
+
+            type(brand).objects.filter(pk=brand.pk).update(
+                brain_last_error=str(exc)[:2000],
+                brain_failed_at=timezone.now(),
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("Could not record brain compile failure")
         return None
