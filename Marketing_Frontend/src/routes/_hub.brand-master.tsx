@@ -1108,6 +1108,7 @@ function BrandMasterPage() {
   const refresh = useCallback(() => {
     if (brandId) void loadOverview(brandId).catch(() => undefined);
   }, [brandId, loadOverview]);
+  const [adoptedNonce, setAdoptedNonce] = useState(0);
   const brandEditor = useBrandSettings({ brandId, onSaved: refresh });
 
   const onRebuild = useCallback(async () => {
@@ -1248,8 +1249,16 @@ function BrandMasterPage() {
             <KnowledgePanel brandId={brandId} onChanged={refresh} />
           </TabsContent>
           <TabsContent value="inspirations" className="space-y-10">
-            <InspirationsPanel brandId={brandId} onChanged={refresh} />
-            <LibraryGallery brandId={brandId} onChanged={refresh} />
+            {/* Adopting from the library writes into this brand's own
+                inspirations, so the panel remounts (and re-reads) on adopt. */}
+            <InspirationsPanel key={adoptedNonce} brandId={brandId} onChanged={refresh} />
+            <LibraryGallery
+              brandId={brandId}
+              onChanged={() => {
+                setAdoptedNonce((n) => n + 1);
+                refresh();
+              }}
+            />
           </TabsContent>
           <TabsContent value="learning">
             <LearningTab brandId={brandId} onChanged={refresh} />

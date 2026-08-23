@@ -4,7 +4,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ('universal', '0001_initial'),
+        ('universal', '0002_platforminspiration_entry_kinds'),
         ('workspaces', '0005_workspace_kind'),
     ]
 

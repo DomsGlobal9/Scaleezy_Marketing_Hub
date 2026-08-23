@@ -14,6 +14,7 @@
  */
 import { api, apiGet, apiPost } from "@/lib/api";
 import { createAuthStore } from "@/lib/auth";
+import { postMultipart } from "@/lib/brand-master";
 
 /* ------------------------------------------------------------------ identity */
 
@@ -410,14 +411,39 @@ export const fetchPatternContributors = (id: string) =>
 
 /* ------------------------------------------------------------------- library */
 
-export interface PlatformInspiration {
+/**
+ * What a library entry IS. LINK and TEXT are authored as JSON; IMAGE, VIDEO
+ * and FILE only ever come from the upload route, which derives the kind from
+ * the file — so a card can trust that `kind` matches the content it carries.
+ */
+export type LibraryKind = "LINK" | "IMAGE" | "VIDEO" | "FILE" | "TEXT";
+export const LIBRARY_KINDS: LibraryKind[] = ["LINK", "IMAGE", "VIDEO", "FILE", "TEXT"];
+
+/** The file picker's accept list — mirrors the server's allowlist (no SVG: it can carry script). */
+export const LIBRARY_UPLOAD_ACCEPT =
+  ".png,.jpg,.jpeg,.gif,.webp,.avif,.mp4,.m4v,.webm,.mov,.pdf,.txt,.md,.doc,.docx,.ppt,.pptx";
+export const LIBRARY_UPLOAD_MAX_MB = 25;
+
+/** Fields every kind shares on the wire; `kind` says which content field is live. */
+export interface LibraryEntryFields {
   id: string;
   title: string;
+  kind: LibraryKind | string;
+  /** The content of a LINK; on any other kind an optional source / credit. */
   reference_url: string;
+  /** The content of a TEXT entry. */
+  body: string;
+  /** The content of an IMAGE / VIDEO / FILE entry. */
+  file_url: string;
+  mime_type: string;
+  file_name: string;
   annotation: string;
   tags: string[];
   industry: string;
   channel: string;
+}
+
+export interface PlatformInspiration extends LibraryEntryFields {
   status: LifecycleStatus | string;
   curated_by?: string | null;
   published_at: string | null;
@@ -427,8 +453,11 @@ export interface PlatformInspiration {
 }
 
 export interface PlatformInspirationInput {
+  /** LINK (default) or TEXT. Uploads go through `uploadPlatformInspiration`. */
+  kind?: "LINK" | "TEXT";
   title: string;
   reference_url: string;
+  body?: string;
   annotation: string;
   tags: string[];
   industry: string;
@@ -440,6 +469,25 @@ export const fetchPlatformInspirations = async () =>
 
 export const createPlatformInspiration = (input: PlatformInspirationInput) =>
   apiPost<unknown>("/api/platform/inspirations/", input);
+
+/**
+ * Multipart: an image, video or file becomes a draft entry. The server picks
+ * the kind from the file; everything else is the same authoring fields.
+ */
+export const uploadPlatformInspiration = (
+  file: File,
+  input: Omit<PlatformInspirationInput, "kind" | "body">,
+) => {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("title", input.title);
+  form.append("reference_url", input.reference_url);
+  form.append("annotation", input.annotation);
+  form.append("tags", input.tags.join(", "));
+  form.append("industry", input.industry);
+  form.append("channel", input.channel);
+  return postMultipart<PlatformInspiration>("/api/platform/inspirations/upload/", form);
+};
 
 export const updatePlatformInspiration = (id: string, input: Partial<PlatformInspirationInput>) =>
   api<unknown>(`/api/platform/inspirations/${id}/`, { method: "PATCH", body: input });
@@ -507,15 +555,7 @@ export const acceptNoteProposal = (brandId: string, noteId: string, proposal: No
 
 /* --------------------------------------------------------- client: library */
 
-export interface LibraryItem {
-  id: string;
-  title: string;
-  reference_url: string;
-  annotation: string;
-  tags: string[];
-  industry: string;
-  channel: string;
-}
+export type LibraryItem = LibraryEntryFields;
 
 /**
  * `/api/marketing/inspirations/library/` is also registered, but the

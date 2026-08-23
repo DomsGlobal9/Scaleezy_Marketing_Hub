@@ -6,9 +6,9 @@ Two things live here, and keeping them apart matters:
 * `UniversalStandard` — craft standards the Scaleezy team authors. Scaleezy's
   own IP, so no client consent is involved and it is useful from the first
   client.
-* `PlatformInspiration` — references the team finds and curates. A pointer and
-  an annotation, never re-hosted media, and never anything derived from a
-  client's own material.
+* `PlatformInspiration` — references the team finds and curates: a link, an
+  uploaded image / video / file, or a piece of text, plus the team's own
+  annotation. Never anything derived from a client's own material.
 
 Both reach a generation at authority rank 80 or weaker — below every
 brand-specific rank (10 hard rule → 70 inspiration signal) — so a universal
@@ -201,20 +201,57 @@ class LearnedPattern(models.Model):
         }
 
 
+class EntryKind(models.TextChoices):
+    """What a library entry IS. Decides which content field carries it.
+
+    LINK and TEXT are authored as JSON; IMAGE / VIDEO / FILE only ever come
+    through the multipart upload route, which derives the kind from the file's
+    media type so the kind and the content can never disagree.
+    """
+
+    LINK = 'LINK', 'Link'
+    IMAGE = 'IMAGE', 'Image'
+    VIDEO = 'VIDEO', 'Video'
+    FILE = 'FILE', 'File'
+    TEXT = 'TEXT', 'Text'
+
+
+#: The kinds whose content is an uploaded object rather than a URL or text.
+UPLOAD_KINDS = (EntryKind.IMAGE, EntryKind.VIDEO, EntryKind.FILE)
+
+
 class PlatformInspiration(models.Model):
     """A reference the Scaleezy team curated, shared across clients.
 
-    Deliberately holds NO tenant foreign key and NO re-hosted media. It is a
-    URL, the team's own annotation, and tags. Copying somebody else's creative
-    onto our storage to redistribute it is a copyright problem, and a row that
-    could point at a client's own material would be a tenancy problem — so
-    neither is possible by construction.
+    Deliberately holds NO tenant foreign key: the library is platform-owned,
+    and a row that could point at a client's own material would be a tenancy
+    problem, so it is impossible by construction. What an entry IS is its
+    `kind` — a link, an uploaded image / video / file, or a piece of text —
+    and exactly one content field carries it (`reference_url`, the file
+    columns, or `body`). Uploads live under a platform-owned storage prefix,
+    never under any workspace's, and the team that uploads them is the one
+    answerable for the rights to do so. Whatever the kind, `annotation` — why
+    the team kept it — is the part a client is really given.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     title = models.CharField(max_length=255)
-    reference_url = models.URLField(max_length=1000)
+    kind = models.CharField(
+        max_length=10, choices=EntryKind.choices, default=EntryKind.LINK
+    )
+    #: The content of a LINK. Optional on every other kind, where it is the
+    #: source the upload or text was taken from — a credit, not the content.
+    reference_url = models.URLField(max_length=1000, blank=True, default='')
+    #: The content of a TEXT entry: a hook, a headline, a caption, a brief —
+    #: the words themselves, as distinct from the annotation about them.
+    body = models.TextField(blank=True, default='')
+    #: The content of an IMAGE / VIDEO / FILE entry. Server-assigned by the
+    #: upload route, never accepted from a request body.
+    file_url = models.URLField(max_length=1000, blank=True, default='')
+    storage_path = models.CharField(max_length=1000, blank=True, default='')
+    mime_type = models.CharField(max_length=100, blank=True, default='')
+    file_name = models.CharField(max_length=255, blank=True, default='')
     #: Why the team kept it. This, not the artwork, is the value.
     annotation = models.TextField(blank=True)
     #: e.g. ["minimal", "product-led", "high-contrast"]
