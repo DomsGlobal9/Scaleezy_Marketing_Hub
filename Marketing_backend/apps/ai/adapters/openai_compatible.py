@@ -138,6 +138,38 @@ class OpenAICompatibleTextAdapter(AIProviderAdapter):
         return value.strip()
 
     def generate_text(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        if str(brief.get('task') or '').upper() == 'EXTRACT':
+            response = self._post('chat/completions', {
+                'model': self.model,
+                'messages': [
+                    {
+                        'role': 'system',
+                        'content': (
+                            'Act only as a replaceable structured extraction provider for '
+                            'Scaleezy. Return one JSON object and invent nothing.'
+                        ),
+                    },
+                    {
+                        'role': 'user',
+                        'content': (
+                            str(brief.get('instruction') or 'Extract grounded facts.')
+                            + '\nINPUT_JSON:\n'
+                            + self._brief_json(brief.get('structured') or {})
+                        ),
+                    },
+                ],
+                'response_format': {'type': 'json_object'},
+                'temperature': 0,
+                'max_tokens': int(self.config.get('max_tokens', 2000)),
+            })
+            return {
+                'raw': self._decode_json(self._response_text(response)),
+                'metadata': {
+                    'response_id': str(response.get('id') or ''),
+                    'model': str(response.get('model') or self.model),
+                },
+            }
+
         response = self._post('chat/completions', {
             'model': self.model,
             'messages': [
@@ -240,7 +272,7 @@ class OpenAICompatibleTextAdapter(AIProviderAdapter):
     def analyze_image(self, brief: Dict[str, Any]) -> Dict[str, Any]:
         analysis = self._vision_json(
             brief,
-            'Analyze this marketing image. Return one useful JSON object only.',
+            str(brief.get('instruction') or 'Analyze this marketing image. Return one useful JSON object only.'),
         )
         return {'analysis': analysis, 'raw': analysis}
 

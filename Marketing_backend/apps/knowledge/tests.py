@@ -1,4 +1,5 @@
 import uuid
+from unittest.mock import patch
 from django.test import TestCase
 from rest_framework.test import APIClient
 from rest_framework import status
@@ -63,7 +64,36 @@ class KnowledgeAPITests(TestCase):
     def test_process_source_action(self):
         url = f'/api/marketing/knowledge/sources/{self.source1.id}/process/'
         response = self.client1.post(url, HTTP_X_WORKSPACE_ID=str(self.workspace1.id))
-        self.assertEqual(response.status_code, status.HTTP_501_NOT_IMPLEMENTED)
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.source1.refresh_from_db()
+        self.assertEqual(self.source1.status, BrandSource.SourceStatus.QUEUED)
+
+    @patch('apps.knowledge.processing.AIRouter.dispatch')
+    def test_processing_creates_grounded_review_candidates(self, dispatch):
+        dispatch.return_value = {
+            'provider': 'test-provider',
+            'raw': {
+                'memories': [{
+                    'memory_type': 'FACT',
+                    'content': 'Scaleezy serves marketing teams.',
+                    'normalized_key': 'target_customer',
+                    'confidence': 0.9,
+                    'quote': 'serves marketing teams',
+                }],
+            },
+        }
+        self.source1.raw_text = 'Scaleezy serves marketing teams with an AI workspace.'
+        self.source1.save(update_fields=['raw_text'])
+
+        from .processing import process_source
+        result = process_source(str(self.source1.pk))
+
+        self.source1.refresh_from_db()
+        memory = BrandMemory.objects.get(source=self.source1)
+        self.assertEqual(result['candidates'], 1)
+        self.assertEqual(self.source1.status, BrandSource.SourceStatus.NEEDS_REVIEW)
+        self.assertEqual(memory.status, BrandMemory.MemoryStatus.CANDIDATE)
+        self.assertEqual(memory.extracted_by_provider, 'test-provider')
 
     def test_memory_tenant_isolation(self):
         source = BrandSource.objects.create(

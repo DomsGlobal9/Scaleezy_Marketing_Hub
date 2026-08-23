@@ -104,7 +104,6 @@ class BrandInspirationViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
 
     @action(detail=True, methods=['post'])
     def analyze(self, request, pk=None):
-        """Placeholder for PR6. Reports honestly that nothing ran."""
         inspiration = self.get_object()
         if inspiration.lifecycle_status == BrandInspiration.LifecycleStatus.ARCHIVED:
             return APIResponse(
@@ -112,14 +111,42 @@ class BrandInspirationViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
                 message="Archived inspirations cannot be analysed.",
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if inspiration.analysis_status in (
+            BrandInspiration.AnalysisStatus.QUEUED,
+            BrandInspiration.AnalysisStatus.PROCESSING,
+        ):
+            return APIResponse(
+                success=True,
+                message="Inspiration analysis is already in progress.",
+                data=BrandInspirationSerializer(
+                    inspiration, context=self.get_serializer_context()
+                ).data,
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        from .tasks import analyze_inspiration_task
+
+        inspiration.analysis_status = BrandInspiration.AnalysisStatus.QUEUED
+        metadata = dict(inspiration.metadata or {})
+        metadata['analysis'] = {
+            **dict(metadata.get('analysis') or {}),
+            'queued_at': timezone.now().isoformat(),
+            'queued_by': str(request.user.pk),
+            'error': '',
+        }
+        inspiration.metadata = metadata
+        inspiration.save(update_fields=['analysis_status', 'metadata', 'updated_at'])
+        task_result = analyze_inspiration_task.enqueue(str(inspiration.pk))
         return APIResponse(
-            success=False,
-            message="Inspiration analysis is not implemented until PR6.",
-            error={
-                "code": "NOT_IMPLEMENTED",
-                "message": "Inspiration analysis is not implemented until PR6.",
+            success=True,
+            message="Inspiration queued for analysis.",
+            data={
+                'inspiration': BrandInspirationSerializer(
+                    inspiration, context=self.get_serializer_context()
+                ).data,
+                'task_id': str(task_result.id),
             },
-            status=status.HTTP_501_NOT_IMPLEMENTED,
+            status=status.HTTP_202_ACCEPTED,
         )
 
     @action(
@@ -242,6 +269,7 @@ class InspirationSignalViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         rebuild_brand_brain_safely(signal.inspiration.brand)
+        self._finish_analysis_review(signal.inspiration)
         superseded = signal.supersedes.first()
         message = "Signal confirmed."
         if superseded is not None:
@@ -274,6 +302,7 @@ class InspirationSignalViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         rebuild_brand_brain_safely(signal.inspiration.brand)
+        self._finish_analysis_review(signal.inspiration)
         return APIResponse(
             success=True,
             message="Signal rejected. It is no longer eligible for retrieval.",
@@ -281,3 +310,17 @@ class InspirationSignalViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
                 signal, context=self.get_serializer_context()
             ).data,
         )
+
+    @staticmethod
+    def _finish_analysis_review(inspiration):
+        waiting = InspirationSignal.objects.filter(
+            inspiration=inspiration,
+            origin=InspirationSignal.Origin.AI,
+            user_confirmation=InspirationSignal.UserConfirmation.PENDING,
+            superseded_at__isnull=True,
+        ).exists()
+        if not waiting:
+            BrandInspiration.objects.filter(
+                pk=inspiration.pk,
+                analysis_status=BrandInspiration.AnalysisStatus.NEEDS_REVIEW,
+            ).update(analysis_status=BrandInspiration.AnalysisStatus.READY)

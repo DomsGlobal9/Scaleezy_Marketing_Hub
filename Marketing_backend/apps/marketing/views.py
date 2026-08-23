@@ -5,7 +5,7 @@ from rest_framework.permissions import AllowAny
 from .models import MarketingAsset
 from apps.workspaces.models import MarketingWorkspace
 from .serializers import MarketingAssetSerializer, UploadAssetSerializer
-from .services.storage import SupabaseStorageService
+from .services.storage import StorageError, SupabaseStorageService
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 from apps.common.permissions import (
@@ -62,13 +62,16 @@ class MarketingAssetViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             asset_type = MarketingAsset.AssetType.VIDEO
             
         try:
-            file_url = SupabaseStorageService.upload_file(str(workspace_id), file_obj, file_obj.name)
+            stored = SupabaseStorageService.upload_and_describe(
+                str(workspace_id), file_obj, file_obj.name, prefix='assets'
+            )
             
             asset = MarketingAsset.objects.create(
                 workspace=workspace,
                 asset_type=asset_type,
                 file_name=file_obj.name,
-                file_url=file_url,
+                file_url=stored['url'],
+                storage_path=stored['path'],
                 mime_type=content_type,
                 file_size=file_obj.size,
                 source=source,
@@ -76,5 +79,9 @@ class MarketingAssetViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             )
             
             return APIResponse(success=True, data=MarketingAssetSerializer(asset).data, status=status.HTTP_201_CREATED)
+        except StorageError as e:
+            return APIResponse(
+                success=False, message=str(e), status=status.HTTP_502_BAD_GATEWAY
+            )
         except Exception as e:
             return APIResponse(success=False, message=str(e), status=status.HTTP_500_INTERNAL_SERVER_ERROR)

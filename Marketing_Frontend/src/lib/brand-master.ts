@@ -420,6 +420,9 @@ export const uploadSource = (
 export const revokeSource = (sourceId: string) =>
   api(`/api/marketing/knowledge/sources/${sourceId}/revoke/`, { method: "POST" });
 
+export const processSource = (sourceId: string) =>
+  api(`/api/marketing/knowledge/sources/${sourceId}/process/`, { method: "POST" });
+
 export const fetchMemories = async (brandId: string) =>
   asList<BrandMemoryRow>(await api(`/api/marketing/knowledge/memories/?brand_id=${brandId}`));
 
@@ -481,6 +484,9 @@ export const uploadInspiration = (brandId: string, file: File, input: Inspiratio
 
 export const archiveInspiration = (inspirationId: string) =>
   api(`/api/marketing/inspirations/${inspirationId}/archive/`, { method: "POST" });
+
+export const analyzeInspiration = (inspirationId: string) =>
+  api(`/api/marketing/inspirations/${inspirationId}/analyze/`, { method: "POST" });
 
 export const createSignal = (input: {
   inspiration: string;

@@ -143,9 +143,15 @@ def enqueue_due_work():
     deploy and another thing to forget to deploy.
     """
     from apps.publishing.scheduler import enqueue_due_jobs
+    from apps.universal.tasks import enqueue_due_enrichment
 
+    count = 0
     try:
-        return enqueue_due_jobs()
+        count += enqueue_due_jobs()
     except Exception:
         logger.exception("Scheduled work sweep failed")
-        return 0
+    try:
+        count += enqueue_due_enrichment()
+    except Exception:
+        logger.exception("Recurring enrichment sweep failed")
+    return count

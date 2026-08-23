@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.utils import timezone
 
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -12,6 +13,7 @@ from apps.social_accounts.models import SocialConnection
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
 from .models import PublishingJob, PublishingJobItem
+from .policy import PublishingPolicyError, enforce_connection_policy
 from .serializers import CreatePublishingJobSerializer, PublishingJobSerializer
 from .tasks import publish_job
 
@@ -113,6 +115,35 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                     success=False,
                     message="Reconnect or enable every selected account before publishing.",
                     error={"code": "SOCIAL_ACCOUNT_NOT_READY", "message": "Selection rejected."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            intended_at = (
+                data.get('scheduled_at')
+                if data['publish_mode'] == PublishingJob.PublishMode.SCHEDULED
+                else timezone.now()
+            )
+            if intended_at is None:
+                return APIResponse(
+                    success=False,
+                    message="Choose when the scheduled post should publish.",
+                    error={"code": "SCHEDULED_AT_REQUIRED", "message": "Missing schedule."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                for connection in connections:
+                    enforce_connection_policy(
+                        connection,
+                        at=intended_at,
+                        check_daily_limit=(
+                            data['publish_mode'] == PublishingJob.PublishMode.NOW
+                        ),
+                    )
+            except PublishingPolicyError as exc:
+                return APIResponse(
+                    success=False,
+                    message=str(exc),
+                    error={"code": exc.code, "message": str(exc)},
                     status=status.HTTP_409_CONFLICT,
                 )
             

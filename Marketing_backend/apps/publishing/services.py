@@ -7,6 +7,7 @@ does not block the others.
 """
 
 import logging
+from datetime import timedelta
 
 import requests
 from django.utils import timezone
@@ -41,6 +42,11 @@ from apps.social_accounts.integrations.youtube.exceptions import (
 )
 from apps.social_accounts.utils.encryption import decrypt_token, encrypt_token
 from apps.audit.models import AuditLog
+from apps.publishing.policy import (
+    PublishingPolicyError,
+    automatic_retry_enabled,
+    enforce_connection_policy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +78,18 @@ def execute_publishing_job(job_id: str):
             # posts a second copy to every channel that had succeeded.
             continue
 
+        try:
+            enforce_connection_policy(item.social_connection, at=timezone.now())
+        except PublishingPolicyError as exc:
+            item.status = PublishingJobItem.Status.FAILED
+            item.error_code = exc.code
+            item.error_message = str(exc)
+            item.failed_at = timezone.now()
+            item.save(update_fields=[
+                'status', 'error_code', 'error_message', 'failed_at'
+            ])
+            continue
+
         item.status = PublishingJobItem.Status.PUBLISHING
         item.save()
 
@@ -89,6 +107,7 @@ def execute_publishing_job(job_id: str):
             _publish_to_youtube(item, job)
         else:
             item.status = PublishingJobItem.Status.FAILED
+            item.error_code = "UNSUPPORTED_PLATFORM"
             item.error_message = "Platform not supported yet"
             item.failed_at = timezone.now()
             item.save()
@@ -101,6 +120,33 @@ def execute_publishing_job(job_id: str):
     all_success = bool(statuses) and all(
         s == PublishingJobItem.Status.PUBLISHED for s in statuses
     )
+
+    policy_failures = {
+        'PUBLISHING_PAUSED', 'OUTSIDE_PUBLISHING_WINDOW',
+        'DAILY_POST_LIMIT_REACHED', 'UNSUPPORTED_PLATFORM',
+    }
+    retryable = [
+        item for item in job.items.select_related('social_connection').filter(
+            status=PublishingJobItem.Status.FAILED, retry_count__lt=2
+        )
+        if item.error_code not in policy_failures
+        and automatic_retry_enabled(item.social_connection)
+    ]
+    if retryable:
+        from apps.publishing.tasks import publish_job
+
+        for item in retryable:
+            item.status = PublishingJobItem.Status.RETRYING
+            item.retry_count += 1
+            item.save(update_fields=['status', 'retry_count'])
+        job.status = PublishingJob.Status.PUBLISHING
+        job.completed_at = None
+        job.save(update_fields=['status', 'completed_at'])
+        delay = max(item.retry_count for item in retryable) * 5
+        publish_job.using(run_after=timezone.now() + timedelta(minutes=delay)).enqueue(
+            str(job.id)
+        )
+        return
 
     job.completed_at = timezone.now()
     if all_success and any_success:

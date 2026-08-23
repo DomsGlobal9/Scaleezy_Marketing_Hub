@@ -7,12 +7,11 @@
  * readiness counts and the next generation reflect them without a manual
  * rebuild.
  *
- * What this panel does NOT do is pretend. Automatic reading of documents is
- * not available yet, so a source never shows "ready" unless the backend says
- * so, and the copy says plainly that the facts are captured by hand.
+ * Processing runs on the durable worker and returns reviewable candidates;
+ * nothing becomes Brand Brain truth until a person confirms it.
  */
 import { Archive, FileText, Link2, Loader2, Plus, Upload } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -46,6 +45,7 @@ import {
   fetchKnowledge,
   fetchMemories,
   humanize,
+  processSource,
   rejectMemory,
   revokeSource,
   uploadSource,
@@ -84,6 +84,15 @@ export function KnowledgePanel({ brandId, onChanged }: { brandId: string; onChan
   const memories = useSlice<BrandMemoryRow[]>(() => fetchMemories(brandId), true);
   const [adding, setAdding] = useState(false);
 
+  useEffect(() => {
+    if (!(sources.data ?? []).some((source) => ["QUEUED", "PROCESSING"].includes(source.status))) return;
+    const timer = window.setInterval(() => {
+      sources.reload();
+      memories.reload();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [sources.data, sources.reload, memories.reload]);
+
   const bySource = useMemo(() => {
     const map = new Map<string, BrandMemoryRow[]>();
     for (const memory of memories.data ?? []) {
@@ -118,8 +127,8 @@ export function KnowledgePanel({ brandId, onChanged }: { brandId: string; onChan
             provenance; the facts you confirm from them become part of the Brand Brain immediately.
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
-            Scaleezy does not yet read documents automatically, and it will not claim to. Capture
-            the facts that matter under each source and confirm them.
+            Ask Scaleezy to read a source, then confirm or reject every suggested fact. Unconfirmed
+            suggestions never enter the Brand Brain.
           </p>
         </div>
         <Button onClick={() => setAdding((v) => !v)}>
@@ -342,8 +351,8 @@ function AddSourceCard({
               onChange={(e) => setUrl(e.target.value)}
             />
             <p className="mt-1.5 text-xs text-muted-foreground">
-              The link is stored as a source. Its content is not fetched automatically yet — capture
-              the facts that matter below once it is saved.
+              Scaleezy fetches this public page only when you choose Read with AI, then shows facts
+              for your review.
             </p>
           </div>
         ) : null}
@@ -424,6 +433,19 @@ function SourceCard({
     }
   };
 
+  const process = async () => {
+    setBusy(true);
+    try {
+      await processSource(source.id);
+      toast.success("Source queued. Suggested facts will appear here for review.");
+      onChanged();
+    } catch (e) {
+      toast.error(errorMessage(e, "Could not process the source."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <Card>
       <CardContent className="space-y-4 pt-6">
@@ -461,6 +483,19 @@ function SourceCard({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {!confirmArchive ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || ["QUEUED", "PROCESSING"].includes(source.status)}
+                onClick={process}
+              >
+                {busy || ["QUEUED", "PROCESSING"].includes(source.status) ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : null}
+                {source.status === "FAILED" ? "Retry AI reading" : "Read with AI"}
+              </Button>
+            ) : null}
             {confirmArchive ? (
               <>
                 <Button size="sm" variant="destructive" disabled={busy} onClick={archive}>

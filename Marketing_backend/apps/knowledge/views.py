@@ -5,6 +5,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 import mimetypes
+from django.utils import timezone
 
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.permissions import (
@@ -115,10 +116,35 @@ class BrandSourceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if source.status == BrandSource.SourceStatus.ARCHIVED:
             return APIResponse(success=False, message="Archived sources cannot be processed", status=status.HTTP_400_BAD_REQUEST)
             
+        if source.status in (
+            BrandSource.SourceStatus.QUEUED,
+            BrandSource.SourceStatus.PROCESSING,
+        ):
+            return APIResponse(
+                success=True,
+                message="Source processing is already in progress.",
+                data=BrandSourceSerializer(source).data,
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        from .tasks import process_source_task
+
+        source.status = BrandSource.SourceStatus.QUEUED
+        metadata = dict(source.metadata or {})
+        metadata['processing'] = {
+            **dict(metadata.get('processing') or {}),
+            'queued_at': timezone.now().isoformat(),
+            'queued_by': str(request.user.pk),
+            'error': '',
+        }
+        source.metadata = metadata
+        source.save(update_fields=['status', 'metadata', 'updated_at'])
+        task_result = process_source_task.enqueue(str(source.pk))
         return APIResponse(
-            success=False, 
-            message="Processing is not implemented until PR6.", 
-            status=status.HTTP_501_NOT_IMPLEMENTED
+            success=True,
+            message="Source queued for processing.",
+            data={'source': BrandSourceSerializer(source).data, 'task_id': str(task_result.id)},
+            status=status.HTTP_202_ACCEPTED,
         )
 
 
@@ -153,6 +179,7 @@ class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         memory.save(update_fields=['status'])
         # A confirmed fact is intelligence; the snapshot must carry it.
         rebuild_brand_brain_safely(memory.brand)
+        self._finish_source_review(memory)
         return APIResponse(success=True, message="Memory confirmed")
 
     @action(detail=True, methods=['post'])
@@ -161,4 +188,19 @@ class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         memory.status = BrandMemory.MemoryStatus.REJECTED
         memory.save(update_fields=['status'])
         rebuild_brand_brain_safely(memory.brand)
+        self._finish_source_review(memory)
         return APIResponse(success=True, message="Memory rejected")
+
+    @staticmethod
+    def _finish_source_review(memory):
+        if not memory.source_id:
+            return
+        waiting = BrandMemory.objects.filter(
+            source_id=memory.source_id,
+            status=BrandMemory.MemoryStatus.CANDIDATE,
+        ).exists()
+        if not waiting:
+            BrandSource.objects.filter(
+                pk=memory.source_id,
+                status=BrandSource.SourceStatus.NEEDS_REVIEW,
+            ).update(status=BrandSource.SourceStatus.READY)

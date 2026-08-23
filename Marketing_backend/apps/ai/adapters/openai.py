@@ -229,6 +229,27 @@ class OpenAIAdapter(AIProviderAdapter):
         return value.strip()
 
     def generate_text(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        if str(brief.get('task') or '').upper() == 'EXTRACT':
+            schema = brief.get('response_schema')
+            if not isinstance(schema, dict):
+                raise AIProviderError('Structured extraction needs a response schema.')
+            generated, response = self._responses_json(
+                prompt=(
+                    str(brief.get('instruction') or 'Extract only grounded facts.')
+                    + '\nINPUT_JSON:\n'
+                    + self._brief_json(brief.get('structured') or {})
+                ),
+                schema_name=str(brief.get('schema_name') or 'scaleezy_extraction')[:64],
+                schema=schema,
+            )
+            return {
+                'raw': generated,
+                'metadata': {
+                    'response_id': str(response.get('id') or ''),
+                    'model': str(response.get('model') or self.model),
+                },
+            }
+
         generated, response = self._responses_json(
             prompt=(
                 'Create one concise, brand-aligned social marketing post from '
@@ -369,6 +390,19 @@ class OpenAIAdapter(AIProviderAdapter):
         return self._validate_data_image(f'data:{mime_type};base64,{encoded}')
 
     def analyze_image(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        if str(brief.get('task') or '').upper() == 'INSPIRATION_ANALYSIS':
+            schema = brief.get('response_schema')
+            if not isinstance(schema, dict):
+                raise AIProviderError('Inspiration analysis needs a response schema.')
+            analysis, response = self._responses_json(
+                prompt=str(brief.get('instruction') or 'Analyze this creative reference.'),
+                schema_name='scaleezy_inspiration_signals',
+                schema=schema,
+                image_url=self._image_reference(brief),
+                model=str(self.config.get('vision_model') or self.model),
+            )
+            return {'analysis': analysis, 'raw': analysis, 'response_id': response.get('id')}
+
         analysis, _response = self._responses_json(
             prompt=(
                 'Analyze the supplied marketing reference. Infer only visible '

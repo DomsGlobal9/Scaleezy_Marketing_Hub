@@ -4,8 +4,8 @@
  * A reference (link, post, reel, screenshot, upload) plus what the user says
  * about it. Stated preferences are recorded as USER-origin signals, which
  * outrank anything inferred and compile into the Brand Brain the moment they
- * are saved. Automatic analysis of a reference is not available yet, and the
- * panel says so rather than showing an "Analyse" button that returns 501.
+ * are saved. AI analysis produces pending signals that a person must confirm
+ * before they influence the brand.
  */
 import {
   Archive,
@@ -18,7 +18,7 @@ import {
   Quote,
   Upload,
 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -47,6 +47,7 @@ import {
   INSPIRATION_LINK_TYPES,
   INSPIRATION_UPLOAD_TYPES,
   SIGNAL_CATEGORIES,
+  analyzeInspiration,
   archiveInspiration,
   confirmSignal,
   createInspiration,
@@ -91,6 +92,15 @@ export function InspirationsPanel({
   const signals = useSlice<InspirationSignalRow[]>(() => fetchSignals(brandId), true);
   const [adding, setAdding] = useState(false);
 
+  useEffect(() => {
+    if (!(inspirations.data ?? []).some((item) => ["QUEUED", "PROCESSING"].includes(item.analysis_status))) return;
+    const timer = window.setInterval(() => {
+      inspirations.reload();
+      signals.reload();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [inspirations.data, inspirations.reload, signals.reload]);
+
   const byInspiration = useMemo(() => {
     const map = new Map<string, InspirationSignalRow[]>();
     for (const signal of signals.data ?? []) {
@@ -125,8 +135,8 @@ export function InspirationsPanel({
             outranks anything Scaleezy infers.
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
-            Automatic analysis of references is not available yet. Nothing is marked as analysed
-            unless it actually was.
+            Analysis runs when you request it. Every AI suggestion waits for your confirmation
+            before it can influence the Brand Brain.
           </p>
         </div>
         <Button onClick={() => setAdding((v) => !v)}>
@@ -457,6 +467,19 @@ function InspirationCard({
     }
   };
 
+  const analyze = async () => {
+    setBusy("analyze");
+    try {
+      await analyzeInspiration(inspiration.id);
+      toast.success("Analysis queued. Review the suggestions when they appear.");
+      onChanged();
+    } catch (e) {
+      toast.error(errorMessage(e, "Could not analyze this inspiration."));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <Card>
       <CardContent className="space-y-4 pt-6">
@@ -532,9 +555,26 @@ function InspirationCard({
                   </Button>
                 </span>
               ) : (
-                <Button size="sm" variant="ghost" onClick={() => setConfirmArchive(true)}>
-                  <Archive className="size-3.5" /> Archive
-                </Button>
+                <span className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={
+                      busy === "analyze" ||
+                      ["QUEUED", "PROCESSING"].includes(inspiration.analysis_status)
+                    }
+                    onClick={analyze}
+                  >
+                    {busy === "analyze" ||
+                    ["QUEUED", "PROCESSING"].includes(inspiration.analysis_status) ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : null}
+                    {inspiration.analysis_status === "FAILED" ? "Retry analysis" : "Analyze with AI"}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setConfirmArchive(true)}>
+                    <Archive className="size-3.5" /> Archive
+                  </Button>
+                </span>
               )}
             </div>
             {inspiration.annotation ? (
@@ -579,7 +619,7 @@ function InspirationCard({
           {inferred.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               {inspiration.analysis_status === "NOT_ANALYSED"
-                ? "Not analysed automatically — that capability is not available yet. What you note above is used directly."
+                ? "Not analysed yet. Choose Analyze with AI, then approve only the suggestions that fit."
                 : `Analysis state: ${humanize(inspiration.analysis_status)}.`}
             </p>
           ) : (

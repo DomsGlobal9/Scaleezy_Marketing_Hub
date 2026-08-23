@@ -6,6 +6,7 @@ adversarial paths that prove it cannot be talked out of its rules. The second
 group is the point of the file.
 """
 from django.contrib.auth import get_user_model
+from unittest.mock import patch
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.utils import IntegrityError
@@ -795,17 +796,49 @@ class InspirationSentimentTests(InspirationTestBase):
 
 
 class InspirationLifecycleTests(InspirationTestBase):
-    def test_analyze_is_not_implemented(self):
+    def test_analyze_is_queued(self):
         inspiration = self.make_inspiration()
         response = self.client1.post(
             f'{INSPIRATIONS_URL}{inspiration.id}/analyze/', format='json', **self.ws1()
         )
-        self.assertEqual(response.status_code, status.HTTP_501_NOT_IMPLEMENTED)
-        self.assertFalse(response.json()['success'])
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertTrue(response.json()['success'])
         inspiration.refresh_from_db()
         self.assertEqual(
-            inspiration.analysis_status, BrandInspiration.AnalysisStatus.NOT_ANALYSED
+            inspiration.analysis_status, BrandInspiration.AnalysisStatus.QUEUED
         )
+
+    @patch('apps.inspirations.analysis._dispatch')
+    def test_analysis_creates_reviewable_ai_signals(self, dispatch):
+        dispatch.return_value = {
+            'provider': 'test-provider',
+            'raw': {
+                'signals': [{
+                    'category': 'LAYOUT',
+                    'attribute': 'density',
+                    'value': 'spacious',
+                    'sentiment': 'LIKED',
+                    'weight': 0.8,
+                    'confidence': 0.9,
+                }],
+            },
+        }
+        inspiration = self.make_inspiration()
+
+        from .analysis import analyze_inspiration
+        result = analyze_inspiration(str(inspiration.pk))
+
+        inspiration.refresh_from_db()
+        signal = inspiration.signals.get()
+        self.assertEqual(result['signals'], 1)
+        self.assertEqual(
+            inspiration.analysis_status, BrandInspiration.AnalysisStatus.NEEDS_REVIEW
+        )
+        self.assertEqual(signal.origin, InspirationSignal.Origin.AI)
+        self.assertEqual(
+            signal.user_confirmation, InspirationSignal.UserConfirmation.PENDING
+        )
+        self.assertEqual(signal.extracted_by_provider, 'test-provider')
 
     def test_analyze_archived_inspiration_is_rejected(self):
         inspiration = self.make_inspiration()
@@ -862,7 +895,7 @@ class InspirationLifecycleTests(InspirationTestBase):
             url=f'{INSPIRATIONS_URL}{inspiration.id}/analyze/',
             workspace=self.workspace1,
             state_of=state,
-            expected_second_status=status.HTTP_501_NOT_IMPLEMENTED,
+            expected_second_status=status.HTTP_202_ACCEPTED,
         )
 
     def test_archive_twice_is_rejected(self):

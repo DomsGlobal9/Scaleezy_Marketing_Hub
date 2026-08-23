@@ -13,21 +13,14 @@ class StorageError(Exception):
 class SupabaseStorageService:
     BUCKET = 'Marketing_Poster_images'
 
-    @staticmethod
-    def _mock_url(workspace_id: str, filename: str) -> str:
-        return f"https://mock-storage.url/workspace_{workspace_id}/{uuid.uuid4()}_{filename}"
-
     @classmethod
     def upload_file(cls, workspace_id: str, file_obj, filename: str, *,
-                    strict: bool = False, prefix: str = 'workspace') -> str:
+                    strict: bool = True, prefix: str = 'workspace') -> str:
         """
         Uploads to Supabase Storage and returns the public URL.
 
-        `strict=True` raises StorageError instead of returning a placeholder.
-        Non-strict is the historical behaviour and is kept for the asset
-        library, but it is genuinely dangerous: the row is created pointing at
-        a URL that serves nothing, and the failure only surfaces later when
-        publishing tries to fetch the media.
+        Storage failures are always honest. ``strict`` is retained only for
+        call-site compatibility; false no longer permits placeholder assets.
         """
         if getattr(settings, 'STORAGE_TEST_MODE', False):
             # Deterministic, and above the `strict` check on purpose: a strict
@@ -36,13 +29,10 @@ class SupabaseStorageService:
             return f"https://storage.test/{prefix}/{workspace_id}/{filename}"
 
         if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
-            if strict:
-                raise StorageError(
-                    "File storage is not configured. Set SUPABASE_URL and "
-                    "SUPABASE_SERVICE_ROLE_KEY."
-                )
-            logger.warning("[Storage Mock] %s for workspace %s", filename, workspace_id)
-            return cls._mock_url(workspace_id, filename)
+            raise StorageError(
+                "File storage is not configured. Set SUPABASE_URL and "
+                "SUPABASE_SERVICE_ROLE_KEY."
+            )
 
         import requests
 
@@ -61,15 +51,11 @@ class SupabaseStorageService:
             res = requests.post(upload_url, headers=headers, data=file_obj.read(), timeout=60)
         except Exception as exc:
             logger.exception("Supabase upload failed for %s", filename)
-            if strict:
-                raise StorageError(f"Upload failed: {exc}") from exc
-            return cls._mock_url(workspace_id, filename)
+            raise StorageError(f"Upload failed: {exc}") from exc
 
         if not res.ok:
             logger.error("Supabase upload rejected (%s): %s", res.status_code, res.text[:300])
-            if strict:
-                raise StorageError(f"Storage rejected the upload ({res.status_code}).")
-            return cls._mock_url(workspace_id, filename)
+            raise StorageError(f"Storage rejected the upload ({res.status_code}).")
 
         return f"{base_url}/storage/v1/object/public/{cls.BUCKET}/{path}"
 

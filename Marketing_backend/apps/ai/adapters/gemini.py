@@ -5,6 +5,7 @@ Wraps the existing GeminiGeneratorService rather than reimplementing it, so
 the working generation path is untouched and the router simply becomes another
 way to reach it.
 """
+import json
 import logging
 from typing import Any, Dict
 
@@ -40,6 +41,32 @@ class GeminiAdapter(AIProviderAdapter):
         return GeminiGeneratorService
 
     def generate_text(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        if str(brief.get('task') or '').upper() == 'EXTRACT':
+            prompt = (
+                str(brief.get('instruction') or 'Extract only grounded facts.')
+                + '\nReturn one valid JSON object only.\nINPUT_JSON:\n'
+                + json.dumps(
+                    brief.get('structured') or {}, ensure_ascii=False,
+                    sort_keys=True, default=str,
+                )
+            )
+            try:
+                response = self._service()._get_client(self.credentials).models.generate_content(
+                    model=self.model or self._service().TEXT_MODEL,
+                    contents=[prompt],
+                )
+                value = (response.text or '').strip()
+                if value.startswith('```') and value.endswith('```'):
+                    value = value[3:-3].strip()
+                    if value.casefold().startswith('json'):
+                        value = value[4:].strip()
+                parsed = json.loads(value)
+            except Exception as exc:
+                raise AIProviderError(f'Gemini structured extraction failed: {exc}') from exc
+            if not isinstance(parsed, dict):
+                raise AIProviderError('Gemini returned invalid structured extraction output.')
+            return {'raw': parsed}
+
         # self.credentials is this workspace's own key when it saved one, and
         # empty otherwise; the service falls back to the server key and raises
         # if there is neither.
@@ -64,6 +91,31 @@ class GeminiAdapter(AIProviderAdapter):
         b64 = brief.get('reference_image_base64') or brief.get('referenceImageBase64', '')
         if not b64:
             raise AIProviderError("No image supplied for analysis.")
+        if str(brief.get('task') or '').upper() == 'INSPIRATION_ANALYSIS':
+            mime_type, img_bytes = self._service()._parse_base64_image(b64)
+            if not mime_type or not img_bytes:
+                raise AIProviderError('The inspiration image could not be decoded.')
+            try:
+                from google.genai import types
+
+                response = self._service()._get_client(self.credentials).models.generate_content(
+                    model=self.model or self._service().TEXT_MODEL,
+                    contents=[
+                        str(brief.get('instruction') or 'Analyze this creative reference as JSON.'),
+                        types.Part.from_bytes(data=img_bytes, mime_type=mime_type),
+                    ],
+                )
+                value = (response.text or '').strip()
+                if value.startswith('```') and value.endswith('```'):
+                    value = value[3:-3].strip()
+                    if value.casefold().startswith('json'):
+                        value = value[4:].strip()
+                parsed = json.loads(value)
+            except Exception as exc:
+                raise AIProviderError(f'Gemini inspiration analysis failed: {exc}') from exc
+            if not isinstance(parsed, dict):
+                raise AIProviderError('Gemini returned invalid inspiration analysis output.')
+            return {'analysis': parsed, 'raw': parsed}
         return {'analysis': self._service().analyze_reference_image(
             b64, api_key=self.credentials)}
 
