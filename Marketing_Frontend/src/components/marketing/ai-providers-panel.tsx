@@ -159,6 +159,10 @@ function humanize(value: string): string {
     .join(" ");
 }
 
+function sameValues(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value) => right.includes(value));
+}
+
 function MetricCard({
   title,
   value,
@@ -208,6 +212,10 @@ export function AIProvidersPanel({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [keys, setKeys] = useState<Record<string, string>>({});
+  const [providerCapabilityDrafts, setProviderCapabilityDrafts] = useState<
+    Record<string, string[]>
+  >({});
+  const [providerModelDrafts, setProviderModelDrafts] = useState<Record<string, string>>({});
   const [providerFilter, setProviderFilter] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [addProviderId, setAddProviderId] = useState("");
@@ -257,6 +265,12 @@ export function AIProvidersPanel({
       setCapabilities(cat.capabilities ?? []);
       setStrategies(cat.strategies ?? []);
       setMine(providerRows);
+      setProviderCapabilityDrafts(
+        Object.fromEntries(providerRows.map((row) => [row.provider, row.capabilities ?? []])),
+      );
+      setProviderModelDrafts(
+        Object.fromEntries(providerRows.map((row) => [row.provider, row.model_override ?? ""])),
+      );
       setResolved(activeRoutes ?? {});
       setUsageSummary(Array.isArray(summary) ? summary : []);
       setUsage(asRows(recent));
@@ -286,6 +300,23 @@ export function AIProvidersPanel({
           !mine.some((row) => row.provider === provider.id),
       ),
     [catalogue, mine],
+  );
+
+  const selectedProviderToAdd = availableToAdd.find((row) => row.id === addProviderId);
+
+  const assignableCapabilities = useCallback(
+    (provider: CatalogueProvider) => {
+      if (provider.integration_type === "SCALEEZY_JSON") {
+        return capabilities.map((capability) => capability.value);
+      }
+      if (provider.integration_type === "OPENAI_COMPATIBLE") {
+        return capabilities
+          .map((capability) => capability.value)
+          .filter((value) => value !== "VIDEO" && value !== "VIDEO_ANALYSIS");
+      }
+      return provider.capabilities;
+    },
+    [capabilities],
   );
 
   const openAddProvider = () => {
@@ -322,6 +353,7 @@ export function AIProvidersPanel({
           enabled: addEnabled,
           credentials: addCredential.trim(),
           model_override: addModel.trim(),
+          capabilities: addCapabilities,
         });
       }
       toast.success(
@@ -346,11 +378,9 @@ export function AIProvidersPanel({
           body: { enabled },
         });
       } else {
-        await apiPost("/api/marketing/ai/providers/", {
-          provider: provider.id,
-          enabled,
-          credentials: keys[provider.id] ?? "",
-        });
+        openAddProvider();
+        setAddProviderId(provider.id);
+        return;
       }
       toast.success(`${provider.display_name} ${enabled ? "enabled" : "disabled"}.`);
       await load();
@@ -373,17 +403,50 @@ export function AIProvidersPanel({
           body: { credentials: credential },
         });
       } else {
-        await apiPost("/api/marketing/ai/providers/", {
-          provider: provider.id,
-          enabled: false,
-          credentials: credential,
-        });
+        openAddProvider();
+        setAddProviderId(provider.id);
+        setAddCredential(credential);
+        return;
       }
       setKeys((current) => ({ ...current, [provider.id]: "" }));
       toast.success(`${provider.display_name} key saved securely.`);
       await load();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not save the provider key.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const toggleProviderCapability = (providerId: string, capability: string, enabled: boolean) => {
+    setProviderCapabilityDrafts((current) => {
+      const selected = current[providerId] ?? [];
+      return {
+        ...current,
+        [providerId]: enabled
+          ? [...selected.filter((value) => value !== capability), capability]
+          : selected.filter((value) => value !== capability),
+      };
+    });
+  };
+
+  const saveProviderTasks = async (
+    provider: CatalogueProvider,
+    workspaceProvider: WorkspaceProvider,
+  ) => {
+    setBusy(`provider:${provider.id}`);
+    try {
+      await api(`/api/marketing/ai/providers/${workspaceProvider.id}/`, {
+        method: "PATCH",
+        body: {
+          capabilities: providerCapabilityDrafts[provider.id] ?? [],
+          model_override: (providerModelDrafts[provider.id] ?? "").trim(),
+        },
+      });
+      toast.success(`${provider.display_name} model and tasks saved.`);
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save provider tasks.");
     } finally {
       setBusy(null);
     }
@@ -669,7 +732,14 @@ export function AIProvidersPanel({
             <div className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="add-ai-provider">Provider</Label>
-                <Select value={addProviderId} onValueChange={setAddProviderId}>
+                <Select
+                  value={addProviderId}
+                  onValueChange={(value) => {
+                    setAddProviderId(value);
+                    setAddCapabilities([]);
+                    setAddIntegrationType("");
+                  }}
+                >
                   <SelectTrigger id="add-ai-provider">
                     <SelectValue placeholder="Choose an installed integration or custom AI" />
                   </SelectTrigger>
@@ -737,19 +807,54 @@ export function AIProvidersPanel({
                         : "Enter the public HTTPS API base URL, normally ending in /v1."}
                     </p>
                   </div>
+                </>
+              ) : null}
+
+              {addProviderId ? (
+                <>
                   <div className="space-y-2">
-                    <Label>Capabilities this AI supports</Label>
+                    <Label htmlFor="add-ai-key">API key</Label>
+                    <Input
+                      id="add-ai-key"
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder={
+                        addProviderId === CUSTOM_PROVIDER_VALUE
+                          ? "API key or token, if this endpoint requires one"
+                          : "Optional when a platform key is available"
+                      }
+                      value={addCredential}
+                      onChange={(event) => setAddCredential(event.target.value)}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="add-ai-model">Exact model name</Label>
+                    <Input
+                      id="add-ai-model"
+                      placeholder="Enter the exact model identifier"
+                      value={addModel}
+                      onChange={(event) => setAddModel(event.target.value)}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Tasks this model will perform</Label>
                     <div className="grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-2">
                       {capabilities.map((capability) => {
-                        const unavailable =
-                          addIntegrationType === "OPENAI_COMPATIBLE" &&
-                          (capability.value === "VIDEO" || capability.value === "VIDEO_ANALYSIS");
+                        const supported =
+                          addProviderId === CUSTOM_PROVIDER_VALUE
+                            ? addIntegrationType === "SCALEEZY_JSON" ||
+                              (addIntegrationType === "OPENAI_COMPATIBLE" &&
+                                capability.value !== "VIDEO" &&
+                                capability.value !== "VIDEO_ANALYSIS")
+                            : !!selectedProviderToAdd?.capabilities.includes(capability.value);
                         return (
                           <div key={capability.value} className="flex items-start gap-2">
                             <Checkbox
                               id={`add-capability-${capability.value}`}
                               checked={addCapabilities.includes(capability.value)}
-                              disabled={!addIntegrationType || unavailable}
+                              disabled={!supported}
                               onCheckedChange={(checked) =>
                                 toggleAddedCapability(capability.value, checked === true)
                               }
@@ -759,55 +864,42 @@ export function AIProvidersPanel({
                               className="text-sm font-normal"
                             >
                               {capability.label}
-                              {unavailable ? " — use universal JSON" : ""}
+                              {!supported && addProviderId === CUSTOM_PROVIDER_VALUE
+                                ? " — choose a compatible protocol"
+                                : !supported
+                                  ? " — not supported by this adapter"
+                                  : ""}
                             </Label>
                           </div>
                         );
                       })}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Select only functions exposed by this endpoint. Each selected function becomes
-                      available in Routing &amp; redundancy; no route is selected automatically.
+                      Nothing is preselected. Only checked tasks become available in Routing &amp;
+                      redundancy.
                     </p>
                   </div>
+
+                  <div className="flex items-center justify-between rounded-lg border border-border p-3">
+                    <div>
+                      <Label htmlFor="enable-added-ai">Enable after adding</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Routes remain empty until you choose them in Routing &amp; redundancy.
+                      </p>
+                    </div>
+                    <Switch
+                      id="enable-added-ai"
+                      checked={addEnabled}
+                      onCheckedChange={setAddEnabled}
+                    />
+                  </div>
                 </>
-              ) : null}
-
-              <div className="space-y-2">
-                <Label htmlFor="add-ai-key">API key</Label>
-                <Input
-                  id="add-ai-key"
-                  type="password"
-                  autoComplete="new-password"
-                  placeholder={
-                    addProviderId === CUSTOM_PROVIDER_VALUE
-                      ? "API key or token, if this endpoint requires one"
-                      : "Optional when a platform key is available"
-                  }
-                  value={addCredential}
-                  onChange={(event) => setAddCredential(event.target.value)}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="add-ai-model">Model</Label>
-                <Input
-                  id="add-ai-model"
-                  placeholder="Enter the exact model identifier"
-                  value={addModel}
-                  onChange={(event) => setAddModel(event.target.value)}
-                />
-              </div>
-
-              <div className="flex items-center justify-between rounded-lg border border-border p-3">
-                <div>
-                  <Label htmlFor="enable-added-ai">Enable after adding</Label>
-                  <p className="text-xs text-muted-foreground">
-                    You can route capabilities after the provider is enabled.
-                  </p>
-                </div>
-                <Switch id="enable-added-ai" checked={addEnabled} onCheckedChange={setAddEnabled} />
-              </div>
+              ) : (
+                <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+                  Choose an installed integration or “Custom AI provider” above. The complete model,
+                  connection and task controls will then appear here.
+                </p>
+              )}
             </div>
 
             <DialogFooter>
@@ -818,11 +910,9 @@ export function AIProvidersPanel({
                 disabled={
                   !addProviderId ||
                   !addModel.trim() ||
+                  addCapabilities.length === 0 ||
                   (addProviderId === CUSTOM_PROVIDER_VALUE &&
-                    (!addCustomName.trim() ||
-                      !addBaseUrl.trim() ||
-                      !addIntegrationType ||
-                      addCapabilities.length === 0)) ||
+                    (!addCustomName.trim() || !addBaseUrl.trim() || !addIntegrationType)) ||
                   busy === "add-provider"
                 }
                 onClick={() => void addProvider()}
@@ -857,6 +947,15 @@ export function AIProvidersPanel({
               const workspaceProvider = connectedFor(provider.id);
               const providerBusy = busy === `provider:${provider.id}`;
               const healthBusy = workspaceProvider && busy === `health:${workspaceProvider.id}`;
+              const supportedTasks = assignableCapabilities(provider);
+              const taskDraft =
+                providerCapabilityDrafts[provider.id] ?? workspaceProvider?.capabilities ?? [];
+              const modelDraft =
+                providerModelDrafts[provider.id] ?? workspaceProvider?.model_override ?? "";
+              const configurationDirty =
+                !!workspaceProvider &&
+                (!sameValues(taskDraft, workspaceProvider.capabilities) ||
+                  modelDraft !== workspaceProvider.model_override);
               return (
                 <Card key={provider.id}>
                   <CardHeader className="pb-4">
@@ -875,8 +974,9 @@ export function AIProvidersPanel({
                           ) : null}
                         </CardTitle>
                         <CardDescription className="mt-1">
-                          {provider.capabilities.map(humanize).join(" · ") ||
-                            "No capabilities declared"}
+                          {workspaceProvider
+                            ? `Assigned tasks: ${workspaceProvider.capabilities.map(humanize).join(" · ") || "None"}`
+                            : `Supported tasks: ${provider.capabilities.map(humanize).join(" · ") || "None"}`}
                         </CardDescription>
                       </div>
                       <div className="flex items-center gap-2">
@@ -956,6 +1056,86 @@ export function AIProvidersPanel({
                     </div>
 
                     {workspaceProvider ? (
+                      <div className="space-y-3 rounded-lg border border-border p-3">
+                        <div>
+                          <Label>Tasks this model performs</Label>
+                          <p className="text-xs text-muted-foreground">
+                            Choose exactly what this model may do. Saving removes it from any task
+                            you deselect in Routing &amp; redundancy.
+                          </p>
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                          {capabilities.map((capability) => {
+                            const supported = supportedTasks.includes(capability.value);
+                            return (
+                              <div key={capability.value} className="flex items-start gap-2">
+                                <Checkbox
+                                  id={`provider-${provider.id}-capability-${capability.value}`}
+                                  checked={taskDraft.includes(capability.value)}
+                                  disabled={providerBusy || !supported}
+                                  onCheckedChange={(checked) =>
+                                    toggleProviderCapability(
+                                      provider.id,
+                                      capability.value,
+                                      checked === true,
+                                    )
+                                  }
+                                />
+                                <Label
+                                  htmlFor={`provider-${provider.id}-capability-${capability.value}`}
+                                  className="text-sm font-normal"
+                                >
+                                  {capability.label}
+                                  {!supported ? " — unavailable" : ""}
+                                </Label>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                          <div className="flex-1 space-y-1.5">
+                            <Label htmlFor={`provider-${provider.id}-model`}>
+                              Exact model name
+                            </Label>
+                            <Input
+                              id={`provider-${provider.id}-model`}
+                              value={modelDraft}
+                              placeholder={
+                                provider.default_model || "Enter the exact model identifier"
+                              }
+                              disabled={providerBusy}
+                              onChange={(event) =>
+                                setProviderModelDrafts((current) => ({
+                                  ...current,
+                                  [provider.id]: event.target.value,
+                                }))
+                              }
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            disabled={providerBusy || !configurationDirty}
+                            onClick={() => void saveProviderTasks(provider, workspaceProvider)}
+                          >
+                            {providerBusy ? <Loader2 className="size-4 animate-spin" /> : null}
+                            Save model &amp; tasks
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          openAddProvider();
+                          setAddProviderId(provider.id);
+                        }}
+                      >
+                        <Plus className="size-4" /> Configure model &amp; tasks
+                      </Button>
+                    )}
+
+                    {workspaceProvider ? (
                       <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
                         <span>Last check: {when(workspaceProvider.last_health_check_at)}</span>
                         <span>
@@ -993,12 +1173,24 @@ export function AIProvidersPanel({
               strategy: "FAILOVER",
               dirty: false,
             };
-            const capable = catalogue.filter(
-              (provider) =>
-                provider.is_available &&
-                provider.adapter_installed &&
-                provider.capabilities.includes(capability.value),
-            );
+            const capable = catalogue
+              .filter((provider) => {
+                const configured = connectedFor(provider.id);
+                return (
+                  provider.is_available &&
+                  provider.adapter_installed &&
+                  !!configured &&
+                  configured.capabilities.includes(capability.value)
+                );
+              })
+              .sort((left, right) => {
+                const leftIndex = draft.providerIds.indexOf(left.id);
+                const rightIndex = draft.providerIds.indexOf(right.id);
+                if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
+                if (leftIndex >= 0) return -1;
+                if (rightIndex >= 0) return 1;
+                return left.display_name.localeCompare(right.display_name);
+              });
             const routeBusy = busy === `route:${capability.value}`;
 
             return (
@@ -1039,7 +1231,8 @@ export function AIProvidersPanel({
                 <CardContent className="space-y-3">
                   {!capable.length ? (
                     <p className="rounded-lg border border-dashed border-border p-5 text-sm text-muted-foreground">
-                      No installed provider adapter declares this capability yet.
+                      No configured model is assigned this task yet. Choose it in the Providers tab
+                      first.
                     </p>
                   ) : (
                     capable.map((provider) => {

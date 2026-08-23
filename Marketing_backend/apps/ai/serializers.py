@@ -88,7 +88,12 @@ class CustomWorkspaceAIProviderSerializer(serializers.Serializer):
 class WorkspaceAIProviderSerializer(serializers.ModelSerializer):
     provider_key = serializers.CharField(source='provider.key', read_only=True)
     provider_name = serializers.CharField(source='provider.display_name', read_only=True)
-    capabilities = serializers.JSONField(source='provider.capabilities', read_only=True)
+    capabilities = serializers.ListField(
+        child=serializers.ChoiceField(choices=Capability.choices),
+        required=False,
+        allow_empty=True,
+        allow_null=True,
+    )
     has_credentials = serializers.BooleanField(read_only=True)
     # Write-only: the plaintext key is accepted once, encrypted, and never
     # returned. Same treatment as the OAuth tokens.
@@ -119,11 +124,55 @@ class WorkspaceAIProviderSerializer(serializers.ModelSerializer):
             )
         return provider
 
+    @staticmethod
+    def _supported_capabilities(provider):
+        from .registry import adapter_class_for_provider
+
+        adapter = adapter_class_for_provider(provider)
+        if adapter is None:
+            return set()
+        adapter_capabilities = {
+            str(value) for value in (getattr(adapter, 'capabilities', ()) or ())
+        }
+        if provider.is_custom:
+            return adapter_capabilities
+        return adapter_capabilities.intersection(provider.capabilities or [])
+
+    def validate(self, attrs):
+        provider = attrs.get('provider') or getattr(self.instance, 'provider', None)
+        if provider and 'capabilities' in attrs:
+            capabilities = list(dict.fromkeys(attrs['capabilities'] or []))
+            unsupported = set(capabilities) - self._supported_capabilities(provider)
+            if unsupported:
+                raise serializers.ValidationError({
+                    'capabilities': (
+                        f"{provider.display_name} cannot serve: "
+                        f"{', '.join(sorted(unsupported))}."
+                    )
+                })
+            attrs['capabilities'] = capabilities
+        return attrs
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['capabilities'] = instance.assigned_capabilities
+        return data
+
     def create(self, validated_data):
+        if 'capabilities' not in validated_data:
+            provider = validated_data['provider']
+            supported = self._supported_capabilities(provider)
+            validated_data['capabilities'] = [
+                value for value in Capability.values if value in supported
+            ]
         return super().create(self._apply_credentials(validated_data))
 
     def update(self, instance, validated_data):
-        return super().update(instance, self._apply_credentials(validated_data))
+        updated = super().update(instance, self._apply_credentials(validated_data))
+        if 'capabilities' in validated_data and updated.provider.is_custom:
+            updated.provider.capabilities = list(updated.capabilities or [])
+            updated.provider.save(update_fields=['capabilities'])
+        return updated
 
 
 class WorkspaceAIRouteSerializer(serializers.ModelSerializer):

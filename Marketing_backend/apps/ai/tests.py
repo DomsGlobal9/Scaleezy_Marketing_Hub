@@ -583,6 +583,59 @@ class AIConsoleAPITests(APITestCase):
         route.refresh_from_db()
         self.assertFalse(route.enabled)
 
+    def test_admin_assigns_tasks_per_model_and_removed_task_clears_route(self):
+        configured = WorkspaceAIProvider.objects.create(
+            workspace=self.ws,
+            provider=self.better_provider,
+            enabled=True,
+            capabilities=[Capability.TEXT, Capability.IMAGE],
+        )
+        route = WorkspaceAIRoute.objects.create(
+            workspace=self.ws,
+            capability=Capability.IMAGE,
+            provider=self.better_provider,
+            enabled=True,
+        )
+        self.as_(self.admin)
+
+        res = self.client.patch(
+            f'/api/marketing/ai/providers/{configured.id}/',
+            {
+                'model_override': 'chosen-text-model',
+                'capabilities': [Capability.TEXT],
+            },
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        configured.refresh_from_db()
+        self.assertEqual(configured.model_override, 'chosen-text-model')
+        self.assertEqual(configured.capabilities, [Capability.TEXT])
+        self.assertFalse(WorkspaceAIRoute.objects.filter(pk=route.pk).exists())
+
+    def test_route_rejects_task_not_assigned_to_workspace_model(self):
+        WorkspaceAIProvider.objects.create(
+            workspace=self.ws,
+            provider=self.better_provider,
+            enabled=True,
+            capabilities=[Capability.IMAGE],
+        )
+        self.as_(self.admin)
+
+        res = self.client.post(
+            '/api/marketing/ai/routes/replace-set/',
+            {
+                'capability': Capability.TEXT,
+                'routes': [{'provider': str(self.better_provider.id), 'priority': 10}],
+                'strategy': Strategy.FAILOVER,
+            },
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Assign this capability', str(res.data))
+        self.assertFalse(WorkspaceAIRoute.objects.filter(workspace=self.ws).exists())
+
     def test_deleting_provider_configuration_removes_its_routes_only(self):
         configured = WorkspaceAIProvider.objects.create(
             workspace=self.ws, provider=self.provider, enabled=True

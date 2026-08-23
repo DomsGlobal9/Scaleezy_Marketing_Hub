@@ -107,6 +107,15 @@ class WorkspaceAIProvider(models.Model):
     # serialised back to the client.
     credentials_encrypted = models.TextField(blank=True)
     model_override = models.CharField(max_length=100, blank=True)
+    capabilities = models.JSONField(
+        default=None,
+        null=True,
+        blank=True,
+        help_text=(
+            "Capabilities this workspace assigned to this provider/model. "
+            "Must remain within the installed adapter's technical support."
+        ),
+    )
     max_cost_per_generation = models.DecimalField(
         max_digits=10, decimal_places=4, null=True, blank=True
     )
@@ -130,6 +139,15 @@ class WorkspaceAIProvider(models.Model):
     @property
     def has_credentials(self) -> bool:
         return bool(self.credentials_encrypted)
+
+    def supports(self, capability: str) -> bool:
+        return capability in self.assigned_capabilities
+
+    @property
+    def assigned_capabilities(self) -> list:
+        if self.capabilities is None:
+            return list(self.provider.capabilities or [])
+        return list(self.capabilities)
 
 
 class WorkspaceAIRoute(models.Model):

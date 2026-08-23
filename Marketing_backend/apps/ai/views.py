@@ -145,6 +145,7 @@ class WorkspaceAIProviderViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 workspace=workspace,
                 provider=provider,
                 enabled=data['enabled'],
+                capabilities=data['capabilities'],
                 credentials_encrypted=(
                     encrypt_token(data['credentials']) if data['credentials'] else ''
                 ),
@@ -161,6 +162,10 @@ class WorkspaceAIProviderViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     def perform_update(self, serializer):
         with transaction.atomic():
             workspace_provider = serializer.save()
+            WorkspaceAIRoute.objects.filter(
+                workspace=workspace_provider.workspace,
+                provider=workspace_provider.provider,
+            ).exclude(capability__in=workspace_provider.assigned_capabilities).delete()
             if not workspace_provider.enabled:
                 WorkspaceAIRoute.objects.filter(
                     workspace=workspace_provider.workspace,
@@ -244,9 +249,17 @@ class WorkspaceAIRouteViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                     error={"code": "INVALID_AI_ROUTE", "message": capability},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            if not WorkspaceAIProvider.objects.filter(
-                workspace=workspace, provider=provider, enabled=True
-            ).exists():
+            workspace_provider = WorkspaceAIProvider.objects.filter(
+                workspace=workspace, provider=provider
+            ).first()
+            if workspace_provider is not None and not workspace_provider.supports(capability):
+                return APIResponse(
+                    success=False,
+                    message="Assign this capability to the provider in Admin before routing it.",
+                    error={"code": "CAPABILITY_NOT_ASSIGNED", "message": capability},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if workspace_provider is None or not workspace_provider.enabled:
                 return APIResponse(
                     success=False,
                     message="Enable the provider before routing work to it.",
