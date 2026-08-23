@@ -43,6 +43,23 @@ class BrandSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Pending approval is set at signup, not by editing a brand."
             )
+        if self.instance is not None and value != current:
+            workspace = self.instance.workspace
+            # Only an approved client may archive and restore its brands. A
+            # rejected client's brand was archived BY Scaleezy; un-archiving it
+            # is not theirs to do, and a pending client has nothing to restore.
+            if not workspace.is_approved:
+                raise serializers.ValidationError(
+                    "This client is not approved; brand status cannot be changed here."
+                )
+            if (
+                current == Brand.Status.ARCHIVED
+                and self.instance.reviewed_at is not None
+                and self.instance.reviewed_by_id is not None
+            ):
+                raise serializers.ValidationError(
+                    "This brand was archived by Scaleezy; contact support to restore it."
+                )
         return value
 
     def validate_palette(self, value):

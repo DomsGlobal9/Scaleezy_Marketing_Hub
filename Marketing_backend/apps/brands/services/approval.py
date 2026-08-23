@@ -143,6 +143,13 @@ def approve_brand(brand, *, by=None, plan=None):
     """
     from apps.workspaces.models import MarketingWorkspace
 
+    # Approving a previously rejected (archived) client brings it back first,
+    # so routes and the schedule are live when the approval lands.
+    if brand.workspace.status == MarketingWorkspace.Status.ARCHIVED:
+        from apps.workspaces.services.lifecycle import reactivate_workspace
+
+        reactivate_workspace(brand.workspace, by=by, reason='Approved after rejection')
+
     subscription, _ = ensure_subscription(brand.workspace, plan=plan)
 
     if brand.status != Brand.Status.ACTIVE:
@@ -195,6 +202,14 @@ def reject_brand(brand, *, by=None, reason=''):
 
     # A rejected signup frees its website for a genuine future enrolment.
     SignupWebsiteClaim.objects.filter(workspace=workspace).delete()
+
+    # Rejection archives the CLIENT, not only the brand: an ACTIVE workspace
+    # keeps its scheduled posts firing and its routes live. Archive stops all
+    # of that, reversibly — approving later reactivates it.
+    if workspace.status != MarketingWorkspace.Status.ARCHIVED:
+        from apps.workspaces.services.lifecycle import archive_workspace
+
+        archive_workspace(workspace, by=by, reason=f'Signup rejected: {reason}'[:255])
 
     from apps.audit.models import record_platform_event
 

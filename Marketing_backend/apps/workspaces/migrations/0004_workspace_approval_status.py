@@ -23,8 +23,19 @@ def backfill(apps, schema_editor):
     active_ids = set(
         Brand.objects.filter(status='ACTIVE').values_list('workspace_id', flat=True)
     )
+    # A brand that an operator archived through the approval service carries
+    # reviewed_at; a brand a customer archived themselves does not. A
+    # workspace whose brands are ALL archived and at least one of them was
+    # operator-reviewed is a rejected signup and must not come out of this
+    # migration APPROVED — that would let it mint a new ACTIVE brand and spend.
+    rejected_ids = set(
+        Brand.objects.filter(status='ARCHIVED', reviewed_at__isnull=False)
+        .values_list('workspace_id', flat=True)
+    )
     for ws_id in pending_ids - active_ids:
         Workspace.objects.filter(pk=ws_id).update(approval_status='PENDING')
+    for ws_id in rejected_ids - active_ids - pending_ids:
+        Workspace.objects.filter(pk=ws_id).update(approval_status='REJECTED')
 
 
 def noop(apps, schema_editor):

@@ -92,14 +92,25 @@ def reactivate_workspace(workspace, *, by=None, reason=''):
         except Exception:  # pragma: no cover - repair helper never raises
             logger.exception("Could not restore AI routing for %s", workspace.pk)
 
-        # Archive cancelled the subscription; a client that is ACTIVE again but
-        # still CANCELLED looks live and is refused on every AI request. Put it
-        # back exactly as archive took it away.
+        # Put back exactly what archive took away — the subscription ids the
+        # archive audit row recorded — and nothing else. A subscription that
+        # was already CANCELLED before the archive (non-payment, churn) stays
+        # cancelled; reactivating the workspace is not a billing decision.
+        from apps.audit.models import PlatformAuditLog
+
+        archive_entry = (
+            PlatformAuditLog.objects.filter(workspace=workspace, action='CLIENT_ARCHIVED')
+            .order_by('-created_at')
+            .first()
+        )
+        restore_ids = (archive_entry.detail or {}).get('cancelled_subscription_ids', []) \
+            if archive_entry else []
         subscription_restored = bool(
             Subscription.objects.filter(
-                workspace=workspace, status=Subscription.Status.CANCELLED
+                id__in=restore_ids, workspace=workspace,
+                status=Subscription.Status.CANCELLED,
             ).update(status=Subscription.Status.ACTIVE)
-        )
+        ) if restore_ids else False
 
     from apps.audit.models import record_platform_event
 
@@ -139,9 +150,17 @@ def archive_workspace(workspace, *, by=None, reason=''):
     disabled_routes = WorkspaceAIRoute.objects.filter(
         workspace=workspace, enabled=True
     ).update(enabled=False)
-    cancelled_subs = Subscription.objects.filter(workspace=workspace).exclude(
+    # Remember exactly which subscription(s) WE cancelled, so reactivate can
+    # restore those and only those — one cancelled earlier for non-payment
+    # must stay cancelled.
+    cancelled_ids = [
+        str(pk) for pk in Subscription.objects.filter(workspace=workspace)
+        .exclude(status=Subscription.Status.CANCELLED)
+        .values_list('id', flat=True)
+    ]
+    cancelled_subs = Subscription.objects.filter(id__in=cancelled_ids).update(
         status=Subscription.Status.CANCELLED
-    ).update(status=Subscription.Status.CANCELLED)
+    )
 
     # An archived client must not keep its website reserved against a genuine
     # future signup.
@@ -161,6 +180,7 @@ def archive_workspace(workspace, *, by=None, reason=''):
             'cancelled_publishing_jobs': cancelled_jobs,
             'disabled_ai_routes': disabled_routes,
             'cancelled_subscriptions': cancelled_subs,
+            'cancelled_subscription_ids': cancelled_ids,
         },
     )
     logger.info(
