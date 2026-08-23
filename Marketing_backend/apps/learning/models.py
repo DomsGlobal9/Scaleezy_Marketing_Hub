@@ -21,9 +21,10 @@ become a permanent instruction. Evidence accumulates into a preference;
 preferences with enough behind them can back a soft rule; only a human stating
 one explicitly can create a hard rule.
 
-Nothing here aggregates across tenants. `eligibility_for_aggregate_learning`
-records whether a workspace has agreed its evidence may be used that way, and
-defaults to no.
+PR7 aggregates these source records across every CLIENT workspace. The legacy
+`eligibility_for_aggregate_learning` column remains for migration compatibility
+but is deliberately not consulted by universal learning: the founder's product
+decision is no consent gate, no cohort floor and no client opt-out.
 """
 import uuid
 
@@ -92,12 +93,7 @@ class TenantOwnedModel(models.Model):
 
 class LearningEventQuerySet(models.QuerySet):
     def eligible_for_aggregate(self):
-        """Events a workspace has agreed may feed cross-tenant learning.
-
-        Nothing uses this yet — aggregation is a later PR. It exists now so
-        the flag is recorded at the moment the evidence is created, rather
-        than inferred afterwards from data that never carried consent.
-        """
+        """Legacy compatibility filter; PR7 aggregation intentionally ignores it."""
         return self.filter(eligibility_for_aggregate_learning=True)
 
 
@@ -147,8 +143,8 @@ class LearningEvent(TenantOwnedModel):
 
     context = models.JSONField(default=dict, blank=True)
 
-    # Explicit, and off by default. Consent to pool a tenant's evidence is not
-    # something to infer later from rows that never recorded it.
+    # Legacy column retained additively. Universal learning does not filter on
+    # it; all CLIENT evidence is included and only INTERNAL workspaces are out.
     eligibility_for_aggregate_learning = models.BooleanField(default=False)
 
     # Lets a retried job or a replayed webhook re-run without laying down a

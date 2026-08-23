@@ -33,6 +33,10 @@ class MarketingWorkspace(models.Model):
         APPROVED = 'APPROVED', 'Approved'
         REJECTED = 'REJECTED', 'Rejected'
 
+    class Kind(models.TextChoices):
+        CLIENT = 'CLIENT', 'Client'
+        INTERNAL = 'INTERNAL', 'Internal / test'
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     customer_id = models.CharField(max_length=255, help_text="Reference to the customer/tenant in the main system")
     #: The one id a human quotes. Unique across the platform and never reused,
@@ -45,6 +49,10 @@ class MarketingWorkspace(models.Model):
     workspace_name = models.CharField(max_length=255)
     timezone = models.CharField(max_length=50, default='UTC')
     default_language = models.CharField(max_length=10, default='en')
+    kind = models.CharField(
+        max_length=16, choices=Kind.choices, default=Kind.CLIENT, db_index=True,
+        help_text='INTERNAL workspaces are excluded from shared learning.',
+    )
 
     #: Lifecycle. SUSPENDED and ARCHIVED both stop writes and stop scheduled
     #: work from firing; only ARCHIVED also tears down routing and billing.

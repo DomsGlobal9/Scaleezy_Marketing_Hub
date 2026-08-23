@@ -11,14 +11,18 @@ drops any standard whose (category, attribute) the brand already has a claim
 about, so a universal standard never even reaches the resolver as a rival to
 brand-specific intelligence.
 """
+import hashlib
+import json
 import logging
 
 from django.db import transaction
 from django.utils import timezone
 
 from .models import (
+    RANK_LEARNED_PATTERN,
     RANK_PLATFORM_INSPIRATION,
     ClientUniversalSettings,
+    LearnedPattern,
     LifecycleStatus,
     PlatformInspiration,
     UniversalStandard,
@@ -143,6 +147,92 @@ def standards_as_context(standards):
         }
         for s in standards
     ]
+
+
+# ───────────────────────────────────────────────────── learned patterns
+
+def live_patterns(brand, *, channel=''):
+    return [
+        pattern
+        for pattern in LearnedPattern.objects.filter(status=LifecycleStatus.PUBLISHED)
+        if pattern.applies_to(brand, channel=channel)
+    ]
+
+
+def learned_pattern_version(patterns):
+    payload = json.dumps(
+        sorted([
+            [str(p.pk), p.pattern_version, p.category, p.attribute, p.value]
+            for p in patterns
+        ]),
+        separators=(',', ':'),
+    )
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]
+
+
+def patterns_for(workspace, brand, *, channel=''):
+    """Published patterns for a generation; there is deliberately no opt-out."""
+    owned = brand_claimed_keys(brand)
+    kept = [
+        pattern for pattern in live_patterns(brand, channel=channel)
+        if (
+            pattern.category.strip().casefold(),
+            pattern.attribute.strip().casefold(),
+        ) not in owned
+    ]
+    return kept, learned_pattern_version(kept)
+
+
+def patterns_as_context(patterns):
+    """Provider-safe claim shape; contributor identities never leave platform APIs."""
+    return [
+        {
+            'category': p.category,
+            'attribute': p.attribute,
+            'value': p.value,
+            'authority': 'learned_pattern',
+            'rank': RANK_LEARNED_PATTERN,
+            'source': 'Learned across Scaleezy clients',
+            'pattern_id': str(p.pk),
+            'contributor_count': p.contributor_count,
+            'supporting_brand_count': p.supporting_brand_count,
+        }
+        for p in patterns
+    ]
+
+
+@transaction.atomic
+def publish_pattern(pattern, *, by=None):
+    if pattern.status == LifecycleStatus.PUBLISHED:
+        return pattern
+    pattern.status = LifecycleStatus.PUBLISHED
+    pattern.published_at = timezone.now()
+    pattern.retired_at = None
+    pattern.save(update_fields=['status', 'published_at', 'retired_at', 'updated_at'])
+    from apps.audit.models import record_platform_event
+    record_platform_event(
+        actor=by, action='LEARNED_PATTERN_PUBLISHED',
+        target=f'pattern:{pattern.pk}',
+        detail={'pattern_version': pattern.pattern_version,
+                'contributor_count': pattern.contributor_count},
+    )
+    return pattern
+
+
+@transaction.atomic
+def retire_pattern(pattern, *, by=None, reason=''):
+    if pattern.status == LifecycleStatus.RETIRED:
+        return pattern
+    pattern.status = LifecycleStatus.RETIRED
+    pattern.retired_at = timezone.now()
+    pattern.save(update_fields=['status', 'retired_at', 'updated_at'])
+    from apps.audit.models import record_platform_event
+    record_platform_event(
+        actor=by, action='LEARNED_PATTERN_RETIRED',
+        target=f'pattern:{pattern.pk}',
+        detail={'pattern_version': pattern.pattern_version, 'reason': reason},
+    )
+    return pattern
 
 
 # ───────────────────────────────────────────────────────────── authoring

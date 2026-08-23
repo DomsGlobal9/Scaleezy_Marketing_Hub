@@ -272,6 +272,8 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
     trace = {
         'brain_version': text_context['brain_version'],
         'context_schema_version': CONTEXT_SCHEMA_VERSION,
+        'universal_version': text_context.get('universal_version', ''),
+        'learned_pattern_version': text_context.get('learned_pattern_version', ''),
         'capabilities': {},
     }
 

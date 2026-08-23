@@ -29,6 +29,7 @@ from django.db import models
 #: Stated here rather than imported so a change to the brand ranks cannot
 #: silently promote the universal layer above them; the test asserts the gap.
 RANK_UNIVERSAL_STANDARD = 80
+RANK_LEARNED_PATTERN = 82
 RANK_PLATFORM_INSPIRATION = 85
 
 
@@ -138,6 +139,65 @@ class UniversalStandard(models.Model):
             'origin': 'SCALEEZY_STANDARD',
             'standard_id': str(self.pk),
             'title': self.title,
+        }
+
+
+class LearnedPattern(models.Model):
+    """A deterministic, derived cross-client observation.
+
+    Contributor ids are platform-only lineage. Client generation context gets
+    only the normalized claim and honest support counts.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    category = models.CharField(max_length=64)
+    attribute = models.CharField(max_length=255)
+    value = models.TextField()
+    normalized_value = models.TextField()
+    industry = models.CharField(max_length=100, blank=True)
+    channel = models.CharField(max_length=64, blank=True)
+    contributor_count = models.PositiveIntegerField(default=0)
+    supporting_brand_count = models.PositiveIntegerField(default=0)
+    confidence = models.FloatField(default=0.0)
+    status = models.CharField(
+        max_length=20, choices=LifecycleStatus.choices, default=LifecycleStatus.DRAFT
+    )
+    compiled_at = models.DateTimeField()
+    pattern_version = models.CharField(max_length=64, db_index=True)
+    contributing_workspace_ids = models.JSONField(default=list, blank=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    retired_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'universal_learned_patterns'
+        ordering = ['-contributor_count', 'category', 'attribute', 'normalized_value']
+        indexes = [
+            models.Index(fields=['status', '-contributor_count']),
+            models.Index(fields=['category', 'attribute']),
+        ]
+
+    def __str__(self):
+        return f"{self.category}/{self.attribute} ({self.contributor_count})"
+
+    def applies_to(self, brand, *, channel=''):
+        if self.industry and self.industry.strip().casefold() != str(
+            getattr(brand, 'industry', '') or ''
+        ).strip().casefold():
+            return False
+        if self.channel and self.channel.strip().casefold() != str(channel or '').strip().casefold():
+            return False
+        return True
+
+    def as_claim(self):
+        return {
+            'category': self.category,
+            'attribute': self.attribute,
+            'value': self.value,
+            'rank': RANK_LEARNED_PATTERN,
+            'origin': 'SCALEEZY_LEARNED_PATTERN',
+            'pattern_id': str(self.pk),
         }
 
 

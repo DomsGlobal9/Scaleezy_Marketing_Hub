@@ -29,6 +29,7 @@ import { Route as PlatformIndexRouteImport } from './routes/platform.index'
 import { Route as PlatformAdminsRouteImport } from './routes/platform.admins'
 import { Route as PlatformClientsRouteImport } from './routes/platform.clients'
 import { Route as PlatformLibraryRouteImport } from './routes/platform.library'
+import { Route as PlatformPatternsRouteImport } from './routes/platform.patterns'
 import { Route as PlatformSignupsRouteImport } from './routes/platform.signups'
 import { Route as PlatformStandardsRouteImport } from './routes/platform.standards'
 import { Route as PlatformClientsWorkspaceIdRouteImport } from './routes/platform.clients.$workspaceId'
@@ -135,6 +136,11 @@ const PlatformLibraryRoute = PlatformLibraryRouteImport.update({
   path: '/library',
   getParentRoute: () => PlatformRoute,
 } as any)
+const PlatformPatternsRoute = PlatformPatternsRouteImport.update({
+  id: '/patterns',
+  path: '/patterns',
+  getParentRoute: () => PlatformRoute,
+} as any)
 const PlatformSignupsRoute = PlatformSignupsRouteImport.update({
   id: '/signups',
   path: '/signups',
@@ -186,6 +192,7 @@ export interface FileRoutesByFullPath {
   '/platform/admins': typeof PlatformAdminsRoute
   '/platform/clients': typeof PlatformClientsRouteWithChildren
   '/platform/library': typeof PlatformLibraryRoute
+  '/platform/patterns': typeof PlatformPatternsRoute
   '/platform/signups': typeof PlatformSignupsRoute
   '/platform/standards': typeof PlatformStandardsRoute
   '/platform/': typeof PlatformIndexRoute
@@ -211,6 +218,7 @@ export interface FileRoutesByTo {
   '/platform/admins': typeof PlatformAdminsRoute
   '/platform/clients': typeof PlatformClientsRouteWithChildren
   '/platform/library': typeof PlatformLibraryRoute
+  '/platform/patterns': typeof PlatformPatternsRoute
   '/platform/signups': typeof PlatformSignupsRoute
   '/platform/standards': typeof PlatformStandardsRoute
   '/': typeof HubIndexRoute
@@ -240,6 +248,7 @@ export interface FileRoutesById {
   '/platform/admins': typeof PlatformAdminsRoute
   '/platform/clients': typeof PlatformClientsRouteWithChildren
   '/platform/library': typeof PlatformLibraryRoute
+  '/platform/patterns': typeof PlatformPatternsRoute
   '/platform/signups': typeof PlatformSignupsRoute
   '/platform/standards': typeof PlatformStandardsRoute
   '/_hub/': typeof HubIndexRoute
@@ -270,6 +279,7 @@ export interface FileRouteTypes {
     | '/platform/admins'
     | '/platform/clients'
     | '/platform/library'
+    | '/platform/patterns'
     | '/platform/signups'
     | '/platform/standards'
     | '/platform/'
@@ -295,6 +305,7 @@ export interface FileRouteTypes {
     | '/platform/admins'
     | '/platform/clients'
     | '/platform/library'
+    | '/platform/patterns'
     | '/platform/signups'
     | '/platform/standards'
     | '/'
@@ -323,6 +334,7 @@ export interface FileRouteTypes {
     | '/platform/admins'
     | '/platform/clients'
     | '/platform/library'
+    | '/platform/patterns'
     | '/platform/signups'
     | '/platform/standards'
     | '/_hub/'
@@ -488,6 +500,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PlatformLibraryRouteImport
       parentRoute: typeof PlatformRoute
     }
+    '/platform/patterns': {
+      id: '/platform/patterns'
+      path: '/patterns'
+      fullPath: '/platform/patterns'
+      preLoaderRoute: typeof PlatformPatternsRouteImport
+      parentRoute: typeof PlatformRoute
+    }
     '/platform/signups': {
       id: '/platform/signups'
       path: '/signups'
@@ -575,6 +594,7 @@ interface PlatformRouteChildren {
   PlatformAdminsRoute: typeof PlatformAdminsRoute
   PlatformClientsRoute: typeof PlatformClientsRouteWithChildren
   PlatformLibraryRoute: typeof PlatformLibraryRoute
+  PlatformPatternsRoute: typeof PlatformPatternsRoute
   PlatformSignupsRoute: typeof PlatformSignupsRoute
   PlatformStandardsRoute: typeof PlatformStandardsRoute
   PlatformIndexRoute: typeof PlatformIndexRoute
@@ -584,6 +604,7 @@ const PlatformRouteChildren: PlatformRouteChildren = {
   PlatformAdminsRoute: PlatformAdminsRoute,
   PlatformClientsRoute: PlatformClientsRouteWithChildren,
   PlatformLibraryRoute: PlatformLibraryRoute,
+  PlatformPatternsRoute: PlatformPatternsRoute,
   PlatformSignupsRoute: PlatformSignupsRoute,
   PlatformStandardsRoute: PlatformStandardsRoute,
   PlatformIndexRoute: PlatformIndexRoute,

@@ -37,6 +37,6 @@ urlpatterns = [
 import importlib
 import importlib.util
 
-for _slice in ('urls_clients', 'urls_controls', 'urls_universal'):
+for _slice in ('urls_clients', 'urls_controls', 'urls_universal', 'urls_patterns'):
     if importlib.util.find_spec(f'apps.platform.{_slice}') is not None:
         urlpatterns += importlib.import_module(f'apps.platform.{_slice}').urlpatterns

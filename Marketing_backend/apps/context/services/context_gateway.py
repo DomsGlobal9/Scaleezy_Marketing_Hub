@@ -147,10 +147,18 @@ def build_generation_context(
     # standard or a client switching the layer off has to invalidate the cut
     # immediately — otherwise a retired standard keeps reaching generations
     # for the life of the cache entry.
-    from apps.universal.services import standards_as_context, standards_for
+    from apps.universal.services import (
+        patterns_as_context,
+        patterns_for,
+        standards_as_context,
+        standards_for,
+    )
 
     universal_standards, universal_ver = standards_for(
         workspace, brand, channel=channel, content_format_or_type=content_format,
+    )
+    learned_patterns, learned_pattern_ver = patterns_for(
+        workspace, brand, channel=channel,
     )
 
     # ---- context cache -------------------------------------------------
@@ -162,7 +170,7 @@ def build_generation_context(
     # construction.
     cache_key = 'genctx:' + hashlib.sha256('|'.join([
         str(workspace.id), str(brand.pk), brain.get('brain_version', ''),
-        str(CONTEXT_SCHEMA_VERSION), task_type, universal_ver,
+        str(CONTEXT_SCHEMA_VERSION), task_type, universal_ver, learned_pattern_ver,
         instruction or '', channel or '', content_format or '', objective or '',
     ]).encode('utf-8')).hexdigest()
     cached = cache.get(cache_key)
@@ -191,6 +199,8 @@ def build_generation_context(
         # the key, so "did standard X reach client Y" is answerable later.
         'universal_version': universal_ver,
         'universal_standards': standards_as_context(universal_standards),
+        'learned_pattern_version': learned_pattern_ver,
+        'learned_patterns': patterns_as_context(learned_patterns),
         'task_type': task_type,
 
         'brand_identity': {
@@ -324,6 +334,12 @@ def context_as_brief(context):
     # came from.
     for standard in context.get('universal_standards', []):
         lines.append(f"Scaleezy craft standard: {standard['guidance']}")
+    for pattern in context.get('learned_patterns', []):
+        lines.append(
+            'Scaleezy learned pattern: '
+            f"{pattern['category']} / {pattern['attribute']} = {pattern['value']} "
+            f"({pattern['contributor_count']} contributing client(s))"
+        )
 
     return {
         'task': context['task_type'],
@@ -341,5 +357,6 @@ def context_as_brief(context):
             'preferences': context['preferences'],
             'avoid_patterns': context['avoid_patterns'],
             'win_patterns': context['win_patterns'],
+            'learned_patterns': context.get('learned_patterns', []),
         },
     }

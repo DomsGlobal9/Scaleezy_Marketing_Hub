@@ -17,6 +17,7 @@ import {
   Library,
   LogOut,
   Menu,
+  Network,
   ShieldCheck,
   UserCog,
 } from "lucide-react";
@@ -58,6 +59,7 @@ const NAV = [
   { to: "/platform/signups", label: "Signups", icon: Inbox, exact: false },
   { to: "/platform/clients", label: "Clients", icon: Building2, exact: false },
   { to: "/platform/standards", label: "Standards", icon: BookMarked, exact: false },
+  { to: "/platform/patterns", label: "Learned patterns", icon: Network, exact: false },
   { to: "/platform/library", label: "Library", icon: Library, exact: false },
   { to: "/platform/admins", label: "Admins", icon: UserCog, exact: false },
 ] as const;

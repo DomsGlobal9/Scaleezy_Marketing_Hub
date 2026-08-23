@@ -363,6 +363,51 @@ export const retireStandard = (id: string, reason: string) =>
 export const previewStandard = (id: string) =>
   apiGet<StandardPreview>(`/api/platform/standards/${id}/preview/`);
 
+/* ------------------------------------------------------------ learned patterns */
+
+export interface LearnedPattern {
+  id: string;
+  category: string;
+  attribute: string;
+  value: string;
+  industry: string;
+  channel: string;
+  contributor_count: number;
+  supporting_brand_count: number;
+  confidence: number;
+  status: LifecycleStatus | string;
+  compiled_at: string;
+  pattern_version: string;
+  published_at: string | null;
+  retired_at: string | null;
+}
+
+export interface PatternContributor {
+  workspace_id: string;
+  client_code: string;
+  name: string;
+}
+
+export const fetchLearnedPatterns = async () =>
+  rows<LearnedPattern>(await apiGet<unknown>("/api/platform/patterns/"), "patterns");
+
+export const compileLearnedPatterns = () =>
+  apiPost<{ status: string; task_id: string; pattern_version: string | null }>(
+    "/api/platform/patterns/compile/",
+    {},
+  );
+
+export const publishLearnedPattern = (id: string) =>
+  apiPost<unknown>(`/api/platform/patterns/${id}/publish/`, {});
+
+export const retireLearnedPattern = (id: string, reason: string) =>
+  apiPost<unknown>(`/api/platform/patterns/${id}/retire/`, { reason });
+
+export const fetchPatternContributors = (id: string) =>
+  apiGet<{ pattern_id: string; contributors: PatternContributor[] }>(
+    `/api/platform/patterns/${id}/contributors/`,
+  );
+
 /* ------------------------------------------------------------------- library */
 
 export interface PlatformInspiration {
