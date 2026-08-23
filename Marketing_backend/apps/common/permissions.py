@@ -6,13 +6,49 @@ classes turn that into an enforced boundary: a caller may only touch data in a
 workspace they are an active member of, and only if their role is high enough.
 """
 import logging
+from datetime import timedelta
 
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 from apps.workspaces.models import WorkspaceMember
 
 logger = logging.getLogger(__name__)
+
+WORKSPACE_INACTIVE_MESSAGE = (
+    "This client is suspended or archived. Existing data stays readable, but "
+    "no changes can be made."
+)
+
+#: How stale `last_active_at` may get before it is rewritten. Without this the
+#: column would be written on every authorised request — a write amplification
+#: of one row per API call, for a number nobody reads to the minute.
+LAST_ACTIVE_RESOLUTION = timedelta(minutes=15)
+
+
+def touch_last_active(membership):
+    """Record that this member is using the product, cheaply.
+
+    `WorkspaceMember.last_active_at` has existed since Phase 1 and has never
+    had a writer, so "inactive N days" — a filter the portfolio view depends
+    on — could only ever have returned every client. This is that writer.
+
+    Uses `update()` rather than `save()`: no signals, no full-row write, and
+    it cannot clobber a concurrent change to another column. Never raises —
+    an activity timestamp must not be able to fail a request.
+    """
+    if membership is None or membership.pk is None:
+        return
+    now = timezone.now()
+    previous = membership.last_active_at
+    if previous is not None and now - previous < LAST_ACTIVE_RESOLUTION:
+        return
+    try:
+        WorkspaceMember.objects.filter(pk=membership.pk).update(last_active_at=now)
+        membership.last_active_at = now
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("Could not update last_active_at", exc_info=True)
 
 
 def get_membership(user, workspace_id):
@@ -124,6 +160,14 @@ def authorize_workspace(request, workspace_id):
             error={"code": "WORKSPACE_FORBIDDEN", "message": "No access to this workspace."},
             status=status.HTTP_403_FORBIDDEN,
         )
+
+    if request.method not in SAFE_METHODS and not membership.workspace.is_active:
+        return None, APIResponse(
+            success=False,
+            message=WORKSPACE_INACTIVE_MESSAGE,
+            error={"code": "WORKSPACE_INACTIVE", "message": WORKSPACE_INACTIVE_MESSAGE},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     return membership, None
 
 
@@ -157,6 +201,19 @@ class IsWorkspaceMember(BasePermission):
                 "Denied workspace access: user=%s workspace=%s", user.pk, workspace_id
             )
             return False
+
+        # A suspended or archived client is read-only. Checked here rather
+        # than in get_membership so reads keep working: the customer can still
+        # see their own data, and support can still investigate.
+        if request.method not in SAFE_METHODS and not membership.workspace.is_active:
+            logger.warning(
+                "Write refused, workspace not active: user=%s workspace=%s status=%s",
+                user.pk, workspace_id, membership.workspace.status,
+            )
+            self.message = WORKSPACE_INACTIVE_MESSAGE
+            return False
+
+        touch_last_active(membership)
 
         # Cache for the view and for HasWorkspaceRole, which runs after this.
         request.workspace_membership = membership

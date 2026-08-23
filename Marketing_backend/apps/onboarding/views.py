@@ -13,6 +13,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 
 from apps.brands.models import Brand
+from apps.brands.services.approval import SpendNotApproved
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.permissions import (
     HasWorkspaceRole,
@@ -25,6 +26,7 @@ from apps.workspaces.models import WorkspaceMember
 
 from .models import CalibrationDirection
 from .services import (
+    BrandNotApproved,
     CalibrationError,
     ensure_onboarding,
     generate_calibration_round,
@@ -81,6 +83,23 @@ class OnboardingViewSet(
         try:
             directions = generate_calibration_round(
                 self._workspace(), brand, user=request.user
+            )
+        except BrandNotApproved as exc:
+            # 403, not 400: the request is well-formed, the brand is simply
+            # not yet allowed to spend. Nothing was generated or written.
+            return APIResponse(
+                success=False,
+                message=str(exc),
+                error={'code': 'BRAND_NOT_APPROVED', 'message': str(exc)},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        except SpendNotApproved as exc:
+            # Workspace-level refusal from the generation chain (backstop).
+            return APIResponse(
+                success=False,
+                message=exc.message,
+                error={'code': exc.code, 'message': exc.message},
+                status=status.HTTP_403_FORBIDDEN,
             )
         except NoProviderConfigured as exc:
             return APIResponse(

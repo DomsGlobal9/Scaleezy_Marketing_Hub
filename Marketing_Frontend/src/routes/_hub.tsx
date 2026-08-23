@@ -5,6 +5,7 @@ import {
   Check,
   CheckCircle2,
   ChevronsUpDown,
+  Landmark,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -15,7 +16,7 @@ import {
   Share2,
   Sparkles,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   DropdownMenu,
@@ -31,6 +32,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AddClientDialog } from "@/components/marketing/add-client-dialog";
 import { SiteFooter } from "@/components/marketing/site-footer";
 import { apiPost } from "@/lib/api";
+import { fetchMe } from "@/lib/platform";
 import { clearWorkspaces, loadWorkspaces, selectWorkspace, useWorkspaces } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub")({
@@ -244,7 +246,34 @@ function NoClientsYet({ onAddClient }: { onAddClient: () => void }) {
   );
 }
 
-function NavList({ isAdmin, onNavigate }: { isAdmin: boolean; onNavigate?: () => void }) {
+/**
+ * Whether the signed-in person may open the Scaleezy console. Only decides if
+ * the link is SHOWN — /platform re-checks on the server on every request, so a
+ * stale or wrong answer here costs a redirect, never access.
+ */
+function usePlatformAdmin(): boolean {
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchMe().then((me) => {
+      if (!cancelled) setIsPlatformAdmin(!!me?.is_platform_admin);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return isPlatformAdmin;
+}
+
+function NavList({
+  isAdmin,
+  isPlatformAdmin,
+  onNavigate,
+}: {
+  isAdmin: boolean;
+  isPlatformAdmin: boolean;
+  onNavigate?: () => void;
+}) {
   return (
     <nav className="space-y-1">
       <p className="label-eyebrow mb-3 px-3">Marketing Hub</p>
@@ -264,6 +293,19 @@ function NavList({ isAdmin, onNavigate }: { isAdmin: boolean; onNavigate?: () =>
           <span className="truncate">{item.label}</span>
         </Link>
       ))}
+      {isPlatformAdmin ? (
+        <>
+          <p className="label-eyebrow mt-6 mb-3 px-3">Scaleezy staff</p>
+          <Link
+            to="/platform"
+            onClick={onNavigate}
+            className="flex items-center gap-3 rounded-xl border border-slate-300 bg-slate-900 px-3 py-2.5 text-sm font-medium text-slate-100 transition-colors hover:bg-slate-800"
+          >
+            <Landmark className="size-4.5 shrink-0 text-amber-300" strokeWidth={1.75} />
+            <span className="truncate">Platform console</span>
+          </Link>
+        </>
+      ) : null}
     </nav>
   );
 }
@@ -345,6 +387,7 @@ function HubLayout() {
     (workspace) => workspace.id === workspaces.selectedId,
   )?.role;
   const isAdmin = activeRole === "OWNER" || activeRole === "ADMIN";
+  const isPlatformAdmin = usePlatformAdmin();
 
   return (
     <div className="min-h-screen bg-background">
@@ -356,7 +399,7 @@ function HubLayout() {
           <WorkspaceSwitcher onAddClient={() => setCreating(true)} />
         </div>
         <div className="mt-6 flex-1">
-          <NavList isAdmin={isAdmin} />
+          <NavList isAdmin={isAdmin} isPlatformAdmin={isPlatformAdmin} />
         </div>
         <div>
           <SignOutButton />
@@ -380,7 +423,11 @@ function HubLayout() {
               />
             </div>
             <div className="mt-6">
-              <NavList isAdmin={isAdmin} onNavigate={() => setOpen(false)} />
+              <NavList
+                isAdmin={isAdmin}
+                isPlatformAdmin={isPlatformAdmin}
+                onNavigate={() => setOpen(false)}
+              />
             </div>
             <div className="mt-6 border-t border-border pt-4">
               <SignOutButton onDone={() => setOpen(false)} />
