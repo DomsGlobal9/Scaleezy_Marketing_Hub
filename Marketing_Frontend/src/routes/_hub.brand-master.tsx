@@ -47,6 +47,7 @@ import {
 } from "@/components/marketing/brand-master-primitives";
 import { InspirationsPanel } from "@/components/marketing/inspirations-panel";
 import { KnowledgePanel } from "@/components/marketing/knowledge-panel";
+import { LearningUsagePanel } from "@/components/marketing/learning-usage-panel";
 import { LibraryGallery } from "@/components/marketing/library-gallery";
 import { EnrichFromWebsite, NlNoteBox } from "@/components/marketing/nl-note-box";
 import { PageHeader, SectionTitle } from "@/components/marketing/primitives";
@@ -436,6 +437,7 @@ function LearningTab({ brandId, onChanged }: { brandId: string; onChanged: () =>
 
   return (
     <div className="space-y-8">
+      <LearningUsagePanel brandId={brandId} />
       {active.length === 0 ? (
         <Empty
           title="Nothing learned yet"
