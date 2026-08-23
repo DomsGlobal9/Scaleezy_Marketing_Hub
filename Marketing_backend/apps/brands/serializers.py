@@ -52,14 +52,6 @@ class BrandSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "This client is not approved; brand status cannot be changed here."
                 )
-            if (
-                current == Brand.Status.ARCHIVED
-                and self.instance.reviewed_at is not None
-                and self.instance.reviewed_by_id is not None
-            ):
-                raise serializers.ValidationError(
-                    "This brand was archived by Scaleezy; contact support to restore it."
-                )
         return value
 
     def validate_palette(self, value):
