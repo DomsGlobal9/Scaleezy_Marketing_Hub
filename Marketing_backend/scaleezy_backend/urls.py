@@ -17,16 +17,9 @@ urlpatterns = [
     path('api/marketing/publishing/', include('apps.publishing.urls')),
     path('api/marketing/analytics/', include('apps.analytics.urls')),
     path('api/marketing/knowledge/', include('apps.knowledge.urls')),
-    # Before the inspirations router: its `inspirations/<pk>/` detail route
-    # would otherwise swallow `inspirations/library/` with pk='library'. Real
-    # UUID pks still resolve to the router because `library` is literal here.
-    path('api/marketing/', include('apps.universal.urls')),
     path('api/marketing/', include('apps.inspirations.urls')),
     path('api/marketing/', include('apps.learning.urls')),
     path('api/marketing/', include('apps.context.urls')),
     path('api/marketing/', include('apps.onboarding.urls')),
-    # The Scaleezy console. Its own namespace and its own gate (IsPlatformAdmin);
-    # nothing under /api/marketing/ ever grants cross-tenant access.
-    path('api/platform/', include('apps.platform.urls')),
     # Other paths will be added here
 ]

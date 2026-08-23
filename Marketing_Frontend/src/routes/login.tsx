@@ -1,4 +1,4 @@
-import { createFileRoute, Link, redirect, useNavigate, useRouter } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate, useRouter } from "@tanstack/react-router";
 import { AlertCircle, Loader2, LogIn, Sparkles } from "lucide-react";
 import { useState } from "react";
 
@@ -149,12 +149,6 @@ function LoginPage() {
         </form>
 
         <p className="mt-6 text-center text-xs text-muted-foreground">
-          New to Scaleezy?{" "}
-          <Link to="/signup" className="font-medium text-foreground underline-offset-4 hover:underline">
-            Create an account
-          </Link>
-        </p>
-        <p className="mt-2 text-center text-xs text-muted-foreground">
           Trouble signing in? Contact your workspace administrator.
         </p>
       </div>

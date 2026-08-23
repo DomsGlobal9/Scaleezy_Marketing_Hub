@@ -1,157 +1,17 @@
 import logging
 
-from django.contrib.auth import get_user_model
-from django.db import IntegrityError, transaction
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from apps.ai.provisioning import AIProvisioningError, provision_default_ai
-from apps.brands.models import Brand
 from apps.common.responses import APIResponse
-from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
 from .models import AuthAuditLog, record_auth_event
-from .serializers import (
-    CurrentUserSerializer,
-    ScaleezyTokenObtainPairSerializer,
-    SignupSerializer,
-)
+from .serializers import CurrentUserSerializer, ScaleezyTokenObtainPairSerializer
 
 logger = logging.getLogger(__name__)
-User = get_user_model()
-
-
-class SignupRateThrottle(AnonRateThrottle):
-    """
-    Public signup is an unauthenticated write target, so it is bounded per
-    client IP. The rate is SIGNUP_THROTTLE_RATE (default 5/hour).
-
-    Counted in Django's default cache. Without a CACHES setting that is
-    per-process LocMem, so with N web workers the effective ceiling is up to
-    N x the configured rate — adequate as abuse control, not a precise quota.
-    REST_FRAMEWORK['NUM_PROXIES'] makes the IP the one the platform proxy
-    appended, not the proxy itself; otherwise every signup shares one bucket.
-    """
-
-    scope = 'signup'
-
-
-class SignupView(APIView):
-    """
-    POST /api/auth/signup/
-        {email, password, brand_name, website?, industry?, first_name?, last_name?}
-        -> {access, refresh, workspace_id, brand_id, brand_status}
-
-    One transaction creates the user, their workspace, an OWNER membership, a
-    PENDING brand and default AI routing — the same bootstrap the add-client
-    path does, with the brand held at PENDING. Until a Scaleezy operator
-    approves it, calibration is refused (apps.onboarding.services), which is
-    the spend a pending client must not be able to incur. If platform AI
-    cannot be provisioned the whole signup rolls back, so no half-built client
-    is left behind to be repaired by hand.
-
-    No email verification yet: this deployment has no mail backend, and a
-    verification step that cannot send mail is a fake control. Rate limiting
-    is the real abuse control here; verification is a follow-up once a mail
-    provider is chosen.
-    """
-
-    permission_classes = [AllowAny]
-    throttle_classes = [SignupRateThrottle]
-
-    def post(self, request):
-        serializer = SignupSerializer(data=request.data)
-        if not serializer.is_valid():
-            first_error = next(iter(serializer.errors.values()), ['Invalid sign-up details.'])
-            message = first_error[0] if isinstance(first_error, list) else str(first_error)
-            return APIResponse(
-                success=False,
-                message=str(message),
-                error={"code": "VALIDATION_ERROR", "fields": serializer.errors},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        data = serializer.validated_data
-        email = data['email']
-
-        try:
-            with transaction.atomic():
-                user = User.objects.create_user(
-                    username=email,
-                    email=email,
-                    password=data['password'],
-                    first_name=data.get('first_name', ''),
-                    last_name=data.get('last_name', ''),
-                )
-                workspace = MarketingWorkspace.objects.create(
-                    customer_id='',
-                    workspace_name=data.get('workspace_name') or data['brand_name'],
-                )
-                WorkspaceMember.objects.create(
-                    workspace=workspace, user=user, role=WorkspaceMember.Role.OWNER
-                )
-                brand = Brand.objects.create(
-                    workspace=workspace,
-                    name=data['brand_name'],
-                    website=data.get('website', ''),
-                    industry=data.get('industry', ''),
-                    is_default=True,
-                    status=Brand.Status.PENDING,
-                    created_by=user,
-                )
-                provision_default_ai(workspace)
-        except IntegrityError:
-            # Two signups for the same email raced past the serializer check.
-            record_auth_event(
-                request, AuthAuditLog.Event.SIGNUP,
-                username=email, succeeded=False, reason='duplicate account',
-            )
-            return APIResponse(
-                success=False,
-                message="An account with this email already exists.",
-                error={"code": "VALIDATION_ERROR",
-                       "fields": {"email": ["An account with this email already exists."]}},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        except AIProvisioningError as exc:
-            logger.error("Signup rejected, platform AI unavailable: %s", exc)
-            record_auth_event(
-                request, AuthAuditLog.Event.SIGNUP,
-                username=email, succeeded=False, reason='platform AI unavailable',
-            )
-            return APIResponse(
-                success=False,
-                message="Sign-up is temporarily unavailable because platform AI is not ready.",
-                error={"code": "AI_BOOTSTRAP_UNAVAILABLE", "message": str(exc)},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-
-        record_auth_event(request, AuthAuditLog.Event.SIGNUP, user=user, username=email)
-        logger.info(
-            "Signup: user=%s workspace=%s brand=%s (pending approval)",
-            user.pk, workspace.pk, brand.pk,
-        )
-
-        # Sign the new user straight in: the same token shape as /login/, with
-        # the membership claim populated by the same serializer.
-        refresh = ScaleezyTokenObtainPairSerializer.get_token(user)
-        return APIResponse(
-            success=True,
-            message="Account created. Your brand is awaiting Scaleezy approval.",
-            data={
-                'access': str(refresh.access_token),
-                'refresh': str(refresh),
-                'workspace_id': str(workspace.pk),
-                'client_code': workspace.client_code,
-                'brand_id': str(brand.pk),
-                'brand_status': brand.status,
-            },
-            status=status.HTTP_201_CREATED,
-        )
 
 
 class LoginView(TokenObtainPairView):

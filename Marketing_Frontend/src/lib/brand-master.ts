@@ -251,10 +251,6 @@ export interface OnboardingSummary {
   };
   readiness: Readiness;
   calibration: CalibrationDirection[];
-  /** Brand.status as the server sees it; PENDING until Scaleezy approves. */
-  brand_status?: string;
-  /** True while the brand is PENDING: calibration and generation stay locked. */
-  awaiting_approval?: boolean;
 }
 
 /* ------------------------------------------------------------- vocabularies */

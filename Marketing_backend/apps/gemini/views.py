@@ -14,7 +14,6 @@ from apps.common.permissions import (
 )
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.responses import APIResponse
-from apps.brands.services.approval import approval_gate_response
 from django.utils import timezone
 
 
@@ -206,11 +205,6 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         quota_error = self._quota_error(workspace)
         if quota_error:
             return quota_error
-        # No provider spend before Scaleezy approval. The router refuses too;
-        # answering here keeps the 403 envelope instead of a generic failure.
-        approval_error = approval_gate_response(workspace)
-        if approval_error:
-            return approval_error
 
         from apps.ai.router import AIRouter, NoProviderAvailable
         from apps.context.services.generation import NoProviderConfigured
@@ -315,11 +309,6 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         quota_error = self._quota_error(workspace)
         if quota_error:
             return quota_error
-        # Refused before the request row exists: a pending client must not
-        # leave a queued generation behind that runs the moment it is approved.
-        approval_error = approval_gate_response(workspace)
-        if approval_error:
-            return approval_error
 
         data = request.data
         brief = {
@@ -379,9 +368,6 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             workspace, error = get_request_workspace(request)
             if error:
                 return error
-            approval_error = approval_gate_response(workspace)
-            if approval_error:
-                return approval_error
             routed = AIRouter(workspace).dispatch(
                 Capability.IMAGE_ANALYSIS,
                 {'reference_image_base64': b64_image},
@@ -404,9 +390,6 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             workspace, error = get_request_workspace(request)
             if error:
                 return error
-            approval_error = approval_gate_response(workspace)
-            if approval_error:
-                return approval_error
             routed = AIRouter(workspace).dispatch(
                 Capability.IMAGE_CAPTION,
                 {'reference_image_base64': b64_image},
@@ -441,9 +424,6 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             workspace, error = get_request_workspace(request)
             if error:
                 return error
-            approval_error = approval_gate_response(workspace)
-            if approval_error:
-                return approval_error
             routed = AIRouter(workspace).dispatch(
                 Capability.VIDEO_ANALYSIS,
                 {'asset_id': str(asset_id)},

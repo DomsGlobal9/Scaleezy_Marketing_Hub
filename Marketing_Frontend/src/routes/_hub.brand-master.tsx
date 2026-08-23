@@ -47,8 +47,6 @@ import {
 } from "@/components/marketing/brand-master-primitives";
 import { InspirationsPanel } from "@/components/marketing/inspirations-panel";
 import { KnowledgePanel } from "@/components/marketing/knowledge-panel";
-import { LibraryGallery } from "@/components/marketing/library-gallery";
-import { EnrichFromWebsite, NlNoteBox } from "@/components/marketing/nl-note-box";
 import { PageHeader, SectionTitle } from "@/components/marketing/primitives";
 import { ProductsAudiencePanel } from "@/components/marketing/products-audience-panel";
 import { TeachScaleezy } from "@/components/marketing/teach-scaleezy";
@@ -1243,13 +1241,11 @@ function BrandMasterPage() {
           <TabsContent value="products" forceMount>
             <ProductsAudiencePanel editor={brandEditor} />
           </TabsContent>
-          <TabsContent value="knowledge" className="space-y-6">
-            <EnrichFromWebsite brandId={brandId} onChanged={refresh} />
+          <TabsContent value="knowledge">
             <KnowledgePanel brandId={brandId} onChanged={refresh} />
           </TabsContent>
-          <TabsContent value="inspirations" className="space-y-10">
+          <TabsContent value="inspirations">
             <InspirationsPanel brandId={brandId} onChanged={refresh} />
-            <LibraryGallery brandId={brandId} onChanged={refresh} />
           </TabsContent>
           <TabsContent value="learning">
             <LearningTab brandId={brandId} onChanged={refresh} />
@@ -1268,8 +1264,7 @@ function BrandMasterPage() {
               onChanged={refresh}
             />
           </TabsContent>
-          <TabsContent value="teach" className="space-y-6">
-            <NlNoteBox brandId={brandId} onChanged={refresh} />
+          <TabsContent value="teach">
             <TeachScaleezy brandId={brandId} onGoToTab={setTab} onChanged={refresh} />
           </TabsContent>
         </Tabs>

@@ -21,29 +21,7 @@ class BrandSerializer(serializers.ModelSerializer):
             'created_by',
             'created_at',
             'updated_at',
-            # Approval is Scaleezy's decision, recorded by the approval
-            # service; a client must not be able to write who approved them.
-            'reviewed_at',
-            'reviewed_by',
         ]
-
-    def validate_status(self, value):
-        """A client may archive and restore its own approved brands, as before.
-
-        It may not leave PENDING: that transition is approval, and it belongs to
-        the approval service (apps.brands.services.approval), not to a PATCH
-        on the brand. Nor may it put a brand INTO pending — signup does that.
-        """
-        current = self.instance.status if self.instance is not None else None
-        if current == Brand.Status.PENDING and value != Brand.Status.PENDING:
-            raise serializers.ValidationError(
-                "This brand is awaiting Scaleezy approval; its status cannot be changed here."
-            )
-        if value == Brand.Status.PENDING and current != Brand.Status.PENDING:
-            raise serializers.ValidationError(
-                "Pending approval is set at signup, not by editing a brand."
-            )
-        return value
 
     def validate_palette(self, value):
         if not isinstance(value, dict):

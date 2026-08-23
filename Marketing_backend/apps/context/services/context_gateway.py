@@ -141,18 +141,6 @@ def build_generation_context(
     if not brain:
         raise ContextError("This brand has no compiled Brand Brain.")
 
-    # The universal layer: Scaleezy's own craft standards, at rank 80+ and
-    # already filtered so none of them touches an attribute this brand has a
-    # position on. Resolved BEFORE the cache key is built, because retiring a
-    # standard or a client switching the layer off has to invalidate the cut
-    # immediately — otherwise a retired standard keeps reaching generations
-    # for the life of the cache entry.
-    from apps.universal.services import standards_as_context, standards_for
-
-    universal_standards, universal_ver = standards_for(
-        workspace, brand, channel=channel, content_format_or_type=content_format,
-    )
-
     # ---- context cache -------------------------------------------------
     # Selection over an unchanged brain is deterministic, so the cut is
     # reusable until the brain moves. The brain_version in the key is the
@@ -162,7 +150,7 @@ def build_generation_context(
     # construction.
     cache_key = 'genctx:' + hashlib.sha256('|'.join([
         str(workspace.id), str(brand.pk), brain.get('brain_version', ''),
-        str(CONTEXT_SCHEMA_VERSION), task_type, universal_ver,
+        str(CONTEXT_SCHEMA_VERSION), task_type,
         instruction or '', channel or '', content_format or '', objective or '',
     ]).encode('utf-8')).hexdigest()
     cached = cache.get(cache_key)
@@ -187,10 +175,6 @@ def build_generation_context(
         # Which brain this was cut from. Two contexts with the same
         # brain_version and the same task inputs are the same context.
         'brain_version': brain.get('brain_version', ''),
-        # Which universal standards this cut carried. In the trace as well as
-        # the key, so "did standard X reach client Y" is answerable later.
-        'universal_version': universal_ver,
-        'universal_standards': standards_as_context(universal_standards),
         'task_type': task_type,
 
         'brand_identity': {
@@ -318,12 +302,6 @@ def context_as_brief(context):
         value = claim.get('value', '')
         if value:
             lines.append(f"Prefer ({label}): {value}")
-    # Last, and labelled as ours rather than as the brand's. Position in the
-    # prose mirrors authority: everything above outranks these, and the label
-    # is what makes the suggestion attributable when a client asks where it
-    # came from.
-    for standard in context.get('universal_standards', []):
-        lines.append(f"Scaleezy craft standard: {standard['guidance']}")
 
     return {
         'task': context['task_type'],

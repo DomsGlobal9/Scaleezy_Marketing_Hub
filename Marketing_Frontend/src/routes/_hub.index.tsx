@@ -126,23 +126,6 @@ function OverviewPage() {
         }
       />
 
-      {overview?.brand.status === "PENDING" ? (
-        <div
-          role="status"
-          className="mb-6 flex items-start gap-3 rounded-xl border border-gold/40 bg-gold/10 px-4 py-3 text-sm"
-        >
-          <Sparkles className="mt-0.5 size-4 shrink-0 text-gold" />
-          <p>
-            <span className="font-medium text-foreground">Awaiting Scaleezy approval</span>
-            <span className="text-muted-foreground">
-              {" "}
-              — calibration and generation unlock once approved. Brand Master and setup stay open;
-              everything you teach now is kept.
-            </span>
-          </p>
-        </div>
-      ) : null}
-
       <section className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
         <BrandCard overview={overview} error={brandError} />
         <div className="surface-card p-6">

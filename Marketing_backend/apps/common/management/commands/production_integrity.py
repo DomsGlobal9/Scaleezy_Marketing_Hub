@@ -54,14 +54,6 @@ CRITICAL_MODELS = (
     'social_accounts.SocialConnection',
     'publishing.PublishingJob',
     'publishing.PublishingJobItem',
-    # Added with the approval / console work: a deploy where these are
-    # missing serves 500s on signup and on every platform endpoint.
-    'billing.Plan',
-    'billing.Subscription',
-    'audit.PlatformAdmin',
-    'audit.PlatformAuditLog',
-    'universal.UniversalStandard',
-    'universal.PlatformInspiration',
 )
 
 #: Non-secret settings production cannot run without. Values are never

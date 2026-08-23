@@ -57,21 +57,6 @@ class AIRouter:
             out.append({'route': route, 'workspace_provider': wp, 'adapter': adapter})
         return out
 
-    def require_spend_approved(self):
-        """Refuse unless the client is approved to spend. Memoised per router.
-
-        A router lives for one request. Callers that dispatch from worker
-        threads (`generate_copy_and_image`) prime this on the main thread so
-        the workers never touch the brands table themselves — a read the test
-        database cannot serve while the main thread holds the brand row.
-        """
-        if getattr(self, '_spend_approved', False):
-            return
-        from apps.brands.services.approval import enforce_spend_approved
-
-        enforce_spend_approved(self.workspace)
-        self._spend_approved = True
-
     def primary_adapter(self, capability: str):
         """The adapter that would serve this capability right now, or None.
 
@@ -130,22 +115,12 @@ class AIRouter:
 
     def dispatch(self, capability: str, brief: Dict[str, Any],
                  content_item_id=None) -> Dict[str, Any]:
-        # A client awaiting Scaleezy approval incurs no provider spend, of any
-        # capability. Checked first so a pending client hears "awaiting
-        # approval" rather than a quota message. This is the backstop for
-        # every caller; the user-facing endpoints apply the same rule earlier
-        # and answer 403 with the envelope.
-        self.require_spend_approved()
-
         # Spend is checked before the call, not after: an over-cap workspace
         # that only finds out from AIUsageLog has already been billed for the
         # generation that took it over.
         from apps.billing.quota import enforce
 
-        # Per-capability, not just workspace-wide: a client allowed 100
-        # posters and 10 videos must be stopped at the eleventh video even
-        # with generations left over.
-        enforce(self.workspace, capability=capability)
+        enforce(self.workspace)
 
         candidates = self._candidates(capability)
         if not candidates:
@@ -238,11 +213,6 @@ class AIRouter:
 
     # ── diagnostics ──────────────────────────────────────────────────────
     def health(self, workspace_provider) -> Dict[str, Any]:
-        # A health check reaches the provider too; same rule as dispatch.
-        from apps.brands.services.approval import enforce_spend_approved
-
-        enforce_spend_approved(workspace_provider.workspace)
-
         adapter = build(workspace_provider)
         if adapter is None:
             result = {'ok': False, 'detail': 'No adapter installed for this provider.'}

@@ -20,7 +20,6 @@ class AuthAuditLog(models.Model):
         TOKEN_REFRESH_FAILED = 'TOKEN_REFRESH_FAILED', 'Token refresh failed'
         LOGOUT = 'LOGOUT', 'Logged out'
         ACCESS_DENIED = 'ACCESS_DENIED', 'Access denied'
-        SIGNUP = 'SIGNUP', 'Signed up'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 

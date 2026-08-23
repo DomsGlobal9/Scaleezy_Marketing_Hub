@@ -47,19 +47,6 @@ class NoProviderConfigured(Exception):
     """The workspace has not routed a provider to this capability."""
 
 
-def _require_spend_approved(workspace):
-    """Refuse before any context is built or any thread is started.
-
-    The router enforces the same rule, but `generate_copy_and_image` runs its
-    dispatches inside workers that turn every exception into a FAILED trace
-    entry — the refusal would surface as a vague provider failure. Checking
-    here keeps it a clear, early refusal.
-    """
-    from apps.brands.services.approval import enforce_spend_approved
-
-    enforce_spend_approved(workspace)
-
-
 class OutputRejected(Exception):
     """The provider returned something that fails deterministic checks."""
 
@@ -209,7 +196,6 @@ def generate_with_context(workspace, brand, task_type=TaskType.COPY, *, instruct
     Returns the provider result alongside the context that produced it, so a
     generation can always be explained by the brain version it was cut from.
     """
-    _require_spend_approved(workspace)
     context = build_generation_context(
         workspace, brand, task_type,
         instruction=instruction, channel=channel,
@@ -255,11 +241,6 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
     layout grid; the image does not carry the objection list); both come from
     the same brain version, so the pair is still one coherent generation.
     """
-    # Primed here, on the main thread, before any context is built or worker
-    # started: the workers' dispatch() calls then skip the brands read.
-    router = AIRouter(workspace)
-    router.require_spend_approved()
-
     text_context = build_generation_context(
         workspace, brand, TaskType.COPY, instruction=instruction,
     )
@@ -269,6 +250,7 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
     text_brief = {**context_as_brief(text_context), **brief_extra}
     image_brief = {**context_as_brief(image_context), **brief_extra}
 
+    router = AIRouter(workspace)
     trace = {
         'brain_version': text_context['brain_version'],
         'context_schema_version': CONTEXT_SCHEMA_VERSION,
@@ -426,7 +408,6 @@ def generate_marketing_payload(workspace, brief, *, instruction=''):
 
 def retry_image(workspace, brand, brief_extra, *, instruction=''):
     """Retry ONLY the image capability. The copy that succeeded stays won."""
-    _require_spend_approved(workspace)
     context = build_generation_context(
         workspace, brand, TaskType.IMAGE, instruction=instruction,
     )

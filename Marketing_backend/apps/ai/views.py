@@ -189,13 +189,6 @@ class WorkspaceAIProviderViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     def test(self, request, pk=None):
         """Runs the adapter's health check and records the outcome."""
         wp = self.get_object()
-        # A health check reaches the provider; a client awaiting approval
-        # does not spend on that either.
-        from apps.brands.services.approval import approval_gate_response
-
-        approval_error = approval_gate_response(wp.workspace)
-        if approval_error:
-            return approval_error
         result = AIRouter(wp.workspace).health(wp)
         return APIResponse(
             success=bool(result.get('ok')),

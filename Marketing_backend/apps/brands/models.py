@@ -26,7 +26,6 @@ class Brand(models.Model):
     """
 
     class Status(models.TextChoices):
-        PENDING = 'PENDING', 'Pending approval'
         ACTIVE = 'ACTIVE', 'Active'
         ARCHIVED = 'ARCHIVED', 'Archived'
 
@@ -92,32 +91,8 @@ class Brand(models.Model):
     # generator feeds it back into each prompt.
     creative_brain = models.JSONField(default=dict, blank=True)
 
-    # Compile health. `creative_brain` alone cannot answer "did the last
-    # rebuild work?" — a brain that failed to recompile looks identical to one
-    # that never needed to, because the previous snapshot is still sitting in
-    # the column. These are what make "Brand Brain compile failures" a real
-    # query instead of a tile that reads zero forever.
-    brain_compiled_at = models.DateTimeField(null=True, blank=True)
-    brain_version = models.CharField(max_length=64, blank=True)
-    brain_last_error = models.TextField(blank=True)
-    brain_failed_at = models.DateTimeField(null=True, blank=True)
-
     is_default = models.BooleanField(default=False)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
-
-    # Signup approval. A brand that arrives through public signup starts
-    # PENDING and cannot run calibration until a Scaleezy operator approves it
-    # (see apps.brands.services.approval). Who decided, and when, is a column
-    # rather than something reconstructed from logs later. Brands created by
-    # an existing member through the app are ACTIVE on creation, as before.
-    reviewed_at = models.DateTimeField(null=True, blank=True)
-    reviewed_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='reviewed_brands',
-    )
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -146,25 +121,6 @@ class Brand(models.Model):
     @property
     def has_logo(self) -> bool:
         return bool(self.logo_url)
-
-    @property
-    def is_pending_approval(self) -> bool:
-        return self.status == self.Status.PENDING
-
-    @property
-    def brain_is_stale(self) -> bool:
-        """True when the last compile failed and has not since succeeded.
-
-        Generation still works — it reads the previous snapshot — but what it
-        reads no longer reflects the records, which is exactly the condition
-        an operator needs surfaced.
-        """
-        if not self.brain_failed_at:
-            return False
-        return (
-            self.brain_compiled_at is None
-            or self.brain_failed_at > self.brain_compiled_at
-        )
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
