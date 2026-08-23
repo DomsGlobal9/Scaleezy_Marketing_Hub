@@ -172,7 +172,7 @@ def remove_member(actor_membership, target):
 
 @transaction.atomic
 def attach_user_to_workspace(user, workspace, *, role=WorkspaceMember.Role.EDITOR,
-                             by=None, archive_orphan=True):
+                             by=None):
     """Platform action: put an existing user onto an existing client.
 
     This is the answer to the case signup deliberately blocks. When a
@@ -180,8 +180,15 @@ def attach_user_to_workspace(user, workspace, *, role=WorkspaceMember.Role.EDITO
     duplicate-website guard refuses them — correctly, or the approval queue
     fills with duplicates of one company. But refusing without a remedy just
     strands the person, so this is the remedy: an operator attaches them to
-    the real client, and the empty workspace their signup created (if any) is
-    archived rather than left to look like a second customer.
+    the real client.
+
+    It does NOT archive anything. An earlier version archived every other
+    workspace where this user was the only member and nothing was approved,
+    on the theory that it must be the stranded signup — but that cannot be
+    proven from membership alone, and an action that archives the wrong
+    customer is far worse than one that leaves a duplicate in the queue. The
+    likely duplicates are RETURNED instead, so the operator can archive the
+    right one deliberately through the normal, audited control.
 
     Crosses the tenant boundary, so it is platform-only and always audited.
     """
@@ -203,33 +210,28 @@ def attach_user_to_workspace(user, workspace, *, role=WorkspaceMember.Role.EDITO
             membership.status = WorkspaceMember.Status.ACTIVE
             membership.save(update_fields=['status', 'updated_at'])
 
-    archived = []
-    if archive_orphan:
-        from apps.workspaces.services.lifecycle import archive_workspace
-
-        # Any OTHER client where this user is the only member and nothing has
-        # been approved: that is the stranded signup, not a real customer.
-        others = (
-            WorkspaceMember.objects.filter(user=user)
-            .exclude(workspace_id=workspace.pk)
-            .select_related('workspace')
-        )
-        for other in others:
-            if other.workspace.status != MarketingWorkspace.Status.ACTIVE:
-                continue
-            if WorkspaceMember.objects.filter(workspace=other.workspace).count() != 1:
-                continue
-            from apps.brands.models import Brand
-
-            if Brand.objects.filter(
-                workspace=other.workspace, status=Brand.Status.ACTIVE
-            ).exists():
-                continue  # a real, approved client — never touch it
-            archive_workspace(
-                other.workspace, by=by,
-                reason=f'Duplicate signup; user attached to {workspace.client_code}',
-            )
-            archived.append(str(other.workspace.pk))
+    # Likely duplicates, for the operator to judge: other ACTIVE workspaces
+    # where this user is the sole member and the client was never approved.
+    duplicate_candidates = []
+    others = (
+        WorkspaceMember.objects.filter(user=user)
+        .exclude(workspace_id=workspace.pk)
+        .select_related('workspace')
+    )
+    for other in others:
+        ws = other.workspace
+        if ws.status != MarketingWorkspace.Status.ACTIVE:
+            continue
+        if ws.approval_status == MarketingWorkspace.Approval.APPROVED:
+            continue
+        if WorkspaceMember.objects.filter(workspace=ws).count() != 1:
+            continue
+        duplicate_candidates.append({
+            'workspace_id': str(ws.pk),
+            'client_code': ws.client_code,
+            'name': ws.workspace_name,
+            'approval_status': ws.approval_status,
+        })
 
     record_platform_event(
         actor=by, action='USER_ATTACHED_TO_CLIENT', workspace=workspace,
@@ -238,7 +240,7 @@ def attach_user_to_workspace(user, workspace, *, role=WorkspaceMember.Role.EDITO
             'username': user.get_username(),
             'role': role,
             'created_membership': created,
-            'archived_orphan_workspaces': archived,
+            'duplicate_candidates': [c['workspace_id'] for c in duplicate_candidates],
         },
     )
-    return membership, archived
+    return membership, duplicate_candidates

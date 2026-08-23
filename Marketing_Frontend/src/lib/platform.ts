@@ -133,7 +133,17 @@ export interface AttachUserResult {
   membership_id: string;
   role: string;
   status: string;
-  archived_orphan_workspaces: number;
+  /**
+   * Other workspaces where this person is the sole member and the client was
+   * never approved — the LIKELY duplicate signups. Reported for the operator
+   * to archive deliberately; attach-user never archives anything itself.
+   */
+  duplicate_candidates: Array<{
+    workspace_id: string;
+    client_code: string;
+    name: string;
+    approval_status: string;
+  }>;
 }
 
 export const attachUserToClient = (workspaceId: string, username: string, role: string) =>

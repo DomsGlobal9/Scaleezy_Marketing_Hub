@@ -82,20 +82,32 @@ def reactivate_workspace(workspace, *, by=None, reason=''):
     was = workspace.status
     _set_status(workspace, MarketingWorkspace.Status.ACTIVE, reason=reason)
 
+    subscription_restored = False
     if was == MarketingWorkspace.Status.ARCHIVED:
         from apps.ai.provisioning import ensure_default_ai_routing
+        from apps.billing.models import Subscription
 
         try:
             ensure_default_ai_routing(workspace)
         except Exception:  # pragma: no cover - repair helper never raises
             logger.exception("Could not restore AI routing for %s", workspace.pk)
 
+        # Archive cancelled the subscription; a client that is ACTIVE again but
+        # still CANCELLED looks live and is refused on every AI request. Put it
+        # back exactly as archive took it away.
+        subscription_restored = bool(
+            Subscription.objects.filter(
+                workspace=workspace, status=Subscription.Status.CANCELLED
+            ).update(status=Subscription.Status.ACTIVE)
+        )
+
     from apps.audit.models import record_platform_event
 
     record_platform_event(
         actor=by, action='CLIENT_REACTIVATED', workspace=workspace,
         target=f'workspace:{workspace.pk}',
-        detail={'from': was, 'reason': reason},
+        detail={'from': was, 'reason': reason,
+                'subscription_restored': subscription_restored},
     )
     logger.info("Workspace %s reactivated from %s", workspace.pk, was)
     return workspace
@@ -130,6 +142,12 @@ def archive_workspace(workspace, *, by=None, reason=''):
     cancelled_subs = Subscription.objects.filter(workspace=workspace).exclude(
         status=Subscription.Status.CANCELLED
     ).update(status=Subscription.Status.CANCELLED)
+
+    # An archived client must not keep its website reserved against a genuine
+    # future signup.
+    from apps.users.models import SignupWebsiteClaim
+
+    SignupWebsiteClaim.objects.filter(workspace=workspace).delete()
 
     _set_status(workspace, MarketingWorkspace.Status.ARCHIVED, reason=reason)
 

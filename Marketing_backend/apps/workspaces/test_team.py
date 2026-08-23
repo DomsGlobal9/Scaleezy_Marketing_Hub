@@ -229,20 +229,22 @@ class AttachUserTests(TenantFixtureMixin, TestCase):
         self.colleague = User.objects.create_user(username='colleague@acme.test', password='pw')
 
     def test_a_colleague_is_attached_and_the_action_is_audited(self):
-        membership, archived = attach_user_to_workspace(
+        membership, candidates = attach_user_to_workspace(
             self.colleague, self.real, role=WorkspaceMember.Role.EDITOR, by=self.staff
         )
         self.assertEqual(membership.workspace, self.real)
         self.assertEqual(membership.role, WorkspaceMember.Role.EDITOR)
         self.assertEqual(membership.status, WorkspaceMember.Status.ACTIVE)
-        self.assertEqual(archived, [])
+        self.assertEqual(candidates, [])
 
         entry = PlatformAuditLog.objects.get(action='USER_ATTACHED_TO_CLIENT')
         self.assertEqual(entry.workspace, self.real)
         self.assertEqual(entry.actor, self.staff)
 
-    def test_a_stranded_signup_workspace_is_archived_on_attach(self):
+    def test_a_stranded_signup_workspace_is_reported_never_archived(self):
         orphan = self.make_workspace('Acme (duplicate)', 'c-dup')
+        orphan.approval_status = MarketingWorkspace.Approval.PENDING
+        orphan.save(update_fields=['approval_status'])
         WorkspaceMember.objects.create(
             workspace=orphan, user=self.colleague, role=WorkspaceMember.Role.OWNER
         )
@@ -250,12 +252,14 @@ class AttachUserTests(TenantFixtureMixin, TestCase):
             workspace=orphan, name='Acme dup', status=Brand.Status.PENDING
         )
 
-        _, archived = attach_user_to_workspace(
+        _, candidates = attach_user_to_workspace(
             self.colleague, self.real, by=self.staff
         )
-        self.assertEqual(archived, [str(orphan.pk)])
+        # Reported for the operator to judge — attach itself archives nothing,
+        # because membership alone cannot prove this was the duplicate signup.
+        self.assertEqual([c['workspace_id'] for c in candidates], [str(orphan.pk)])
         orphan.refresh_from_db()
-        self.assertEqual(orphan.status, MarketingWorkspace.Status.ARCHIVED)
+        self.assertEqual(orphan.status, MarketingWorkspace.Status.ACTIVE)
 
     def test_a_real_approved_client_of_theirs_is_never_archived(self):
         theirs = self.make_workspace('Their Own Co', 'c-own')
@@ -266,10 +270,10 @@ class AttachUserTests(TenantFixtureMixin, TestCase):
             workspace=theirs, name='Their Co', status=Brand.Status.ACTIVE
         )
 
-        _, archived = attach_user_to_workspace(
+        _, candidates = attach_user_to_workspace(
             self.colleague, self.real, by=self.staff
         )
-        self.assertEqual(archived, [])
+        self.assertEqual(candidates, [])
         theirs.refresh_from_db()
         self.assertEqual(theirs.status, MarketingWorkspace.Status.ACTIVE)
 

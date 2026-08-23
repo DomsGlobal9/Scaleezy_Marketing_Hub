@@ -28,6 +28,11 @@ class MarketingWorkspace(models.Model):
         SUSPENDED = 'SUSPENDED', 'Suspended'
         ARCHIVED = 'ARCHIVED', 'Archived'
 
+    class Approval(models.TextChoices):
+        PENDING = 'PENDING', 'Awaiting Scaleezy approval'
+        APPROVED = 'APPROVED', 'Approved'
+        REJECTED = 'REJECTED', 'Rejected'
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     customer_id = models.CharField(max_length=255, help_text="Reference to the customer/tenant in the main system")
     #: The one id a human quotes. Unique across the platform and never reused,
@@ -51,6 +56,17 @@ class MarketingWorkspace(models.Model):
     status_reason = models.CharField(max_length=255, blank=True)
     status_changed_at = models.DateTimeField(null=True, blank=True)
 
+    #: Whether Scaleezy has approved this CLIENT. Lives on the workspace, not
+    #: on a brand: approval is a property of the customer, and deriving it from
+    #: "does any brand happen to be ACTIVE" let a pending customer approve
+    #: themselves by creating a second brand. Defaults to APPROVED so every
+    #: workspace that existed before approval keeps working; signup creates
+    #: PENDING explicitly.
+    approval_status = models.CharField(
+        max_length=20, choices=Approval.choices, default=Approval.APPROVED,
+        db_index=True,
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -63,6 +79,10 @@ class MarketingWorkspace(models.Model):
     @property
     def is_active(self) -> bool:
         return self.status == self.Status.ACTIVE
+
+    @property
+    def is_approved(self) -> bool:
+        return self.approval_status == self.Approval.APPROVED
 
     def save(self, *args, **kwargs):
         # Assigned here rather than as a field default so the collision retry

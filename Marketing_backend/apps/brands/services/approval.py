@@ -31,28 +31,58 @@ class SpendNotApproved(Exception):
         self.message = message
 
 
+PENDING_MESSAGE = (
+    "This client is awaiting Scaleezy approval. AI generation, calibration "
+    "and analysis unlock once it has been approved."
+)
+
+
 def spend_block(workspace):
     """Why this workspace may not spend on AI right now, or None if it may.
 
-    A client is approved when at least one of its brands is ACTIVE. A
-    workspace with no brand row at all predates approval and is not blocked —
-    a table appearing in a deploy must not stop existing people working.
+    Approval is the WORKSPACE's `approval_status`, set only by the approval
+    service. It is deliberately not derived from brand rows: "any ACTIVE brand
+    means approved" let a pending customer approve themselves by creating a
+    second brand. The brand-based check below remains only as a stricter
+    fallback for approved workspaces whose every brand is pending/archived.
     """
+    from apps.workspaces.models import MarketingWorkspace
+
+    if workspace.status == MarketingWorkspace.Status.ARCHIVED:
+        return SpendNotApproved(
+            'CLIENT_ARCHIVED', "This client is archived; AI generation is unavailable."
+        )
+    if workspace.approval_status == MarketingWorkspace.Approval.PENDING:
+        return SpendNotApproved('CLIENT_NOT_APPROVED', PENDING_MESSAGE)
+    if workspace.approval_status == MarketingWorkspace.Approval.REJECTED:
+        return SpendNotApproved(
+            'CLIENT_REJECTED',
+            "This client's signup was not approved; AI generation is unavailable.",
+        )
+
     brands = Brand.objects.filter(workspace=workspace)
     if not brands.exists():
         return None
     if brands.filter(status=Brand.Status.ACTIVE).exists():
         return None
     if brands.filter(status=Brand.Status.PENDING).exists():
-        return SpendNotApproved(
-            'CLIENT_NOT_APPROVED',
-            "This client is awaiting Scaleezy approval. AI generation, calibration "
-            "and analysis unlock once it has been approved.",
-        )
+        return SpendNotApproved('CLIENT_NOT_APPROVED', PENDING_MESSAGE)
     return SpendNotApproved(
-        'CLIENT_ARCHIVED',
-        "This client is archived; AI generation is unavailable.",
+        'CLIENT_ARCHIVED', "This client is archived; AI generation is unavailable."
     )
+
+
+def initial_brand_status(workspace):
+    """What a brand created inside this workspace starts as.
+
+    PENDING unless the client is approved — so a customer awaiting approval
+    cannot mint an ACTIVE brand for themselves, from any creation path.
+    """
+    from apps.workspaces.models import MarketingWorkspace
+
+    if workspace.approval_status == MarketingWorkspace.Approval.APPROVED:
+        return Brand.Status.ACTIVE
+    return Brand.Status.PENDING
 
 
 def enforce_spend_approved(workspace):
@@ -111,6 +141,8 @@ def approve_brand(brand, *, by=None, plan=None):
     ensures the subscription, because brands approved before this existed have
     none.
     """
+    from apps.workspaces.models import MarketingWorkspace
+
     subscription, _ = ensure_subscription(brand.workspace, plan=plan)
 
     if brand.status != Brand.Status.ACTIVE:
@@ -118,6 +150,17 @@ def approve_brand(brand, *, by=None, plan=None):
         brand.reviewed_at = timezone.now()
         brand.reviewed_by = by
         brand.save(update_fields=['status', 'reviewed_at', 'reviewed_by', 'updated_at'])
+
+    # The client itself becomes approved — this is what the spend gate reads.
+    workspace = brand.workspace
+    if workspace.approval_status != MarketingWorkspace.Approval.APPROVED:
+        workspace.approval_status = MarketingWorkspace.Approval.APPROVED
+        workspace.save(update_fields=['approval_status', 'updated_at'])
+
+    # A reactivated subscription, if rejection or archive had cancelled it.
+    if subscription is not None and subscription.status != subscription.Status.ACTIVE:
+        subscription.status = subscription.Status.ACTIVE
+        subscription.save(update_fields=['status', 'updated_at'])
 
     from apps.audit.models import record_platform_event
 
@@ -135,10 +178,23 @@ def reject_brand(brand, *, by=None, reason=''):
     """-> ARCHIVED, reversibly. Archiving an archived brand changes nothing."""
     if brand.status == Brand.Status.ARCHIVED:
         return brand
+    from apps.users.models import SignupWebsiteClaim
+    from apps.workspaces.models import MarketingWorkspace
+
     brand.status = Brand.Status.ARCHIVED
     brand.reviewed_at = timezone.now()
     brand.reviewed_by = by
     brand.save(update_fields=['status', 'reviewed_at', 'reviewed_by', 'updated_at'])
+
+    # The client is no longer approved (it may never have been): no spend, and
+    # no new ACTIVE brands. Reversible through approve_brand.
+    workspace = brand.workspace
+    if workspace.approval_status != MarketingWorkspace.Approval.REJECTED:
+        workspace.approval_status = MarketingWorkspace.Approval.REJECTED
+        workspace.save(update_fields=['approval_status', 'updated_at'])
+
+    # A rejected signup frees its website for a genuine future enrolment.
+    SignupWebsiteClaim.objects.filter(workspace=workspace).delete()
 
     from apps.audit.models import record_platform_event
 

@@ -14,11 +14,12 @@ from apps.brands.models import Brand
 from apps.common.responses import APIResponse
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
-from .models import AuthAuditLog, record_auth_event
+from .models import AuthAuditLog, SignupWebsiteClaim, record_auth_event
 from .serializers import (
     CurrentUserSerializer,
     ScaleezyTokenObtainPairSerializer,
     SignupSerializer,
+    normalised_host,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,7 @@ class SignupView(APIView):
                 workspace = MarketingWorkspace.objects.create(
                     customer_id='',
                     workspace_name=data.get('workspace_name') or data['brand_name'],
+                    approval_status=MarketingWorkspace.Approval.PENDING,
                 )
                 WorkspaceMember.objects.create(
                     workspace=workspace, user=user, role=WorkspaceMember.Role.OWNER
@@ -103,18 +105,25 @@ class SignupView(APIView):
                     status=Brand.Status.PENDING,
                     created_by=user,
                 )
+                # The concurrency-safe half of "one company, one enrolment":
+                # the serializer's pre-check is friendly, this unique row is
+                # what two simultaneous signups cannot both get past.
+                host = normalised_host(data.get('website', ''))
+                if host:
+                    SignupWebsiteClaim.objects.create(website_host=host, workspace=workspace)
                 provision_default_ai(workspace)
         except IntegrityError:
-            # Two signups for the same email raced past the serializer check.
+            # A simultaneous signup for the same email or the same website
+            # got there first; the serializer check is advisory, this is real.
             record_auth_event(
                 request, AuthAuditLog.Event.SIGNUP,
-                username=email, succeeded=False, reason='duplicate account',
+                username=email, succeeded=False, reason='duplicate account or website',
             )
             return APIResponse(
                 success=False,
-                message="An account with this email already exists.",
+                message="An account already exists for this email or website.",
                 error={"code": "VALIDATION_ERROR",
-                       "fields": {"email": ["An account with this email already exists."]}},
+                       "fields": {"email": ["An account already exists for this email or website."]}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except AIProvisioningError as exc:

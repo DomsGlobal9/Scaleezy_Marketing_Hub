@@ -225,8 +225,10 @@ class DuplicateEnrolmentTests(SignupTestBase):
     def test_an_archived_client_frees_its_website_again(self):
         first = self.signup()
         brand = Brand.objects.get(pk=first.json()['data']['brand_id'])
-        brand.status = Brand.Status.ARCHIVED
-        brand.save(update_fields=['status'])
+        from apps.brands.services.approval import reject_brand
+
+        # Through the real path: rejection releases the website claim.
+        reject_brand(brand, by=None, reason='test')
 
         response = self.signup(email='second@acme.test', brand_name='Acme Again')
         self.assertEqual(response.status_code, 201, response.content)

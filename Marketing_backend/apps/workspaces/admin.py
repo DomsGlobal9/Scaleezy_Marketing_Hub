@@ -13,10 +13,20 @@ class WorkspaceMemberInline(admin.TabularInline):
 
 @admin.register(MarketingWorkspace)
 class MarketingWorkspaceAdmin(admin.ModelAdmin):
-    list_display = ('workspace_name', 'customer_id', 'timezone', 'member_count', 'created_at')
-    search_fields = ('workspace_name', 'customer_id')
-    list_filter = ('timezone', 'default_language')
+    list_display = (
+        'workspace_name', 'client_code', 'approval_status', 'status',
+        'customer_id', 'member_count', 'created_at',
+    )
+    search_fields = ('workspace_name', 'customer_id', 'client_code')
+    list_filter = ('approval_status', 'status', 'timezone', 'default_language')
     inlines = [WorkspaceMemberInline]
+    # Approval, lifecycle and identity are platform decisions, made in the
+    # console by a PlatformAdmin and written to PlatformAuditLog. Django admin
+    # may look, not decide: a staff flag is not platform authority.
+    readonly_fields = (
+        'client_code', 'approval_status', 'status', 'status_reason',
+        'status_changed_at', 'created_at', 'updated_at',
+    )
 
     @admin.display(description='Members')
     def member_count(self, obj):
