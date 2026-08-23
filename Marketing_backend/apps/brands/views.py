@@ -109,8 +109,12 @@ class BrandViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if error:
             return error
 
+        # Exclude archived rather than require ACTIVE: a workspace whose only
+        # brand is PENDING approval must get that brand back, not have a second,
+        # already-approved one silently created around the approval gate.
         brand = (
-            Brand.objects.filter(workspace=workspace, status=Brand.Status.ACTIVE)
+            Brand.objects.filter(workspace=workspace)
+            .exclude(status=Brand.Status.ARCHIVED)
             .order_by('-is_default', 'created_at')
             .first()
         )

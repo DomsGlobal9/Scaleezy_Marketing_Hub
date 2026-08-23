@@ -8,6 +8,7 @@ import {
   type AIAdminTab,
 } from "@/components/marketing/ai-providers-panel";
 import { PageHeader } from "@/components/marketing/primitives";
+import { TeamPanel } from "@/components/marketing/team-panel";
 import { getSelectedWorkspace } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub/admin")({
@@ -72,6 +73,8 @@ function AdminPage() {
         </div>
         <AIProvidersPanel activeTab={activeTab} onTabChange={setTab} />
       </section>
+
+      <TeamPanel />
     </div>
   );
 }

@@ -60,6 +60,8 @@ INSTALLED_APPS = [
     'apps.learning',
     'apps.context',
     'apps.onboarding',
+    'apps.universal',
+    'apps.platform',
 ]
 
 MIDDLEWARE = [
@@ -194,6 +196,16 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    # Only views that set throttle_classes are throttled; today that is public
+    # signup. Rates live in env so an abuse wave is a config change.
+    'DEFAULT_THROTTLE_RATES': {
+        'signup': env('SIGNUP_THROTTLE_RATE', default='5/hour'),
+    },
+    # Render (and any reverse proxy) puts the client in X-Forwarded-For and
+    # the proxy in REMOTE_ADDR. With this unset every throttled caller shares
+    # the proxy's IP and one bucket. One trusted hop; DRF takes the address
+    # that hop appended, so a client-supplied header cannot spoof it.
+    'NUM_PROXIES': env.int('NUM_PROXIES', default=1),
 }
 
 SIMPLE_JWT = {
