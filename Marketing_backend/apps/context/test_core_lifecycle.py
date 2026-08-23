@@ -6,11 +6,16 @@ while the product was unusable: a workspace created through the API had no AI
 route, so the first generation 503'd. A defect that only appears where two
 green suites meet is invisible to both of them.
 
-So this walks one tenant through the whole core loop without an operator
-anywhere in it — sign up, create the workspace, create the brand, describe the
-business, teach it, correct it, compile, generate, save, return, edit, review,
-approve and queue a publish — and then proves a member of a second workspace
-cannot see a single record it produced.
+So this walks one tenant through the whole core loop — sign up, create the
+workspace, create the brand, describe the business, teach it, correct it,
+compile, be approved, generate, save, return, edit, review, approve and queue
+a publish — and then proves a member of a second workspace cannot see a single
+record it produced.
+
+Exactly one step needs an operator, and it is deliberate: a client that signed
+up is PENDING and may not spend a penny of provider money until Scaleezy
+approves it. The test asserts the refusal before it approves, because a gate
+nobody proves is shut is a gate that quietly opens.
 
 Deliberately ONE test. Split into eight it would still pass with the chain
 broken between any two of them, which is the exact failure it exists to catch.
@@ -26,7 +31,9 @@ from rest_framework.test import APIClient
 
 from apps.ai.models import Capability, WorkspaceAIProvider, WorkspaceAIRoute
 from apps.ai.router import AIRouter
+from apps.billing.models import Subscription
 from apps.brands.models import Brand
+from apps.brands.services.approval import SpendNotApproved, approve_brand
 from apps.common.testing import workspace_header
 from apps.content.models import ContentItem
 from apps.inspirations.models import BrandInspiration
@@ -232,6 +239,32 @@ class CoreProductLifecycleTests(TestCase):
         brief_lines = context_as_brief(context)['brand_context']
         self.assertIn(f'About: {DESCRIPTION}', brief_lines)
         self.assertIn(f'Audience: {AUDIENCE}', brief_lines)
+
+        # --- Approve: the one operator step, and it really does gate spend --
+        # Everything above is free: describing the business, teaching it and
+        # compiling the brain cost nothing, so a pending client can do all of
+        # it. Generation is the first thing that would spend provider money,
+        # and it must refuse until Scaleezy has approved the client.
+        self.assertEqual(
+            workspace_a.approval_status, MarketingWorkspace.Approval.PENDING,
+            'a client that signed up itself must start out awaiting approval',
+        )
+        with self.assertRaises(SpendNotApproved) as refused:
+            generate_with_context(workspace_a, brand, TaskType.COPY)
+        self.assertEqual(refused.exception.code, 'CLIENT_NOT_APPROVED')
+
+        operator = User.objects.create_user(username='scaleezy-operator', password='pw')
+        approve_brand(default_brand, by=operator)
+        workspace_a.refresh_from_db()
+        brand.refresh_from_db()
+        self.assertEqual(workspace_a.approval_status, MarketingWorkspace.Approval.APPROVED)
+        self.assertEqual(brand.status, Brand.Status.ACTIVE)
+        # Approval is where entitlement begins: without a subscription the
+        # quota check treats the client as unlimited.
+        self.assertTrue(
+            Subscription.objects.filter(workspace=workspace_a).exists(),
+            'approving a client must create the subscription that meters it',
+        )
 
         # --- ...and survive the whole chain into what the provider is sent ---
         dispatched = {}
