@@ -86,3 +86,10 @@ Update this section after each vertical slice with named tests and exact results
 - Preserved security and tenant semantics: workspace keys remain encrypted/write-only, provider destinations are fixed code-owned HTTPS endpoints, and OWNER/ADMIN enforcement is unchanged.
 - Verification: focused adapter/catalogue checks **10 passed, 0 failed**; all **75 AI-module tests have passing evidence** after rerunning the three environment-only encryption checks with a valid temporary test key; Python compilation and migration drift checks **PASS**.
 - Release position: **P0 PROVIDER CATALOGUE CODE GATE PASS; BACKEND DEPLOYMENT NEXT**. P1 and PR7 remain closed.
+
+### 2026-08-23 — Provider catalogue deploy recovery
+
+- Live evidence showed that the production catalogue still contained only Gemini and OpenAI, so the Add provider dialog correctly had nothing else to offer. The deploy-time sync had not populated the five new adapter rows.
+- Added an idempotent, additive data migration for Groq, Mistral AI, DeepSeek, OpenRouter and Together AI. It preserves the operator kill switch and creates no workspace configuration or routes.
+- Focused verification: **7 passed, 0 failed**; migration drift check **PASS**.
+- Release position: **P0 DEPLOY RECOVERY CODE GATE PASS; BACKEND DEPLOYMENT REQUIRED**. P1 and PR7 remain closed.

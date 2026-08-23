@@ -1,9 +1,11 @@
 """Contract tests for the shared chat-completions provider family."""
+import importlib
 import json
 from unittest.mock import Mock, patch
 
 import httpx
-from django.test import SimpleTestCase, override_settings
+from django.apps import apps as django_apps
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.ai.adapters.base import AIProviderError
 from apps.ai.adapters.openai_compatible import (
@@ -13,7 +15,7 @@ from apps.ai.adapters.openai_compatible import (
     OpenRouterAdapter,
     TogetherAdapter,
 )
-from apps.ai.models import Capability
+from apps.ai.models import AIProvider, Capability
 from apps.ai.registry import get_adapter_class
 
 
@@ -126,3 +128,32 @@ class OpenAICompatibleAdapterTests(SimpleTestCase):
         with self.assertRaisesMessage(AIProviderError, 'DeepSeek request timed out.'):
             DeepSeekAdapter(credentials='workspace-test-key').generate_text({})
 
+
+class OpenAICompatibleCatalogueMigrationTests(TestCase):
+    def test_seed_is_idempotent_and_preserves_global_kill_switch(self):
+        AIProvider.objects.update_or_create(
+            key='groq',
+            defaults={
+                'display_name': 'Old Groq',
+                'capabilities': [],
+                'default_model': 'old-model',
+                'unit_cost': 0,
+                'is_available': False,
+            },
+        )
+        migration = importlib.import_module(
+            'apps.ai.migrations.0007_seed_openai_compatible_providers'
+        )
+
+        migration.seed_openai_compatible_providers(django_apps, None)
+        migration.seed_openai_compatible_providers(django_apps, None)
+
+        expected = {'groq', 'mistral', 'deepseek', 'openrouter', 'together'}
+        self.assertTrue(expected.issubset(
+            set(AIProvider.objects.values_list('key', flat=True))
+        ))
+        groq = AIProvider.objects.get(key='groq')
+        self.assertEqual(groq.display_name, 'Groq')
+        self.assertEqual(groq.capabilities, ['TEXT'])
+        self.assertEqual(groq.default_model, 'openai/gpt-oss-20b')
+        self.assertFalse(groq.is_available)
