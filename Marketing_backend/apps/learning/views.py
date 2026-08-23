@@ -9,6 +9,7 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.views import APIView
 
 from apps.brands.services.brand_brain import rebuild_brand_brain_safely
 from apps.common.mixins import WorkspaceScopedMixin
@@ -27,6 +28,7 @@ from .serializers import (
     LearningEventSerializer,
 )
 from .services import LearningError, create_explicit_rule, deactivate_rule
+from .usage import learning_usage_report
 
 
 class LearningBaseViewSet(viewsets.GenericViewSet):
@@ -206,3 +208,40 @@ class BrandRuleViewSet(
                 rule, context=self.get_serializer_context()
             ).data,
         )
+
+
+class LearningUsageView(APIView):
+    """GET /learning/usage/?brand_id= — what has been learned, and what of it
+    is actually reaching generation.
+
+    A read, so VIEWER is enough; the same workspace resolution every other
+    tenant view uses, and the brand is resolved INSIDE that workspace so a
+    brand id from another client is simply not found.
+    """
+
+    permission_classes = [IsAuthenticated, IsWorkspaceMember, HasWorkspaceRole]
+    requires_workspace = False
+    required_role = WorkspaceMember.Role.EDITOR
+    required_read_role = WorkspaceMember.Role.VIEWER
+
+    def get(self, request):
+        from apps.brands.models import Brand
+
+        workspace, error = get_request_workspace(request)
+        if error:
+            raise PermissionDenied("No accessible workspace for this request.")
+
+        brands = Brand.objects.filter(workspace=workspace)
+        brand_id = request.query_params.get('brand_id')
+        brand = (
+            brands.filter(pk=brand_id).first() if brand_id
+            else brands.order_by('-is_default', 'created_at').first()
+        )
+        if brand is None:
+            return APIResponse(
+                success=False,
+                message="Brand not found.",
+                error={'code': 'NOT_FOUND', 'message': "Brand not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return APIResponse(success=True, data=learning_usage_report(workspace, brand))
