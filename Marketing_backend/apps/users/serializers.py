@@ -126,11 +126,24 @@ class CurrentUserSerializer(serializers.ModelSerializer):
     """Shape returned by /auth/me/ — identity plus what it can reach."""
 
     memberships = serializers.SerializerMethodField()
+    # A live read of the PlatformAdmin table on every /me/ call — never a
+    # cached claim. The frontend uses it only to decide whether to SHOW the
+    # console; every platform request is re-gated server-side by
+    # IsPlatformAdmin, so a stale or forged value changes nothing.
+    is_platform_admin = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'memberships']
+        fields = [
+            'id', 'username', 'email', 'first_name', 'last_name', 'is_staff',
+            'is_platform_admin', 'memberships',
+        ]
         read_only_fields = fields
+
+    def get_is_platform_admin(self, obj):
+        from apps.audit.models import is_platform_admin
+
+        return is_platform_admin(obj)
 
     def get_memberships(self, obj):
         qs = (

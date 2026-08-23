@@ -26,3 +26,17 @@ urlpatterns = [
         AttachUserView.as_view(), name='attach_user',
     ),
 ]
+
+# One module per console slice, so slices can be built and reviewed alone:
+#   urls_clients   — P2 portfolio, P3 client detail
+#   urls_controls  — P4 master controls, P7 platform admins
+#   urls_universal — P6 standards & inspiration library authoring
+# Checked for existence rather than imported blindly, so a slice that is not
+# written yet is simply absent — while a real import error inside a slice
+# that does exist still fails loudly.
+import importlib
+import importlib.util
+
+for _slice in ('urls_clients', 'urls_controls', 'urls_universal'):
+    if importlib.util.find_spec(f'apps.platform.{_slice}') is not None:
+        urlpatterns += importlib.import_module(f'apps.platform.{_slice}').urlpatterns
