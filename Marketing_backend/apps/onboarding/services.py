@@ -50,7 +50,7 @@ def require_approved_for_calibration(brand):
     real provider calls and costs real money, and approval is what says that
     spend is ours to incur.
     """
-    if brand.status == Brand.Status.PENDING:
+    if brand.status == Brand.Status.PENDING or not brand.workspace.is_approved:
         raise BrandNotApproved(
             "This brand is awaiting Scaleezy approval. Calibration unlocks "
             "once it has been approved."

@@ -53,8 +53,8 @@ class UnsafeURL(EnrichmentError):
     """The URL is not one we are willing to fetch."""
 
 
-def _resolves_to_public_ip(host: str) -> bool:
-    """Every address the host resolves to must be public.
+def _public_addresses(host: str):
+    """Every address the host resolves to, or None if any of them is not public.
 
     Checked on the resolved addresses rather than on the hostname, because
     `internal.example.com` can point anywhere — including at the cloud
@@ -63,21 +63,41 @@ def _resolves_to_public_ip(host: str) -> bool:
     """
     try:
         infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        return False
+    except (socket.gaierror, OSError):
+        return None
     if not infos:
-        return False
+        return None
+    addresses = []
     for info in infos:
         try:
             address = ipaddress.ip_address(info[4][0])
         except ValueError:
-            return False
+            return None
         if (
             address.is_private or address.is_loopback or address.is_link_local
             or address.is_reserved or address.is_multicast or address.is_unspecified
         ):
-            return False
-    return True
+            return None
+        addresses.append(str(address))
+    return addresses
+
+
+def _resolves_to_public_ip(host: str) -> bool:
+    return bool(_public_addresses(host))
+
+
+def _pin_to_address(url: str, address: str) -> str:
+    """The same URL with its host replaced by the address we already vetted.
+
+    This closes the window between "we resolved the host and it was public"
+    and "the HTTP client resolved it again and connected": the client never
+    resolves at all. TLS still verifies the certificate against the real
+    hostname, which is sent as SNI (see safe_fetch).
+    """
+    parts = urlsplit(url)
+    literal = f'[{address}]' if ':' in address else address
+    netloc = literal + (f':{parts.port}' if parts.port else '')
+    return parts._replace(netloc=netloc).geturl()
 
 
 def registrable_host(url: str) -> str:
@@ -108,32 +128,67 @@ def assert_safe(url: str, *, allowed_host: str):
     return True
 
 
-def safe_fetch(url: str, *, allowed_host: str, budget=None):
+MAX_REDIRECTS = 5
+
+
+def safe_fetch(url: str, *, allowed_host: str, budget=None, transport=None):
     """One guarded GET. Returns (text, content_hash) or raises.
 
-    Redirects are followed by httpx but re-checked here afterwards, because a
-    redirect is exactly how a permitted URL becomes a forbidden one.
+    Redirects are NOT left to the HTTP client. Each hop is checked BEFORE it
+    is requested — scheme, host, and the public-ness of every address the host
+    resolves to — so a customer's site that answers "302 Location:
+    http://169.254.169.254/" never causes this server to issue that request.
+    The earlier version let httpx follow redirects and checked the final URL
+    afterwards, by which time the internal request had already been made.
+
+    The connection is then pinned to the address that was checked (the URL is
+    rewritten to the IP; the real hostname goes in the Host header and as SNI
+    for certificate verification), so DNS cannot answer "public" to our check
+    and "internal" to the client's own lookup a moment later.
+
+    `transport` exists for tests to inject an httpx.MockTransport.
     """
     import httpx
 
-    assert_safe(url, allowed_host=allowed_host)
-    try:
-        with httpx.Client(
-            timeout=FETCH_TIMEOUT_SECONDS, follow_redirects=True,
-            headers={'User-Agent': USER_AGENT},
-        ) as client:
-            response = client.get(url)
-    except httpx.HTTPError as exc:
-        raise EnrichmentError(f"Could not fetch {url}: {exc}") from exc
+    current = url
+    for _hop in range(MAX_REDIRECTS + 1):
+        assert_safe(current, allowed_host=allowed_host)
+        parts = urlsplit(current)
+        host = parts.hostname or ''
+        addresses = _public_addresses(host)
+        if not addresses:
+            raise UnsafeURL("That host does not resolve to a public address.")
+        pinned = _pin_to_address(current, addresses[0])
+        try:
+            with httpx.Client(
+                timeout=FETCH_TIMEOUT_SECONDS, follow_redirects=False,
+                headers={'User-Agent': USER_AGENT}, transport=transport,
+            ) as client:
+                response = client.get(
+                    pinned,
+                    headers={'Host': host},
+                    extensions={'sni_hostname': host},
+                )
+        except httpx.HTTPError as exc:
+            raise EnrichmentError(f"Could not fetch {current}: {exc}") from exc
 
-    # Where we actually ended up, not where we asked to go.
-    assert_safe(str(response.url), allowed_host=allowed_host)
+        if 300 <= response.status_code < 400:
+            location = response.headers.get('location')
+            if not location:
+                raise EnrichmentError(f"{current} redirected without a Location.")
+            # Resolved against the URL we asked for; checked at the top of the
+            # next iteration, before anything is requested.
+            current = urljoin(current, location)
+            continue
+        break
+    else:
+        raise EnrichmentError(f"{url}: too many redirects.")
 
     if response.status_code >= 400:
-        raise EnrichmentError(f"{url} returned {response.status_code}.")
+        raise EnrichmentError(f"{current} returned {response.status_code}.")
     content_type = response.headers.get('content-type', '')
     if 'html' not in content_type and 'text' not in content_type:
-        raise EnrichmentError(f"{url} is not a text page ({content_type}).")
+        raise EnrichmentError(f"{current} is not a text page ({content_type}).")
 
     body = response.content[:MAX_PAGE_BYTES]
     if budget is not None:

@@ -132,15 +132,8 @@ class SignupDecisionView(PlatformView):
             return self.not_found("Brand")
 
         if decision == 'approve':
-            corrections = {}
-            for field in ('name', 'website'):
-                value = request.data.get(field)
-                if isinstance(value, str) and value.strip() and value.strip() != getattr(brand, field):
-                    corrections[field] = {'from': getattr(brand, field), 'to': value.strip()}
-                    setattr(brand, field, value.strip())
-            if corrections:
-                brand.save(update_fields=list(corrections) + ['updated_at'])
-
+            # Validate everything first. Nothing about the customer changes
+            # unless the whole approval goes through.
             plan = None
             plan_key = request.data.get('plan')
             if plan_key:
@@ -154,12 +147,36 @@ class SignupDecisionView(PlatformView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-            approve_brand(brand, by=request.user, plan=plan)
-            if corrections:
-                self.audit(
-                    'BRAND_CORRECTED_AT_APPROVAL', workspace=brand.workspace,
-                    target=f'brand:{brand.pk}', detail=corrections,
-                )
+            corrections = {}
+            for field in ('name', 'website'):
+                value = request.data.get(field)
+                if isinstance(value, str) and value.strip() and value.strip() != getattr(brand, field):
+                    corrections[field] = {'from': getattr(brand, field), 'to': value.strip()}
+
+            from django.db import transaction
+
+            from apps.users.models import SignupWebsiteClaim
+            from apps.users.serializers import normalised_host
+
+            with transaction.atomic():
+                if corrections:
+                    for field, change in corrections.items():
+                        setattr(brand, field, change['to'])
+                    brand.save(update_fields=list(corrections) + ['updated_at'])
+                    if 'website' in corrections:
+                        # The enrolment claim follows the corrected website.
+                        host = normalised_host(corrections['website']['to'])
+                        SignupWebsiteClaim.objects.filter(workspace=brand.workspace).delete()
+                        if host:
+                            SignupWebsiteClaim.objects.get_or_create(
+                                website_host=host, defaults={'workspace': brand.workspace}
+                            )
+                approve_brand(brand, by=request.user, plan=plan)
+                if corrections:
+                    self.audit(
+                        'BRAND_CORRECTED_AT_APPROVAL', workspace=brand.workspace,
+                        target=f'brand:{brand.pk}', detail=corrections,
+                    )
             return APIResponse(
                 success=True,
                 message=f"{brand.name} approved.",
@@ -195,7 +212,7 @@ class AttachUserView(PlatformView):
 
         role = str(request.data.get('role', WorkspaceMember.Role.EDITOR)).upper()
         try:
-            membership, archived = attach_user_to_workspace(
+            membership, duplicate_candidates = attach_user_to_workspace(
                 user, workspace, role=role, by=request.user,
             )
         except TeamError as exc:
@@ -204,10 +221,12 @@ class AttachUserView(PlatformView):
                 error={'code': 'ATTACH_REFUSED', 'message': str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # attach_user_to_workspace audits itself.
+        # attach_user_to_workspace audits itself. Nothing else was changed:
+        # possible duplicate signups are listed for the operator to archive
+        # deliberately, never archived on their behalf.
         return APIResponse(success=True, message=f"{user.get_username()} attached.", data={
             'membership_id': str(membership.pk),
             'role': membership.role,
             'status': membership.status,
-            'archived_orphan_workspaces': archived,
+            'duplicate_candidates': duplicate_candidates,
         })

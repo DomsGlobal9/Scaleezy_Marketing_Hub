@@ -58,6 +58,36 @@ class AuthAuditLog(models.Model):
         return f"{self.event} — {who} @ {self.created_at:%Y-%m-%d %H:%M:%S}"
 
 
+class SignupWebsiteClaim(models.Model):
+    """One company, one enrolment — enforced by the database.
+
+    The signup serializer refuses a website that already belongs to a client,
+    but two simultaneous signups can both pass that read before either
+    writes. This row is created inside the signup transaction with a UNIQUE
+    host, so the second of two racing signups fails at commit and is told so.
+
+    Released when the signup is rejected or the client archived, so a dead
+    enrolment never blocks a real one. Kept as its own table rather than a
+    unique index on Brand.website so that pre-existing brands sharing a site
+    (two brands of one company, test data) never break a migration.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    #: Registrable host, lowercase, no leading www. — see users.serializers.normalised_host
+    website_host = models.CharField(max_length=253, unique=True)
+    workspace = models.ForeignKey(
+        'workspaces.MarketingWorkspace', on_delete=models.CASCADE,
+        related_name='signup_website_claims',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'signup_website_claims'
+
+    def __str__(self):
+        return f"{self.website_host} -> {self.workspace_id}"
+
+
 def client_ip(request):
     """Client IP, honouring one level of proxy via X-Forwarded-For."""
     forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')

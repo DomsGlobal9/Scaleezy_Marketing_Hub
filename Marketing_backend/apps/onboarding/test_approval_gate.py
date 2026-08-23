@@ -285,7 +285,7 @@ class SpendGateAPITests(TenantFixtureMixin, TestCase):
         reject_brand(self.brand, by=self.user)
         with self.assertRaises(SpendNotApproved) as caught:
             AIRouter(self.workspace).dispatch(Capability.TEXT, {'prompt': 'x'})
-        self.assertEqual(caught.exception.code, 'CLIENT_ARCHIVED')
+        self.assertEqual(caught.exception.code, 'CLIENT_REJECTED')
 
     def test_a_workspace_without_any_brand_row_is_not_blocked(self):
         # Predates approval; nothing to approve. Existing tenants keep working.
