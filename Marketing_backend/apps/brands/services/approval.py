@@ -48,16 +48,18 @@ def spend_block(workspace):
     """
     from apps.workspaces.models import MarketingWorkspace
 
-    if workspace.status == MarketingWorkspace.Status.ARCHIVED:
-        return SpendNotApproved(
-            'CLIENT_ARCHIVED', "This client is archived; AI generation is unavailable."
-        )
-    if workspace.approval_status == MarketingWorkspace.Approval.PENDING:
-        return SpendNotApproved('CLIENT_NOT_APPROVED', PENDING_MESSAGE)
+    # Rejection also archives the client, so the approval verdict is checked
+    # first: "not approved" is the more useful answer than "archived".
     if workspace.approval_status == MarketingWorkspace.Approval.REJECTED:
         return SpendNotApproved(
             'CLIENT_REJECTED',
             "This client's signup was not approved; AI generation is unavailable.",
+        )
+    if workspace.approval_status == MarketingWorkspace.Approval.PENDING:
+        return SpendNotApproved('CLIENT_NOT_APPROVED', PENDING_MESSAGE)
+    if workspace.status == MarketingWorkspace.Status.ARCHIVED:
+        return SpendNotApproved(
+            'CLIENT_ARCHIVED', "This client is archived; AI generation is unavailable."
         )
 
     brands = Brand.objects.filter(workspace=workspace)
