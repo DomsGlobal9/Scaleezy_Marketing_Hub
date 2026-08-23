@@ -73,7 +73,11 @@ def _public_addresses(host: str):
             address = ipaddress.ip_address(info[4][0])
         except ValueError:
             return None
-        if (
+        # `is_global` is the IANA special-purpose registry in one bit: it
+        # excludes private, loopback, link-local, reserved, multicast,
+        # unspecified, AND the ranges the explicit checks missed — CGNAT
+        # 100.64.0.0/10, 192.0.0.0/24, benchmarking 198.18.0.0/15, IPv6 ULA.
+        if not address.is_global or (
             address.is_private or address.is_loopback or address.is_link_local
             or address.is_reserved or address.is_multicast or address.is_unspecified
         ):
@@ -159,21 +163,44 @@ def safe_fetch(url: str, *, allowed_host: str, budget=None, transport=None):
         if not addresses:
             raise UnsafeURL("That host does not resolve to a public address.")
         pinned = _pin_to_address(current, addresses[0])
+        body = b''
         try:
             with httpx.Client(
                 timeout=FETCH_TIMEOUT_SECONDS, follow_redirects=False,
                 headers={'User-Agent': USER_AGENT}, transport=transport,
             ) as client:
-                response = client.get(
-                    pinned,
+                # Streamed, so the cap is enforced while bytes arrive. A page
+                # that advertises or sends more than MAX_PAGE_BYTES never fully
+                # lands in memory: we keep the first MAX_PAGE_BYTES and close.
+                with client.stream(
+                    'GET', pinned,
                     headers={'Host': host},
                     extensions={'sni_hostname': host},
-                )
+                ) as response:
+                    status_code = response.status_code
+                    headers = response.headers
+                    if not (300 <= status_code < 400):
+                        declared = headers.get('content-length')
+                        if declared and declared.isdigit() and int(declared) > MAX_PAGE_BYTES:
+                            logger.info(
+                                "Enrichment: %s declares %s bytes; reading only %d",
+                                current, declared, MAX_PAGE_BYTES,
+                            )
+                        chunks = []
+                        received = 0
+                        for chunk in response.iter_bytes():
+                            remaining = MAX_PAGE_BYTES - received
+                            if remaining <= 0:
+                                break
+                            piece = chunk[:remaining]
+                            chunks.append(piece)
+                            received += len(piece)
+                        body = b''.join(chunks)
         except httpx.HTTPError as exc:
             raise EnrichmentError(f"Could not fetch {current}: {exc}") from exc
 
-        if 300 <= response.status_code < 400:
-            location = response.headers.get('location')
+        if 300 <= status_code < 400:
+            location = headers.get('location')
             if not location:
                 raise EnrichmentError(f"{current} redirected without a Location.")
             # Resolved against the URL we asked for; checked at the top of the
@@ -184,19 +211,17 @@ def safe_fetch(url: str, *, allowed_host: str, budget=None, transport=None):
     else:
         raise EnrichmentError(f"{url}: too many redirects.")
 
-    if response.status_code >= 400:
-        raise EnrichmentError(f"{current} returned {response.status_code}.")
-    content_type = response.headers.get('content-type', '')
+    if status_code >= 400:
+        raise EnrichmentError(f"{current} returned {status_code}.")
+    content_type = headers.get('content-type', '')
     if 'html' not in content_type and 'text' not in content_type:
         raise EnrichmentError(f"{current} is not a text page ({content_type}).")
-
-    body = response.content[:MAX_PAGE_BYTES]
     if budget is not None:
         budget['used'] = budget.get('used', 0) + len(body)
         if budget['used'] > MAX_TOTAL_BYTES:
             raise EnrichmentError("Enrichment byte budget exhausted for this run.")
 
-    text = _visible_text(body.decode(response.encoding or 'utf-8', errors='replace'))
+    text = _visible_text(body.decode('utf-8', errors='replace'))
     return text, hashlib.sha256(body).hexdigest()
 
 

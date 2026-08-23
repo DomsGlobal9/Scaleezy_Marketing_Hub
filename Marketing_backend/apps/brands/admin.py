@@ -26,7 +26,19 @@ class BrandAdmin(admin.ModelAdmin):
         # Platform-owned. Changed only by apps.brands.services.approval,
         # only from the console, always audited.
         'status', 'reviewed_at', 'reviewed_by',
+        # Tenancy is not editable from a Django form: moving a brand between
+        # workspaces would move its intelligence across a tenant boundary.
+        'workspace',
     )
+
+    # A brand added here would be born ACTIVE in whatever workspace staff
+    # picked. Brands are created through the product, inside an authorised
+    # workspace, with the status the client's approval dictates.
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
     fieldsets = (
         (None, {'fields': ('workspace', 'name', 'industry', 'status', 'is_default')}),
         ('Visual identity', {'fields': ('palette', 'fonts', 'layout_preference')}),

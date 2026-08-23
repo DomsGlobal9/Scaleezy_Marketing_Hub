@@ -158,18 +158,47 @@ class SignupDecisionView(PlatformView):
             from apps.users.models import SignupWebsiteClaim
             from apps.users.serializers import normalised_host
 
+            corrected_host = ''
+            if 'website' in corrections:
+                corrected_host = normalised_host(corrections['website']['to'])
+                if corrected_host:
+                    # The corrected site must not already be another client's.
+                    taken = SignupWebsiteClaim.objects.filter(
+                        website_host=corrected_host
+                    ).exclude(workspace=brand.workspace).select_related('workspace').first()
+                    if taken is None:
+                        other = next((
+                            b for b in Brand.objects.exclude(workspace=brand.workspace)
+                            .exclude(status=Brand.Status.ARCHIVED).exclude(website='')
+                            .only('website', 'workspace_id')
+                            if normalised_host(b.website) == corrected_host
+                        ), None)
+                        taken = other
+                    if taken is not None:
+                        return APIResponse(
+                            success=False,
+                            message=(
+                                f"{corrected_host} already belongs to another client "
+                                f"({taken.workspace.client_code}). Correct the website to "
+                                "something else, or attach this person to that client."
+                            ),
+                            error={'code': 'WEBSITE_TAKEN', 'message': 'Website belongs to another client.'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+
             with transaction.atomic():
                 if corrections:
                     for field, change in corrections.items():
                         setattr(brand, field, change['to'])
                     brand.save(update_fields=list(corrections) + ['updated_at'])
                     if 'website' in corrections:
-                        # The enrolment claim follows the corrected website.
-                        host = normalised_host(corrections['website']['to'])
+                        # The enrolment claim follows the corrected website. We
+                        # verified above that nobody else holds it; create, never
+                        # silently adopt an existing row.
                         SignupWebsiteClaim.objects.filter(workspace=brand.workspace).delete()
-                        if host:
-                            SignupWebsiteClaim.objects.get_or_create(
-                                website_host=host, defaults={'workspace': brand.workspace}
+                        if corrected_host:
+                            SignupWebsiteClaim.objects.create(
+                                website_host=corrected_host, workspace=brand.workspace
                             )
                 approve_brand(brand, by=request.user, plan=plan)
                 if corrections:
