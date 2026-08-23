@@ -69,3 +69,36 @@ Update this section after each vertical slice with named tests and exact results
 - Added a 300-second shutdown allowance so the worker can finish an in-flight provider call or publish after `SIGTERM`, matching the command's graceful-stop contract.
 - Verification: YAML parse **PASS**; current official Render Blueprint schema **PASS**; worker command discovery/help **PASS**; focused durable-jobs and publishing suite **35 passed, 0 failed**; diff check **PASS**.
 - Release position remains **PRODUCTION PROMOTION BLOCKED** until the Blueprint is synced on Render, the worker reports healthy polling, and the credentialed AI/social smoke succeeds. PR7 remains closed.
+
+### 2026-08-23 — Admin console and open-ended AI completion
+
+- Replaced the implicit provider/routing surface with URL-addressable Overview, Providers, Routing & redundancy, and Activity tabs under the existing OWNER/ADMIN guard. Settings remains free of AI controls.
+- Added an explicit catalogue-backed **Add provider** workflow. Workspace admins can add every installed integration, store its encrypted key, optionally override its model and enable it; routing accepts an arbitrary ordered provider set rather than primary-plus-one-failover slots.
+- Made adapter discovery recursive and catalogue synchronisation idempotent at deploy time, so adding another adapter expands the Admin catalogue without core router or frontend changes. The operator kill switch remains authoritative.
+- Replaced key-presence checks with authenticated, read-only OpenAI/Gemini connection checks; failures are sanitised. New clients may now compose different default providers per required capability in one transaction.
+- Focused gate: all **76 AI/Admin backend checks have passing evidence** after supplying the required local test encryption key; targeted frontend lint and TypeScript **PASS**; production client/SSR/Nitro build **PASS**; diff check **PASS**.
+- Release position: **ADMIN P0 CODE GATE PASS; DEPLOYMENT NEXT**. P1 and PR7 remain closed until the live Admin tabs and Add provider workflow are confirmed.
+
+### 2026-08-23 — Provider catalogue expansion
+
+- Closed the live Add provider dead end by installing five additional production adapters: Groq, Mistral AI, DeepSeek, OpenRouter and Together AI. The Admin catalogue now has seven integrations including Gemini and OpenAI.
+- Kept the PR5 boundary intact: vendor endpoints and payloads exist only in adapters; all product workflows still request capabilities from AIRouter. Each new integration can join an arbitrary ordered Copy route with FAILOVER, ROUND_ROBIN or BEST_OF.
+- Preserved security and tenant semantics: workspace keys remain encrypted/write-only, provider destinations are fixed code-owned HTTPS endpoints, and OWNER/ADMIN enforcement is unchanged.
+- Verification: focused adapter/catalogue checks **10 passed, 0 failed**; all **75 AI-module tests have passing evidence** after rerunning the three environment-only encryption checks with a valid temporary test key; Python compilation and migration drift checks **PASS**.
+- Release position: **P0 PROVIDER CATALOGUE CODE GATE PASS; BACKEND DEPLOYMENT NEXT**. P1 and PR7 remain closed.
+
+### 2026-08-23 — Provider catalogue deploy recovery
+
+- Live evidence showed that the production catalogue still contained only Gemini and OpenAI, so the Add provider dialog correctly had nothing else to offer. The deploy-time sync had not populated the five new adapter rows.
+- Added an idempotent, additive data migration for Groq, Mistral AI, DeepSeek, OpenRouter and Together AI. It preserves the operator kill switch and creates no workspace configuration or routes.
+- Focused verification: **7 passed, 0 failed**; migration drift check **PASS**.
+- Release position: **P0 DEPLOY RECOVERY CODE GATE PASS; BACKEND DEPLOYMENT REQUIRED**. P1 and PR7 remain closed.
+
+### 2026-08-23 — Manual AI onboarding and complete capability routing
+
+- Root cause: the earlier acceptance gate proved arbitrary ordered provider sets but treated catalogue-backed installation as the complete onboarding contract. The first custom endpoint implementation then hard-coded `TEXT`, leaving manual providers eligible only for Copy despite the PR5 capability-routing requirement.
+- Removed every onboarding default. Admin must explicitly enter provider name, exact model, public HTTPS endpoint, optional key/token, protocol and the capabilities the endpoint actually serves.
+- OpenAI-compatible custom endpoints support their standard text, image, vision/caption and embedding paths. The provider-neutral Scaleezy universal JSON contract supports all seven routing capabilities, including video generation and analysis.
+- Capability declaration and routing remain separate: each declared provider becomes eligible, while Admin explicitly composes each ordered FAILOVER, ROUND_ROBIN or BEST_OF route. No provider or route is chosen silently.
+- Corrected the remaining Admin omission: each configured provider/model now has an editable, workspace-specific task assignment. Installed adapter capabilities remain the honest technical ceiling; deselecting a task removes any conflicting route. The Add Provider flow requires explicit task choices for installed and custom integrations, and route rows now render in their saved priority order.
+- Tenant isolation, encrypted credentials, public-endpoint SSRF controls and the frozen AIRouter ownership boundary remain enforced. P1 and PR7 remain closed until this P0 is deployed.

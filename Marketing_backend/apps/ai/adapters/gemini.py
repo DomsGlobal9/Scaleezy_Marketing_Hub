@@ -8,6 +8,7 @@ way to reach it.
 import logging
 from typing import Any, Dict
 
+import httpx
 from django.conf import settings
 
 from apps.ai.models import Capability
@@ -106,9 +107,42 @@ class GeminiAdapter(AIProviderAdapter):
         return {'embedding': vector, 'model': model}
 
     def health_check(self) -> Dict[str, Any]:
-        # The key is read from settings today; a per-workspace credential
-        # overrides it once supplied.
         key = self.credentials or getattr(settings, 'GEMINI_API_KEY', '')
         if not key:
             return {'ok': False, 'detail': 'No Gemini API key configured.'}
-        return {'ok': True, 'detail': f'Configured (model {self.model}).'}
+
+        # Model discovery is an authenticated, read-only request. Unlike a
+        # prompt it consumes no generation tokens, so the Admin Test control
+        # can distinguish a saved key from a key that actually authenticates.
+        try:
+            base_url = str(
+                getattr(
+                    settings,
+                    'GEMINI_API_BASE_URL',
+                    'https://generativelanguage.googleapis.com/v1beta',
+                )
+                or 'https://generativelanguage.googleapis.com/v1beta'
+            ).rstrip('/')
+            timeout = float(getattr(settings, 'AI_PROVIDER_HEALTH_TIMEOUT', 10.0))
+            response = httpx.get(
+                f'{base_url}/models',
+                headers={'x-goog-api-key': key},
+                params={'pageSize': 1},
+                timeout=timeout,
+            )
+        except httpx.TimeoutException:
+            return {'ok': False, 'detail': 'Gemini health check timed out.'}
+        except httpx.HTTPError:
+            return {'ok': False, 'detail': 'Gemini could not be reached.'}
+        except (TypeError, ValueError):
+            return {'ok': False, 'detail': 'Gemini health check is misconfigured.'}
+
+        if response.status_code in (400, 401, 403):
+            return {'ok': False, 'detail': 'Gemini authentication failed.'}
+        if response.status_code == 429:
+            return {'ok': False, 'detail': 'Gemini health check was rate limited.'}
+        if response.status_code >= 500:
+            return {'ok': False, 'detail': 'Gemini is temporarily unavailable.'}
+        if response.status_code >= 300:
+            return {'ok': False, 'detail': 'Gemini health check failed.'}
+        return {'ok': True, 'detail': f'Connected (model {self.model}).'}

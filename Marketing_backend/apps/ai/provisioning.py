@@ -79,6 +79,20 @@ def resolve_default_provider(capabilities=REQUIRED_CAPABILITIES):
     return candidates[0] if candidates else None
 
 
+def resolve_default_providers(capabilities=REQUIRED_CAPABILITIES):
+    """Resolve the cheapest eligible provider independently per capability.
+
+    Requiring one vendor to implement the entire product capability set makes
+    a deliberately composable router behave like a single-provider system.
+    The returned mapping preserves the requested capability order.
+    """
+    resolved = {}
+    for capability in capabilities:
+        candidates = eligible_providers((capability,))
+        resolved[capability] = candidates[0] if candidates else None
+    return resolved
+
+
 def provision_ai_routing(
     workspace,
     provider,
@@ -160,31 +174,43 @@ def provision_default_ai(workspace, *, capabilities=REQUIRED_CAPABILITIES):
     client-creation transaction can roll back instead of returning fake
     readiness.
     """
-    provider = resolve_default_provider(capabilities)
-    if provider is None:
+    resolved = resolve_default_providers(capabilities)
+    missing = [capability for capability, provider in resolved.items() if provider is None]
+    if missing:
         raise AIProvisioningError(
             "No installed, available platform AI provider serves the required "
-            f"capabilities: {', '.join(str(capability) for capability in capabilities)}."
+            f"capabilities: {', '.join(str(capability) for capability in missing)}."
         )
 
     try:
-        provision_ai_routing(workspace, provider, capabilities=capabilities)
+        capabilities_by_provider = {}
+        for capability, provider in resolved.items():
+            capabilities_by_provider.setdefault(provider, []).append(capability)
+
+        # One outer transaction keeps a split-provider bootstrap just as
+        # atomic as the previous single-provider path.
+        with transaction.atomic():
+            for provider, provider_capabilities in capabilities_by_provider.items():
+                provision_ai_routing(
+                    workspace,
+                    provider,
+                    capabilities=provider_capabilities,
+                )
     except Exception as exc:
         raise AIProvisioningError("Default AI routing could not be provisioned.") from exc
 
-    workspace_provider = WorkspaceAIProvider.objects.get(
+    workspace_providers = list(WorkspaceAIProvider.objects.filter(
         workspace=workspace,
-        provider=provider,
-    )
+        provider__in=capabilities_by_provider,
+    ).select_related('provider').order_by('provider__key'))
     routes = list(
         WorkspaceAIRoute.objects.filter(
             workspace=workspace,
-            provider=provider,
             capability__in=capabilities,
             enabled=True,
         ).order_by('priority', 'id')
     )
-    return workspace_provider, routes
+    return workspace_providers, routes
 
 
 def ensure_default_ai_routing(workspace, *, capabilities=REQUIRED_CAPABILITIES):
@@ -199,20 +225,33 @@ def ensure_default_ai_routing(workspace, *, capabilities=REQUIRED_CAPABILITIES):
     Returns True when routing is in place afterwards.
     """
     try:
-        provider = resolve_default_provider(capabilities)
-        if provider is None:
+        resolved = resolve_default_providers(capabilities)
+        missing = [capability for capability, provider in resolved.items() if provider is None]
+        if missing:
             logger.warning(
                 "No installed, available AI provider serves %s; workspace %s has no "
                 "default routing and will 503 until one is configured.",
-                ', '.join(str(c) for c in capabilities), workspace.pk,
+                ', '.join(str(c) for c in missing), workspace.pk,
             )
             return False
 
-        changes = provision_ai_routing(workspace, provider, capabilities=capabilities)
+        capabilities_by_provider = {}
+        for capability, provider in resolved.items():
+            capabilities_by_provider.setdefault(provider, []).append(capability)
+
+        changes = []
+        with transaction.atomic():
+            for provider, provider_capabilities in capabilities_by_provider.items():
+                changes.extend(provision_ai_routing(
+                    workspace,
+                    provider,
+                    capabilities=provider_capabilities,
+                ))
         if changes:
             logger.info(
-                "Default AI routing provisioned for workspace %s on %s (%d change(s))",
-                workspace.pk, provider.key, len(changes),
+                "Default AI routing provisioned for workspace %s across %d provider(s) "
+                "(%d change(s))",
+                workspace.pk, len(capabilities_by_provider), len(changes),
             )
         return True
     except Exception:

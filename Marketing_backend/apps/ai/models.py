@@ -29,6 +29,12 @@ class Strategy(models.TextChoices):
     ROUND_ROBIN = 'ROUND_ROBIN', 'Round robin — spread load and spend'
 
 
+class ProviderIntegrationType(models.TextChoices):
+    INSTALLED = 'INSTALLED', 'Installed adapter'
+    OPENAI_COMPATIBLE = 'OPENAI_COMPATIBLE', 'Custom OpenAI-compatible endpoint'
+    SCALEEZY_JSON = 'SCALEEZY_JSON', 'Scaleezy universal JSON endpoint'
+
+
 class AIProvider(models.Model):
     """
     Global catalogue of installed providers.
@@ -38,8 +44,22 @@ class AIProvider(models.Model):
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner_workspace = models.ForeignKey(
+        MarketingWorkspace,
+        on_delete=models.CASCADE,
+        related_name='custom_ai_providers',
+        null=True,
+        blank=True,
+        help_text='Null for platform integrations; set for a tenant-owned custom endpoint.',
+    )
     key = models.SlugField(max_length=50, unique=True, help_text="Matches the adapter's key.")
     display_name = models.CharField(max_length=100)
+    integration_type = models.CharField(
+        max_length=32,
+        choices=ProviderIntegrationType.choices,
+        default=ProviderIntegrationType.INSTALLED,
+    )
+    base_url = models.URLField(blank=True, max_length=500)
     capabilities = models.JSONField(
         default=list, help_text="Capability values this provider can serve."
     )
@@ -63,6 +83,10 @@ class AIProvider(models.Model):
     def supports(self, capability: str) -> bool:
         return capability in (self.capabilities or [])
 
+    @property
+    def is_custom(self) -> bool:
+        return self.integration_type != ProviderIntegrationType.INSTALLED
+
 
 class WorkspaceAIProvider(models.Model):
     """
@@ -83,6 +107,15 @@ class WorkspaceAIProvider(models.Model):
     # serialised back to the client.
     credentials_encrypted = models.TextField(blank=True)
     model_override = models.CharField(max_length=100, blank=True)
+    capabilities = models.JSONField(
+        default=None,
+        null=True,
+        blank=True,
+        help_text=(
+            "Capabilities this workspace assigned to this provider/model. "
+            "Must remain within the installed adapter's technical support."
+        ),
+    )
     max_cost_per_generation = models.DecimalField(
         max_digits=10, decimal_places=4, null=True, blank=True
     )
@@ -106,6 +139,15 @@ class WorkspaceAIProvider(models.Model):
     @property
     def has_credentials(self) -> bool:
         return bool(self.credentials_encrypted)
+
+    def supports(self, capability: str) -> bool:
+        return capability in self.assigned_capabilities
+
+    @property
+    def assigned_capabilities(self) -> list:
+        if self.capabilities is None:
+            return list(self.provider.capabilities or [])
+        return list(self.capabilities)
 
 
 class WorkspaceAIRoute(models.Model):

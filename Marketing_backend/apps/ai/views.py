@@ -1,9 +1,11 @@
 import logging
+import uuid
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
+from django.db.models import Q
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 
@@ -16,12 +18,21 @@ from apps.common.permissions import (
 from apps.common.responses import APIResponse
 from apps.workspaces.models import WorkspaceMember
 
-from .models import AIProvider, AIUsageLog, Capability, Strategy, WorkspaceAIProvider, WorkspaceAIRoute
-from .registry import all_adapters
+from .models import (
+    AIProvider,
+    AIUsageLog,
+    Capability,
+    ProviderIntegrationType,
+    Strategy,
+    WorkspaceAIProvider,
+    WorkspaceAIRoute,
+)
+from .registry import adapter_class_for_provider, all_adapters
 from .router import AIRouter
 from .serializers import (
     AIProviderSerializer,
     AIUsageLogSerializer,
+    CustomWorkspaceAIProviderSerializer,
     WorkspaceAIProviderSerializer,
     WorkspaceAIRouteSerializer,
     ReplaceWorkspaceAIRouteSetSerializer,
@@ -40,13 +51,21 @@ class AIProviderCatalogueView(APIView):
     required_read_role = WorkspaceMember.Role.ADMIN
 
     def get(self, request):
+        workspace, error = get_request_workspace(request)
+        if error:
+            return error
         installed = set(all_adapters())
-        providers = AIProvider.objects.all()
+        providers = AIProvider.objects.filter(
+            Q(owner_workspace__isnull=True) | Q(owner_workspace=workspace)
+        )
         return APIResponse(
             success=True,
             data={
                 'providers': [
-                    {**AIProviderSerializer(p).data, 'adapter_installed': p.key in installed}
+                    {
+                        **AIProviderSerializer(p).data,
+                        'adapter_installed': p.is_custom or p.key in installed,
+                    }
                     for p in providers
                 ],
                 'capabilities': [
@@ -77,7 +96,94 @@ class WorkspaceAIProviderViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         return workspace
 
     def perform_create(self, serializer):
-        serializer.save(workspace=self._workspace())
+        workspace = self._workspace()
+        provider = serializer.validated_data['provider']
+        if provider.owner_workspace_id not in (None, workspace.id):
+            raise ValidationError({
+                'provider': 'That provider is not available to the selected client.'
+            })
+        if WorkspaceAIProvider.objects.filter(
+            workspace=workspace, provider=provider
+        ).exists():
+            raise ValidationError({
+                'provider': 'This provider is already configured for the selected client.'
+            })
+        try:
+            # The nested transaction keeps a concurrent duplicate from
+            # breaking the request transaction before it becomes a friendly
+            # validation response.
+            with transaction.atomic():
+                serializer.save(workspace=workspace)
+        except IntegrityError as exc:
+            raise ValidationError({
+                'provider': 'This provider is already configured for the selected client.'
+            }) from exc
+
+    @action(detail=False, methods=['post'], url_path='custom')
+    def custom(self, request):
+        """Create one tenant-owned, manually described integration atomically."""
+        workspace = self._workspace()
+        payload = CustomWorkspaceAIProviderSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        data = payload.validated_data
+
+        from apps.social_accounts.utils.encryption import encrypt_token
+
+        with transaction.atomic():
+            provider = AIProvider.objects.create(
+                owner_workspace=workspace,
+                key=f'custom-{uuid.uuid4().hex}',
+                display_name=data['display_name'],
+                integration_type=data['integration_type'],
+                base_url=data['base_url'],
+                capabilities=data['capabilities'],
+                default_model='',
+                is_available=True,
+                unit_cost=0,
+            )
+            workspace_provider = WorkspaceAIProvider.objects.create(
+                workspace=workspace,
+                provider=provider,
+                enabled=data['enabled'],
+                capabilities=data['capabilities'],
+                credentials_encrypted=(
+                    encrypt_token(data['credentials']) if data['credentials'] else ''
+                ),
+                model_override=data['model'],
+            )
+
+        return APIResponse(
+            success=True,
+            data=WorkspaceAIProviderSerializer(workspace_provider).data,
+            message='Custom AI provider added.',
+            status=status.HTTP_201_CREATED,
+        )
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            workspace_provider = serializer.save()
+            WorkspaceAIRoute.objects.filter(
+                workspace=workspace_provider.workspace,
+                provider=workspace_provider.provider,
+            ).exclude(capability__in=workspace_provider.assigned_capabilities).delete()
+            if not workspace_provider.enabled:
+                WorkspaceAIRoute.objects.filter(
+                    workspace=workspace_provider.workspace,
+                    provider=workspace_provider.provider,
+                    enabled=True,
+                ).update(enabled=False)
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            provider = instance.provider
+            workspace_id = instance.workspace_id
+            WorkspaceAIRoute.objects.filter(
+                workspace=instance.workspace,
+                provider=instance.provider,
+            ).delete()
+            instance.delete()
+            if provider.owner_workspace_id == workspace_id:
+                provider.delete()
 
     @action(detail=True, methods=['post'], url_path='test')
     def test(self, request, pk=None):
@@ -134,9 +240,11 @@ class WorkspaceAIRouteViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
 
         for member in members:
             provider = member['provider']
-            adapter = all_adapters().get(provider.key)
+            adapter = adapter_class_for_provider(provider)
             declared = {str(value) for value in (getattr(adapter, 'capabilities', ()) or ())}
             if (
+                provider.owner_workspace_id not in (None, workspace.id)
+                or
                 not provider.is_available
                 or adapter is None
                 or not provider.supports(capability)
@@ -148,9 +256,17 @@ class WorkspaceAIRouteViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                     error={"code": "INVALID_AI_ROUTE", "message": capability},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            if not WorkspaceAIProvider.objects.filter(
-                workspace=workspace, provider=provider, enabled=True
-            ).exists():
+            workspace_provider = WorkspaceAIProvider.objects.filter(
+                workspace=workspace, provider=provider
+            ).first()
+            if workspace_provider is not None and not workspace_provider.supports(capability):
+                return APIResponse(
+                    success=False,
+                    message="Assign this capability to the provider in Admin before routing it.",
+                    error={"code": "CAPABILITY_NOT_ASSIGNED", "message": capability},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if workspace_provider is None or not workspace_provider.enabled:
                 return APIResponse(
                     success=False,
                     message="Enable the provider before routing work to it.",
@@ -221,12 +337,27 @@ class AIUsageViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['get'])
     def summary(self, request):
-        from django.db.models import Count, Sum
+        from django.db.models import Avg, Count, Q, Sum
 
         rows = (
             self.get_queryset()
             .values('provider__key', 'capability')
-            .annotate(calls=Count('id'), spend=Sum('cost'))
+            .annotate(
+                calls=Count('id'),
+                successful_calls=Count('id', filter=Q(success=True)),
+                failed_calls=Count('id', filter=Q(success=False)),
+                spend=Sum('cost'),
+                average_latency_ms=Avg('latency_ms'),
+            )
             .order_by('-calls')
         )
-        return APIResponse(success=True, data=list(rows))
+        data = []
+        for row in rows:
+            calls = row['calls'] or 0
+            row['success_rate_percent'] = round(
+                (row['successful_calls'] / calls * 100) if calls else 0,
+                2,
+            )
+            row['average_latency_ms'] = round(float(row['average_latency_ms'] or 0), 2)
+            data.append(row)
+        return APIResponse(success=True, data=data)

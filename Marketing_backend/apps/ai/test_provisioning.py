@@ -21,7 +21,12 @@ from apps.ai.models import (
     WorkspaceAIProvider,
     WorkspaceAIRoute,
 )
-from apps.ai.provisioning import ensure_default_ai_routing, resolve_default_provider
+from apps.ai.provisioning import (
+    ensure_default_ai_routing,
+    provision_default_ai,
+    resolve_default_provider,
+    resolve_default_providers,
+)
 from apps.workspaces.models import MarketingWorkspace
 
 
@@ -34,6 +39,18 @@ class DefaultTestAdapter(AIProviderAdapter):
 
     def health_check(self):
         return {'ok': True, 'detail': 'test adapter ready'}
+
+
+class TextOnlyTestAdapter(DefaultTestAdapter):
+    key = 'test-text-only'
+    display_name = 'Test Text Only'
+    capabilities = (Capability.TEXT,)
+
+
+class ImageOnlyTestAdapter(DefaultTestAdapter):
+    key = 'test-image-only'
+    display_name = 'Test Image Only'
+    capabilities = (Capability.IMAGE,)
 
 
 class EnsureDefaultAIRoutingTests(TestCase):
@@ -184,3 +201,47 @@ class EnsureDefaultAIRoutingTests(TestCase):
                 candidates = AIRouter(self.workspace)._candidates(capability)
                 self.assertEqual(len(candidates), 1)
                 self.assertEqual(candidates[0]['route'].provider.key, self.provider.key)
+
+    def test_default_bootstrap_composes_different_providers_by_capability(self):
+        self.provider.is_available = False
+        self.provider.save(update_fields=['is_available'])
+        text_provider, _ = AIProvider.objects.update_or_create(
+            key=TextOnlyTestAdapter.key,
+            defaults={
+                'display_name': TextOnlyTestAdapter.display_name,
+                'capabilities': [Capability.TEXT],
+                'unit_cost': 0.01,
+                'is_available': True,
+            },
+        )
+        image_provider, _ = AIProvider.objects.update_or_create(
+            key=ImageOnlyTestAdapter.key,
+            defaults={
+                'display_name': ImageOnlyTestAdapter.display_name,
+                'capabilities': [Capability.IMAGE],
+                'unit_cost': 0.02,
+                'is_available': True,
+            },
+        )
+        adapters = {
+            TextOnlyTestAdapter.key: TextOnlyTestAdapter,
+            ImageOnlyTestAdapter.key: ImageOnlyTestAdapter,
+        }
+
+        with patch('apps.ai.provisioning.all_adapters', return_value=adapters):
+            resolved = resolve_default_providers()
+            workspace_providers, routes = provision_default_ai(self.workspace)
+
+        self.assertEqual(resolved[Capability.TEXT], text_provider)
+        self.assertEqual(resolved[Capability.IMAGE], image_provider)
+        self.assertEqual(
+            {workspace_provider.provider for workspace_provider in workspace_providers},
+            {text_provider, image_provider},
+        )
+        self.assertEqual(
+            {(route.capability, route.provider) for route in routes},
+            {
+                (Capability.TEXT, text_provider),
+                (Capability.IMAGE, image_provider),
+            },
+        )

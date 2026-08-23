@@ -235,8 +235,9 @@ class Command(BaseCommand):
                 )
 
             if wp and wp.enabled and adapter_class is not None:
-                # health_check only asks whether a key is reachable. It makes no
-                # network call and so costs nothing and cannot leak a value.
+                # The health check is an authenticated, read-only provider
+                # request. It creates no content and consumes no generation
+                # tokens; adapters also sanitize every failure.
                 from apps.ai.registry import build
 
                 adapter = build(wp)

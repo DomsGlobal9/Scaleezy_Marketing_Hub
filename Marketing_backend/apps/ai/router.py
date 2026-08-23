@@ -49,6 +49,8 @@ class AIRouter:
                 continue  # operator kill switch
             if not route.provider.supports(capability):
                 continue
+            if not wp.supports(capability):
+                continue
             adapter = build(wp)
             if adapter is None:
                 continue

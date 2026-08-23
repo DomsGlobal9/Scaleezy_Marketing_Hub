@@ -1,5 +1,5 @@
 """Phase 5 — capability routing, per-customer switches, strategies."""
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from rest_framework import status
@@ -10,6 +10,7 @@ from apps.ai.models import (
     AIProvider,
     AIUsageLog,
     Capability,
+    ProviderIntegrationType,
     Strategy,
     WorkspaceAIProvider,
     WorkspaceAIRoute,
@@ -233,6 +234,430 @@ class AIConsoleAPITests(APITestCase):
         self.assertTrue(wp.enabled)
         self.assertTrue(wp.has_credentials)
 
+    @patch('apps.ai.endpoint_security.socket.getaddrinfo')
+    def test_admin_can_onboard_a_custom_ai_without_provider_or_model_defaults(self, resolve):
+        resolve.return_value = [
+            (2, 1, 6, '', ('93.184.216.34', 443)),
+        ]
+        self.as_(self.admin)
+
+        res = self.client.post(
+            '/api/marketing/ai/providers/custom/',
+            {
+                'display_name': 'My chosen AI',
+                'base_url': 'https://ai.example.com/v1/',
+                'credentials': 'customer-owned-secret',
+                'model': 'chosen-model-2026',
+                'integration_type': ProviderIntegrationType.OPENAI_COMPATIBLE,
+                'capabilities': [Capability.TEXT, Capability.IMAGE, Capability.EMBEDDING],
+                'enabled': True,
+            },
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        configured = WorkspaceAIProvider.objects.get(
+            workspace=self.ws, provider__display_name='My chosen AI'
+        )
+        self.assertEqual(configured.model_override, 'chosen-model-2026')
+        self.assertNotIn('customer-owned-secret', configured.credentials_encrypted)
+        self.assertEqual(configured.provider.default_model, '')
+        self.assertEqual(configured.provider.base_url, 'https://ai.example.com/v1')
+        self.assertEqual(
+            configured.provider.integration_type,
+            ProviderIntegrationType.OPENAI_COMPATIBLE,
+        )
+        self.assertEqual(
+            configured.provider.capabilities,
+            [Capability.TEXT, Capability.IMAGE, Capability.EMBEDDING],
+        )
+        self.assertNotIn('credentials', res.data['data'])
+
+    @patch('apps.ai.adapters.openai_compatible.validate_public_https_endpoint')
+    @patch('apps.ai.adapters.openai_compatible.httpx.post')
+    @patch('apps.ai.endpoint_security.socket.getaddrinfo')
+    def test_custom_ai_executes_through_airouter_without_a_vendor_branch(
+        self, resolve, post, validate_endpoint
+    ):
+        resolve.return_value = [(2, 1, 6, '', ('93.184.216.34', 443))]
+        validate_endpoint.return_value = 'https://chosen.example.com/v1'
+        upstream = Mock(status_code=200)
+        upstream.json.return_value = {
+            'id': 'custom-response',
+            'model': 'manual-model',
+            'choices': [{
+                'message': {
+                    'content': (
+                        '{"headline":"Chosen AI","caption":"Manual route",'
+                        '"hashtags":"#chosen"}'
+                    ),
+                },
+            }],
+        }
+        post.return_value = upstream
+        self.as_(self.admin)
+        created = self.client.post(
+            '/api/marketing/ai/providers/custom/',
+            {
+                'display_name': 'Chosen endpoint',
+                'base_url': 'https://chosen.example.com/v1',
+                'credentials': 'chosen-key',
+                'model': 'manual-model',
+                'integration_type': ProviderIntegrationType.OPENAI_COMPATIBLE,
+                'capabilities': [Capability.TEXT],
+            },
+            format='json',
+        )
+        configured = WorkspaceAIProvider.objects.get(id=created.data['data']['id'])
+        WorkspaceAIRoute.objects.create(
+            workspace=self.ws,
+            provider=configured.provider,
+            capability=Capability.TEXT,
+            priority=10,
+        )
+
+        result = AIRouter(self.ws).dispatch(Capability.TEXT, {'topic': 'launch'})
+
+        self.assertEqual(result['headline'], 'Chosen AI')
+        self.assertEqual(
+            post.call_args.args[0],
+            'https://chosen.example.com/v1/chat/completions',
+        )
+        self.assertEqual(post.call_args.kwargs['json']['model'], 'manual-model')
+        self.assertEqual(
+            post.call_args.kwargs['headers']['Authorization'],
+            'Bearer chosen-key',
+        )
+
+    @patch('apps.ai.adapters.openai_compatible.validate_public_https_endpoint')
+    @patch('apps.ai.adapters.openai_compatible.httpx.post')
+    @patch('apps.ai.endpoint_security.socket.getaddrinfo')
+    def test_universal_custom_ai_can_route_every_capability(
+        self, resolve, post, validate_endpoint
+    ):
+        resolve.return_value = [(2, 1, 6, '', ('93.184.216.34', 443))]
+        validate_endpoint.return_value = 'https://gateway.example.com/scaleezy'
+        upstream = Mock(status_code=200)
+        upstream.json.return_value = {'result': {'video_url': 'https://cdn.example.com/video.mp4'}}
+        post.return_value = upstream
+        self.as_(self.admin)
+        created = self.client.post(
+            '/api/marketing/ai/providers/custom/',
+            {
+                'display_name': 'Universal gateway',
+                'base_url': 'https://gateway.example.com/scaleezy',
+                'credentials': 'gateway-key',
+                'model': 'manual-video-model',
+                'integration_type': ProviderIntegrationType.SCALEEZY_JSON,
+                'capabilities': list(Capability.values),
+            },
+            format='json',
+        )
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED, created.data)
+        configured = WorkspaceAIProvider.objects.get(id=created.data['data']['id'])
+        self.assertEqual(configured.provider.capabilities, list(Capability.values))
+
+        for capability in Capability.values:
+            with self.subTest(capability=capability):
+                routed = self.client.post(
+                    '/api/marketing/ai/routes/replace-set/',
+                    {
+                        'capability': capability,
+                        'strategy': Strategy.FAILOVER,
+                        'routes': [{'provider': str(configured.provider_id), 'priority': 10}],
+                    },
+                    format='json',
+                )
+                self.assertEqual(routed.status_code, status.HTTP_200_OK, routed.data)
+
+        result = AIRouter(self.ws).dispatch(Capability.VIDEO, {'topic': 'launch'})
+        self.assertEqual(result['video_url'], 'https://cdn.example.com/video.mp4')
+        self.assertEqual(post.call_args.args[0], 'https://gateway.example.com/scaleezy')
+        self.assertEqual(post.call_args.kwargs['json'], {
+            'capability': Capability.VIDEO,
+            'model': 'manual-video-model',
+            'brief': {'topic': 'launch'},
+        })
+
+    @patch('apps.ai.endpoint_security.socket.getaddrinfo')
+    def test_openai_compatible_custom_ai_rejects_video_capabilities(self, resolve):
+        resolve.return_value = [(2, 1, 6, '', ('93.184.216.34', 443))]
+        self.as_(self.admin)
+        res = self.client.post(
+            '/api/marketing/ai/providers/custom/',
+            {
+                'display_name': 'No standard video API',
+                'base_url': 'https://video.example.com/v1',
+                'model': 'video-model',
+                'integration_type': ProviderIntegrationType.OPENAI_COMPATIBLE,
+                'capabilities': [Capability.VIDEO],
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('capabilities', res.data)
+
+    @patch('apps.ai.endpoint_security.socket.getaddrinfo')
+    def test_custom_ai_is_visible_and_configurable_only_in_its_owner_workspace(self, resolve):
+        resolve.return_value = [(2, 1, 6, '', ('93.184.216.34', 443))]
+        WorkspaceMember.objects.create(
+            workspace=self.other, user=self.admin, role=WorkspaceMember.Role.ADMIN
+        )
+        self.as_(self.admin)
+        created = self.client.post(
+            '/api/marketing/ai/providers/custom/',
+            {
+                'display_name': 'Alpha private AI',
+                'base_url': 'https://alpha-ai.example.com/v1',
+                'credentials': 'alpha-secret',
+                'model': 'alpha-model',
+                'integration_type': ProviderIntegrationType.OPENAI_COMPATIBLE,
+                'capabilities': [Capability.TEXT],
+            },
+            format='json',
+        )
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED, created.data)
+        custom = AIProvider.objects.get(display_name='Alpha private AI')
+
+        self.as_(self.admin, self.other)
+        catalogue = self.client.get('/api/marketing/ai/catalogue/')
+        self.assertFalse(any(
+            row['id'] == str(custom.id)
+            for row in catalogue.data['data']['providers']
+        ))
+        injected = self.client.post(
+            '/api/marketing/ai/providers/',
+            {
+                'provider': str(custom.id),
+                'credentials': 'stolen-target',
+                'model_override': 'stolen-model',
+                'enabled': True,
+            },
+            format='json',
+        )
+        self.assertEqual(injected.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(WorkspaceAIProvider.objects.filter(
+            workspace=self.other, provider=custom
+        ).exists())
+
+    def test_custom_ai_rejects_missing_fields_and_non_public_endpoints(self):
+        self.as_(self.admin)
+        cases = (
+            ({}, ('display_name', 'base_url', 'model', 'integration_type', 'capabilities')),
+            ({
+                'display_name': 'Local AI',
+                'base_url': 'http://localhost:8000/v1',
+                'credentials': 'secret',
+                'model': 'local',
+                'integration_type': ProviderIntegrationType.OPENAI_COMPATIBLE,
+                'capabilities': [Capability.TEXT],
+            }, ('base_url',)),
+            ({
+                'display_name': 'Private AI',
+                'base_url': 'https://127.0.0.1/v1',
+                'credentials': 'secret',
+                'model': 'private',
+                'integration_type': ProviderIntegrationType.OPENAI_COMPATIBLE,
+                'capabilities': [Capability.TEXT],
+            }, ('base_url',)),
+        )
+
+        for payload, fields in cases:
+            with self.subTest(payload=payload):
+                res = self.client.post(
+                    '/api/marketing/ai/providers/custom/', payload, format='json'
+                )
+                self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+                for field in fields:
+                    self.assertIn(field, res.data)
+
+    @patch('apps.ai.endpoint_security.socket.getaddrinfo')
+    def test_custom_ai_rejects_a_hostname_that_resolves_to_a_private_address(self, resolve):
+        resolve.return_value = [(2, 1, 6, '', ('10.0.0.12', 443))]
+        self.as_(self.admin)
+
+        res = self.client.post(
+            '/api/marketing/ai/providers/custom/',
+            {
+                'display_name': 'Rebound AI',
+                'base_url': 'https://looks-public.example.com/v1',
+                'model': 'private-target',
+                'integration_type': ProviderIntegrationType.OPENAI_COMPATIBLE,
+                'capabilities': [Capability.TEXT],
+            },
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('base_url', res.data)
+        self.assertFalse(AIProvider.objects.filter(display_name='Rebound AI').exists())
+
+    @patch('apps.ai.endpoint_security.socket.getaddrinfo')
+    def test_custom_ai_can_be_saved_without_a_key_when_endpoint_needs_none(self, resolve):
+        resolve.return_value = [(2, 1, 6, '', ('93.184.216.34', 443))]
+        self.as_(self.admin)
+
+        res = self.client.post(
+            '/api/marketing/ai/providers/custom/',
+            {
+                'display_name': 'Public endpoint AI',
+                'base_url': 'https://public-ai.example.com/v1',
+                'model': 'public-model',
+                'integration_type': ProviderIntegrationType.OPENAI_COMPATIBLE,
+                'capabilities': [Capability.TEXT],
+            },
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertFalse(res.data['data']['has_credentials'])
+
+    @patch('apps.ai.endpoint_security.socket.getaddrinfo')
+    def test_editor_cannot_onboard_a_custom_ai(self, resolve):
+        resolve.return_value = [(2, 1, 6, '', ('93.184.216.34', 443))]
+        self.as_(self.editor)
+        res = self.client.post(
+            '/api/marketing/ai/providers/custom/',
+            {
+                'display_name': 'Forbidden AI',
+                'base_url': 'https://forbidden.example.com/v1',
+                'credentials': 'secret',
+                'model': 'model',
+                'integration_type': ProviderIntegrationType.SCALEEZY_JSON,
+                'capabilities': list(Capability.values),
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_duplicate_provider_configuration_returns_friendly_validation(self):
+        WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.provider, enabled=True
+        )
+        self.as_(self.admin)
+
+        res = self.client.post(
+            '/api/marketing/ai/providers/',
+            {'provider': str(self.provider.id), 'enabled': True},
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('already configured', str(res.data['provider']))
+
+    def test_configured_provider_identity_is_immutable(self):
+        configured = WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.provider, enabled=True
+        )
+        self.as_(self.admin)
+
+        res = self.client.patch(
+            f'/api/marketing/ai/providers/{configured.id}/',
+            {'provider': str(self.better_provider.id)},
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        configured.refresh_from_db()
+        self.assertEqual(configured.provider, self.provider)
+
+    def test_disabling_provider_disables_its_active_routes(self):
+        configured = WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.provider, enabled=True
+        )
+        route = WorkspaceAIRoute.objects.create(
+            workspace=self.ws,
+            capability=Capability.TEXT,
+            provider=self.provider,
+            enabled=True,
+        )
+        self.as_(self.admin)
+
+        res = self.client.patch(
+            f'/api/marketing/ai/providers/{configured.id}/',
+            {'enabled': False},
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        route.refresh_from_db()
+        self.assertFalse(route.enabled)
+
+    def test_admin_assigns_tasks_per_model_and_removed_task_clears_route(self):
+        configured = WorkspaceAIProvider.objects.create(
+            workspace=self.ws,
+            provider=self.better_provider,
+            enabled=True,
+            capabilities=[Capability.TEXT, Capability.IMAGE],
+        )
+        route = WorkspaceAIRoute.objects.create(
+            workspace=self.ws,
+            capability=Capability.IMAGE,
+            provider=self.better_provider,
+            enabled=True,
+        )
+        self.as_(self.admin)
+
+        res = self.client.patch(
+            f'/api/marketing/ai/providers/{configured.id}/',
+            {
+                'model_override': 'chosen-text-model',
+                'capabilities': [Capability.TEXT],
+            },
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        configured.refresh_from_db()
+        self.assertEqual(configured.model_override, 'chosen-text-model')
+        self.assertEqual(configured.capabilities, [Capability.TEXT])
+        self.assertFalse(WorkspaceAIRoute.objects.filter(pk=route.pk).exists())
+
+    def test_route_rejects_task_not_assigned_to_workspace_model(self):
+        WorkspaceAIProvider.objects.create(
+            workspace=self.ws,
+            provider=self.better_provider,
+            enabled=True,
+            capabilities=[Capability.IMAGE],
+        )
+        self.as_(self.admin)
+
+        res = self.client.post(
+            '/api/marketing/ai/routes/replace-set/',
+            {
+                'capability': Capability.TEXT,
+                'routes': [{'provider': str(self.better_provider.id), 'priority': 10}],
+                'strategy': Strategy.FAILOVER,
+            },
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Assign this capability', str(res.data))
+        self.assertFalse(WorkspaceAIRoute.objects.filter(workspace=self.ws).exists())
+
+    def test_deleting_provider_configuration_removes_its_routes_only(self):
+        configured = WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.provider, enabled=True
+        )
+        own_route = WorkspaceAIRoute.objects.create(
+            workspace=self.ws,
+            capability=Capability.TEXT,
+            provider=self.provider,
+        )
+        other_route = WorkspaceAIRoute.objects.create(
+            workspace=self.other,
+            capability=Capability.TEXT,
+            provider=self.provider,
+        )
+        self.as_(self.admin)
+
+        res = self.client.delete(f'/api/marketing/ai/providers/{configured.id}/')
+
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(WorkspaceAIRoute.objects.filter(pk=own_route.pk).exists())
+        self.assertTrue(WorkspaceAIRoute.objects.filter(pk=other_route.pk).exists())
+
     def test_credentials_are_encrypted_and_never_returned(self):
         self.as_(self.admin)
         res = self.client.post(
@@ -453,3 +878,25 @@ class AIConsoleAPITests(APITestCase):
         res = self.client.get('/api/marketing/ai/routes/resolved/')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertIn(Capability.TEXT, res.data['data'])
+
+    def test_usage_summary_includes_reliability_and_latency(self):
+        for success, latency in ((True, 100), (True, 200), (False, 300)):
+            AIUsageLog.objects.create(
+                workspace=self.ws,
+                provider=self.provider,
+                capability=Capability.TEXT,
+                success=success,
+                latency_ms=latency,
+                cost='0.0100',
+            )
+        self.as_(self.admin)
+
+        res = self.client.get('/api/marketing/ai/usage/summary/')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        row = res.data['data'][0]
+        self.assertEqual(row['calls'], 3)
+        self.assertEqual(row['successful_calls'], 2)
+        self.assertEqual(row['failed_calls'], 1)
+        self.assertEqual(row['average_latency_ms'], 200.0)
+        self.assertEqual(row['success_rate_percent'], 66.67)
