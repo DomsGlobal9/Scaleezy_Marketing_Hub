@@ -160,11 +160,61 @@ def execute_publishing_job(job_id: str):
     if all_success and job.content_item_id:
         from apps.content.models import ContentItem
 
-        ContentItem.objects.filter(
+        moved = ContentItem.objects.filter(
             id=job.content_item_id,
             workspace_id=job.workspace_id,
             status=ContentItem.Status.APPROVED,
         ).update(status=ContentItem.Status.PUBLISHED, updated_at=timezone.now())
+        # Only when this run is the one that moved it: a partial retry that
+        # re-publishes an already-PUBLISHED item must not log a second time.
+        if moved:
+            _record_published_event(job)
+
+
+def _record_published_event(job):
+    """Record that a content item actually reached the world.
+
+    Until now the learning ledger heard only about review verdicts and
+    calibration, so "what did we ship" was invisible to it. The outcome is
+    NEUTRAL on purpose: publishing says the work shipped, not that it was
+    good. The approval that had to precede it already carried the positive
+    verdict, and counting both would weigh one person's opinion twice.
+
+    Best-effort — a ledger write must never turn a successful publish into a
+    failed one.
+    """
+    from apps.learning.models import LearningEvent, LearningScope, SubjectType
+    from apps.learning.services import record_event
+
+    try:
+        content_item = job.content_item
+        if content_item is None:
+            return
+        brand = getattr(content_item, 'brand', None)
+        record_event(
+            workspace=job.workspace,
+            brand=brand,
+            event_type=LearningEvent.EventType.PUBLISHED,
+            outcome=LearningEvent.Outcome.NEUTRAL,
+            subject_type=SubjectType.CONTENT_ITEM,
+            subject_id=content_item.pk,
+            source_type='publishing_job',
+            source_id=job.pk,
+            context={
+                'platforms': sorted(
+                    job.items.filter(
+                        status=PublishingJobItem.Status.PUBLISHED
+                    ).values_list('social_connection__platform', flat=True).distinct()
+                ),
+                'scope': LearningScope.BRAND if brand is not None else LearningScope.TENANT,
+            },
+            # One row per content item however many times a job is re-run.
+            dedupe_key=f'published:{content_item.pk}',
+        )
+    except Exception:
+        logger.exception(
+            "Could not record the PUBLISHED learning event for job %s", job.pk
+        )
 
 
 def _publish_to_x(item: PublishingJobItem, job: PublishingJob):

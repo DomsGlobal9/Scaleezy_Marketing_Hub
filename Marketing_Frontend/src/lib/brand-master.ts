@@ -520,6 +520,45 @@ export const fetchLearningEvents = async (brandId: string) =>
 export const fetchRules = async (brandId: string) =>
   asList<BrandRuleRow>(await api(`/api/marketing/brand-rules/?brand_id=${brandId}`));
 
+/** One learned instruction with whether it is actually reaching generation. */
+export interface LearningUsageRow {
+  id: string;
+  kind: "RULE" | "PREFERENCE" | string;
+  text: string;
+  origin?: string;
+  hardness?: string;
+  state?: string;
+  scope: string;
+  is_active: boolean;
+  in_force: boolean;
+  /** '' when in force; DEACTIVATED / RETIRED / NOT_IN_COMPILED_BRAIN otherwise. */
+  not_in_force_reason: string;
+  evidence_count: number;
+  last_evidence_at: string | null;
+  generations_used: number;
+  last_used_at: string | null;
+  created_at: string | null;
+}
+
+export interface LearningUsageReport {
+  brand_id: string;
+  brand_name: string;
+  brain_version: string;
+  brain_compiled_at: string | null;
+  generated_at: string;
+  totals: { in_force: number; not_in_force: number; learned: number; never_used: number };
+  attribution: {
+    generations_scanned: number;
+    scan_limit: number;
+    oldest_scanned_at: string | null;
+    note: string;
+  };
+  rows: LearningUsageRow[];
+}
+
+export const fetchLearningUsage = (brandId: string) =>
+  api<LearningUsageReport>(`/api/marketing/learning/usage/?brand_id=${brandId}`);
+
 export const createRule = (brandId: string, input: { text: string; hardness: "HARD" | "SOFT" }) =>
   api<BrandRuleRow>("/api/marketing/brand-rules/", {
     method: "POST",

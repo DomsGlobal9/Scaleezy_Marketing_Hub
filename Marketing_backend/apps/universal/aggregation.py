@@ -60,10 +60,40 @@ def _safe_value(raw_value, brand=None):
     return normalized
 
 
+#: The event types that represent a human judgment about the work. These —
+#: and only these — feed the confidence weight below. The ledger also holds
+#: bookkeeping events (PUBLISHED today, PERFORMANCE_OBSERVED when a metrics
+#: source exists) that record that something HAPPENED, not that a person
+#: judged it; counting those would quietly turn "how much has a human taught
+#: this brand" into "how busy is this brand", and a high-volume publisher
+#: would outweigh a better-evidenced one. New event types therefore default
+#: to NOT influencing universal learning until someone adds them here on
+#: purpose.
+JUDGMENT_EVENT_TYPES = (
+    LearningEvent.EventType.APPROVED,
+    LearningEvent.EventType.EDITED,
+    LearningEvent.EventType.REJECTED,
+    LearningEvent.EventType.REDO,
+    LearningEvent.EventType.EXPLICIT_RULE,
+    LearningEvent.EventType.PREFERENCE_SIGNAL,
+    LearningEvent.EventType.INSPIRATION_SIGNAL,
+    LearningEvent.EventType.MEMORY_CONFIRMED,
+    LearningEvent.EventType.MEMORY_REJECTED,
+)
+
+
 def _event_counts():
-    """Real counts used as a deterministic confidence weight; no eligibility filter."""
+    """Judgment-event counts used as a deterministic confidence weight.
+
+    No eligibility/consent filter — that is the PR7 policy. The filter here
+    is about MEANING, not consent: only events where a person exercised
+    judgment count as evidence weight.
+    """
     rows = (
-        LearningEvent.objects.filter(workspace__kind=MarketingWorkspace.Kind.CLIENT)
+        LearningEvent.objects.filter(
+            workspace__kind=MarketingWorkspace.Kind.CLIENT,
+            event_type__in=JUDGMENT_EVENT_TYPES,
+        )
         .values('workspace_id', 'brand_id', 'event_type', 'outcome')
         .annotate(total=Count('id'))
     )
