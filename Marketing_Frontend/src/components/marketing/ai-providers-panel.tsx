@@ -661,8 +661,8 @@ export function AIProvidersPanel({
             <DialogHeader>
               <DialogTitle>Add AI provider</DialogTitle>
               <DialogDescription>
-                Choose an installed integration or connect any OpenAI-compatible AI endpoint. You
-                choose the provider and model; Scaleezy does not preselect either.
+                Choose an installed integration or enter any custom AI provider. You choose its
+                protocol, capabilities and model; Scaleezy does not preselect them.
               </DialogDescription>
             </DialogHeader>
 
@@ -671,11 +671,11 @@ export function AIProvidersPanel({
                 <Label htmlFor="add-ai-provider">Provider</Label>
                 <Select value={addProviderId} onValueChange={setAddProviderId}>
                   <SelectTrigger id="add-ai-provider">
-                    <SelectValue placeholder="Choose an installed provider" />
+                    <SelectValue placeholder="Choose an installed integration or custom AI" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={CUSTOM_PROVIDER_VALUE}>
-                      Custom OpenAI-compatible endpoint
+                      Custom AI provider — enter your own
                     </SelectItem>
                     {availableToAdd.map((provider) => (
                       <SelectItem key={provider.id} value={provider.id}>
