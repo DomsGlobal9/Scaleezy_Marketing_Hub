@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as HubRouteImport } from './routes/_hub'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as SignupRouteImport } from './routes/signup'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as HubIndexRouteImport } from './routes/_hub.index'
 import { Route as HubAccountsRouteImport } from './routes/_hub.accounts'
@@ -39,6 +40,11 @@ const LoginRoute = LoginRouteImport.update({
 const PrivacyRoute = PrivacyRouteImport.update({
   id: '/privacy',
   path: '/privacy',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignupRoute = SignupRouteImport.update({
+  id: '/signup',
+  path: '/signup',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TermsRoute = TermsRouteImport.update({
@@ -116,6 +122,7 @@ export interface FileRoutesByFullPath {
   '/': typeof HubIndexRoute
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
+  '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/accounts': typeof HubAccountsRoute
   '/admin': typeof HubAdminRoute
@@ -133,6 +140,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
+  '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/accounts': typeof HubAccountsRoute
   '/admin': typeof HubAdminRoute
@@ -153,6 +161,7 @@ export interface FileRoutesById {
   '/_hub': typeof HubRouteWithChildren
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
+  '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/_hub/accounts': typeof HubAccountsRoute
   '/_hub/admin': typeof HubAdminRoute
@@ -174,6 +183,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/privacy'
+    | '/signup'
     | '/terms'
     | '/accounts'
     | '/admin'
@@ -191,6 +201,7 @@ export interface FileRouteTypes {
   to:
     | '/login'
     | '/privacy'
+    | '/signup'
     | '/terms'
     | '/accounts'
     | '/admin'
@@ -210,6 +221,7 @@ export interface FileRouteTypes {
     | '/_hub'
     | '/login'
     | '/privacy'
+    | '/signup'
     | '/terms'
     | '/_hub/accounts'
     | '/_hub/admin'
@@ -230,6 +242,7 @@ export interface RootRouteChildren {
   HubRoute: typeof HubRouteWithChildren
   LoginRoute: typeof LoginRoute
   PrivacyRoute: typeof PrivacyRoute
+  SignupRoute: typeof SignupRoute
   TermsRoute: typeof TermsRoute
   OauthCallbackRoute: typeof OauthCallbackRoute
   SocialLinkedinCallbackRoute: typeof SocialLinkedinCallbackRoute
@@ -258,6 +271,13 @@ declare module '@tanstack/react-router' {
       path: '/privacy'
       fullPath: '/privacy'
       preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/signup': {
+      id: '/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof SignupRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/terms': {
@@ -391,6 +411,7 @@ const rootRouteChildren: RootRouteChildren = {
   HubRoute: HubRouteWithChildren,
   LoginRoute: LoginRoute,
   PrivacyRoute: PrivacyRoute,
+  SignupRoute: SignupRoute,
   TermsRoute: TermsRoute,
   OauthCallbackRoute: OauthCallbackRoute,
   SocialLinkedinCallbackRoute: SocialLinkedinCallbackRoute,

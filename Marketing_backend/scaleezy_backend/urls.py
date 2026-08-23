@@ -21,5 +21,8 @@ urlpatterns = [
     path('api/marketing/', include('apps.learning.urls')),
     path('api/marketing/', include('apps.context.urls')),
     path('api/marketing/', include('apps.onboarding.urls')),
+    # The Scaleezy console. Its own namespace and its own gate (IsPlatformAdmin);
+    # nothing under /api/marketing/ ever grants cross-tenant access.
+    path('api/platform/', include('apps.platform.urls')),
     # Other paths will be added here
 ]
