@@ -270,6 +270,23 @@ function OnboardingPage() {
         }
       />
 
+      {summary.awaiting_approval ? (
+        <div
+          role="status"
+          className="flex items-start gap-3 rounded-xl border border-gold/40 bg-gold/10 px-4 py-3 text-sm"
+        >
+          <Sparkles className="mt-0.5 size-4 shrink-0 text-gold" />
+          <p>
+            <span className="font-medium text-foreground">Awaiting Scaleezy approval</span>
+            <span className="text-muted-foreground">
+              {" "}
+              — calibration and generation unlock once approved. Keep teaching in the meantime;
+              everything you add now is kept.
+            </span>
+          </p>
+        </div>
+      ) : null}
+
       <div className="space-y-3">
         <StageRail
           steps={STEPS.map((entry) => {

@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as HubRouteImport } from './routes/_hub'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as PlatformRouteImport } from './routes/platform'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as TermsRouteImport } from './routes/terms'
@@ -24,6 +25,13 @@ import { Route as HubPublishingRouteImport } from './routes/_hub.publishing'
 import { Route as HubReviewRouteImport } from './routes/_hub.review'
 import { Route as HubSettingsRouteImport } from './routes/_hub.settings'
 import { Route as OauthCallbackRouteImport } from './routes/oauth.callback'
+import { Route as PlatformIndexRouteImport } from './routes/platform.index'
+import { Route as PlatformAdminsRouteImport } from './routes/platform.admins'
+import { Route as PlatformClientsRouteImport } from './routes/platform.clients'
+import { Route as PlatformLibraryRouteImport } from './routes/platform.library'
+import { Route as PlatformSignupsRouteImport } from './routes/platform.signups'
+import { Route as PlatformStandardsRouteImport } from './routes/platform.standards'
+import { Route as PlatformClientsWorkspaceIdRouteImport } from './routes/platform.clients.$workspaceId'
 import { Route as SocialLinkedinCallbackRouteImport } from './routes/social.linkedin.callback'
 import { Route as SocialMetaCallbackRouteImport } from './routes/social.meta.callback'
 import { Route as SocialYoutubeCallbackRouteImport } from './routes/social.youtube.callback'
@@ -35,6 +43,11 @@ const HubRoute = HubRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PlatformRoute = PlatformRouteImport.update({
+  id: '/platform',
+  path: '/platform',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PrivacyRoute = PrivacyRouteImport.update({
@@ -102,6 +115,42 @@ const OauthCallbackRoute = OauthCallbackRouteImport.update({
   path: '/oauth/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PlatformIndexRoute = PlatformIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => PlatformRoute,
+} as any)
+const PlatformAdminsRoute = PlatformAdminsRouteImport.update({
+  id: '/admins',
+  path: '/admins',
+  getParentRoute: () => PlatformRoute,
+} as any)
+const PlatformClientsRoute = PlatformClientsRouteImport.update({
+  id: '/clients',
+  path: '/clients',
+  getParentRoute: () => PlatformRoute,
+} as any)
+const PlatformLibraryRoute = PlatformLibraryRouteImport.update({
+  id: '/library',
+  path: '/library',
+  getParentRoute: () => PlatformRoute,
+} as any)
+const PlatformSignupsRoute = PlatformSignupsRouteImport.update({
+  id: '/signups',
+  path: '/signups',
+  getParentRoute: () => PlatformRoute,
+} as any)
+const PlatformStandardsRoute = PlatformStandardsRouteImport.update({
+  id: '/standards',
+  path: '/standards',
+  getParentRoute: () => PlatformRoute,
+} as any)
+const PlatformClientsWorkspaceIdRoute =
+  PlatformClientsWorkspaceIdRouteImport.update({
+    id: '/$workspaceId',
+    path: '/$workspaceId',
+    getParentRoute: () => PlatformClientsRoute,
+  } as any)
 const SocialLinkedinCallbackRoute = SocialLinkedinCallbackRouteImport.update({
   id: '/social/linkedin/callback',
   path: '/social/linkedin/callback',
@@ -121,6 +170,7 @@ const SocialYoutubeCallbackRoute = SocialYoutubeCallbackRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof HubIndexRoute
   '/login': typeof LoginRoute
+  '/platform': typeof PlatformRouteWithChildren
   '/privacy': typeof PrivacyRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
@@ -133,6 +183,13 @@ export interface FileRoutesByFullPath {
   '/review': typeof HubReviewRoute
   '/settings': typeof HubSettingsRoute
   '/oauth/callback': typeof OauthCallbackRoute
+  '/platform/admins': typeof PlatformAdminsRoute
+  '/platform/clients': typeof PlatformClientsRouteWithChildren
+  '/platform/library': typeof PlatformLibraryRoute
+  '/platform/signups': typeof PlatformSignupsRoute
+  '/platform/standards': typeof PlatformStandardsRoute
+  '/platform/': typeof PlatformIndexRoute
+  '/platform/clients/$workspaceId': typeof PlatformClientsWorkspaceIdRoute
   '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
   '/social/meta/callback': typeof SocialMetaCallbackRoute
   '/social/youtube/callback': typeof SocialYoutubeCallbackRoute
@@ -151,7 +208,14 @@ export interface FileRoutesByTo {
   '/review': typeof HubReviewRoute
   '/settings': typeof HubSettingsRoute
   '/oauth/callback': typeof OauthCallbackRoute
+  '/platform/admins': typeof PlatformAdminsRoute
+  '/platform/clients': typeof PlatformClientsRouteWithChildren
+  '/platform/library': typeof PlatformLibraryRoute
+  '/platform/signups': typeof PlatformSignupsRoute
+  '/platform/standards': typeof PlatformStandardsRoute
   '/': typeof HubIndexRoute
+  '/platform': typeof PlatformIndexRoute
+  '/platform/clients/$workspaceId': typeof PlatformClientsWorkspaceIdRoute
   '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
   '/social/meta/callback': typeof SocialMetaCallbackRoute
   '/social/youtube/callback': typeof SocialYoutubeCallbackRoute
@@ -160,6 +224,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_hub': typeof HubRouteWithChildren
   '/login': typeof LoginRoute
+  '/platform': typeof PlatformRouteWithChildren
   '/privacy': typeof PrivacyRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
@@ -172,7 +237,14 @@ export interface FileRoutesById {
   '/_hub/review': typeof HubReviewRoute
   '/_hub/settings': typeof HubSettingsRoute
   '/oauth/callback': typeof OauthCallbackRoute
+  '/platform/admins': typeof PlatformAdminsRoute
+  '/platform/clients': typeof PlatformClientsRouteWithChildren
+  '/platform/library': typeof PlatformLibraryRoute
+  '/platform/signups': typeof PlatformSignupsRoute
+  '/platform/standards': typeof PlatformStandardsRoute
   '/_hub/': typeof HubIndexRoute
+  '/platform/': typeof PlatformIndexRoute
+  '/platform/clients/$workspaceId': typeof PlatformClientsWorkspaceIdRoute
   '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
   '/social/meta/callback': typeof SocialMetaCallbackRoute
   '/social/youtube/callback': typeof SocialYoutubeCallbackRoute
@@ -182,6 +254,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
+    | '/platform'
     | '/privacy'
     | '/signup'
     | '/terms'
@@ -194,6 +267,13 @@ export interface FileRouteTypes {
     | '/review'
     | '/settings'
     | '/oauth/callback'
+    | '/platform/admins'
+    | '/platform/clients'
+    | '/platform/library'
+    | '/platform/signups'
+    | '/platform/standards'
+    | '/platform/'
+    | '/platform/clients/$workspaceId'
     | '/social/linkedin/callback'
     | '/social/meta/callback'
     | '/social/youtube/callback'
@@ -212,7 +292,14 @@ export interface FileRouteTypes {
     | '/review'
     | '/settings'
     | '/oauth/callback'
+    | '/platform/admins'
+    | '/platform/clients'
+    | '/platform/library'
+    | '/platform/signups'
+    | '/platform/standards'
     | '/'
+    | '/platform'
+    | '/platform/clients/$workspaceId'
     | '/social/linkedin/callback'
     | '/social/meta/callback'
     | '/social/youtube/callback'
@@ -220,6 +307,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_hub'
     | '/login'
+    | '/platform'
     | '/privacy'
     | '/signup'
     | '/terms'
@@ -232,7 +320,14 @@ export interface FileRouteTypes {
     | '/_hub/review'
     | '/_hub/settings'
     | '/oauth/callback'
+    | '/platform/admins'
+    | '/platform/clients'
+    | '/platform/library'
+    | '/platform/signups'
+    | '/platform/standards'
     | '/_hub/'
+    | '/platform/'
+    | '/platform/clients/$workspaceId'
     | '/social/linkedin/callback'
     | '/social/meta/callback'
     | '/social/youtube/callback'
@@ -241,6 +336,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   HubRoute: typeof HubRouteWithChildren
   LoginRoute: typeof LoginRoute
+  PlatformRoute: typeof PlatformRouteWithChildren
   PrivacyRoute: typeof PrivacyRoute
   SignupRoute: typeof SignupRoute
   TermsRoute: typeof TermsRoute
@@ -264,6 +360,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/platform': {
+      id: '/platform'
+      path: '/platform'
+      fullPath: '/platform'
+      preLoaderRoute: typeof PlatformRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/privacy': {
@@ -357,6 +460,55 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OauthCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/platform/': {
+      id: '/platform/'
+      path: '/'
+      fullPath: '/platform/'
+      preLoaderRoute: typeof PlatformIndexRouteImport
+      parentRoute: typeof PlatformRoute
+    }
+    '/platform/admins': {
+      id: '/platform/admins'
+      path: '/admins'
+      fullPath: '/platform/admins'
+      preLoaderRoute: typeof PlatformAdminsRouteImport
+      parentRoute: typeof PlatformRoute
+    }
+    '/platform/clients': {
+      id: '/platform/clients'
+      path: '/clients'
+      fullPath: '/platform/clients'
+      preLoaderRoute: typeof PlatformClientsRouteImport
+      parentRoute: typeof PlatformRoute
+    }
+    '/platform/library': {
+      id: '/platform/library'
+      path: '/library'
+      fullPath: '/platform/library'
+      preLoaderRoute: typeof PlatformLibraryRouteImport
+      parentRoute: typeof PlatformRoute
+    }
+    '/platform/signups': {
+      id: '/platform/signups'
+      path: '/signups'
+      fullPath: '/platform/signups'
+      preLoaderRoute: typeof PlatformSignupsRouteImport
+      parentRoute: typeof PlatformRoute
+    }
+    '/platform/standards': {
+      id: '/platform/standards'
+      path: '/standards'
+      fullPath: '/platform/standards'
+      preLoaderRoute: typeof PlatformStandardsRouteImport
+      parentRoute: typeof PlatformRoute
+    }
+    '/platform/clients/$workspaceId': {
+      id: '/platform/clients/$workspaceId'
+      path: '/$workspaceId'
+      fullPath: '/platform/clients/$workspaceId'
+      preLoaderRoute: typeof PlatformClientsWorkspaceIdRouteImport
+      parentRoute: typeof PlatformClientsRoute
+    }
     '/social/linkedin/callback': {
       id: '/social/linkedin/callback'
       path: '/social/linkedin/callback'
@@ -407,9 +559,44 @@ const HubRouteChildren: HubRouteChildren = {
 
 const HubRouteWithChildren = HubRoute._addFileChildren(HubRouteChildren)
 
+interface PlatformClientsRouteChildren {
+  PlatformClientsWorkspaceIdRoute: typeof PlatformClientsWorkspaceIdRoute
+}
+
+const PlatformClientsRouteChildren: PlatformClientsRouteChildren = {
+  PlatformClientsWorkspaceIdRoute: PlatformClientsWorkspaceIdRoute,
+}
+
+const PlatformClientsRouteWithChildren = PlatformClientsRoute._addFileChildren(
+  PlatformClientsRouteChildren,
+)
+
+interface PlatformRouteChildren {
+  PlatformAdminsRoute: typeof PlatformAdminsRoute
+  PlatformClientsRoute: typeof PlatformClientsRouteWithChildren
+  PlatformLibraryRoute: typeof PlatformLibraryRoute
+  PlatformSignupsRoute: typeof PlatformSignupsRoute
+  PlatformStandardsRoute: typeof PlatformStandardsRoute
+  PlatformIndexRoute: typeof PlatformIndexRoute
+}
+
+const PlatformRouteChildren: PlatformRouteChildren = {
+  PlatformAdminsRoute: PlatformAdminsRoute,
+  PlatformClientsRoute: PlatformClientsRouteWithChildren,
+  PlatformLibraryRoute: PlatformLibraryRoute,
+  PlatformSignupsRoute: PlatformSignupsRoute,
+  PlatformStandardsRoute: PlatformStandardsRoute,
+  PlatformIndexRoute: PlatformIndexRoute,
+}
+
+const PlatformRouteWithChildren = PlatformRoute._addFileChildren(
+  PlatformRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   HubRoute: HubRouteWithChildren,
   LoginRoute: LoginRoute,
+  PlatformRoute: PlatformRouteWithChildren,
   PrivacyRoute: PrivacyRoute,
   SignupRoute: SignupRoute,
   TermsRoute: TermsRoute,
