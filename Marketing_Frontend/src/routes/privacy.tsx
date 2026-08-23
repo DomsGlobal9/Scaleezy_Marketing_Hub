@@ -92,8 +92,7 @@ function PrivacyPage() {
           ]}
         />
         <p>
-          We do not sell your data, and we do not use your content or audience data to train our own
-          models.
+          We do not sell your data. We use content and activity within client workspaces to improve Scaleezy's shared creative intelligence. Scaleezy does not reproduce another client's brand names, customer data, product names, taglines, or literal creative content in your generated output.
         </p>
       </LegalSection>
 
