@@ -8,8 +8,10 @@ published standard refuses in-place edits. The library side: curate, publish,
 list with a live adoption count, retire.
 """
 import uuid
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -17,9 +19,11 @@ from rest_framework.test import APIClient
 from apps.audit.models import PlatformAuditLog
 from apps.audit.services import grant_platform_admin
 from apps.brands.models import Brand
-from apps.common.testing import TenantFixtureMixin
+from apps.common.testing import TenantFixtureMixin, workspace_header
 from apps.inspirations.models import BrandInspiration
+from apps.marketing.services.storage import StorageError
 from apps.universal.models import (
+    EntryKind,
     LifecycleStatus,
     PlatformInspiration,
     UniversalScope,
@@ -32,6 +36,8 @@ User = get_user_model()
 
 STANDARDS = '/api/platform/standards/'
 INSPIRATIONS = '/api/platform/inspirations/'
+UPLOAD = f'{INSPIRATIONS}upload/'
+CLIENT_LIBRARY = '/api/marketing/universal/library/'
 
 STANDARD_BODY = {
     'title': 'Short headlines',
@@ -256,3 +262,204 @@ class UniversalConsoleTests(TenantFixtureMixin, TestCase):
             f'{INSPIRATIONS}{reference.pk}/', {'annotation': 'x'}, format='json',
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # ───────────────────────────────────── entry kinds: link, text, uploads
+
+    def test_links_and_text_are_authored_as_json_and_each_needs_its_content(self):
+        # Text: the words are the content; the annotation is the note about them.
+        response = self.staff_api.post(INSPIRATIONS, {
+            'kind': 'text', 'title': 'Pattern-interrupt hook',
+            'body': 'Stop scrolling if you hate Mondays.',
+            'annotation': 'Names the feeling first.', 'tags': 'hook, short',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+        data = response.json()['data']
+        self.assertEqual(data['kind'], 'TEXT')
+        self.assertEqual(data['body'], 'Stop scrolling if you hate Mondays.')
+        self.assertEqual(data['reference_url'], '')
+        self.assertEqual(data['file_url'], '')
+        self.assertEqual(data['tags'], ['hook', 'short'])
+        created = PlatformAuditLog.objects.get(action='PLATFORM_INSPIRATION_CREATED')
+        self.assertEqual(created.detail['kind'], 'TEXT')
+
+        for body, why in (
+            ({'kind': 'TEXT', 'title': 'Empty'}, 'a text entry needs its words'),
+            ({'title': 'No link'}, 'a link (the default kind) needs a URL'),
+            ({'kind': 'IMAGE', 'title': 'x', 'reference_url': 'https://x.test/a.png'},
+             'uploads are never authored as JSON'),
+            ({'kind': 'BOGUS', 'title': 'x'}, 'unknown kinds are refused'),
+            ({'kind': 'TEXT', 'title': 'Long', 'body': 'x' * 20001}, 'body has a ceiling'),
+        ):
+            response = self.staff_api.post(INSPIRATIONS, body, format='json')
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, why)
+        self.assertEqual(PlatformInspiration.objects.count(), 1)
+
+        # Published, the client reads the words — and can narrow the gallery
+        # to one kind. The curator stays platform-side.
+        self.staff_api.post(f"{INSPIRATIONS}{data['id']}/publish/", {}, format='json')
+        publish_inspiration(PlatformInspiration.objects.create(**INSPIRATION_BODY))
+        gallery = self.owner_api.get(
+            CLIENT_LIBRARY, {'kind': 'text'}, **workspace_header(self.workspace),
+        )
+        self.assertEqual(gallery.status_code, 200, gallery.content)
+        rows = gallery.json()['data']['inspirations']
+        self.assertEqual([r['kind'] for r in rows], ['TEXT'])
+        self.assertEqual(rows[0]['body'], 'Stop scrolling if you hate Mondays.')
+        self.assertNotIn('curated_by', rows[0])
+        everything = self.owner_api.get(CLIENT_LIBRARY, **workspace_header(self.workspace))
+        self.assertEqual(everything.json()['data']['count'], 2)
+
+    def test_upload_makes_an_image_video_or_file_entry_and_refuses_the_rest(self):
+        png = SimpleUploadedFile(
+            'Hero shot (final).PNG', b'\x89PNG\r\n\x1a\n' + b'0' * 64, content_type='image/png',
+        )
+        response = self.staff_api.post(UPLOAD, {
+            'file': png, 'title': 'Hero crop', 'annotation': 'One subject.',
+            'tags': 'crop, hero', 'reference_url': 'https://example.test/source',
+            'industry': 'Coffee',
+        }, format='multipart')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+        data = response.json()['data']
+        self.assertEqual(data['kind'], 'IMAGE')
+        self.assertEqual(data['status'], LifecycleStatus.DRAFT)
+        self.assertEqual(data['mime_type'], 'image/png')
+        self.assertEqual(data['file_name'], 'Hero-shot-final.png')
+        self.assertTrue(
+            data['file_url'].startswith('https://storage.test/library/platform/'), data['file_url'],
+        )
+        self.assertEqual(data['reference_url'], 'https://example.test/source')
+        self.assertEqual(data['tags'], ['crop', 'hero'])
+        self.assertEqual(data['industry'], 'Coffee')
+        self.assertEqual(PlatformInspiration.objects.get(pk=data['id']).curated_by, self.staff)
+        created = PlatformAuditLog.objects.get(action='PLATFORM_INSPIRATION_CREATED')
+        self.assertEqual(created.detail['kind'], 'IMAGE')
+        self.assertEqual(created.detail['file_name'], 'Hero-shot-final.png')
+
+        # The kind follows the file, and a missing title falls back to its name.
+        for name, kind in (('loop.mov', 'VIDEO'), ('deck.pdf', 'FILE'), ('notes.md', 'FILE')):
+            response = self.staff_api.post(
+                UPLOAD, {'file': SimpleUploadedFile(name, b'data')}, format='multipart',
+            )
+            self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+            self.assertEqual(response.json()['data']['kind'], kind, name)
+            self.assertEqual(response.json()['data']['title'], name)
+
+        # Refused: no file, an empty file, a type off the allowlist, too large,
+        # a bad source URL. Nothing is written for any of them.
+        self.assertEqual(
+            self.staff_api.post(UPLOAD, {'title': 'x'}, format='multipart').status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+        for bad in (
+            SimpleUploadedFile('empty.png', b''),
+            SimpleUploadedFile('tool.exe', b'MZ'),
+            SimpleUploadedFile('vector.svg', b'<svg/>'),
+            SimpleUploadedFile('noext', b'data'),
+            SimpleUploadedFile('page.html', b'<html/>'),
+        ):
+            response = self.staff_api.post(UPLOAD, {'file': bad}, format='multipart')
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, bad.name)
+            self.assertEqual(response.json()['error']['code'], 'INVALID_UPLOAD', bad.name)
+        with patch('apps.platform.views_universal.MAX_UPLOAD_BYTES', 8):
+            response = self.staff_api.post(
+                UPLOAD, {'file': SimpleUploadedFile('big.png', b'0' * 9)}, format='multipart',
+            )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('larger than', response.json()['error']['message'])
+        response = self.staff_api.post(
+            UPLOAD, {'file': SimpleUploadedFile('a.png', b'1'), 'reference_url': 'ftp://x.test/a'},
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(PlatformInspiration.objects.count(), 4)
+
+        # Storage that fails writes no row: no dead cards in a client's gallery.
+        with patch(
+            'apps.platform.views_universal.SupabaseStorageService.upload_and_describe',
+            side_effect=StorageError('bucket down'),
+        ):
+            response = self.staff_api.post(
+                UPLOAD, {'file': SimpleUploadedFile('b.png', b'1')}, format='multipart',
+            )
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+        self.assertEqual(PlatformInspiration.objects.count(), 4)
+
+        # The boundary holds on this route too.
+        self.assertEqual(
+            self.owner_api.post(
+                UPLOAD, {'file': SimpleUploadedFile('c.png', b'1')}, format='multipart',
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            APIClient().post(
+                UPLOAD, {'file': SimpleUploadedFile('c.png', b'1')}, format='multipart',
+            ).status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+        self.assertEqual(PlatformInspiration.objects.count(), 4)
+
+    def test_kind_and_file_are_fixed_and_a_patch_keeps_the_content_rule(self):
+        link = PlatformInspiration.objects.create(**INSPIRATION_BODY)
+        text = PlatformInspiration.objects.create(
+            title='Hook', kind=EntryKind.TEXT, body='Words.',
+        )
+        image = PlatformInspiration.objects.create(
+            title='Pic', kind=EntryKind.IMAGE, file_url='https://storage.test/p.png',
+            storage_path='library/platform/p.png', mime_type='image/png', file_name='p.png',
+        )
+
+        for pk, body, why in (
+            (link.pk, {'kind': 'TEXT', 'body': 'x'}, 'a link cannot become text'),
+            (link.pk, {'reference_url': ''}, 'a link cannot lose its URL'),
+            (text.pk, {'body': '  '}, 'a text entry cannot lose its words'),
+            (image.pk, {'kind': 'LINK', 'reference_url': 'https://x.test/'}, 'an upload stays an upload'),
+        ):
+            response = self.staff_api.patch(f'{INSPIRATIONS}{pk}/', body, format='json')
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, why)
+
+        # Restating the same kind is not a change.
+        response = self.staff_api.patch(
+            f'{INSPIRATIONS}{text.pk}/', {'kind': 'text', 'body': 'Better words.'}, format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['data']['body'], 'Better words.')
+
+        # An upload's words and its credit can change; the file columns are
+        # not authoring fields and are ignored however they are spelled.
+        response = self.staff_api.patch(f'{INSPIRATIONS}{image.pk}/', {
+            'title': 'Picture', 'reference_url': 'https://example.test/credit',
+            'file_url': 'https://evil.test/x.png', 'storage_path': 'inspirations/other-tenant/x.png',
+            'mime_type': 'text/html', 'file_name': 'x.html',
+        }, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+        image.refresh_from_db()
+        self.assertEqual(image.title, 'Picture')
+        self.assertEqual(image.reference_url, 'https://example.test/credit')
+        self.assertEqual(image.file_url, 'https://storage.test/p.png')
+        self.assertEqual(image.storage_path, 'library/platform/p.png')
+        self.assertEqual(image.mime_type, 'image/png')
+        self.assertEqual(image.file_name, 'p.png')
+        edited = (
+            PlatformAuditLog.objects.filter(action='PLATFORM_INSPIRATION_EDITED')
+            .order_by('created_at').last()
+        )
+        self.assertEqual(set(edited.detail['changes']), {'title', 'reference_url'})
+
+        # Published, an upload reaches the client with what it needs to render
+        # and adopts as the matching brand inspiration type.
+        publish_inspiration(image)
+        gallery = self.owner_api.get(CLIENT_LIBRARY, **workspace_header(self.workspace))
+        row = gallery.json()['data']['inspirations'][0]
+        self.assertEqual((row['kind'], row['file_url'], row['mime_type']),
+                         ('IMAGE', 'https://storage.test/p.png', 'image/png'))
+        self.assertNotIn('storage_path', row)
+        adopt = self.owner_api.post(
+            f'{CLIENT_LIBRARY}{image.pk}/adopt/', {'brand_id': str(self.brand.pk)},
+            format='json', **workspace_header(self.workspace),
+        )
+        self.assertEqual(adopt.status_code, status.HTTP_201_CREATED, adopt.content)
+        adopted = BrandInspiration.objects.get(pk=adopt.json()['data']['inspiration_id'])
+        self.assertEqual(adopted.inspiration_type, BrandInspiration.InspirationType.IMAGE)
+        self.assertEqual(adopted.file_url, 'https://storage.test/p.png')
+        self.assertIsNone(adopted.storage_path)

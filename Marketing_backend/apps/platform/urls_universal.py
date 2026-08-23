@@ -10,6 +10,7 @@ from .views_universal import (
     InspirationDetailView,
     InspirationLifecycleView,
     InspirationListView,
+    InspirationUploadView,
     StandardDetailView,
     StandardLifecycleView,
     StandardListView,
@@ -23,6 +24,8 @@ urlpatterns = [
         StandardLifecycleView.as_view(), name='standard_move',
     ),
     path('inspirations/', InspirationListView.as_view(), name='inspirations'),
+    # Multipart: images, videos and files. The JSON list route takes links and text.
+    path('inspirations/upload/', InspirationUploadView.as_view(), name='inspiration_upload'),
     path(
         'inspirations/<uuid:inspiration_id>/',
         InspirationDetailView.as_view(), name='inspiration_detail',

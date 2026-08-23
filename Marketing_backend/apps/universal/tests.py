@@ -27,6 +27,7 @@ from apps.learning.models import BrandRule
 from apps.universal import enrichment, nl
 from apps.universal.models import (
     RANK_UNIVERSAL_STANDARD,
+    EntryKind,
     LifecycleStatus,
     PlatformInspiration,
     UniversalScope,
@@ -224,6 +225,79 @@ class PlatformInspirationTests(UniversalBase):
         publish_inspiration(self.reference)
         set_client_universal(self.workspace, inspirations=False, by=self.user)
         self.assertEqual(gallery_for(self.workspace), [])
+
+    def test_an_adopted_upload_points_at_the_platform_file_but_never_owns_it(self):
+        image = publish_inspiration(PlatformInspiration.objects.create(
+            title='Hero crop', kind=EntryKind.IMAGE,
+            file_url='https://storage.test/library/platform/hero.png',
+            storage_path='library/platform/hero.png',
+            mime_type='image/png', file_name='hero.png',
+            reference_url='https://example.test/source',  # a credit, not the content
+            annotation='Tight crop, one subject.',
+        ))
+        adopted, created = adopt_inspiration(image, self.brand, user=self.user)
+        self.assertTrue(created)
+        self.assertEqual(adopted.inspiration_type, BrandInspiration.InspirationType.IMAGE)
+        self.assertEqual(adopted.file_url, image.file_url)
+        self.assertEqual(adopted.mime_type, 'image/png')
+        self.assertEqual(adopted.file_name, 'hero.png')
+        self.assertEqual(adopted.reference_url, 'https://example.test/source')
+        # The object is the platform's: the brand row must not look like it
+        # owns a storage path it could later be asked to clean up.
+        self.assertIsNone(adopted.storage_path)
+        self.assertEqual(adopted.metadata['platform_kind'], 'IMAGE')
+
+        # The credit URL is not what makes it a duplicate — the platform id is.
+        _, again = adopt_inspiration(image, self.brand, user=self.user)
+        self.assertFalse(again)
+        self.assertEqual(BrandInspiration.objects.filter(brand=self.brand).count(), 1)
+
+        video = publish_inspiration(PlatformInspiration.objects.create(
+            title='Loop', kind=EntryKind.VIDEO, file_url='https://storage.test/l.mp4',
+            mime_type='video/mp4', file_name='l.mp4',
+        ))
+        deck = publish_inspiration(PlatformInspiration.objects.create(
+            title='Deck', kind=EntryKind.FILE, file_url='https://storage.test/d.pdf',
+            mime_type='application/pdf', file_name='d.pdf',
+        ))
+        self.assertEqual(
+            adopt_inspiration(video, self.brand, user=self.user)[0].inspiration_type,
+            BrandInspiration.InspirationType.VIDEO,
+        )
+        self.assertEqual(
+            adopt_inspiration(deck, self.brand, user=self.user)[0].inspiration_type,
+            BrandInspiration.InspirationType.REFERENCE,
+        )
+
+    def test_an_adopted_text_entry_carries_its_words_and_the_note(self):
+        text = publish_inspiration(PlatformInspiration.objects.create(
+            title='Pattern-interrupt hook', kind=EntryKind.TEXT,
+            body='Stop scrolling if you hate Mondays.',
+            annotation='Names the feeling before the product.',
+        ))
+        adopted, created = adopt_inspiration(text, self.brand, user=self.user)
+        self.assertTrue(created)
+        self.assertEqual(adopted.inspiration_type, BrandInspiration.InspirationType.TEXT)
+        self.assertIsNone(adopted.reference_url)
+        self.assertIsNone(adopted.file_url)
+        self.assertEqual(
+            adopted.annotation,
+            'Stop scrolling if you hate Mondays.\n\nNames the feeling before the product.',
+        )
+        self.assertFalse(adopt_inspiration(text, self.brand, user=self.user)[1])
+
+    def test_the_gallery_can_be_narrowed_to_one_kind(self):
+        publish_inspiration(self.reference)
+        publish_inspiration(PlatformInspiration.objects.create(
+            title='Hook', kind=EntryKind.TEXT, body='Words.',
+        ))
+        self.assertEqual(len(gallery_for(self.workspace)), 2)
+        self.assertEqual(
+            [row.kind for row in gallery_for(self.workspace, kind='text')], ['TEXT']
+        )
+        self.assertEqual(
+            [row.kind for row in gallery_for(self.workspace, kind='LINK')], ['LINK']
+        )
 
 
 class NaturalLanguageTests(UniversalBase):

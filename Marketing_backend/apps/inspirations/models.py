@@ -104,6 +104,9 @@ class BrandInspiration(models.Model):
         COMPETITOR = 'COMPETITOR', 'Competitor reference'
         REFERENCE = 'REFERENCE', 'General reference'
         MOODBOARD = 'MOODBOARD', 'Moodboard'
+        # Words rather than a picture or a page: a hook, a headline, a caption.
+        # What a TEXT entry of the Scaleezy library becomes when adopted.
+        TEXT = 'TEXT', 'Text / copy'
         OTHER = 'OTHER', 'Other'
 
     class UsageScope(models.TextChoices):

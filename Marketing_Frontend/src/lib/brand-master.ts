@@ -165,6 +165,7 @@ export interface Inspiration {
   annotation: string;
   reference_url: string | null;
   file_url: string | null;
+  mime_type?: string | null;
   external_platform: string;
   usage_scope: string;
   focus_areas: string[];
@@ -348,7 +349,7 @@ function asList<T>(payload: unknown): T[] {
  * Multipart POST. `apiFetch` rather than `api()` so the browser writes the
  * boundary itself; the envelope is unwrapped here the same way `api()` does.
  */
-async function postMultipart<T>(path: string, form: FormData): Promise<T> {
+export async function postMultipart<T>(path: string, form: FormData): Promise<T> {
   const res = await apiFetch(path, { method: "POST", body: form });
   const json = (await res.json().catch(() => null)) as {
     success?: boolean;

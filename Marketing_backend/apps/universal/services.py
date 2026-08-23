@@ -18,7 +18,9 @@ from django.utils import timezone
 
 from .models import (
     RANK_PLATFORM_INSPIRATION,
+    UPLOAD_KINDS,
     ClientUniversalSettings,
+    EntryKind,
     LifecycleStatus,
     PlatformInspiration,
     UniversalStandard,
@@ -239,19 +241,60 @@ def publish_inspiration(inspiration, *, by=None):
     record_platform_event(
         actor=by, action='PLATFORM_INSPIRATION_PUBLISHED',
         target=f'inspiration:{inspiration.pk}',
-        detail={'title': inspiration.title, 'url': inspiration.reference_url},
+        detail={'title': inspiration.title, 'kind': inspiration.kind,
+                'url': inspiration.reference_url, 'file_name': inspiration.file_name},
     )
     return inspiration
 
 
-def gallery_for(workspace, *, industry='', limit=50):
+def gallery_for(workspace, *, industry='', kind='', limit=50):
     """What a client may browse. Empty when they opted out."""
     if not settings_for(workspace).inspirations_enabled:
         return []
     rows = PlatformInspiration.objects.filter(status=LifecycleStatus.PUBLISHED)
     if industry:
         rows = rows.filter(industry__iexact=industry)
+    if kind:
+        rows = rows.filter(kind=str(kind).upper())
     return list(rows[:limit])
+
+
+def _adopted_fields(platform_inspiration):
+    """How each kind of library entry lands in a brand's own inspirations.
+
+    A LINK stays a general reference to the URL. An upload becomes an
+    inspiration of the matching type that points at the platform-hosted file
+    — the brand row carries the public URL only, not the storage path, because
+    the object is the platform's and must not look like the brand's to delete.
+    A TEXT entry has no pointer at all: its words go into the annotation, with
+    the team's note after them, so the client reads both where they read
+    everything else.
+    """
+    from apps.inspirations.models import BrandInspiration
+
+    kind = platform_inspiration.kind
+    Type = BrandInspiration.InspirationType
+    fields = {
+        'inspiration_type': {
+            EntryKind.IMAGE: Type.IMAGE,
+            EntryKind.VIDEO: Type.VIDEO,
+            EntryKind.TEXT: Type.TEXT,
+        }.get(kind, Type.REFERENCE),
+        'reference_url': platform_inspiration.reference_url or None,
+        'annotation': platform_inspiration.annotation,
+    }
+    if kind in UPLOAD_KINDS:
+        fields.update(
+            file_url=platform_inspiration.file_url or None,
+            mime_type=platform_inspiration.mime_type or None,
+            file_name=platform_inspiration.file_name or None,
+        )
+    elif kind == EntryKind.TEXT:
+        fields['annotation'] = '\n\n'.join(
+            part for part in (platform_inspiration.body, platform_inspiration.annotation)
+            if part
+        )
+    return fields
 
 
 @transaction.atomic
@@ -260,7 +303,7 @@ def adopt_inspiration(platform_inspiration, brand, *, user=None):
 
     Adopt, never push. A platform reference becomes part of a brand's
     intelligence only when somebody at that brand chooses it, and what is
-    copied is the pointer and the annotation — the brand's own
+    copied is the pointer (or the words) and the annotation — the brand's own
     `BrandInspiration` row then behaves exactly like one they added
     themselves, including its authority rank.
 
@@ -272,22 +315,26 @@ def adopt_inspiration(platform_inspiration, brand, *, user=None):
     if platform_inspiration.status != LifecycleStatus.PUBLISHED:
         raise UniversalError("That reference is not published.")
 
+    # Adopting twice is a no-op whatever the kind; and a link the brand already
+    # keeps on its own is not added a second time either.
     existing = BrandInspiration.objects.filter(
-        brand=brand, reference_url=platform_inspiration.reference_url
+        brand=brand, metadata__platform_inspiration_id=str(platform_inspiration.pk)
     ).first()
+    if existing is None and platform_inspiration.kind == EntryKind.LINK:
+        existing = BrandInspiration.objects.filter(
+            brand=brand, reference_url=platform_inspiration.reference_url
+        ).first()
     if existing is not None:
         return existing, False
 
     adopted = BrandInspiration.objects.create(
         workspace=brand.workspace,
         brand=brand,
-        inspiration_type=BrandInspiration.InspirationType.REFERENCE,
         title=platform_inspiration.title[:255],
-        reference_url=platform_inspiration.reference_url,
-        annotation=platform_inspiration.annotation,
         metadata={
             'adopted_from_platform': True,
             'platform_inspiration_id': str(platform_inspiration.pk),
+            'platform_kind': platform_inspiration.kind,
             'adopted_at': timezone.now().isoformat(),
             'authority_note': (
                 'Adopted from the Scaleezy library; treated as this brand\'s '
@@ -295,6 +342,7 @@ def adopt_inspiration(platform_inspiration, brand, *, user=None):
             ),
         },
         created_by=user,
+        **_adopted_fields(platform_inspiration),
     )
     logger.info(
         "Brand %s adopted platform inspiration %s", brand.pk, platform_inspiration.pk

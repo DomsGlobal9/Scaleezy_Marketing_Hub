@@ -10,6 +10,7 @@
 import {
   Archive,
   ExternalLink,
+  FileText,
   Image as ImageIcon,
   Link2,
   Loader2,
@@ -459,7 +460,25 @@ function InspirationCard({
     <Card>
       <CardContent className="space-y-4 pt-6">
         <div className="flex flex-wrap items-start gap-4">
-          {inspiration.file_url ? (
+          {inspiration.file_url && inspiration.mime_type?.startsWith("video/") ? (
+            <video
+              src={inspiration.file_url}
+              controls
+              preload="metadata"
+              playsInline
+              className="size-24 shrink-0 rounded-lg border bg-black object-contain"
+            />
+          ) : inspiration.file_url && inspiration.mime_type && !inspiration.mime_type.startsWith("image/") ? (
+            <a
+              href={inspiration.file_url}
+              target="_blank"
+              rel="noreferrer"
+              className="grid size-24 shrink-0 place-items-center rounded-lg border text-muted-foreground hover:text-foreground"
+              title={inspiration.file_url}
+            >
+              <FileText className="size-5" />
+            </a>
+          ) : inspiration.file_url ? (
             <a href={inspiration.file_url} target="_blank" rel="noreferrer" className="shrink-0">
               <img
                 src={inspiration.file_url}
