@@ -78,3 +78,11 @@ Update this section after each vertical slice with named tests and exact results
 - Replaced key-presence checks with authenticated, read-only OpenAI/Gemini connection checks; failures are sanitised. New clients may now compose different default providers per required capability in one transaction.
 - Focused gate: all **76 AI/Admin backend checks have passing evidence** after supplying the required local test encryption key; targeted frontend lint and TypeScript **PASS**; production client/SSR/Nitro build **PASS**; diff check **PASS**.
 - Release position: **ADMIN P0 CODE GATE PASS; DEPLOYMENT NEXT**. P1 and PR7 remain closed until the live Admin tabs and Add provider workflow are confirmed.
+
+### 2026-08-23 — Provider catalogue expansion
+
+- Closed the live Add provider dead end by installing five additional production adapters: Groq, Mistral AI, DeepSeek, OpenRouter and Together AI. The Admin catalogue now has seven integrations including Gemini and OpenAI.
+- Kept the PR5 boundary intact: vendor endpoints and payloads exist only in adapters; all product workflows still request capabilities from AIRouter. Each new integration can join an arbitrary ordered Copy route with FAILOVER, ROUND_ROBIN or BEST_OF.
+- Preserved security and tenant semantics: workspace keys remain encrypted/write-only, provider destinations are fixed code-owned HTTPS endpoints, and OWNER/ADMIN enforcement is unchanged.
+- Verification: focused adapter/catalogue checks **10 passed, 0 failed**; all **75 AI-module tests have passing evidence** after rerunning the three environment-only encryption checks with a valid temporary test key; Python compilation and migration drift checks **PASS**.
+- Release position: **P0 PROVIDER CATALOGUE CODE GATE PASS; BACKEND DEPLOYMENT NEXT**. P1 and PR7 remain closed.
