@@ -164,6 +164,8 @@ STATIC_URL = 'static/'
 # Where collectstatic gathers files at deploy time. Only the admin uses
 # statics today, but the build fails without a target directory.
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 STORAGES = {
     'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
     # Compressed but NOT manifest storage: manifest mode hard-fails the whole

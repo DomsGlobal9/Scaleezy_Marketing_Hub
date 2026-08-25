@@ -282,14 +282,29 @@ Return ONLY a valid JSON object with these exact keys:
         offer = request_data.get('offer', '')
         brand_tone = request_data.get('brand_tone', '')
         b64_img = request_data.get('reference_image_base64', '')
-        # Rules the training engine has learned from repeated reviewer
-        # rejections. Placed near the end of the prompt, where the model
-        # weights instructions most heavily.
         brand_rules = request_data.get('brand_rules') or []
+        brand_name = request_data.get('brand_name', '')
+        brand_tagline = request_data.get('brand_tagline', '')
+        brand_cta = request_data.get('brand_cta', '')
+        brand_palette = request_data.get('brand_palette') or {}
+        brand_fonts = request_data.get('brand_fonts') or {}
+
+        brand_master_block = ""
+        if brand_name or brand_tagline or brand_cta or brand_palette or brand_fonts:
+            palette_desc = f"Primary: {brand_palette.get('primary', '#1A1A1A')}, Light: {brand_palette.get('light', '#FDFDFD')}, Accent: {brand_palette.get('accent', '#7C3AED')}" if brand_palette else "Curated aesthetic"
+            font_desc = f"Primary: {brand_fonts.get('primary', 'DM Sans')}, Secondary: {brand_fonts.get('secondary', 'Noto Serif')}" if brand_fonts else "Modern typography"
+            brand_master_block = f"""
+Brand Master Intelligence:
+- Brand Name: {brand_name or 'The Brand'}
+- Brand Tagline / Positioning: {brand_tagline or 'N/A'}
+- Primary Call to Action: {brand_cta or offer or 'Discover More'}
+- Visual Palette: {palette_desc}
+- Typography Style: {font_desc}
+"""
 
         prompt_text = f"""You are an elite, award-winning creative director and social media marketing expert.
 
-Given the following campaign details, generate TWO things:
+Given the following campaign details and Brand Master identity, generate TWO things:
 
 A) Social media post content (title, description, hashtags)
 B) A highly detailed image generation prompt that will be sent to an AI image model to create a breathtaking, professional marketing poster.
@@ -300,17 +315,17 @@ Campaign Details:
 - Target Audience: {audience}
 - Location: {location}
 - Occasion/Festival: {occasion}
-- Offer: {offer}
+- Offer / Key Value: {offer}
 - Brand Tone: {brand_tone}
-
-For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just place text on a plain background. Re-imagine the product in a visually stunning, high-end editorial or cinematic setting. Be extremely detailed about:
+{brand_master_block}
+For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just place text on a plain background. Re-imagine the product/service in a visually stunning, high-end editorial or cinematic setting. Be extremely detailed about:
 - **Visual Style & Medium**: (e.g., 8k resolution, photorealistic fashion editorial, 3D surrealism, Vogue magazine cover, cinematic lighting).
-- **The Setting/Background**: Place the product in a dynamic, immersive environment (e.g., a glowing enchanted forest, a high-end minimalist marble studio, a neon-lit futuristic street). 
+- **The Setting/Background**: Place the subject in a dynamic, immersive environment matching the brand's industry and tone.
 - **Lighting & Atmosphere**: (e.g., dramatic chiaroscuro, soft golden hour sunlight, moody rim lighting).
-- **Color Palette**: Highly curated colors that perfectly match the "{brand_tone}" tone.
-- **Typography & Text Integration**: Describe exactly how the text ("{campaign}" and "{offer}") should elegantly integrate into the composition (e.g., bold gold foil serif font, glowing neon letters floating in the background).
-- **Mood & Emotion**: (e.g., luxurious and mysterious, vibrant and energetic).
-- Make it suitable for Instagram (1080x1350 portrait).
+- **Color Palette**: Incorporate the Brand Master palette ({brand_palette.get('primary', 'brand primary')} and {brand_palette.get('accent', 'brand accent')}) harmoniously with the "{brand_tone}" tone.
+- **Typography & Text Integration**: Describe exactly how the text ("{campaign}" and "{offer or brand_cta}") should elegantly integrate into the composition with clean, legible typography.
+- **Mood & Emotion**: Reflect the brand's authentic voice and positioning.
+- Make it suitable for Instagram / Social (1080x1350 portrait).
 
 {cls._rules_block(brand_rules)}
 Respond ONLY with a valid JSON object (no markdown, no code fences, no extra text):

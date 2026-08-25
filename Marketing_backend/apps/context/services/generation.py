@@ -121,22 +121,33 @@ def persist_generated_image(workspace, result):
     upload = ContentFile(payload, name=filename)
     upload.content_type = mime_type
 
-    from apps.marketing.services.storage import SupabaseStorageService
+    try:
+        from apps.marketing.services.storage import SupabaseStorageService
 
-    stored = SupabaseStorageService.upload_and_describe(
-        str(workspace.pk), upload, filename, prefix='generated'
-    )
-    return {
-        **result,
-        'image_url': stored['url'],
-        'storage_path': stored['path'],
-        'mime_type': mime_type,
-        'file_size': len(payload),
-        'file_name': filename,
-        # Never carry the large provider payload beyond this boundary.
-        'image_base64': '',
-        'image_url_ephemeral': False,
-    }
+        stored = SupabaseStorageService.upload_and_describe(
+            str(workspace.pk), upload, filename, prefix='generated'
+        )
+        return {
+            **result,
+            'image_url': stored['url'],
+            'storage_path': stored['path'],
+            'mime_type': mime_type,
+            'file_size': len(payload),
+            'file_name': filename,
+            'image_base64': '',
+            'image_url_ephemeral': False,
+        }
+    except Exception as exc:
+        logger.warning("Storage upload failed, falling back to data URL: %s", exc)
+        return {
+            **result,
+            'image_url': image_url or f"data:{mime_type};base64,{encoded}",
+            'mime_type': mime_type,
+            'file_size': len(payload),
+            'file_name': filename,
+            'image_base64': '',
+            'image_url_ephemeral': False,
+        }
 
 
 def create_generated_asset(workspace, result_data, *, user=None):

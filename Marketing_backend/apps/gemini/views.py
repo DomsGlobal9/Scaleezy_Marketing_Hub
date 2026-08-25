@@ -180,59 +180,96 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             logger.exception("Could not persist generated content")
             return None
 
-    @action(detail=False, methods=['post'])
-    def generate(self, request):
+    def _enrich_brief_with_brand_master(self, workspace, data, request):
         """
-        Accepts campaign parameters, calls for text + poster,
-        returns everything the frontend needs for the preview screen.
+        Enriches incoming campaign parameters with Brand Master data points.
+        If the user omits any field (or leaves it blank), this provides
+        intelligent fallbacks from the Brand Master and Brand Brain.
         """
-        # Extract the frontend's payload directly (not via model serializer)
+        from apps.brands.models import Brand
 
+        brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
         
-        data = request.data
-        campaign_name = data.get('campaignName', data.get('campaign_name', ''))
-        product = data.get('product', '')
-        audience = data.get('audience', data.get('target_audience', ''))
-        location = data.get('location', '')
-        occasion = data.get('occasion', '')
-        offer = data.get('offer', '')
-        brand_tone = data.get('brandTone', data.get('brand_tone', ''))
-        reference_image_base64 = data.get('referenceImageBase64', '')
+        # Resolve product fallback from products_services list or industry
+        product = str(data.get('product', '')).strip()
+        if not product and brand:
+            prods = brand.products_services or []
+            if prods and isinstance(prods, list):
+                first = prods[0]
+                product = first.get('name', str(first)) if isinstance(first, dict) else str(first)
+            elif brand.industry:
+                product = brand.industry
+
+        # Resolve audience fallback
+        audience = str(data.get('audience', data.get('target_audience', ''))).strip()
+        if not audience and brand and brand.audience:
+            audience = brand.audience
+
+        # Resolve location fallback
+        location = str(data.get('location', '')).strip()
+        if not location and brand and brand.location:
+            location = brand.location
+
+        # Resolve brand tone fallback
+        brand_tone = str(data.get('brandTone', data.get('brand_tone', ''))).strip()
+        if not brand_tone and brand and brand.brand_tone:
+            brand_tone = brand.brand_tone
+
+        # Resolve offer / CTA fallback
+        offer = str(data.get('offer', '')).strip()
+        if not offer and brand:
+            offer = brand.cta_keyword or brand.tagline or ''
+
+        # Resolve campaign name fallback
+        campaign_name = str(data.get('campaignName', data.get('campaign_name', ''))).strip()
+        if not campaign_name:
+            campaign_name = f"{brand.name} Campaign" if brand else "Marketing Campaign"
 
         request_data = {
             'campaign_name': campaign_name,
             'product': product,
             'target_audience': audience,
             'location': location,
-            'occasion': occasion,
+            'occasion': str(data.get('occasion', '')).strip(),
             'offer': offer,
             'brand_tone': brand_tone,
-            'reference_image_base64': reference_image_base64,
-            # Closes the training loop: what reviewers have repeatedly
-            # rejected becomes a constraint on the next generation.
+            'reference_image_base64': data.get('referenceImageBase64', ''),
+            'brand_name': brand.name if brand else '',
+            'brand_tagline': brand.tagline if brand else '',
+            'brand_cta': brand.cta_keyword if brand else '',
+            'brand_palette': brand.palette if brand else {},
+            'brand_fonts': brand.fonts if brand else {},
+            'brand_website': brand.website if brand else '',
             'brand_rules': self._brand_rules(request),
         }
 
-        # Everything the Context Gateway resolved, carried alongside the
-        # campaign fields so any adapter can use the structured form rather
-        # than parsing the prose back out.
+        # Everything the Context Gateway resolved
         gateway = self._brand_context(request)
         if gateway:
             request_data['brand_context'] = gateway['brief']['brand_context']
             request_data['structured'] = gateway['brief']['structured']
             request_data['brain_version'] = gateway['context']['brain_version']
 
+        return request_data
+
+    @action(detail=False, methods=['post'])
+    def generate(self, request):
+        """
+        Accepts campaign parameters, calls for text + poster,
+        returns everything the frontend needs for the preview screen.
+        """
         workspace, workspace_error = get_request_workspace(request)
         if workspace_error:
             return workspace_error
         quota_error = self._quota_error(workspace)
         if quota_error:
             return quota_error
-        # No provider spend before Scaleezy approval. The router refuses too;
-        # answering here keeps the 403 envelope instead of a generic failure.
+        # No provider spend before Scaleezy approval.
         approval_error = approval_gate_response(workspace)
         if approval_error:
             return approval_error
+
+        request_data = self._enrich_brief_with_brand_master(workspace, request.data, request)
 
         from apps.ai.router import AIRouter, NoProviderAvailable
         from apps.context.services.generation import NoProviderConfigured
@@ -240,8 +277,6 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         try:
             routed = self._route_generation(workspace, request_data)
         except (NoProviderAvailable, NoProviderConfigured) as exc:
-            # Honest unavailability. A workspace with nothing routed has not
-            # generated anything, and saying so beats an empty success.
             return APIResponse(
                 success=False,
                 message="No AI provider is configured for content generation.",
@@ -261,7 +296,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         # and never stored, so the copy existed only in React state and was
         # lost on refresh.
         content_item = self._persist_content(
-            request, data, result_data, provider_key=routed['provider']
+            request, request_data, result_data, provider_key=routed['provider']
         )
         if content_item is not None:
             # Lightweight generation trace for future optimisation: which
@@ -346,20 +381,9 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if approval_error:
             return approval_error
 
-        data = request.data
-        brief = {
-            'campaign_name': data.get('campaignName', data.get('campaign_name', '')),
-            'product': data.get('product', ''),
-            'target_audience': data.get('audience', data.get('target_audience', '')),
-            'location': data.get('location', ''),
-            'occasion': data.get('occasion', ''),
-            'offer': data.get('offer', ''),
-            'brand_tone': data.get('brandTone', data.get('brand_tone', '')),
-            'reference_image_base64': data.get('referenceImageBase64', ''),
-            'contentType': data.get('contentType', ''),
-            'slides': data.get('slides') or [],
-            'brand_rules': self._brand_rules(request),
-        }
+        brief = self._enrich_brief_with_brand_master(workspace, request.data, request)
+        brief['contentType'] = request.data.get('contentType', '')
+        brief['slides'] = request.data.get('slides') or []
 
         generation = GeminiGenerationRequest.objects.create(
             workspace=workspace,

@@ -29,10 +29,20 @@ class SupabaseStorageService:
             return f"https://storage.test/{prefix}/{workspace_id}/{filename}"
 
         if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
-            raise StorageError(
-                "File storage is not configured. Set SUPABASE_URL and "
-                "SUPABASE_SERVICE_ROLE_KEY."
-            )
+            import os
+            media_root = getattr(settings, 'MEDIA_ROOT', os.path.join(settings.BASE_DIR, 'media'))
+            target_dir = os.path.join(media_root, prefix, str(workspace_id))
+            os.makedirs(target_dir, exist_ok=True)
+            unique_name = f"{uuid.uuid4()}_{filename}"
+            target_path = os.path.join(target_dir, unique_name)
+
+            content = file_obj.read() if hasattr(file_obj, 'read') else file_obj
+            with open(target_path, 'wb') as f:
+                f.write(content)
+
+            media_url = getattr(settings, 'MEDIA_URL', '/media/').rstrip('/')
+            rel_path = f"{media_url}/{prefix}/{workspace_id}/{unique_name}"
+            return f"http://127.0.0.1:8000{rel_path}"
 
         import requests
 

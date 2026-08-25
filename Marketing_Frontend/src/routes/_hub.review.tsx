@@ -7,11 +7,14 @@ import {
   Loader2,
   Palette,
   XCircle,
+  ZoomIn,
+  Eye,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { FeedbackTagPicker, useFeedbackElements } from "@/components/marketing/feedback-tags";
@@ -91,6 +94,7 @@ function ReviewPage() {
   const [tags, setTags] = useState<Record<string, string[]>>({});
   const [report, setReport] = useState<TrainingReport | null>(null);
   const [studio, setStudio] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
   const { groups, provisional } = useFeedbackElements();
   const { layouts, sizes } = useLayoutCatalogue();
 
@@ -282,11 +286,28 @@ function ReviewPage() {
           {items.map((item) => (
             <article key={item.id} className="surface-card overflow-hidden">
               {item.preview_url ? (
-                <img
-                  src={item.preview_url}
-                  alt=""
-                  className="h-48 w-full border-b border-border object-cover"
-                />
+                <div
+                  className="relative group h-48 w-full border-b border-border overflow-hidden cursor-pointer bg-black/5"
+                  onClick={() =>
+                    setPreviewImage({
+                      url: item.preview_url,
+                      title: item.headline || "Poster Preview",
+                    })
+                  }
+                  title="Click to view full size poster"
+                >
+                  <img
+                    src={item.preview_url}
+                    alt={item.headline || "Generated Poster"}
+                    className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                  />
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center pointer-events-none">
+                    <div className="flex items-center gap-1.5 rounded-full bg-black/60 px-3 py-1.5 text-xs font-medium text-white backdrop-blur-sm shadow-md">
+                      <ZoomIn className="size-3.5" />
+                      View Full Size
+                    </div>
+                  </div>
+                </div>
               ) : null}
               <div className="p-5">
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
@@ -468,6 +489,24 @@ function ReviewPage() {
           ))}
         </div>
       )}
+
+      {/* FULL SIZE IMAGE MODAL */}
+      <Dialog open={!!previewImage} onOpenChange={(open) => !open && setPreviewImage(null)}>
+        <DialogContent className="max-w-[90vw] md:max-w-3xl lg:max-w-4xl p-2 bg-black/90 border border-white/10 text-white shadow-2xl backdrop-blur-md">
+          <DialogTitle className="text-sm font-medium text-white/80 px-2 pt-1 truncate">
+            {previewImage?.title || "Poster Preview"}
+          </DialogTitle>
+          {previewImage?.url && (
+            <div className="relative overflow-hidden rounded-lg flex flex-col items-center justify-center p-1">
+              <img
+                src={previewImage.url}
+                alt={previewImage.title || "Full size poster"}
+                className="w-full h-auto max-h-[85vh] object-contain rounded-md shadow-lg"
+              />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -21,10 +21,14 @@ import {
   Plus,
   Trash2,
   Video,
+  BookOpen,
+  Palette,
+  Layers,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -281,6 +285,26 @@ function PublishingPage() {
     setIncludePhone(brand.showPhoneOnPosters);
     setPhoneOverride(brand.phoneNumber);
   }, [brand.showLogoOnPosters, brand.showPhoneOnPosters, brand.phoneNumber]);
+
+  // Auto-populate AI form with Brand Master context
+  useEffect(() => {
+    if (brand.brandTone && !brandTone) setBrandTone(brand.brandTone);
+    if (brand.location && !location) setLocation(brand.location);
+    if (brand.audience && !audience) setAudience(brand.audience);
+    if (!campaignName && brand.name) setCampaignName(`${brand.name} Spotlight`);
+  }, [brand.brandTone, brand.location, brand.audience, brand.name]);
+
+  const fillFromBrandMaster = () => {
+    if (brand.brandTone) setBrandTone(brand.brandTone);
+    if (brand.location) setLocation(brand.location);
+    if (brand.audience) setAudience(brand.audience);
+    if (brand.ctaKeyword || brand.tagline) setOffer(brand.ctaKeyword || brand.tagline);
+    if (brand.name) setCampaignName(`${brand.name} Spotlight`);
+    if (brand.productsServices && brand.productsServices.length > 0 && brand.productsServices[0]) {
+      setProduct(brand.productsServices[0].name || "");
+    }
+    toast.success("Loaded all details from Brand Master!");
+  };
 
   const hasLogo = !!brand.logoUrl;
 
@@ -1038,6 +1062,82 @@ function PublishingPage() {
             </div>
 
             <div className="p-5 sm:p-8">
+              {/* Brand Master Intelligence Connected Banner */}
+              <div className="mb-6 rounded-2xl border border-[#7C3AED]/20 bg-gradient-to-br from-[#7C3AED]/5 via-[#F7F3EE] to-white p-4 sm:p-5 shadow-sm">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-[#7C3AED]/10 pb-3.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex size-8 items-center justify-center rounded-lg bg-[#7C3AED] text-white shadow-xs">
+                      <BookOpen className="size-4" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                        Brand Master Intelligence Connected
+                        <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20 text-[10px] px-1.5 py-0">
+                          Active
+                        </Badge>
+                      </h3>
+                      <p className="text-xs text-muted-foreground">
+                        Scaleezy automatically injects your Brand Master identity, tone, and visual guidelines into this generation.
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={fillFromBrandMaster}
+                    className="shrink-0 h-8 text-xs border-[#7C3AED]/30 text-[#7C3AED] hover:bg-[#7C3AED]/10"
+                  >
+                    <Sparkles className="size-3.5 mr-1 text-[#7C3AED]" /> Auto-fill with Brand Master
+                  </Button>
+                </div>
+
+                {/* Brand Points Summary */}
+                <div className="mt-3.5 flex flex-wrap items-center gap-2 text-xs">
+                  {brand.name && (
+                    <span className="inline-flex items-center gap-1 rounded-md bg-white dark:bg-card px-2.5 py-1 border border-border/80 text-foreground font-medium shadow-xs">
+                      <span className="text-muted-foreground font-normal">Brand:</span> {brand.name}
+                    </span>
+                  )}
+                  {brand.industry && (
+                    <span className="inline-flex items-center gap-1 rounded-md bg-white dark:bg-card px-2.5 py-1 border border-border/80 text-foreground font-medium shadow-xs">
+                      <span className="text-muted-foreground font-normal">Industry:</span> {brand.industry}
+                    </span>
+                  )}
+                  {brand.brandTone && (
+                    <span className="inline-flex items-center gap-1 rounded-md bg-white dark:bg-card px-2.5 py-1 border border-border/80 text-foreground font-medium shadow-xs">
+                      <span className="text-muted-foreground font-normal">Tone:</span> {brand.brandTone}
+                    </span>
+                  )}
+                  {brand.location && (
+                    <span className="inline-flex items-center gap-1 rounded-md bg-white dark:bg-card px-2.5 py-1 border border-border/80 text-foreground font-medium shadow-xs">
+                      <span className="text-muted-foreground font-normal">Location:</span> {brand.location}
+                    </span>
+                  )}
+                  {brand.tagline && (
+                    <span className="inline-flex items-center gap-1 rounded-md bg-white dark:bg-card px-2.5 py-1 border border-border/80 text-foreground font-medium shadow-xs max-w-xs truncate">
+                      <span className="text-muted-foreground font-normal">Tagline:</span> {brand.tagline}
+                    </span>
+                  )}
+                  {brand.palette && Object.keys(brand.palette).length > 0 && (
+                    <span className="inline-flex items-center gap-1.5 rounded-md bg-white dark:bg-card px-2.5 py-1 border border-border/80 text-foreground font-medium shadow-xs">
+                      <Palette className="size-3 text-muted-foreground" />
+                      <span className="text-muted-foreground font-normal">Palette:</span>
+                      <span className="flex items-center gap-1">
+                        {Object.entries(brand.palette).slice(0, 3).map(([role, col]) => (
+                          <span
+                            key={role}
+                            className="size-3 rounded-full border border-black/10 shadow-xs inline-block"
+                            style={{ backgroundColor: col }}
+                            title={`${role}: ${col}`}
+                          />
+                        ))}
+                      </span>
+                    </span>
+                  )}
+                </div>
+              </div>
+
               {referenceImageBase64 && (
                 <div className="mb-6 flex items-start gap-4 p-4 rounded-xl border border-[#7C3AED]/20 bg-[#7C3AED]/5">
                   <div className="relative w-24 h-24 rounded-lg overflow-hidden shrink-0 border border-border">
@@ -1071,7 +1171,7 @@ function PublishingPage() {
 
               {/* WHAT TO GENERATE */}
               <div className="mb-8">
-                <Label className="text-xs tracking-wide uppercase">What should we create?</Label>
+                <Label className="text-xs tracking-wide uppercase font-semibold text-muted-foreground">What should we create?</Label>
                 <div className="mt-3 grid gap-3 sm:grid-cols-3">
                   {CONTENT_TYPES.map((ct) => {
                     const active = contentType === ct.id;
@@ -1088,7 +1188,7 @@ function PublishingPage() {
                         className={cn(
                           "flex items-center gap-3 rounded-xl border p-4 text-left transition-colors",
                           active
-                            ? "border-[#7C3AED] bg-[#7C3AED]/5"
+                            ? "border-[#7C3AED] bg-[#7C3AED]/5 shadow-xs"
                             : "border-border hover:bg-secondary/60",
                           !ct.available &&
                             "cursor-not-allowed opacity-60 hover:bg-transparent",
@@ -1118,32 +1218,113 @@ function PublishingPage() {
 
               <div className="grid gap-5 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <Label>Campaign / promotion name</Label>
-                  <Input value={campaignName} onChange={(e) => setCampaignName(e.target.value)} />
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">Campaign / promotion name</Label>
+                    <span className="text-[11px] text-muted-foreground">optional</span>
+                  </div>
+                  <Input
+                    placeholder={brand.name ? `e.g., ${brand.name} Special Spotlight` : "e.g., Summer Launch"}
+                    value={campaignName}
+                    onChange={(e) => setCampaignName(e.target.value)}
+                  />
                 </div>
+
                 <div className="space-y-2">
-                  <Label>Product or collection</Label>
-                  <Input value={product} onChange={(e) => setProduct(e.target.value)} />
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">Product or collection</Label>
+                    <span className="text-[11px] text-muted-foreground">optional</span>
+                  </div>
+                  {/* Brand Master Product Chips */}
+                  {brand.productsServices && brand.productsServices.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 pb-1">
+                      <span className="text-[11px] text-muted-foreground flex items-center gap-1">
+                        <Sparkles className="size-3 text-[#7C3AED]" /> Quick pick:
+                      </span>
+                      {brand.productsServices.slice(0, 4).map((p, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => setProduct(p.name)}
+                          className={cn(
+                            "text-[11px] px-2 py-0.5 rounded-md border transition-all",
+                            product === p.name
+                              ? "border-[#7C3AED] bg-[#7C3AED] text-white font-medium shadow-xs"
+                              : "border-border bg-secondary/50 text-foreground hover:border-[#7C3AED]/40 hover:bg-secondary"
+                          )}
+                        >
+                          {p.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <Input
+                    placeholder={
+                      brand.productsServices?.[0]?.name ||
+                      (brand.industry ? `e.g., ${brand.industry} services` : "e.g., Premium Consultation")
+                    }
+                    value={product}
+                    onChange={(e) => setProduct(e.target.value)}
+                  />
                 </div>
+
                 <div className="space-y-2">
-                  <Label>Target audience</Label>
-                  <Input value={audience} onChange={(e) => setAudience(e.target.value)} />
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">Target audience</Label>
+                    <span className="text-[11px] text-muted-foreground">optional</span>
+                  </div>
+                  <Input
+                    placeholder={brand.audience || "e.g., Students, Professionals, Travelers"}
+                    value={audience}
+                    onChange={(e) => setAudience(e.target.value)}
+                  />
                 </div>
+
                 <div className="space-y-2">
-                  <Label>Location</Label>
-                  <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">Location</Label>
+                    <span className="text-[11px] text-muted-foreground">optional</span>
+                  </div>
+                  <Input
+                    placeholder={brand.location || "e.g., Bengaluru, India"}
+                    value={location}
+                    onChange={(e) => setLocation(e.target.value)}
+                  />
                 </div>
+
                 <div className="space-y-2">
-                  <Label>Occasion / festival</Label>
-                  <Input value={occasion} onChange={(e) => setOccasion(e.target.value)} />
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">Occasion / festival</Label>
+                    <span className="text-[11px] text-muted-foreground">optional</span>
+                  </div>
+                  <Input
+                    placeholder="e.g., Summer Season, New Year, Exclusive Offer"
+                    value={occasion}
+                    onChange={(e) => setOccasion(e.target.value)}
+                  />
                 </div>
+
                 <div className="space-y-2">
-                  <Label>Offer</Label>
-                  <Input value={offer} onChange={(e) => setOffer(e.target.value)} />
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">Offer / Key Call-to-Action</Label>
+                    <span className="text-[11px] text-muted-foreground">optional</span>
+                  </div>
+                  <Input
+                    placeholder={brand.ctaKeyword || brand.tagline || "e.g., Start Application Today / Flat 20% Off"}
+                    value={offer}
+                    onChange={(e) => setOffer(e.target.value)}
+                  />
                 </div>
+
                 <div className="space-y-2 sm:col-span-2">
-                  <Label>Brand tone</Label>
-                  <Input value={brandTone} onChange={(e) => setBrandTone(e.target.value)} />
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">Brand tone</Label>
+                    <span className="text-[11px] text-muted-foreground">optional</span>
+                  </div>
+                  <Input
+                    placeholder={brand.brandTone || "e.g., Authoritative, Premium, Trustworthy"}
+                    value={brandTone}
+                    onChange={(e) => setBrandTone(e.target.value)}
+                  />
                 </div>
               </div>
 

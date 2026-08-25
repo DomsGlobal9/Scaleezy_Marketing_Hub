@@ -42,3 +42,4 @@ htmlcov/
 .coverage
 .coverage.*
 coverage.xml
+/generated/prisma

@@ -34,7 +34,14 @@ logger = logging.getLogger(__name__)
 #: The capabilities a workspace needs routed before Create works end to end.
 #: TEXT alone produces copy with no poster; the generation accelerator asks for
 #: both and keeps whichever succeeds.
-REQUIRED_CAPABILITIES = (Capability.TEXT, Capability.IMAGE)
+REQUIRED_CAPABILITIES = (
+    Capability.TEXT,
+    Capability.IMAGE,
+    Capability.IMAGE_ANALYSIS,
+    Capability.IMAGE_CAPTION,
+    Capability.VIDEO_ANALYSIS,
+    Capability.EMBEDDING,
+)
 
 DEFAULT_PRIORITY = 100
 DEFAULT_STRATEGY = Strategy.FAILOVER
