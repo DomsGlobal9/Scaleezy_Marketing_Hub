@@ -51,7 +51,7 @@ class AIRouter:
                 continue
             if not wp.supports(capability):
                 continue
-            adapter = build(wp)
+            adapter = build(wp, model=route.model_override)
             if adapter is None:
                 continue
             out.append({'route': route, 'workspace_provider': wp, 'adapter': adapter})

@@ -86,8 +86,8 @@ def adapter_class_for_provider(provider):
     return get_adapter_class(provider.key)
 
 
-def build(workspace_provider) -> AIProviderAdapter | None:
-    """Instantiates the adapter for a WorkspaceAIProvider row."""
+def build(workspace_provider, *, model=None) -> AIProviderAdapter | None:
+    """Instantiates the adapter for a WorkspaceAIProvider row, optionally overriding the model."""
     from apps.social_accounts.utils.encryption import decrypt_token
 
     cls = adapter_class_for_provider(workspace_provider.provider)
@@ -104,9 +104,10 @@ def build(workspace_provider) -> AIProviderAdapter | None:
                 "Could not decrypt credentials for %s", workspace_provider.provider.key
             )
 
+    chosen_model = model or workspace_provider.model_override or workspace_provider.provider.default_model
     adapter = cls(
         credentials=credentials,
-        model=workspace_provider.model_override or workspace_provider.provider.default_model,
+        model=chosen_model,
         config=workspace_provider.config or {},
     )
     if workspace_provider.provider.is_custom:

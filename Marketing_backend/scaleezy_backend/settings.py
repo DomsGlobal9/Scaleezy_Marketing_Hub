@@ -8,6 +8,9 @@ import environ
 from datetime import timedelta
 from pathlib import Path
 
+# Clean up broken Windows SSLKEYLOGFILE pipe if set by local network proxy/filter
+os.environ.pop('SSLKEYLOGFILE', None)
+
 from corsheaders.defaults import default_headers as default_cors_headers
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.

@@ -149,12 +149,25 @@ class WorkspaceAIProvider(models.Model):
             return list(self.provider.capabilities or [])
         return list(self.capabilities)
 
+    @property
+    def configured_models(self) -> list:
+        models = (self.config or {}).get('models')
+        if isinstance(models, list) and models:
+            clean = [str(m).strip() for m in models if str(m).strip()]
+            if clean:
+                return clean
+        if self.model_override:
+            return [self.model_override.strip()]
+        if self.provider.default_model:
+            return [self.provider.default_model.strip()]
+        return []
+
 
 class WorkspaceAIRoute(models.Model):
     """
-    Which providers serve which capability, in what order.
+    Which providers and models serve which capability, in what order.
 
-    This expresses independent, ordered provider sets for every capability.
+    This expresses independent, ordered provider/model sets for every capability.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -163,6 +176,7 @@ class WorkspaceAIRoute(models.Model):
     )
     capability = models.CharField(max_length=32, choices=Capability.choices)
     provider = models.ForeignKey(AIProvider, on_delete=models.CASCADE, related_name='routes')
+    model_override = models.CharField(max_length=150, blank=True)
 
     priority = models.PositiveIntegerField(default=100, help_text="Lower runs first.")
     enabled = models.BooleanField(default=True)
@@ -175,11 +189,12 @@ class WorkspaceAIRoute(models.Model):
 
     class Meta:
         db_table = 'workspace_ai_routes'
-        unique_together = ('workspace', 'capability', 'provider')
+        unique_together = ('workspace', 'capability', 'provider', 'model_override')
         ordering = ['capability', 'priority']
 
     def __str__(self):
-        return f"{self.capability} -> {self.provider.key} (p{self.priority})"
+        m = f" ({self.model_override})" if self.model_override else ""
+        return f"{self.capability} -> {self.provider.key}{m} (p{self.priority})"
 
 
 class AIUsageLog(models.Model):

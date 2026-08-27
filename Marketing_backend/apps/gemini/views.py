@@ -215,15 +215,21 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if not brand_tone and brand and brand.brand_tone:
             brand_tone = brand.brand_tone
 
-        # Resolve offer / CTA fallback
+        # Resolve offer / CTA (respect explicitly cleared or empty offer)
         offer = str(data.get('offer', '')).strip()
-        if not offer and brand:
-            offer = brand.cta_keyword or brand.tagline or ''
 
         # Resolve campaign name fallback
         campaign_name = str(data.get('campaignName', data.get('campaign_name', ''))).strip()
         if not campaign_name:
             campaign_name = f"{brand.name} Campaign" if brand else "Marketing Campaign"
+
+        # Resolve brand add-ons
+        include_logo = data.get('includeLogo', data.get('include_logo', brand.show_logo_on_posters if brand else False))
+        include_phone = data.get('includePhone', data.get('include_phone', brand.show_phone_on_posters if brand else False))
+        phone_number = str(data.get('phoneNumber', data.get('phone_number', data.get('phoneOverride', '')))).strip()
+        if not phone_number and brand and brand.contact_phone:
+            phone_number = brand.contact_phone
+        logo_url = brand.logo_url if brand else ''
 
         request_data = {
             'campaign_name': campaign_name,
@@ -240,6 +246,10 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'brand_palette': brand.palette if brand else {},
             'brand_fonts': brand.fonts if brand else {},
             'brand_website': brand.website if brand else '',
+            'include_logo': bool(include_logo and logo_url),
+            'include_phone': bool(include_phone and phone_number),
+            'phone_number': phone_number,
+            'logo_url': logo_url,
             'brand_rules': self._brand_rules(request),
         }
 

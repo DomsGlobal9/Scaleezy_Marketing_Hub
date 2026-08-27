@@ -27,6 +27,8 @@ def _public_address(value: str) -> bool:
 def validate_public_https_endpoint(value: str) -> str:
     """Return a normalized public HTTPS base URL or raise ValidationError."""
     raw = (value or '').strip()
+    if not raw.startswith(('http://', 'https://')):
+        raw = f'https://{raw}'
     parsed = urlsplit(raw)
     if parsed.scheme.lower() != 'https' or not parsed.hostname:
         raise ValidationError('Enter a public HTTPS API base URL.')
@@ -56,7 +58,9 @@ def validate_public_https_endpoint(value: str) -> str:
             )
         }
     except (OSError, ValueError) as exc:
-        raise ValidationError('The AI endpoint hostname could not be resolved.') from exc
+        raise ValidationError(
+            f"The AI endpoint hostname '{hostname}' could not be resolved. Please verify the domain name."
+        ) from exc
     if not addresses or any(not _public_address(address) for address in addresses):
         raise ValidationError('The AI endpoint must resolve only to public addresses.')
 

@@ -72,6 +72,7 @@ interface WorkspaceProvider {
   provider_key: string;
   provider_name: string;
   capabilities: string[];
+  configured_models?: string[];
   enabled: boolean;
   has_credentials: boolean;
   model_override: string;
@@ -86,6 +87,7 @@ interface RouteRow {
   provider: string;
   provider_key: string;
   provider_name: string;
+  model_override?: string;
   priority: number;
   enabled: boolean;
   strategy: string;
@@ -120,7 +122,7 @@ interface UsageRow {
 }
 
 interface RouteDraft {
-  providerIds: string[];
+  targetKeys: string[];
   strategy: string;
   dirty: boolean;
 }
@@ -216,6 +218,8 @@ export function AIProvidersPanel({
     Record<string, string[]>
   >({});
   const [providerModelDrafts, setProviderModelDrafts] = useState<Record<string, string>>({});
+  const [providerModelsDrafts, setProviderModelsDrafts] = useState<Record<string, string[]>>({});
+  const [newModelInputs, setNewModelInputs] = useState<Record<string, string>>({});
   const [providerFilter, setProviderFilter] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [addProviderId, setAddProviderId] = useState("");
@@ -234,7 +238,7 @@ export function AIProvidersPanel({
         .filter((row) => row.capability === capability.value)
         .sort((a, b) => a.priority - b.priority);
       next[capability.value] = {
-        providerIds: members.map((row) => row.provider),
+        targetKeys: members.map((row) => `${row.provider}::${row.model_override || ""}`),
         strategy: members[0]?.strategy ?? "FAILOVER",
         dirty: false,
       };
@@ -270,6 +274,19 @@ export function AIProvidersPanel({
       );
       setProviderModelDrafts(
         Object.fromEntries(providerRows.map((row) => [row.provider, row.model_override ?? ""])),
+      );
+      setProviderModelsDrafts(
+        Object.fromEntries(
+          providerRows.map((row) => {
+            const models =
+              row.configured_models && row.configured_models.length > 0
+                ? row.configured_models
+                : row.model_override
+                  ? [row.model_override]
+                  : [];
+            return [row.provider, models];
+          }),
+        ),
       );
       setResolved(activeRoutes ?? {});
       setUsageSummary(Array.isArray(summary) ? summary : []);
@@ -309,7 +326,11 @@ export function AIProvidersPanel({
       if (provider.integration_type === "SCALEEZY_JSON") {
         return capabilities.map((capability) => capability.value);
       }
-      if (provider.integration_type === "OPENAI_COMPATIBLE") {
+      if (
+        provider.integration_type === "OPENAI_COMPATIBLE" ||
+        provider.key === "openrouter" ||
+        provider.key === "together"
+      ) {
         return capabilities
           .map((capability) => capability.value)
           .filter((value) => value !== "VIDEO" && value !== "VIDEO_ANALYSIS");
@@ -430,20 +451,47 @@ export function AIProvidersPanel({
     });
   };
 
+  const addModelToProvider = (providerId: string) => {
+    const val = (newModelInputs[providerId] || "").trim();
+    if (!val) return;
+    setProviderModelsDrafts((current) => {
+      const existing = current[providerId] || [];
+      if (existing.includes(val)) return current;
+      return { ...current, [providerId]: [...existing, val] };
+    });
+    setNewModelInputs((current) => ({ ...current, [providerId]: "" }));
+  };
+
+  const removeModelFromProvider = (providerId: string, modelToRemove: string) => {
+    setProviderModelsDrafts((current) => {
+      const existing = current[providerId] || [];
+      return { ...current, [providerId]: existing.filter((m) => m !== modelToRemove) };
+    });
+  };
+
   const saveProviderTasks = async (
     provider: CatalogueProvider,
     workspaceProvider: WorkspaceProvider,
   ) => {
     setBusy(`provider:${provider.id}`);
     try {
+      const models =
+        providerModelsDrafts[provider.id] ??
+        (workspaceProvider.configured_models && workspaceProvider.configured_models.length > 0
+          ? workspaceProvider.configured_models
+          : workspaceProvider.model_override
+            ? [workspaceProvider.model_override]
+            : []);
+      const primaryModel = (models[0] ?? providerModelDrafts[provider.id] ?? "").trim();
       await api(`/api/marketing/ai/providers/${workspaceProvider.id}/`, {
         method: "PATCH",
         body: {
           capabilities: providerCapabilityDrafts[provider.id] ?? [],
-          model_override: (providerModelDrafts[provider.id] ?? "").trim(),
+          model_override: primaryModel,
+          configured_models: models,
         },
       });
-      toast.success(`${provider.display_name} model and tasks saved.`);
+      toast.success(`${provider.display_name} models and tasks saved.`);
       await load();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not save provider tasks.");
@@ -485,7 +533,7 @@ export function AIProvidersPanel({
     setRouteDrafts((current) => ({
       ...current,
       [capability]: {
-        providerIds: current[capability]?.providerIds ?? [],
+        targetKeys: current[capability]?.targetKeys ?? [],
         strategy: current[capability]?.strategy ?? "FAILOVER",
         dirty: true,
         ...change,
@@ -493,12 +541,12 @@ export function AIProvidersPanel({
     }));
   };
 
-  const toggleRouteProvider = (capability: string, providerId: string, enabled: boolean) => {
-    const current = routeDrafts[capability]?.providerIds ?? [];
+  const toggleRouteTarget = (capability: string, targetKey: string, enabled: boolean) => {
+    const current = routeDrafts[capability]?.targetKeys ?? [];
     updateDraft(capability, {
-      providerIds: enabled
-        ? [...current.filter((id) => id !== providerId), providerId]
-        : current.filter((id) => id !== providerId),
+      targetKeys: enabled
+        ? [...current.filter((k) => k !== targetKey), targetKey]
+        : current.filter((k) => k !== targetKey),
     });
   };
 
@@ -510,15 +558,15 @@ export function AIProvidersPanel({
     );
   };
 
-  const moveRouteProvider = (capability: string, providerId: string, direction: -1 | 1) => {
-    const ids = [...(routeDrafts[capability]?.providerIds ?? [])];
-    const from = ids.indexOf(providerId);
+  const moveRouteTarget = (capability: string, targetKey: string, direction: -1 | 1) => {
+    const keys = [...(routeDrafts[capability]?.targetKeys ?? [])];
+    const from = keys.indexOf(targetKey);
     const to = from + direction;
-    if (from < 0 || to < 0 || to >= ids.length) return;
-    const [moved] = ids.splice(from, 1);
+    if (from < 0 || to < 0 || to >= keys.length) return;
+    const [moved] = keys.splice(from, 1);
     if (!moved) return;
-    ids.splice(to, 0, moved);
-    updateDraft(capability, { providerIds: ids });
+    keys.splice(to, 0, moved);
+    updateDraft(capability, { targetKeys: keys });
   };
 
   const saveRoute = async (capability: string) => {
@@ -529,10 +577,14 @@ export function AIProvidersPanel({
       await apiPost("/api/marketing/ai/routes/replace-set/", {
         capability,
         strategy: draft.strategy,
-        routes: draft.providerIds.map((provider, index) => ({
-          provider,
-          priority: (index + 1) * 10,
-        })),
+        routes: draft.targetKeys.map((targetKey, index) => {
+          const [providerId, model] = targetKey.split("::");
+          return {
+            provider: providerId,
+            model_override: model || "",
+            priority: (index + 1) * 10,
+          };
+        }),
       });
       toast.success(`${humanize(capability)} route saved.`);
       await load();
@@ -1056,12 +1108,11 @@ export function AIProvidersPanel({
                     </div>
 
                     {workspaceProvider ? (
-                      <div className="space-y-3 rounded-lg border border-border p-3">
+                      <div className="space-y-4 rounded-lg border border-border p-4">
                         <div>
-                          <Label>Tasks this model performs</Label>
+                          <Label>Tasks this provider performs</Label>
                           <p className="text-xs text-muted-foreground">
-                            Choose exactly what this model may do. Saving removes it from any task
-                            you deselect in Routing &amp; redundancy.
+                            Choose what this provider gateway may do. Deselecting removes all its models from that capability route.
                           </p>
                         </div>
                         <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
@@ -1092,34 +1143,76 @@ export function AIProvidersPanel({
                             );
                           })}
                         </div>
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-                          <div className="flex-1 space-y-1.5">
-                            <Label htmlFor={`provider-${provider.id}-model`}>
-                              Exact model name
-                            </Label>
+
+                        {/* MULTI-MODEL CONFIGURATION */}
+                        <div className="space-y-2.5 border-t border-border pt-3">
+                          <div>
+                            <Label>Configured Gateway Models</Label>
+                            <p className="text-xs text-muted-foreground">
+                              Add models available under this provider key. Each model appears as an individual routing target in Capability Routing.
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5 min-h-[32px]">
+                            {(providerModelsDrafts[provider.id] || []).map((m) => (
+                              <span
+                                key={m}
+                                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-secondary/80 px-2.5 py-1 text-xs font-medium text-foreground"
+                              >
+                                <span>{m}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => removeModelFromProvider(provider.id, m)}
+                                  className="text-muted-foreground hover:text-destructive text-sm leading-none ml-1"
+                                  title="Remove model"
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            ))}
+                            {!(providerModelsDrafts[provider.id] || []).length && (
+                              <span className="text-xs text-muted-foreground italic">No models configured yet.</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
                             <Input
-                              id={`provider-${provider.id}-model`}
-                              value={modelDraft}
-                              placeholder={
-                                provider.default_model || "Enter the exact model identifier"
-                              }
+                              placeholder="Enter model name (e.g. minimax/minimax-m3, stealth/ox-alpha)"
+                              value={newModelInputs[provider.id] || ""}
                               disabled={providerBusy}
-                              onChange={(event) =>
-                                setProviderModelDrafts((current) => ({
+                              onChange={(e) =>
+                                setNewModelInputs((current) => ({
                                   ...current,
-                                  [provider.id]: event.target.value,
+                                  [provider.id]: e.target.value,
                                 }))
                               }
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  addModelToProvider(provider.id);
+                                }
+                              }}
+                              className="h-8 text-xs"
                             />
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-8 text-xs gap-1 shrink-0"
+                              disabled={providerBusy || !(newModelInputs[provider.id] || "").trim()}
+                              onClick={() => addModelToProvider(provider.id)}
+                            >
+                              <Plus className="size-3.5" /> Add model
+                            </Button>
                           </div>
-                          <Button
-                            type="button"
-                            disabled={providerBusy || !configurationDirty}
-                            onClick={() => void saveProviderTasks(provider, workspaceProvider)}
-                          >
-                            {providerBusy ? <Loader2 className="size-4 animate-spin" /> : null}
-                            Save model &amp; tasks
-                          </Button>
+                          <div className="flex justify-end pt-2">
+                            <Button
+                              type="button"
+                              disabled={providerBusy}
+                              onClick={() => void saveProviderTasks(provider, workspaceProvider)}
+                            >
+                              {providerBusy ? <Loader2 className="size-4 animate-spin" /> : null}
+                              Save models &amp; tasks
+                            </Button>
+                          </div>
                         </div>
                       </div>
                     ) : (
@@ -1139,8 +1232,9 @@ export function AIProvidersPanel({
                       <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
                         <span>Last check: {when(workspaceProvider.last_health_check_at)}</span>
                         <span>
-                          Model:{" "}
-                          {workspaceProvider.model_override ||
+                          Models:{" "}
+                          {(providerModelsDrafts[provider.id] || []).join(", ") ||
+                            workspaceProvider.model_override ||
                             provider.default_model ||
                             "Provider default"}
                         </span>
@@ -1161,36 +1255,68 @@ export function AIProvidersPanel({
         <div>
           <p className="label-eyebrow">Capability routing</p>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            Select as many enabled providers as needed for each purpose, order them, choose a
-            strategy, then save the complete route atomically.
+            Select as many enabled providers and models as needed for each purpose, order them by priority, choose a
+            failover strategy, then save the complete route atomically.
           </p>
         </div>
 
         <div className="space-y-4">
           {capabilities.map((capability) => {
             const draft = routeDrafts[capability.value] ?? {
-              providerIds: [],
+              targetKeys: [],
               strategy: "FAILOVER",
               dirty: false,
             };
-            const capable = catalogue
-              .filter((provider) => {
-                const configured = connectedFor(provider.id);
-                return (
-                  provider.is_available &&
-                  provider.adapter_installed &&
-                  !!configured &&
-                  configured.capabilities.includes(capability.value)
-                );
-              })
-              .sort((left, right) => {
-                const leftIndex = draft.providerIds.indexOf(left.id);
-                const rightIndex = draft.providerIds.indexOf(right.id);
-                if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
-                if (leftIndex >= 0) return -1;
-                if (rightIndex >= 0) return 1;
-                return left.display_name.localeCompare(right.display_name);
-              });
+
+            const capableItems: {
+              targetKey: string;
+              providerId: string;
+              providerName: string;
+              model: string;
+              enabled: boolean;
+            }[] = [];
+
+            catalogue.forEach((provider) => {
+              const configured = connectedFor(provider.id);
+              if (
+                provider.is_available &&
+                provider.adapter_installed &&
+                !!configured &&
+                configured.capabilities.includes(capability.value)
+              ) {
+                const models =
+                  configured.configured_models && configured.configured_models.length > 0
+                    ? configured.configured_models
+                    : configured.model_override
+                      ? [configured.model_override]
+                      : [provider.default_model || ""];
+
+                models.forEach((m) => {
+                  const modelName = (m || "").trim();
+                  const targetKey = `${provider.id}::${modelName}`;
+                  capableItems.push({
+                    targetKey,
+                    providerId: provider.id,
+                    providerName: provider.display_name,
+                    model: modelName,
+                    enabled: !!configured.enabled,
+                  });
+                });
+              }
+            });
+
+            // Sort candidates: selected items first in order of draft.targetKeys, then alphabetical
+            capableItems.sort((left, right) => {
+              const leftIndex = draft.targetKeys.indexOf(left.targetKey);
+              const rightIndex = draft.targetKeys.indexOf(right.targetKey);
+              if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
+              if (leftIndex >= 0) return -1;
+              if (rightIndex >= 0) return 1;
+              return `${left.providerName} ${left.model}`.localeCompare(
+                `${right.providerName} ${right.model}`,
+              );
+            });
+
             const routeBusy = busy === `route:${capability.value}`;
 
             return (
@@ -1200,14 +1326,14 @@ export function AIProvidersPanel({
                     <div>
                       <CardTitle className="text-base">{capability.label}</CardTitle>
                       <CardDescription className="mt-1">
-                        {draft.providerIds.length
-                          ? `${draft.providerIds.length} provider${draft.providerIds.length === 1 ? "" : "s"} selected. Execution follows the order below.`
-                          : "No provider selected for this capability."}
+                        {draft.targetKeys.length
+                          ? `${draft.targetKeys.length} target${draft.targetKeys.length === 1 ? "" : "s"} selected. Execution follows the order below.`
+                          : "No model selected for this capability."}
                       </CardDescription>
                     </div>
                     <Select
                       value={draft.strategy}
-                      disabled={routeBusy || !draft.providerIds.length}
+                      disabled={routeBusy || !draft.targetKeys.length}
                       onValueChange={(strategy) => updateDraft(capability.value, { strategy })}
                     >
                       <SelectTrigger
@@ -1229,38 +1355,44 @@ export function AIProvidersPanel({
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  {!capable.length ? (
+                  {!capableItems.length ? (
                     <p className="rounded-lg border border-dashed border-border p-5 text-sm text-muted-foreground">
-                      No configured model is assigned this task yet. Choose it in the Providers tab
+                      No configured model is assigned this task yet. Configure models under the Providers tab
                       first.
                     </p>
                   ) : (
-                    capable.map((provider) => {
-                      const selectedIndex = draft.providerIds.indexOf(provider.id);
+                    capableItems.map((item) => {
+                      const selectedIndex = draft.targetKeys.indexOf(item.targetKey);
                       const selected = selectedIndex >= 0;
-                      const enabled = !!connectedFor(provider.id)?.enabled;
                       return (
                         <div
-                          key={provider.id}
+                          key={item.targetKey}
                           className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-border bg-background px-3 py-2.5"
                         >
                           <Checkbox
-                            id={`${capability.value}-${provider.id}`}
+                            id={`${capability.value}-${item.targetKey}`}
                             checked={selected}
-                            disabled={routeBusy || (!enabled && !selected)}
+                            disabled={routeBusy || (!item.enabled && !selected)}
                             onCheckedChange={(value) =>
-                              toggleRouteProvider(capability.value, provider.id, value === true)
+                              toggleRouteTarget(capability.value, item.targetKey, value === true)
                             }
                           />
                           <Label
-                            htmlFor={`${capability.value}-${provider.id}`}
+                            htmlFor={`${capability.value}-${item.targetKey}`}
                             className="min-w-0 cursor-pointer text-sm font-normal"
                           >
-                            <span className="block truncate">{provider.display_name}</span>
-                            <span className="block text-xs text-muted-foreground">
+                            <span className="flex flex-wrap items-center gap-2 truncate font-medium">
+                              <span>{item.providerName}</span>
+                              {item.model ? (
+                                <span className="rounded bg-secondary px-2 py-0.5 text-xs font-normal text-foreground border border-border/80">
+                                  {item.model}
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="block text-xs text-muted-foreground mt-0.5">
                               {selected
-                                ? `Priority ${selectedIndex + 1}${enabled ? "" : " · provider disabled"}`
-                                : enabled
+                                ? `Priority ${selectedIndex + 1}${item.enabled ? "" : " · provider disabled"}`
+                                : item.enabled
                                   ? "Available to add"
                                   : "Enable this provider in the Providers tab first"}
                             </span>
@@ -1272,9 +1404,9 @@ export function AIProvidersPanel({
                                 size="icon"
                                 variant="ghost"
                                 className="size-8"
-                                aria-label={`Move ${provider.display_name} up`}
+                                aria-label={`Move ${item.providerName} up`}
                                 disabled={routeBusy || selectedIndex === 0}
-                                onClick={() => moveRouteProvider(capability.value, provider.id, -1)}
+                                onClick={() => moveRouteTarget(capability.value, item.targetKey, -1)}
                               >
                                 <ArrowUp className="size-4" />
                               </Button>
@@ -1283,11 +1415,11 @@ export function AIProvidersPanel({
                                 size="icon"
                                 variant="ghost"
                                 className="size-8"
-                                aria-label={`Move ${provider.display_name} down`}
+                                aria-label={`Move ${item.providerName} down`}
                                 disabled={
-                                  routeBusy || selectedIndex === draft.providerIds.length - 1
+                                  routeBusy || selectedIndex === draft.targetKeys.length - 1
                                 }
-                                onClick={() => moveRouteProvider(capability.value, provider.id, 1)}
+                                onClick={() => moveRouteTarget(capability.value, item.targetKey, 1)}
                               >
                                 <ArrowDown className="size-4" />
                               </Button>

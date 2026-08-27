@@ -26,19 +26,37 @@ def response(payload, status_code=200):
 
 
 class OpenAICompatibleAdapterTests(SimpleTestCase):
-    def test_all_installed_providers_are_discoverable_and_text_only(self):
+    def test_all_installed_providers_are_discoverable_with_declared_capabilities(self):
         adapters = {
-            'groq': GroqAdapter,
-            'mistral': MistralAdapter,
-            'deepseek': DeepSeekAdapter,
-            'openrouter': OpenRouterAdapter,
-            'together': TogetherAdapter,
+            'groq': (GroqAdapter, (Capability.TEXT,)),
+            'mistral': (MistralAdapter, (Capability.TEXT,)),
+            'deepseek': (DeepSeekAdapter, (Capability.TEXT,)),
+            'openrouter': (
+                OpenRouterAdapter,
+                (
+                    Capability.TEXT,
+                    Capability.IMAGE,
+                    Capability.IMAGE_ANALYSIS,
+                    Capability.IMAGE_CAPTION,
+                    Capability.EMBEDDING,
+                ),
+            ),
+            'together': (
+                TogetherAdapter,
+                (
+                    Capability.TEXT,
+                    Capability.IMAGE,
+                    Capability.IMAGE_ANALYSIS,
+                    Capability.IMAGE_CAPTION,
+                    Capability.EMBEDDING,
+                ),
+            ),
         }
 
-        for key, adapter_class in adapters.items():
+        for key, (adapter_class, expected_caps) in adapters.items():
             with self.subTest(key=key):
                 self.assertIs(get_adapter_class(key), adapter_class)
-                self.assertEqual(tuple(adapter_class.capabilities), (Capability.TEXT,))
+                self.assertEqual(tuple(adapter_class.capabilities), expected_caps)
                 self.assertTrue(adapter_class.base_url.startswith('https://'))
                 self.assertNotIn('{', adapter_class.base_url)
 

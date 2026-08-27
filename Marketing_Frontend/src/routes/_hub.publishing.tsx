@@ -721,12 +721,10 @@ function PublishingPage() {
           offer,
           brandTone,
           referenceImageBase64,
-          // contentType and slides are read and persisted on both the sync and
-          // the async path. The video settings, the derived slideCount and the
-          // logo/phone overlay keys that used to ride along here were read by
-          // nothing — the views build their brief from an explicit allowlist —
-          // so they are no longer sent and their controls are disabled above.
           contentType,
+          includeLogo: includeLogo && hasLogo,
+          includePhone: includePhone,
+          phoneNumber: phoneOverride || brand.phoneNumber || brand.contactPhone || "",
           ...(contentType === "carousel"
             ? {
                 slides: slides.map((s, i) => ({
@@ -1496,13 +1494,12 @@ function PublishingPage() {
               {/* POSTER ADD-ONS — logo and phone number from the brand kit */}
               {contentType !== "video" && (
                 <div className="mt-8 rounded-xl border border-border p-5">
-                  <h3 className="text-sm font-semibold text-foreground">Brand add-ons</h3>
-                  {/* The old copy promised a per-generation override. Only the
-                      brand-level defaults reach the poster; the toggles here
-                      were a local copy that nothing downstream ever read. */}
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-foreground">Brand add-ons</h3>
+                    <span className="text-xs font-medium text-primary">Live Overlay Enabled</span>
+                  </div>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Follows the poster defaults in Brand Master — a per-generation override is not
-                    available yet.
+                    Automatically overlays your verified brand logo at the top-right and contact details in the footer.
                   </p>
 
                   <div className="mt-4 space-y-3">
@@ -1520,13 +1517,18 @@ function PublishingPage() {
                           </span>
                         )}
                         <div className="min-w-0">
-                          <Label className="text-sm font-normal">Show brand logo</Label>
+                          <Label htmlFor="addon-logo" className="text-sm font-medium cursor-pointer">Show brand logo (Top Right)</Label>
                           <p className="mt-0.5 text-xs text-muted-foreground">
-                            {hasLogo ? "From your Brand Kit." : "Upload a logo in Settings first."}
+                            {hasLogo ? "Verified logo from your Brand Master." : "Upload a logo in Brand Master first."}
                           </p>
                         </div>
                       </div>
-                      <Checkbox checked={includeLogo && hasLogo} disabled />
+                      <Checkbox
+                        id="addon-logo"
+                        checked={includeLogo && hasLogo}
+                        disabled={!hasLogo}
+                        onCheckedChange={(checked) => setIncludeLogo(!!checked)}
+                      />
                     </div>
 
                     <div className="rounded-xl border border-border bg-secondary/20 px-4 py-3">
@@ -1536,23 +1538,29 @@ function PublishingPage() {
                             <Phone className="size-4" />
                           </span>
                           <div className="min-w-0">
-                            <Label className="text-sm font-normal">Show phone number</Label>
+                            <Label htmlFor="addon-phone" className="text-sm font-medium cursor-pointer">Show phone & website (Footer Frame)</Label>
                             <p className="mt-0.5 text-xs text-muted-foreground">
-                              Printed at the bottom of the image.
+                              Rendered in a modern footer frame at the bottom.
                             </p>
                           </div>
                         </div>
-                        <Checkbox checked={includePhone} disabled />
+                        <Checkbox
+                          id="addon-phone"
+                          checked={includePhone}
+                          onCheckedChange={(checked) => setIncludePhone(!!checked)}
+                        />
                       </div>
                       {includePhone ? (
-                        <Input
-                          type="tel"
-                          className="mt-3"
-                          disabled
-                          placeholder="+91 98765 43210"
-                          value={phoneOverride}
-                          onChange={(e) => setPhoneOverride(e.target.value)}
-                        />
+                        <div className="mt-3">
+                          <Label className="text-xs text-muted-foreground">Contact Phone Number</Label>
+                          <Input
+                            type="tel"
+                            className="mt-1"
+                            placeholder="+91 98765 43210"
+                            value={phoneOverride}
+                            onChange={(e) => setPhoneOverride(e.target.value)}
+                          />
+                        </div>
                       ) : null}
                     </div>
                   </div>

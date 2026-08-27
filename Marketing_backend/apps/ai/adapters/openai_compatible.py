@@ -32,7 +32,11 @@ class OpenAICompatibleTextAdapter(AIProviderAdapter):
     allow_anonymous = False
 
     def _api_key(self) -> str:
-        return (self.credentials or '').strip()
+        key = (self.credentials or '').strip()
+        for prefix in ('api key:', 'apikey:', 'api_key:', 'bearer '):
+            if key.lower().startswith(prefix):
+                key = key[len(prefix):].strip()
+        return key
 
     def _detail(self, message: str) -> str:
         return f'{self.display_name} {message}'
@@ -118,6 +122,8 @@ class OpenAICompatibleTextAdapter(AIProviderAdapter):
         return content.strip()
 
     def _decode_json(self, text: str) -> Dict[str, Any]:
+        import re
+
         value = text.strip()
         if value.startswith('```') and value.endswith('```'):
             value = value[3:-3].strip()
@@ -125,17 +131,30 @@ class OpenAICompatibleTextAdapter(AIProviderAdapter):
                 value = value[4:].strip()
         try:
             parsed = json.loads(value)
-        except (TypeError, ValueError) as exc:
-            raise AIProviderError(self._detail('returned invalid structured output.')) from exc
-        if not isinstance(parsed, dict):
-            raise AIProviderError(self._detail('returned invalid structured output.'))
-        return parsed
+            if isinstance(parsed, dict):
+                return parsed
+        except (TypeError, ValueError):
+            pass
 
-    def _required_string(self, data: Mapping[str, Any], field: str) -> str:
-        value = data.get(field)
-        if not isinstance(value, str) or not value.strip():
-            raise AIProviderError(self._detail('returned incomplete structured output.'))
-        return value.strip()
+        match = re.search(r'\{[\s\S]*\}', value)
+        if match:
+            try:
+                parsed = json.loads(match.group(0))
+                if isinstance(parsed, dict):
+                    return parsed
+            except (TypeError, ValueError) as exc:
+                raise AIProviderError(self._detail('returned invalid structured output.')) from exc
+
+        raise AIProviderError(self._detail('returned invalid structured output.'))
+
+    def _get_string_field(self, data: Mapping[str, Any], *fields: str) -> str:
+        for field in fields:
+            value = data.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, list) and value:
+                return ' '.join(str(v) for v in value).strip()
+        return ''
 
     def generate_text(self, brief: Dict[str, Any]) -> Dict[str, Any]:
         if str(brief.get('task') or '').upper() == 'EXTRACT':
@@ -158,7 +177,6 @@ class OpenAICompatibleTextAdapter(AIProviderAdapter):
                         ),
                     },
                 ],
-                'response_format': {'type': 'json_object'},
                 'temperature': 0,
                 'max_tokens': int(self.config.get('max_tokens', 2000)),
             })
@@ -177,8 +195,8 @@ class OpenAICompatibleTextAdapter(AIProviderAdapter):
                     'role': 'system',
                     'content': (
                         'Act only as a replaceable execution provider for Scaleezy. '
-                        'Respect supplied brand facts and hard rules. Return one JSON '
-                        'object with exactly headline, caption and hashtags strings.'
+                        'Respect supplied brand facts and hard rules. Return valid JSON '
+                        'with keys: headline, caption, hashtags.'
                     ),
                 },
                 {
@@ -190,14 +208,19 @@ class OpenAICompatibleTextAdapter(AIProviderAdapter):
                     ),
                 },
             ],
-            'response_format': {'type': 'json_object'},
             'temperature': float(self.config.get('temperature', 0.7)),
             'max_tokens': int(self.config.get('max_tokens', 1200)),
         })
         generated = self._decode_json(self._response_text(response))
-        headline = self._required_string(generated, 'headline')
-        caption = self._required_string(generated, 'caption')
-        hashtags = self._required_string(generated, 'hashtags')
+        headline = self._get_string_field(generated, 'headline', 'postTitle', 'title', 'heading')
+        caption = self._get_string_field(generated, 'caption', 'postDescription', 'description', 'body', 'content')
+        hashtags = self._get_string_field(generated, 'hashtags', 'postHashtags', 'tags')
+        if not headline and not caption:
+            raise AIProviderError(self._detail('returned incomplete structured output.'))
+        if not headline:
+            headline = caption[:60]
+        if not caption:
+            caption = headline
         return {
             'headline': headline,
             'caption': caption,
@@ -214,31 +237,122 @@ class OpenAICompatibleTextAdapter(AIProviderAdapter):
         }
 
     def generate_image(self, brief: Dict[str, Any]) -> Dict[str, Any]:
-        response = self._post('images/generations', {
-            'model': self.model,
-            'prompt': (
+        import base64
+        import re
+
+        prompt = str(
+            brief.get('image_prompt')
+            or brief.get('prompt')
+            or brief.get('instruction')
+            or ''
+        ).strip()
+        if not prompt:
+            prompt = (
                 'Create one polished, brand-aligned marketing visual. '
                 'Do not invent business claims.\nBRIEF_JSON:\n'
                 + self._brief_json(brief)
-            ),
-            'n': 1,
-            'size': self.config.get('image_size', '1024x1024'),
-        })
-        rows = response.get('data')
-        first = rows[0] if isinstance(rows, list) and rows else None
-        if not isinstance(first, Mapping):
-            raise AIProviderError(self._detail('returned no image.'))
-        image_url = first.get('url')
-        encoded = first.get('b64_json')
-        if isinstance(encoded, str) and encoded.strip():
-            image_url = f"data:image/png;base64,{encoded.strip()}"
-        if not isinstance(image_url, str) or not image_url.strip():
-            raise AIProviderError(self._detail('returned no image.'))
-        return {
-            'image_url': image_url.strip(),
-            'image_url_ephemeral': not bool(encoded),
-            'raw': response,
-        }
+            )
+
+        last_error = None
+
+        # 1. Try standard OpenAI /images/generations endpoint
+        try:
+            response = self._post('images/generations', {
+                'model': self.model,
+                'prompt': prompt,
+                'n': 1,
+                'size': self.config.get('image_size', '1024x1024'),
+            })
+            rows = response.get('data')
+            first = rows[0] if isinstance(rows, list) and rows else None
+            if isinstance(first, Mapping):
+                image_url = first.get('url')
+                encoded = first.get('b64_json')
+                if isinstance(encoded, str) and encoded.strip():
+                    image_url = f"data:image/png;base64,{encoded.strip()}"
+                if isinstance(image_url, str) and image_url.strip():
+                    return {
+                        'image_url': image_url.strip(),
+                        'image_url_ephemeral': not bool(encoded),
+                        'raw': response,
+                    }
+        except Exception as exc:
+            last_error = exc
+
+        # 2. Try direct binary image inference (Hugging Face / custom model endpoints)
+        for path in (f'models/{self.model}', f'hf-inference/models/{self.model}', ''):
+            if not path and not ('huggingface' in self.base_url or 'endpoints' in self.base_url):
+                continue
+            try:
+                base = self._request_base_url()
+                url = f"{base}/{path.lstrip('/')}" if path else base
+                timeout = float(getattr(settings, 'AI_PROVIDER_REQUEST_TIMEOUT', 60.0))
+                resp = httpx.post(
+                    url,
+                    headers=self._headers(),
+                    json={'inputs': prompt},
+                    timeout=timeout,
+                    follow_redirects=True,
+                )
+                if resp.status_code == 200:
+                    ct = resp.headers.get('content-type', 'image/png').split(';')[0].strip()
+                    if ct.startswith('image/') or resp.content.startswith((b'\x89PNG', b'\xff\xd8\xff', b'RIFF')):
+                        encoded = base64.b64encode(resp.content).decode('ascii')
+                        return {
+                            'image_url': f"data:{ct if ct.startswith('image/') else 'image/png'};base64,{encoded}",
+                            'image_url_ephemeral': False,
+                            'raw': {'content_length': len(resp.content)},
+                        }
+                elif resp.status_code >= 400:
+                    try:
+                        err_json = resp.json()
+                        err_msg = err_json.get('error') or err_json.get('message')
+                        if err_msg:
+                            last_error = AIProviderError(self._detail(f"rejected request: {err_msg}"))
+                    except Exception:
+                        pass
+            except Exception as exc:
+                last_error = exc
+
+        # 3. Fallback to /chat/completions for multimodal chat-based image models
+        try:
+            chat_resp = self._post('chat/completions', {
+                'model': self.model,
+                'messages': [
+                    {
+                        'role': 'user',
+                        'content': f"Generate an image with prompt: {prompt}",
+                    }
+                ],
+                'max_tokens': 1000,
+            })
+            text = self._response_text(chat_resp)
+            md_match = re.search(r'!\[.*?\]\((https?://[^\s\)]+|data:image/[^;]+;base64,[^\s\)]+)\)', text)
+            if md_match:
+                img_url = md_match.group(1).strip()
+                return {
+                    'image_url': img_url,
+                    'image_url_ephemeral': not img_url.startswith('data:'),
+                    'raw': chat_resp,
+                }
+            url_match = re.search(r'(https?://[^\s"\'<>]+\.(?:png|jpg|jpeg|webp)(?:\?[^\s"\'<>]*)?)', text, re.IGNORECASE)
+            if url_match:
+                img_url = url_match.group(1).strip()
+                return {
+                    'image_url': img_url,
+                    'image_url_ephemeral': True,
+                    'raw': chat_resp,
+                }
+        except Exception as exc:
+            if not last_error:
+                last_error = exc
+
+        if isinstance(last_error, AIProviderError):
+            raise last_error
+        if last_error:
+            raise AIProviderError(self._detail(f"image generation failed: {str(last_error)}")) from last_error
+
+        raise AIProviderError(self._detail('returned no image.'))
 
     @staticmethod
     def _image_reference(brief: Mapping[str, Any]) -> str:
@@ -403,6 +517,13 @@ class OpenRouterAdapter(OpenAICompatibleTextAdapter):
     display_name = 'OpenRouter'
     default_model = 'openai/gpt-oss-20b'
     base_url = 'https://openrouter.ai/api/v1'
+    capabilities = (
+        Capability.TEXT,
+        Capability.IMAGE,
+        Capability.IMAGE_ANALYSIS,
+        Capability.IMAGE_CAPTION,
+        Capability.EMBEDDING,
+    )
 
 
 class TogetherAdapter(OpenAICompatibleTextAdapter):
@@ -410,3 +531,10 @@ class TogetherAdapter(OpenAICompatibleTextAdapter):
     display_name = 'Together AI'
     default_model = 'openai/gpt-oss-20b'
     base_url = 'https://api.together.ai/v1'
+    capabilities = (
+        Capability.TEXT,
+        Capability.IMAGE,
+        Capability.IMAGE_ANALYSIS,
+        Capability.IMAGE_CAPTION,
+        Capability.EMBEDDING,
+    )

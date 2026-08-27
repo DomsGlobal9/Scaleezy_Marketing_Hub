@@ -281,10 +281,12 @@ class WorkspaceAIRouteViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             keep = []
             for member in members:
                 provider = member['provider']
+                model_override = (member.get('model_override') or '').strip()
                 route, _created = WorkspaceAIRoute.objects.update_or_create(
                     workspace=workspace,
                     capability=capability,
                     provider=provider,
+                    model_override=model_override,
                     defaults={
                         'priority': member['priority'],
                         'strategy': data['strategy'],

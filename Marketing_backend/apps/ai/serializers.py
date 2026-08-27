@@ -25,7 +25,7 @@ class AIProviderSerializer(serializers.ModelSerializer):
 
 class CustomWorkspaceAIProviderSerializer(serializers.Serializer):
     display_name = serializers.CharField(max_length=100, trim_whitespace=True)
-    base_url = serializers.URLField(max_length=500)
+    base_url = serializers.CharField(max_length=500, trim_whitespace=True)
     credentials = serializers.CharField(
         write_only=True,
         trim_whitespace=True,
@@ -94,6 +94,11 @@ class WorkspaceAIProviderSerializer(serializers.ModelSerializer):
         allow_empty=True,
         allow_null=True,
     )
+    configured_models = serializers.ListField(
+        child=serializers.CharField(max_length=150, trim_whitespace=True),
+        required=False,
+        allow_empty=True,
+    )
     has_credentials = serializers.BooleanField(read_only=True)
     # Write-only: the plaintext key is accepted once, encrypted, and never
     # returned. Same treatment as the OAuth tokens.
@@ -103,6 +108,7 @@ class WorkspaceAIProviderSerializer(serializers.ModelSerializer):
         model = WorkspaceAIProvider
         fields = [
             'id', 'provider', 'provider_key', 'provider_name', 'capabilities',
+            'configured_models',
             'enabled', 'credentials', 'has_credentials', 'model_override',
             'max_cost_per_generation', 'config',
             'last_health_check_at', 'last_health_ok', 'last_error',
@@ -114,6 +120,10 @@ class WorkspaceAIProviderSerializer(serializers.ModelSerializer):
 
         raw = validated.pop('credentials', None)
         if raw is not None:
+            raw = raw.strip()
+            for prefix in ('api key:', 'apikey:', 'api_key:', 'bearer '):
+                if raw.lower().startswith(prefix):
+                    raw = raw[len(prefix):].strip()
             validated['credentials_encrypted'] = encrypt_token(raw) if raw else ''
         return validated
 
@@ -156,6 +166,7 @@ class WorkspaceAIProviderSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data['capabilities'] = instance.assigned_capabilities
+        data['configured_models'] = instance.configured_models
         return data
 
     def create(self, validated_data):
@@ -165,9 +176,25 @@ class WorkspaceAIProviderSerializer(serializers.ModelSerializer):
             validated_data['capabilities'] = [
                 value for value in Capability.values if value in supported
             ]
+        configured_models = validated_data.pop('configured_models', None)
+        if configured_models is not None:
+            clean_models = [m.strip() for m in configured_models if m.strip()]
+            config = dict(validated_data.get('config') or {})
+            config['models'] = clean_models
+            validated_data['config'] = config
+            if clean_models and not validated_data.get('model_override'):
+                validated_data['model_override'] = clean_models[0]
         return super().create(self._apply_credentials(validated_data))
 
     def update(self, instance, validated_data):
+        configured_models = validated_data.pop('configured_models', None)
+        if configured_models is not None:
+            clean_models = [m.strip() for m in configured_models if m.strip()]
+            config = dict(validated_data.get('config', instance.config) or {})
+            config['models'] = clean_models
+            validated_data['config'] = config
+            if clean_models and not validated_data.get('model_override'):
+                validated_data['model_override'] = clean_models[0]
         updated = super().update(instance, self._apply_credentials(validated_data))
         if 'capabilities' in validated_data and updated.provider.is_custom:
             updated.provider.capabilities = list(updated.capabilities or [])
@@ -182,7 +209,7 @@ class WorkspaceAIRouteSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkspaceAIRoute
         fields = ['id', 'capability', 'provider', 'provider_key', 'provider_name',
-                  'priority', 'enabled', 'strategy']
+                  'model_override', 'priority', 'enabled', 'strategy']
         read_only_fields = ['id']
 
     def validate(self, attrs):
@@ -197,6 +224,7 @@ class WorkspaceAIRouteSerializer(serializers.ModelSerializer):
 
 class WorkspaceAIRouteMemberSerializer(serializers.Serializer):
     provider = serializers.PrimaryKeyRelatedField(queryset=AIProvider.objects.all())
+    model_override = serializers.CharField(max_length=150, required=False, allow_blank=True, default='')
     priority = serializers.IntegerField(min_value=0)
 
 
@@ -209,9 +237,9 @@ class ReplaceWorkspaceAIRouteSetSerializer(serializers.Serializer):
     )
 
     def validate_routes(self, routes):
-        provider_ids = [route['provider'].id for route in routes]
-        if len(provider_ids) != len(set(provider_ids)):
-            raise serializers.ValidationError("A provider can appear only once per capability.")
+        pairs = [(route['provider'].id, (route.get('model_override') or '').strip()) for route in routes]
+        if len(pairs) != len(set(pairs)):
+            raise serializers.ValidationError("A provider and model pair can appear only once per capability.")
         priorities = [route['priority'] for route in routes]
         if len(priorities) != len(set(priorities)):
             raise serializers.ValidationError("Route priorities must be unique.")

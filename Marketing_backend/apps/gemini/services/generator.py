@@ -288,19 +288,36 @@ Return ONLY a valid JSON object with these exact keys:
         brand_cta = request_data.get('brand_cta', '')
         brand_palette = request_data.get('brand_palette') or {}
         brand_fonts = request_data.get('brand_fonts') or {}
+        include_logo = request_data.get('include_logo', False)
+        include_phone = request_data.get('include_phone', False)
+        phone_number = request_data.get('phone_number', '')
+        brand_website = request_data.get('brand_website', '')
+
+        # Clean composition constraints for the AI image generator
+        addon_instructions = [
+            "- **Clean Upper-Right Area**: Keep the top-right corner uncluttered and clean (no artificial text logos, badges, or watermarks in pixels), leaving room for post-production brand emblem compositing.",
+            "- **Clean Lower 15% Area**: Keep the bottom margin clean, atmospheric, and uncluttered (no artificial phone numbers, URLs, or contact footer bars in pixels).",
+            "- **CRITICAL NEGATIVE CONSTRAINT**: DO NOT render, draw, or bake any phone numbers, URLs, email addresses, or contact footer bars into the raw artwork.",
+        ]
+        addon_block = "\n**Poster Composition & Negative Constraints**:\n" + "\n".join(addon_instructions) + "\n"
 
         brand_master_block = ""
-        if brand_name or brand_tagline or brand_cta or brand_palette or brand_fonts:
+        if brand_name or brand_tagline or brand_palette or brand_fonts or offer:
             palette_desc = f"Primary: {brand_palette.get('primary', '#1A1A1A')}, Light: {brand_palette.get('light', '#FDFDFD')}, Accent: {brand_palette.get('accent', '#7C3AED')}" if brand_palette else "Curated aesthetic"
             font_desc = f"Primary: {brand_fonts.get('primary', 'DM Sans')}, Secondary: {brand_fonts.get('secondary', 'Noto Serif')}" if brand_fonts else "Modern typography"
+            cta_line = f"- Primary Call to Action / Offer: {offer}\n" if offer else "- Call to Action: None (No CTA or promotional offer is requested. Do NOT generate or draw any CTA text)\n"
             brand_master_block = f"""
 Brand Master Intelligence:
 - Brand Name: {brand_name or 'The Brand'}
 - Brand Tagline / Positioning: {brand_tagline or 'N/A'}
-- Primary Call to Action: {brand_cta or offer or 'Discover More'}
-- Visual Palette: {palette_desc}
+{cta_line}- Visual Palette: {palette_desc}
 - Typography Style: {font_desc}
 """
+
+        if offer:
+            typography_instruction = f'- **Typography & Text Integration**: Describe exactly how the text ("{campaign}" and "{offer}") should elegantly integrate into the composition with clean, legible typography.'
+        else:
+            typography_instruction = f'- **Typography & Text Integration**: Describe how the headline text ("{campaign}") should integrate into the composition. Since NO call-to-action or offer is provided, DO NOT render, invent, or draw any call-to-action buttons, discount badges, or CTA text (like "Discover More", "Book Now", etc.) into the artwork.'
 
         prompt_text = f"""You are an elite, award-winning creative director and social media marketing expert.
 
@@ -315,15 +332,16 @@ Campaign Details:
 - Target Audience: {audience}
 - Location: {location}
 - Occasion/Festival: {occasion}
-- Offer / Key Value: {offer}
+- Offer / Key Value: {offer or 'None'}
 - Brand Tone: {brand_tone}
 {brand_master_block}
+{addon_block}
 For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just place text on a plain background. Re-imagine the product/service in a visually stunning, high-end editorial or cinematic setting. Be extremely detailed about:
 - **Visual Style & Medium**: (e.g., 8k resolution, photorealistic fashion editorial, 3D surrealism, Vogue magazine cover, cinematic lighting).
 - **The Setting/Background**: Place the subject in a dynamic, immersive environment matching the brand's industry and tone.
 - **Lighting & Atmosphere**: (e.g., dramatic chiaroscuro, soft golden hour sunlight, moody rim lighting).
 - **Color Palette**: Incorporate the Brand Master palette ({brand_palette.get('primary', 'brand primary')} and {brand_palette.get('accent', 'brand accent')}) harmoniously with the "{brand_tone}" tone.
-- **Typography & Text Integration**: Describe exactly how the text ("{campaign}" and "{offer or brand_cta}") should elegantly integrate into the composition with clean, legible typography.
+{typography_instruction}
 - **Mood & Emotion**: Reflect the brand's authentic voice and positioning.
 - Make it suitable for Instagram / Social (1080x1350 portrait).
 

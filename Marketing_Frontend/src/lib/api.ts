@@ -179,13 +179,23 @@ function unwrap<T>(json: unknown): T {
 
 function errorFrom(status: number, json: unknown, fallback: string): ApiError {
   if (json && typeof json === "object") {
-    const e = json as {
-      message?: string;
-      detail?: string;
-      error?: { code?: string; message?: string };
-    };
-    const message = e.error?.message || e.message || e.detail || fallback;
-    return new ApiError(status, message, e.error?.code, json);
+    const e = json as Record<string, any>;
+    let message = e.error?.message || e.message || e.detail;
+    if (!message) {
+      const fieldErrors: string[] = [];
+      for (const [key, val] of Object.entries(e)) {
+        if (key === "error" || key === "success") continue;
+        if (Array.isArray(val)) {
+          fieldErrors.push(`${key}: ${val.join(" ")}`);
+        } else if (typeof val === "string") {
+          fieldErrors.push(`${key}: ${val}`);
+        }
+      }
+      if (fieldErrors.length > 0) {
+        message = fieldErrors.join(" | ");
+      }
+    }
+    return new ApiError(status, message || fallback, e.error?.code, json);
   }
   return new ApiError(status, fallback, undefined, json);
 }

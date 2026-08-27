@@ -67,7 +67,7 @@ class OutputRejected(Exception):
 MAX_GENERATED_IMAGE_BYTES = 20 * 1024 * 1024
 
 
-def persist_generated_image(workspace, result):
+def persist_generated_image(workspace, result, *, brand=None, brief=None):
     """Replace provider-temporary image data with durable platform storage.
 
     Provider adapters normalize their output, but they do not own customer
@@ -111,12 +111,49 @@ def persist_generated_image(workspace, result):
     if not mime_type.startswith('image/'):
         raise OutputRejected("Generated media is not an image.")
 
+    # Apply Brand Add-on Compositing (Logo at Top Right & Contact Phone / Website in Footer Frame)
+    try:
+        from apps.brands.models import Brand
+        from apps.marketing.services.compositor import BrandAddonCompositor
+
+        target_brand = brand
+        if target_brand is None:
+            target_brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
+
+        b_data = brief or {}
+        include_logo = b_data.get('include_logo', b_data.get('includeLogo', target_brand.show_logo_on_posters if target_brand else False))
+        include_phone = b_data.get('include_phone', b_data.get('includePhone', target_brand.show_phone_on_posters if target_brand else False))
+        phone_number = str(b_data.get('phone_number', b_data.get('phoneNumber', b_data.get('phoneOverride', '')))).strip()
+        if not phone_number and target_brand and target_brand.contact_phone:
+            phone_number = target_brand.contact_phone
+        logo_url = target_brand.logo_url if target_brand else ''
+        website = target_brand.website if target_brand else ''
+        cta = str(b_data.get('offer') or (target_brand.cta_keyword if target_brand else '') or (target_brand.tagline if target_brand else '') or '')
+        b_name = target_brand.name if target_brand else ''
+        palette = target_brand.palette if target_brand else {}
+
+        if (include_logo and logo_url) or (include_phone and phone_number):
+            payload = BrandAddonCompositor.composite_poster(
+                payload,
+                logo_url=logo_url,
+                include_logo=bool(include_logo and logo_url),
+                phone_number=phone_number,
+                include_phone=bool(include_phone and phone_number),
+                website=website,
+                cta=cta,
+                brand_name=b_name,
+                palette=palette,
+            )
+            mime_type = 'image/jpeg'
+    except Exception as exc:
+        logger.warning("Compositing brand add-ons failed, continuing with raw image: %s", exc)
+
     suffix = {
         'image/jpeg': 'jpg',
         'image/png': 'png',
         'image/webp': 'webp',
         'image/gif': 'gif',
-    }.get(mime_type, 'img')
+    }.get(mime_type, 'jpg')
     filename = f'generated-{uuid.uuid4().hex}.{suffix}'
     upload = ContentFile(payload, name=filename)
     upload.content_type = mime_type
@@ -238,7 +275,7 @@ def generate_with_context(workspace, brand, task_type=TaskType.COPY, *, instruct
 
     validate_output(capability, result, context)
     if capability == Capability.IMAGE:
-        result = persist_generated_image(workspace, result)
+        result = persist_generated_image(workspace, result, brand=brand, brief=brief)
 
     return {
         'result': result,
@@ -354,7 +391,7 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
 
     if image is not None:
         try:
-            image = persist_generated_image(workspace, image)
+            image = persist_generated_image(workspace, image, brand=brand, brief=brief_extra)
         except Exception as exc:
             # Storage is part of completing an image. Keep successfully
             # generated copy, but never call a temporary/truncated image done.
@@ -447,6 +484,6 @@ def retry_image(workspace, brand, brief_extra, *, instruction=''):
     try:
         result = AIRouter(workspace).dispatch(Capability.IMAGE, brief)
         validate_output(Capability.IMAGE, result, context)
-        return persist_generated_image(workspace, result)
+        return persist_generated_image(workspace, result, brand=brand, brief=brief)
     except NoProviderAvailable as exc:
         raise NoProviderConfigured(str(exc)) from exc
