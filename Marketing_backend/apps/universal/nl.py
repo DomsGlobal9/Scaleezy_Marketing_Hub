@@ -166,15 +166,15 @@ def accept_proposal(workspace, brand, proposal, *, note=None, user=None):
     including its authority rank and its provenance.
     """
     from apps.knowledge.models import BrandMemory
-    from apps.learning.models import BrandRule
-    from apps.learning.services import create_explicit_rule
+    from apps.learning.models import BrandRule, LearningEvent, SubjectType
+    from apps.learning.services import create_explicit_rule, record_event_safely
 
     kind = str(proposal.get('kind', '')).upper()
     if kind not in PROPOSAL_KINDS:
         raise NLError(f"Unknown proposal kind: {kind}")
 
     if kind in ('FACT', 'AUDIENCE'):
-        return BrandMemory.objects.create(
+        memory = BrandMemory.objects.create(
             workspace=workspace,
             brand=brand,
             source=note,
@@ -185,6 +185,22 @@ def accept_proposal(workspace, brand, proposal, *, note=None, user=None):
             status=BrandMemory.MemoryStatus.CONFIRMED,
             confidence=1.0,
         )
+        # Tapping accept on a proposal card IS a confirmation — the same act
+        # the knowledge review calls one — so it leaves the same evidence.
+        record_event_safely(
+            workspace=workspace,
+            brand=brand,
+            event_type=LearningEvent.EventType.MEMORY_CONFIRMED,
+            outcome=LearningEvent.Outcome.POSITIVE,
+            subject_type=SubjectType.BRAND_MEMORY,
+            subject_id=memory.pk,
+            source_type=SubjectType.BRAND_SOURCE,
+            source_id=note.pk,
+            context={'kind': kind, 'quote': str(proposal.get('quote', ''))[:300]},
+            dedupe_key=f'nl-accept:{note.pk}:{memory.pk}',
+            created_by=user,
+        )
+        return memory
 
     if kind in ('PREFERENCE', 'TONE', 'SOFT_RULE'):
         # SOFT, never HARD. A hard rule blocks generation, and a parse is not

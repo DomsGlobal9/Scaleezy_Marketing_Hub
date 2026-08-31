@@ -99,10 +99,46 @@ class BrandViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             status=initial_brand_status(workspace),
         )
 
+    #: Fields that change what the brand IS, as opposed to housekeeping.
+    IDENTITY_FIELDS = (
+        'name', 'industry', 'tagline', 'brand_tone', 'cta_keyword',
+        'description', 'audience',
+    )
+
     def perform_update(self, serializer):
         # Name, industry, tagline, tone and CTA are the brain's identity and
         # voice sections; the snapshot generation reads must follow an edit.
+        before = {
+            field: getattr(serializer.instance, field, '')
+            for field in self.IDENTITY_FIELDS
+        }
         brand = serializer.save()
+
+        # A person restating who the brand is, dated. Nothing recorded this:
+        # the brain was rebuilt and the previous identity vanished, so no
+        # later pass could tell a long-held position from one changed
+        # yesterday.
+        changed = {
+            field: {'from': str(before[field])[:300],
+                    'to': str(getattr(brand, field, ''))[:300]}
+            for field in self.IDENTITY_FIELDS
+            if before[field] != getattr(brand, field, '')
+        }
+        if changed:
+            from apps.learning.models import LearningEvent, SubjectType
+            from apps.learning.services import record_event_safely
+
+            record_event_safely(
+                workspace=brand.workspace,
+                brand=brand,
+                event_type=LearningEvent.EventType.PREFERENCE_SIGNAL,
+                outcome=LearningEvent.Outcome.NEUTRAL,
+                subject_type=SubjectType.BRAND,
+                subject_id=brand.pk,
+                context={'action': 'IDENTITY_EDITED',
+                         'fields': sorted(changed), 'changes': changed},
+                created_by=self.request.user,
+            )
         rebuild_brand_brain_safely(brand)
 
     @action(detail=False, methods=['get'])

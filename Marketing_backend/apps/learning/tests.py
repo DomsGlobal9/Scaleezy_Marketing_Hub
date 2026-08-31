@@ -348,11 +348,27 @@ class PreferenceThresholdTests(LearningTestBase):
         )
 
     def test_new_evidence_does_not_revive_a_retired_preference(self):
+        """Retiring withdraws THAT record; it does not retire the subject.
+
+        This used to raise, which read as "do not revive" but actually meant
+        the attribute could never accumulate evidence again: every later
+        judgment about it hit the retired row and was swallowed, invisibly and
+        permanently. The rule the code always documented — "new evidence
+        starts a new record" — is what it now does.
+        """
         preference = self.make_established_preference()
         preference.state = BrandPreference.State.RETIRED
         preference.save(update_fields=['state'])
-        with self.assertRaises(LearningError):
-            self.reinforce(self.make_event(dedupe_key='after-retire'))
+
+        successor = self.reinforce(self.make_event(dedupe_key='after-retire'))
+
+        self.assertNotEqual(successor.pk, preference.pk)
+        self.assertNotEqual(successor.state, BrandPreference.State.RETIRED)
+        preference.refresh_from_db()
+        self.assertEqual(
+            preference.state, BrandPreference.State.RETIRED,
+            'the retired record stays retired; it is not revived',
+        )
 
 
 class RuleAuthorityTests(LearningTestBase):

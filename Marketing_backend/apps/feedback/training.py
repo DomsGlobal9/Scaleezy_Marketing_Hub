@@ -131,9 +131,16 @@ class TrainingEngine:
         if not feedback.is_corrective:
             return []
 
+        # Scoped to the brand, not just the workspace. A workspace may hold
+        # several brands, and a sibling's review says nothing about this one:
+        # left unfiltered it lands in the evidence set, and `upsert_learned_rule`
+        # then rejects the whole batch because the events belong to another
+        # brand — so one unrelated review could stop a real pattern from ever
+        # becoming a rule.
         candidates = (
             Feedback.objects.filter(
                 workspace_id=feedback.workspace_id,
+                brand_id=feedback.brand_id,
                 verdict__in=list(Feedback.CORRECTIVE),
             )
             .exclude(pk=feedback.pk)

@@ -117,6 +117,15 @@ class BrandMemory(models.Model):
     embedding_model = models.CharField(max_length=100, blank=True, null=True)
     extracted_by_provider = models.CharField(max_length=100, blank=True, null=True)
 
+    # Who ruled on this candidate, and when. A confirmed fact enters the Brand
+    # Brain at rank 20 and outranks most of what a generation reads, so
+    # "somebody decided this was true" needs a name against it.
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='brand_memories_reviewed',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
