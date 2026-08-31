@@ -13,9 +13,8 @@ actually produce the state it counts. When it cannot, the value is None and
 rather than a zero.
 
 `live` is a fact about the codebase, not a runtime probe, so it is stated
-here as a constant next to each signal — and it is a lie that fails loudly:
-the moment PR6 ships the knowledge processor, the flag flips here and the
-tile starts meaning something, in one edit.
+here next to each signal. When a writer lands, its health signal must start
+counting the durable state in the same delivery.
 """
 from dataclasses import dataclass
 from datetime import timedelta
@@ -59,32 +58,6 @@ class Signal:
         }
 
 
-def _dead(key, label, reason):
-    return Signal(key=key, label=label, value=None, live=False, reason=reason)
-
-
-# Written by nothing today. Kept in the list deliberately rather than deleted:
-# an operator who cannot see that knowledge processing is unmonitored will
-# assume it is working.
-NOT_YET_WRITTEN = {
-    'knowledge_failed': (
-        'Knowledge sources failed',
-        'Knowledge processing is not implemented '
-        '(apps/knowledge/views.py::process returns 501), so no source can '
-        'reach FAILED. This tile will start counting when the extractor ships.',
-    ),
-    'knowledge_needs_review': (
-        'Knowledge needs review',
-        'Set by the knowledge extractor, which is not implemented yet.',
-    ),
-    'inspiration_analysis_failed': (
-        'Inspiration analysis failed',
-        'Inspiration analysis is not implemented '
-        '(apps/inspirations/views.py returns 501).',
-    ),
-}
-
-
 def platform_signals(*, inactive_days=DEFAULT_INACTIVE_DAYS):
     """Every operations signal, live ones counted, dead ones declared.
 
@@ -93,7 +66,9 @@ def platform_signals(*, inactive_days=DEFAULT_INACTIVE_DAYS):
     """
     from apps.ai.models import WorkspaceAIRoute
     from apps.brands.models import Brand
+    from apps.inspirations.models import BrandInspiration
     from apps.jobs.models import TaskRun
+    from apps.knowledge.models import BrandSource
     from apps.publishing.models import PublishingJob
     from apps.social_accounts.models import SocialConnection
     from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
@@ -128,6 +103,33 @@ def platform_signals(*, inactive_days=DEFAULT_INACTIVE_DAYS):
                 status=Brand.Status.ACTIVE,
                 brain_failed_at__isnull=False,
             ).exclude(brain_compiled_at__gt=F('brain_failed_at')).count(),
+            live=True,
+        ),
+        Signal(
+            key='knowledge_failed',
+            label='Knowledge sources failed',
+            value=BrandSource.objects.filter(
+                workspace__in=active_workspaces,
+                status=BrandSource.SourceStatus.FAILED,
+            ).count(),
+            live=True,
+        ),
+        Signal(
+            key='knowledge_needs_review',
+            label='Knowledge needs review',
+            value=BrandSource.objects.filter(
+                workspace__in=active_workspaces,
+                status=BrandSource.SourceStatus.NEEDS_REVIEW,
+            ).count(),
+            live=True,
+        ),
+        Signal(
+            key='inspiration_analysis_failed',
+            label='Inspiration analysis failed',
+            value=BrandInspiration.objects.eligible_for_retrieval().filter(
+                workspace__in=active_workspaces,
+                analysis_status=BrandInspiration.AnalysisStatus.FAILED,
+            ).count(),
             live=True,
         ),
         Signal(
@@ -180,9 +182,6 @@ def platform_signals(*, inactive_days=DEFAULT_INACTIVE_DAYS):
         ),
     ]
 
-    signals.extend(
-        _dead(key, label, reason) for key, (label, reason) in NOT_YET_WRITTEN.items()
-    )
     return signals
 
 

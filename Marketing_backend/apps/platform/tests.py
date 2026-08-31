@@ -83,7 +83,9 @@ class PlatformBoundaryTests(TenantFixtureMixin, TestCase):
         data = response.json()['data']
         by_key = {s['key']: s for s in data['signals']}
         self.assertEqual(by_key['pending_approvals']['value'], 1)
-        self.assertEqual(by_key['knowledge_failed']['display'], 'Not monitored')
+        self.assertTrue(by_key['knowledge_failed']['live'])
+        self.assertEqual(by_key['knowledge_failed']['display'], '0')
+        self.assertNotIn('knowledge_failed', data['unmonitored'])
         self.assertTrue(PlatformAuditLog.objects.filter(action='PLATFORM_HEALTH_VIEWED').exists())
 
     # ───────────────────────────────────────────── P1 approval queue

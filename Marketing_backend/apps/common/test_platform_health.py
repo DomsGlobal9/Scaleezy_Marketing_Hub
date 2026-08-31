@@ -18,7 +18,9 @@ from apps.brands.services.brand_brain import (
     rebuild_brand_brain_safely,
 )
 from apps.common.permissions import LAST_ACTIVE_RESOLUTION, touch_last_active
-from apps.common.platform_health import platform_health, platform_signals
+from apps.common.platform_health import Signal, platform_health, platform_signals
+from apps.inspirations.models import BrandInspiration
+from apps.knowledge.models import BrandSource
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
 
@@ -120,52 +122,143 @@ class LastActiveTests(TestCase):
         self.assertEqual(signal('inactive_clients').value, 0)
 
 
-class UnmonitoredSignalTests(TestCase):
-    """The point of the whole module: a dead sensor must not read zero."""
+class ProcessingHealthTests(TestCase):
+    def setUp(self):
+        self.workspace = MarketingWorkspace.objects.create(
+            customer_id='processing', workspace_name='Processing Co'
+        )
+        self.brand = Brand.objects.create(
+            workspace=self.workspace,
+            name='Processing Co',
+            is_default=True,
+            status=Brand.Status.ACTIVE,
+        )
 
-    def test_signals_with_no_writer_report_not_monitored(self):
+    def test_processing_states_are_live_numeric_signals(self):
+        BrandSource.objects.create(
+            workspace=self.workspace,
+            brand=self.brand,
+            title='Broken source',
+            status=BrandSource.SourceStatus.FAILED,
+        )
+        BrandSource.objects.create(
+            workspace=self.workspace,
+            brand=self.brand,
+            title='Review source',
+            status=BrandSource.SourceStatus.NEEDS_REVIEW,
+        )
+        BrandInspiration.objects.create(
+            workspace=self.workspace,
+            brand=self.brand,
+            title='Broken inspiration',
+            analysis_status=BrandInspiration.AnalysisStatus.FAILED,
+        )
+
+        payload = platform_health()
+        by_key = {row['key']: row for row in payload['signals']}
+        for key in (
+            'knowledge_failed',
+            'knowledge_needs_review',
+            'inspiration_analysis_failed',
+        ):
+            self.assertTrue(by_key[key]['live'], key)
+            self.assertEqual(by_key[key]['value'], 1, key)
+            self.assertEqual(by_key[key]['display'], '1', key)
+            self.assertEqual(by_key[key]['reason'], '', key)
+            self.assertNotIn(key, payload['unmonitored'])
+
+        raised = {
+            row['key'] for row in payload['signals']
+            if row['live'] and row['actionable'] and (row['value'] or 0) > 0
+        }
+        self.assertTrue({
+            'knowledge_failed',
+            'knowledge_needs_review',
+            'inspiration_analysis_failed',
+        }.issubset(raised))
+        self.assertEqual(payload['needs_attention'], len(raised))
+
+    def test_inactive_and_revoked_work_is_not_actionable(self):
+        inactive = MarketingWorkspace.objects.create(
+            customer_id='inactive',
+            workspace_name='Inactive Co',
+            status=MarketingWorkspace.Status.ARCHIVED,
+        )
+        inactive_brand = Brand.objects.create(
+            workspace=inactive,
+            name='Inactive Co',
+            is_default=True,
+            status=Brand.Status.ACTIVE,
+        )
+        BrandSource.objects.create(
+            workspace=inactive,
+            brand=inactive_brand,
+            title='Inactive failure',
+            status=BrandSource.SourceStatus.FAILED,
+        )
+        BrandInspiration.objects.create(
+            workspace=inactive,
+            brand=inactive_brand,
+            title='Inactive inspiration failure',
+            analysis_status=BrandInspiration.AnalysisStatus.FAILED,
+        )
+
+        archived_source = BrandSource.objects.create(
+            workspace=self.workspace,
+            brand=self.brand,
+            title='Revoked source',
+            status=BrandSource.SourceStatus.ARCHIVED,
+        )
+        BrandInspiration.objects.create(
+            workspace=self.workspace,
+            brand=self.brand,
+            source=archived_source,
+            title='Revoked inspiration failure',
+            analysis_status=BrandInspiration.AnalysisStatus.FAILED,
+        )
+        BrandInspiration.objects.create(
+            workspace=self.workspace,
+            brand=self.brand,
+            title='Archived inspiration failure',
+            analysis_status=BrandInspiration.AnalysisStatus.FAILED,
+            lifecycle_status=BrandInspiration.LifecycleStatus.ARCHIVED,
+        )
+
+        self.assertEqual(signal('knowledge_failed').value, 0)
+        self.assertEqual(signal('inspiration_analysis_failed').value, 0)
+
+
+class UnmonitoredSignalTests(TestCase):
+    """A dead sensor must not read zero; newly connected sensors must."""
+
+    def test_processing_signals_are_live_even_when_zero(self):
         payload = platform_health()
         by_key = {s['key']: s for s in payload['signals']}
 
         for key in ('knowledge_failed', 'knowledge_needs_review',
                     'inspiration_analysis_failed'):
             row = by_key[key]
-            self.assertFalse(row['live'], key)
-            self.assertIsNone(row['value'], key)
-            self.assertEqual(row['display'], 'Not monitored', key)
-            self.assertNotEqual(row['display'], '0', key)
-            self.assertTrue(row['reason'], f"{key} must say why it is not live")
-
-        self.assertIn('knowledge_failed', payload['unmonitored'])
+            self.assertTrue(row['live'], key)
+            self.assertEqual(row['value'], 0, key)
+            self.assertEqual(row['display'], '0', key)
+            self.assertEqual(row['reason'], '', key)
+            self.assertNotIn(key, payload['unmonitored'])
 
     def test_a_dead_sensor_never_counts_towards_needs_attention(self):
-        payload = platform_health()
-        self.assertEqual(payload['needs_attention'], 0)
-        live_keys = {s['key'] for s in payload['signals'] if s['live']}
-        dead_keys = {s['key'] for s in payload['signals'] if not s['live']}
-        self.assertTrue(dead_keys)
+        with patch(
+            'apps.common.platform_health.platform_signals',
+            return_value=[
+                Signal('live', 'Live', 1, True),
+                Signal('dead', 'Dead', None, False, 'No writer yet.'),
+            ],
+        ):
+            payload = platform_health()
 
-        workspace = MarketingWorkspace.objects.create(
-            customer_id='c', workspace_name='W'
-        )
-        Brand.objects.create(
-            workspace=workspace, name='Pending Co', status=Brand.Status.PENDING
-        )
-
-        # This one client legitimately trips several LIVE signals at once —
-        # it is awaiting approval, has no AI routing and has no activity. What
-        # matters is that every contribution to needs_attention came from a
-        # live signal, and that the dead ones stayed out of the count no
-        # matter what the platform is doing.
-        payload = platform_health()
-        raised = {
-            s['key'] for s in payload['signals']
-            if s['live'] and s['actionable'] and (s['value'] or 0) > 0
-        }
-        self.assertEqual(payload['needs_attention'], len(raised))
-        self.assertIn('pending_approvals', raised)
-        self.assertTrue(raised.issubset(live_keys))
-        self.assertFalse(raised & dead_keys)
+        self.assertEqual(payload['needs_attention'], 1)
+        self.assertEqual(payload['unmonitored'], ['dead'])
+        by_key = {row['key']: row for row in payload['signals']}
+        self.assertEqual(by_key['live']['display'], '1')
+        self.assertEqual(by_key['dead']['display'], 'Not monitored')
 
     def test_every_live_signal_returns_a_number(self):
         for row in platform_signals():
