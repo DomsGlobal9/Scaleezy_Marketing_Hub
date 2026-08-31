@@ -185,6 +185,52 @@ def link_supersession(previous, successor):
 
 
 @transaction.atomic
+def _outcome_for(signal):
+    """Liking a thing and disliking it are opposite evidence, not the same
+    evidence twice. NEUTRAL is real too: it means somebody looked and had no
+    strong view, which should not be counted either way."""
+    from apps.learning.models import LearningEvent
+
+    return {
+        InspirationSignal.Sentiment.LIKED: LearningEvent.Outcome.POSITIVE,
+        InspirationSignal.Sentiment.DISLIKED: LearningEvent.Outcome.NEGATIVE,
+    }.get(signal.sentiment, LearningEvent.Outcome.NEUTRAL)
+
+
+def _record_signal_evidence(signal, *, user, outcome, action):
+    """A person stating, confirming or withdrawing a taste is a judgment.
+
+    Emitted from the service rather than the view so every writer is covered.
+    Without it, a client could state the same preference across a dozen
+    references and none of it ever reached the learning fabric — the signal
+    lived only on its own inspiration, so nothing could notice the pattern.
+    """
+    from apps.learning.models import LearningEvent, SubjectType
+    from apps.learning.services import record_event_safely
+
+    inspiration = signal.inspiration
+    return record_event_safely(
+        workspace=inspiration.workspace,
+        brand=inspiration.brand,
+        event_type=LearningEvent.EventType.INSPIRATION_SIGNAL,
+        outcome=outcome,
+        subject_type=SubjectType.INSPIRATION_SIGNAL,
+        subject_id=signal.pk,
+        source_type=SubjectType.INSPIRATION,
+        source_id=inspiration.pk,
+        context={
+            'action': action,
+            'category': signal.category,
+            'attribute': signal.attribute,
+            'value': (signal.value or '')[:300],
+            'sentiment': signal.sentiment,
+            'origin': signal.origin,
+        },
+        dedupe_key=f'signal:{signal.pk}:{action}',
+        created_by=user,
+    )
+
+
 def record_user_signal(serializer, *, user):
     """Persist a stated preference, retiring the one it replaces.
 
@@ -214,6 +260,9 @@ def record_user_signal(serializer, *, user):
     link_supersession(previous, signal)
     reconcile_attribute(inspiration, category, attribute)
     signal.refresh_from_db()
+    _record_signal_evidence(
+        signal, user=user, outcome=_outcome_for(signal), action='STATED'
+    )
     return signal
 
 
@@ -272,6 +321,9 @@ def confirm_signal(signal, *, user):
 
     reconcile_attribute(signal.inspiration, signal.category, signal.attribute)
     signal.refresh_from_db()
+    _record_signal_evidence(
+        signal, user=user, outcome=_outcome_for(signal), action='CONFIRMED'
+    )
     return signal
 
 
@@ -295,6 +347,13 @@ def reject_signal(signal, *, user):
 
     reconcile_attribute(signal.inspiration, signal.category, signal.attribute)
     signal.refresh_from_db()
+    # Withdrawing a taste is a judgment about the brand too, and always
+    # negative regardless of the sentiment the signal carried.
+    from apps.learning.models import LearningEvent
+
+    _record_signal_evidence(
+        signal, user=user, outcome=LearningEvent.Outcome.NEGATIVE, action='REJECTED'
+    )
     return signal
 
 

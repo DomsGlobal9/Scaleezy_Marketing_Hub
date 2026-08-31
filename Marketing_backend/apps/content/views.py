@@ -47,6 +47,9 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             raise PermissionDenied("No accessible workspace for this request.")
         serializer.save(workspace=workspace, created_by=self.request.user)
 
+    #: The fields a person rewrites when they disagree with what was generated.
+    CORRECTABLE = ('headline', 'caption', 'cta', 'hashtags')
+
     def update(self, request, *args, **kwargs):
         item = self.get_object()
         if item.status != ContentItem.Status.DRAFT:
@@ -56,7 +59,59 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 error={"code": "CONTENT_LOCKED", "message": item.get_status_display()},
                 status=status.HTTP_409_CONFLICT,
             )
-        return super().update(request, *args, **kwargs)
+
+        before = {field: getattr(item, field, '') for field in self.CORRECTABLE}
+        response = super().update(request, *args, **kwargs)
+
+        # Somebody rewriting the generated copy is the most precise statement
+        # of intent the product ever receives — not "this is wrong" but "this
+        # is what it should have said". It used to be written straight over
+        # the original with no record that a correction had happened at all.
+        item.refresh_from_db()
+        changed = {
+            field: {'from': before[field], 'to': getattr(item, field, '')}
+            for field in self.CORRECTABLE
+            if before[field] != getattr(item, field, '')
+        }
+        if changed:
+            self._record_rewrite(item, changed)
+        return response
+
+    def _record_rewrite(self, item, changed):
+        from apps.learning.models import LearningEvent, SubjectType
+        from apps.learning.services import record_event_safely
+
+        # Keep the first generated wording on the item, so the pair
+        # (what the machine wrote, what the human wanted) survives the edit.
+        config = dict(item.layout_config or {})
+        original = config.get('original_generated')
+        if original is None:
+            config['original_generated'] = {
+                field: change['from'] for field, change in changed.items()
+            }
+            item.layout_config = config
+            item.save(update_fields=['layout_config'])
+
+        record_event_safely(
+            workspace=item.workspace,
+            brand=item.brand,
+            event_type=LearningEvent.EventType.EDITED,
+            outcome=LearningEvent.Outcome.NEGATIVE,
+            subject_type=SubjectType.CONTENT_ITEM,
+            subject_id=item.pk,
+            context={
+                'action': 'DRAFT_REWRITTEN',
+                'fields': sorted(changed),
+                'changes': {
+                    field: {
+                        'from': str(change['from'])[:300],
+                        'to': str(change['to'])[:300],
+                    }
+                    for field, change in changed.items()
+                },
+            },
+            created_by=self.request.user,
+        )
 
     # ── review workflow ──────────────────────────────────────────────────
     def _review(self, request, new_status, require_manager=True):

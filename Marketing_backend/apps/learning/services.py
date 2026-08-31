@@ -35,6 +35,23 @@ class LearningError(Exception):
     """The requested learning write cannot be performed."""
 
 
+def record_event_safely(**kwargs):
+    """Record evidence without ever breaking the action that produced it.
+
+    Every caller of this is a human doing something real — confirming a fact,
+    retiring a preference, rewriting a headline. That action must land whether
+    or not the fabric write succeeds; a ledger that can fail a verdict is
+    worse than a ledger with a gap in it. Returns None on failure, loudly.
+    """
+    try:
+        return record_event(**kwargs)
+    except Exception:
+        logger.exception(
+            "Could not record a %s learning event", kwargs.get('event_type')
+        )
+        return None
+
+
 @transaction.atomic
 def record_event(
     *,
@@ -145,23 +162,47 @@ def reinforce_preference(
             "event belongs to a single brand."
         )
 
-    preference, _ = BrandPreference.objects.get_or_create(
-        workspace=workspace,
-        brand=brand,
-        category=category,
-        attribute=attribute,
-        defaults={
-            'value': value,
-            'scope': scope,
-            'weight': 0.5 if weight is None else weight,
-            'confidence': 0.0 if confidence is None else confidence,
-        },
+    # Retired rows are excluded from the lookup on purpose. Someone decided
+    # that leaning no longer applies, so new evidence must not revive their
+    # row — but it must still be able to start a NEW one, or retiring a
+    # preference once would silently discard every future judgment about that
+    # attribute forever. `uniq_active_brand_preference` is conditional on
+    # NOT RETIRED, so the retired row and its successor coexist legally.
+    preference = (
+        BrandPreference.objects.filter(
+            workspace=workspace,
+            brand=brand,
+            category=category,
+            attribute=attribute,
+        )
+        .exclude(state=BrandPreference.State.RETIRED)
+        .first()
     )
-    if preference.state == BrandPreference.State.RETIRED:
-        # A retired leaning is not quietly revived by new evidence; someone
-        # decided it no longer applies. New evidence starts a new record.
+    if preference is None:
+        preference = BrandPreference.objects.create(
+            workspace=workspace,
+            brand=brand,
+            category=category,
+            attribute=attribute,
+            value=value,
+            scope=scope,
+            weight=0.5 if weight is None else weight,
+            confidence=0.0 if confidence is None else confidence,
+        )
+
+    # Two events only corroborate each other if they say the same thing.
+    # Calibration tests opposing values for one attribute (register "soft" in
+    # one direction, "direct" in another); without this, a verdict on each
+    # counted as two supporting events for whichever value happened to be
+    # stored first, and the preference reached ESTABLISHED on evidence that
+    # partly contradicted it.
+    incoming = ' '.join(str(value or '').split()).casefold()
+    held = ' '.join(str(preference.value or '').split()).casefold()
+    if incoming and held and incoming != held:
         raise LearningError(
-            "This preference was retired. Create a new one rather than reviving it."
+            f"This evidence says '{value}' but the live preference says "
+            f"'{preference.value}'. A contradiction is not corroboration; "
+            "state the new position explicitly, or retire the old one."
         )
 
     _, is_new_evidence = PreferenceEvidence.objects.get_or_create(
@@ -420,22 +461,42 @@ def upsert_learned_rule(
     # Matched in Python rather than with a JSON lookup: the set of active
     # learned rules for one brand is small, and this behaves identically on
     # every database backend.
+    # Deliberately NOT filtered to is_active: a deactivated rule with this
+    # key has to be visible here, or the lookup misses it, a fresh rule is
+    # created under a new id, and the person who switched it off is overruled
+    # by the very engine they were correcting.
     existing = next(
         (
             rule
             for rule in BrandRule.objects.filter(
                 workspace=workspace, brand=brand,
-                origin=BrandRule.Origin.LEARNED, is_active=True,
+                origin=BrandRule.Origin.LEARNED,
             ).order_by('created_at')
             if isinstance(rule.structured, dict) and rule.structured.get('key') == str(key)
         ),
         None,
     )
 
+    if existing is not None and not existing.is_active:
+        # A person judged this inference wrong. More of the same evidence is
+        # not an argument against them — it is the same evidence that produced
+        # it in the first place. The caller logs and moves on; a human can
+        # still state it outright as an explicit rule.
+        raise LearningError(
+            "This learned rule was switched off by a person; the pattern is not "
+            "re-learned. State it explicitly if it should apply again."
+        )
+
     if existing is not None:
+        # Union, not replace. The rule's own claim is "this happened N times",
+        # and its lineage is the list it cites — if the newest batch overwrote
+        # the list, a rule built on five reviews would cite two and the claim
+        # and the evidence behind it would disagree.
+        merged = sorted({*(existing.evidence_event_ids or []), *event_ids})
+        payload['evidence_count'] = len(merged)
         existing.text = text
         existing.structured = payload
-        existing.evidence_event_ids = event_ids
+        existing.evidence_event_ids = merged
         existing.confidence = min(1.0, max(0.0, float(confidence)))
         existing.priority = priority
         # Hardness and origin are deliberately never touched here: a learned

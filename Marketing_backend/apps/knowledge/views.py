@@ -17,6 +17,9 @@ from apps.common.responses import APIResponse
 from apps.workspaces.models import WorkspaceMember
 from apps.brands.services.brand_brain import rebuild_brand_brain_safely
 from apps.marketing.services.storage import StorageError, SupabaseStorageService
+from apps.learning.models import LearningEvent, SubjectType
+from apps.learning.services import record_event_safely
+
 from .models import BrandSource, BrandMemory
 from .serializers import BrandSourceSerializer, BrandMemorySerializer, BrandSourceUploadSerializer
 
@@ -172,11 +175,44 @@ class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(workspace=self._authorised_workspace())
 
+    def _record_verdict(self, memory, *, event_type, outcome):
+        """A person ruling on a candidate fact is evidence in its own right.
+
+        Until now confirm and reject moved a status and nothing else: the
+        ledger never heard that somebody had decided, and the row never said
+        who. Both event types were already declared and already counted as
+        judgment by universal learning — nothing was emitting them.
+        """
+        record_event_safely(
+            workspace=memory.workspace,
+            brand=memory.brand,
+            event_type=event_type,
+            outcome=outcome,
+            subject_type=SubjectType.BRAND_MEMORY,
+            subject_id=memory.pk,
+            source_type=SubjectType.BRAND_SOURCE if memory.source_id else '',
+            source_id=memory.source_id,
+            context={
+                'memory_type': memory.memory_type,
+                'normalized_key': memory.normalized_key,
+                'content': (memory.content or '')[:500],
+            },
+            dedupe_key=f'memory-verdict:{memory.pk}:{memory.status}',
+            created_by=self.request.user,
+        )
+
     @action(detail=True, methods=['post'])
     def confirm(self, request, pk=None):
         memory = self.get_object()
         memory.status = BrandMemory.MemoryStatus.CONFIRMED
-        memory.save(update_fields=['status'])
+        memory.reviewed_by = request.user
+        memory.reviewed_at = timezone.now()
+        memory.save(update_fields=['status', 'reviewed_by', 'reviewed_at'])
+        self._record_verdict(
+            memory,
+            event_type=LearningEvent.EventType.MEMORY_CONFIRMED,
+            outcome=LearningEvent.Outcome.POSITIVE,
+        )
         # A confirmed fact is intelligence; the snapshot must carry it.
         rebuild_brand_brain_safely(memory.brand)
         self._finish_source_review(memory)
@@ -186,10 +222,48 @@ class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     def reject(self, request, pk=None):
         memory = self.get_object()
         memory.status = BrandMemory.MemoryStatus.REJECTED
-        memory.save(update_fields=['status'])
+        memory.reviewed_by = request.user
+        memory.reviewed_at = timezone.now()
+        memory.save(update_fields=['status', 'reviewed_by', 'reviewed_at'])
+        self._record_verdict(
+            memory,
+            event_type=LearningEvent.EventType.MEMORY_REJECTED,
+            outcome=LearningEvent.Outcome.NEGATIVE,
+        )
         rebuild_brand_brain_safely(memory.brand)
         self._finish_source_review(memory)
         return APIResponse(success=True, message="Memory rejected")
+
+    def destroy(self, request, *args, **kwargs):
+        """A fact somebody confirmed is provenance, not a scratch row.
+
+        Every other record that carries a verdict in this codebase refuses
+        hard deletion; this one was a plain ModelViewSet and did not.
+        """
+        return APIResponse(
+            success=False,
+            message="Facts are not deleted. Reject it instead, which keeps the record.",
+            error={'code': 'DELETE_DISABLED', 'message': 'Use reject.'},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def perform_update(self, serializer):
+        """Editing what a confirmed fact SAYS withdraws the confirmation.
+
+        Otherwise the text a person approved can be replaced afterwards while
+        the CONFIRMED stamp — and its place in the Brand Brain — carries over
+        to words nobody ever agreed to.
+        """
+        before = serializer.instance
+        was_confirmed = before.status == BrandMemory.MemoryStatus.CONFIRMED
+        old_content = before.content
+        memory = serializer.save()
+        if was_confirmed and memory.content != old_content:
+            memory.status = BrandMemory.MemoryStatus.CANDIDATE
+            memory.reviewed_by = None
+            memory.reviewed_at = None
+            memory.save(update_fields=['status', 'reviewed_by', 'reviewed_at'])
+            rebuild_brand_brain_safely(memory.brand)
 
     @staticmethod
     def _finish_source_review(memory):

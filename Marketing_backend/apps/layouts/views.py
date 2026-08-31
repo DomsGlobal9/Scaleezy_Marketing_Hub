@@ -210,6 +210,11 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
             update_fields=['layout_plugin', 'layout_config', 'asset', 'preview_url', 'updated_at']
         )
 
+        # Picking a layout is a taste decision, and it was going nowhere but
+        # onto this one item. Two independent picks now establish a visual
+        # preference through the ordinary threshold — no special case.
+        self._record_layout_choice(item, layout, request.user)
+
         return APIResponse(
             success=True,
             data={
@@ -221,6 +226,51 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
             },
             status=status.HTTP_201_CREATED,
         )
+
+    def _record_layout_choice(self, item, layout, user):
+        """One layout pick, recorded as ordinary evidence.
+
+        Deliberately POSITIVE and deliberately not special-cased: it goes
+        through the same threshold as everything else, so a single
+        experimental pick proves nothing and two independent ones establish
+        a leaning the Brand Brain can read.
+        """
+        from apps.learning.models import LearningEvent, LearningScope, SubjectType
+        from apps.learning.services import (
+            LearningError,
+            record_event_safely,
+            reinforce_preference,
+        )
+
+        if item.brand_id is None or not layout:
+            return
+        event = record_event_safely(
+            workspace=item.workspace,
+            brand=item.brand,
+            event_type=LearningEvent.EventType.PREFERENCE_SIGNAL,
+            outcome=LearningEvent.Outcome.POSITIVE,
+            subject_type=SubjectType.CONTENT_ITEM,
+            subject_id=item.pk,
+            context={'action': 'LAYOUT_CHOSEN', 'layout': layout},
+            dedupe_key=f'layout-chosen:{item.pk}:{layout}',
+            created_by=user,
+        )
+        if event is None:
+            return
+        try:
+            reinforce_preference(
+                workspace=item.workspace,
+                brand=item.brand,
+                event=event,
+                category='LAYOUT',
+                attribute='poster_layout',
+                value=layout,
+                scope=LearningScope.BRAND,
+            )
+        except LearningError as exc:
+            # A contradiction with the live preference, or a retired row.
+            # Honest silence: the pick stands, the brand is not re-taught.
+            logger.info("Layout preference not reinforced for %s: %s", item.pk, exc)
 
     @action(detail=False, methods=['post'])
     def export(self, request):

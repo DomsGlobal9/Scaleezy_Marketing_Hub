@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { ClientContentGallery } from "@/components/platform/client-content-gallery";
 import {
   ConfirmDialog,
   ErrorNote,
@@ -752,13 +753,22 @@ function ClientDetailPage() {
         </div>
       </section>
 
+      {/* The work itself, before the levers. It used to sit thirteen panels
+          down, below suspend and archive, so an operator scrolled past every
+          destructive control to reach the one thing they came to look at. */}
+      <div className="mt-8">
+        <Panel
+          title="Recent content"
+          description="The last 20 pieces this client generated, and which of them taught the brand anything."
+        >
+          <ClientContentGallery rows={detail.recent_content} empty="No content yet." />
+        </Panel>
+      </div>
+
       {/* ----------------------------------------------------- recent activity */}
       <div className="mt-8 grid gap-4">
         <Panel title="Team" description="Members as the server lists them.">
           <RecordTable rows={detail.team} empty="No team rows were returned." />
-        </Panel>
-        <Panel title="Recent content">
-          <RecordTable rows={detail.recent_content} empty="No content yet." />
         </Panel>
         <Panel title="Recent publishing">
           <RecordTable rows={detail.recent_publishing} empty="No publishing jobs yet." />

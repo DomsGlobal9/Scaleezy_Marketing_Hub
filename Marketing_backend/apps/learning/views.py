@@ -27,7 +27,13 @@ from .serializers import (
     BrandRuleSerializer,
     LearningEventSerializer,
 )
-from .services import LearningError, create_explicit_rule, deactivate_rule
+from .models import LearningEvent, SubjectType
+from .services import (
+    LearningError,
+    create_explicit_rule,
+    deactivate_rule,
+    record_event_safely,
+)
 from .usage import learning_usage_report
 
 
@@ -120,6 +126,25 @@ class BrandPreferenceViewSet(
             )
         preference.state = BrandPreference.State.RETIRED
         preference.save(update_fields=['state', 'updated_at'])
+        # "This is not us" is as much a judgment as "this is". Recorded so the
+        # correction is part of the brand's history rather than a silent
+        # deletion, and so a later pass can see that a person disagreed.
+        record_event_safely(
+            workspace=preference.workspace,
+            brand=preference.brand,
+            event_type=LearningEvent.EventType.PREFERENCE_SIGNAL,
+            outcome=LearningEvent.Outcome.NEGATIVE,
+            subject_type=SubjectType.OTHER,
+            subject_id=preference.pk,
+            context={
+                'action': 'PREFERENCE_RETIRED',
+                'category': preference.category,
+                'attribute': preference.attribute,
+                'value': preference.value,
+            },
+            dedupe_key=f'preference-retired:{preference.pk}',
+            created_by=request.user,
+        )
         rebuild_brand_brain_safely(preference.brand)
         return APIResponse(
             success=True,
@@ -200,6 +225,26 @@ class BrandRuleViewSet(
                 status=status.HTTP_400_BAD_REQUEST,
             )
         deactivate_rule(rule=rule, user=request.user)
+        # Switching off a LEARNED rule is a person overruling an inference —
+        # the single strongest correction available to them. It has to be in
+        # the ledger, or the only trace of it is a boolean on a row.
+        record_event_safely(
+            workspace=rule.workspace,
+            brand=rule.brand,
+            event_type=LearningEvent.EventType.EXPLICIT_RULE,
+            outcome=LearningEvent.Outcome.NEGATIVE,
+            subject_type=SubjectType.OTHER,
+            subject_id=rule.pk,
+            context={
+                'action': 'RULE_DEACTIVATED',
+                'origin': rule.origin,
+                'hardness': rule.hardness,
+                'text': rule.text[:500],
+                'key': (rule.structured or {}).get('key', ''),
+            },
+            dedupe_key=f'rule-deactivated:{rule.pk}',
+            created_by=request.user,
+        )
         rebuild_brand_brain_safely(rule.brand)
         return APIResponse(
             success=True,

@@ -54,6 +54,17 @@ def record_feedback_event(feedback):
         (LearningEvent.EventType.EDITED, LearningEvent.Outcome.NEUTRAL),
     )
 
+    # "Ship it, but the logo is too small." The verdict is an approval and the
+    # judgment inside it is a complaint. Filing that as POSITIVE reinforces
+    # the very thing the reviewer objected to, so the outcome follows the
+    # sentiment the text actually carried. The event TYPE still says APPROVED,
+    # because that is what happened; only the outcome stops lying.
+    if (
+        outcome == LearningEvent.Outcome.POSITIVE
+        and feedback.sentiment == feedback.Sentiment.NEGATIVE
+    ):
+        outcome = LearningEvent.Outcome.MIXED
+
     return record_event(
         workspace=feedback.workspace,
         brand=feedback.brand,
@@ -69,6 +80,11 @@ def record_feedback_event(feedback):
             'sentiment': feedback.sentiment,
             'urgency': feedback.urgency,
             'has_fix_request': bool(feedback.fix_request),
+            # The words themselves, not just a boolean. Without this the
+            # ledger records that somebody objected but never to what, and no
+            # later pass can recover it.
+            'fix_request': (feedback.fix_request or '')[:1000],
+            'feedback_text': (feedback.feedback_text or '')[:1000],
         },
         dedupe_key=f'feedback:{feedback.pk}',
         created_by=feedback.user,

@@ -47,9 +47,15 @@ interface ContentItem {
   created_at: string;
 }
 
+// Every state a piece of work can be in, so this screen answers "show me my
+// stuff" rather than only "what needs me". Published items were already being
+// fetched and counted here and then thrown away — there was simply no tab
+// able to show them, which is why the product had nowhere to see finished
+// work with its picture attached.
 const TABS = [
   { key: "PENDING_REVIEW", label: "Pending" },
   { key: "APPROVED", label: "Approved" },
+  { key: "PUBLISHED", label: "Published" },
   { key: "NEEDS_EDITS", label: "Needs edits" },
   { key: "REJECTED", label: "Rejected" },
   { key: "DRAFT", label: "Drafts" },

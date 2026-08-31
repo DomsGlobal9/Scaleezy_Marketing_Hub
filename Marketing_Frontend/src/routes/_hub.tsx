@@ -72,7 +72,9 @@ const NAV = [
   { to: "/brand-master", label: "Brand Master", icon: Brain, adminOnly: false },
   { to: "/accounts", label: "Social Media Accounts", icon: Share2, adminOnly: false },
   { to: "/publishing", label: "Publishing", icon: Send, adminOnly: false },
-  { to: "/review", label: "Review", icon: CheckCircle2, adminOnly: false },
+  // Named for the object, not for one stage of its lifecycle: this is where
+  // every piece of work lives, whatever state it is in.
+  { to: "/review", label: "Content", icon: CheckCircle2, adminOnly: false },
   { to: "/analytics", label: "Analytics", icon: BarChart3, adminOnly: false },
   { to: "/settings", label: "Settings", icon: Settings, adminOnly: false },
   { to: "/admin", label: "Admin", icon: ShieldCheck, adminOnly: true },
