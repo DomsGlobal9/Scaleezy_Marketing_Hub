@@ -281,6 +281,7 @@ Return ONLY a valid JSON object with these exact keys:
         occasion = request_data.get('occasion', '')
         offer = request_data.get('offer', '')
         brand_tone = request_data.get('brand_tone', '')
+        custom_instructions = request_data.get('custom_instructions', '')
         b64_img = request_data.get('reference_image_base64', '')
         brand_rules = request_data.get('brand_rules') or []
         brand_name = request_data.get('brand_name', '')
@@ -315,9 +316,9 @@ Brand Master Intelligence:
 """
 
         if offer:
-            typography_instruction = f'- **Typography & Text Integration**: Describe exactly how the text ("{campaign}" and "{offer}") should elegantly integrate into the composition with clean, legible typography.'
+            typography_instruction = f'- **Typography & Text Integration**: Describe exactly how the campaign name ("{campaign}"), the offer ("{offer}"), and ANY specific text, bullet points, or descriptions visible in the reference image or requested in Custom Instructions should be clearly and legibly rendered in the composition.'
         else:
-            typography_instruction = f'- **Typography & Text Integration**: Describe how the headline text ("{campaign}") should integrate into the composition. Since NO call-to-action or offer is provided, DO NOT render, invent, or draw any call-to-action buttons, discount badges, or CTA text (like "Discover More", "Book Now", etc.) into the artwork.'
+            typography_instruction = f'- **Typography & Text Integration**: Describe exactly how the campaign name ("{campaign}") and ANY specific text, bullet points, or descriptions visible in the reference image or requested in Custom Instructions should be clearly and legibly rendered in the composition. Since NO call-to-action or offer is provided, DO NOT render, invent, or draw any call-to-action buttons.'
 
         prompt_text = f"""You are an elite, award-winning creative director and social media marketing expert.
 
@@ -334,6 +335,7 @@ Campaign Details:
 - Occasion/Festival: {occasion}
 - Offer / Key Value: {offer or 'None'}
 - Brand Tone: {brand_tone}
+- Custom Instructions / Specific Requirements: {custom_instructions or 'None'}
 {brand_master_block}
 {addon_block}
 For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just place text on a plain background. Re-imagine the product/service in a visually stunning, high-end editorial or cinematic setting. Be extremely detailed about:
@@ -363,7 +365,7 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                 types.Part.from_bytes(data=img_bytes, mime_type=mime_type)
             )
             # Add an extra instruction for multimodal processing
-            contents[0] += "\n\nIMPORTANT: I have attached a reference image of the product. DO NOT just recreate this image exactly. Your `imagePrompt` MUST radically transform the setting, lighting, and mood. Take the product shown in the reference image and re-imagine it placed within a stunning, professional, high-budget creative campaign environment as described above."
+            contents[0] += "\n\nIMPORTANT: I have attached a reference image of the poster. Your `imagePrompt` MUST explicitly instruct the image generator to preserve the original composition, layout, structure (e.g. which side content is on and which side images are kept), background, pattern, and text placement of this reference image as closely as possible. Do NOT radically transform it; replicate its layout."
 
         response = client.models.generate_content(
             model=cls.TEXT_MODEL,
@@ -400,10 +402,15 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         """
         client = cls._get_client(api_key)
         
-        # We ONLY pass the text prompt to the image model. 
-        # The reference image was already analyzed in Step 1 to create this highly detailed prompt.
-        # Passing it here again restricts the AI to just editing the original image instead of generating a brand new creative one.
-        contents = [image_prompt]
+        # Pass both the text prompt and the reference image to the image model 
+        # so it can replicate the layout and background accurately.
+        contents: list = [image_prompt]
+        
+        mime_type, img_bytes = cls._parse_base64_image(reference_image_base64)
+        if mime_type and img_bytes:
+            contents.append(
+                types.Part.from_bytes(data=img_bytes, mime_type=mime_type)
+            )
 
         response = client.models.generate_content(
             model=cls.IMAGE_MODEL,

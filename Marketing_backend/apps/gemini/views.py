@@ -239,6 +239,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'occasion': str(data.get('occasion', '')).strip(),
             'offer': offer,
             'brand_tone': brand_tone,
+            'custom_instructions': str(data.get('custom_instructions', '')).strip(),
             'reference_image_base64': data.get('referenceImageBase64', ''),
             'brand_name': brand.name if brand else '',
             'brand_tagline': brand.tagline if brand else '',

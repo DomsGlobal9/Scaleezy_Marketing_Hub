@@ -238,14 +238,39 @@ const canPublishTo = (acc: PublishingAccount, isVideoAsset: boolean): boolean =>
   return status === "CONNECTED" && enabled && !formatMismatch;
 };
 
+function useSessionState<T>(key: string, initialValue: T): [T, (val: T | ((prev: T) => T)) => void] {
+  const [state, setState] = useState<T>(() => {
+    try {
+      const item = sessionStorage.getItem(key);
+      return item ? JSON.parse(item) : initialValue;
+    } catch {
+      return initialValue;
+    }
+  });
+
+  const setValue = useCallback((value: T | ((prev: T) => T)) => {
+    setState((prevState) => {
+      const nextValue = value instanceof Function ? value(prevState) : value;
+      try {
+        sessionStorage.setItem(key, JSON.stringify(nextValue));
+      } catch (e) {
+        console.warn("Failed to save state to sessionStorage", e);
+      }
+      return nextValue;
+    });
+  }, [key]);
+
+  return [state, setValue];
+}
+
 function PublishingPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [step, setStep] = useState<WorkflowStep>("create_or_upload");
-  const [asset, setAsset] = useState<DraftAsset | null>(null);
+  const [step, setStep] = useSessionState<WorkflowStep>("pub_step", "create_or_upload");
+  const [asset, setAsset] = useSessionState<DraftAsset | null>("pub_asset", null);
   const [contentSaving, setContentSaving] = useState(false);
   const [contentLocked, setContentLocked] = useState(false);
   const [showFullImage, setShowFullImage] = useState(false);
-  const [referenceImageBase64, setReferenceImageBase64] = useState<string>("");
+  const [referenceImageBase64, setReferenceImageBase64] = useSessionState<string>("pub_ref_img", "");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [uploadIntention, setUploadIntention] = useState<"reference" | "final" | null>(null);
   const [isGeneratingCaptions, setIsGeneratingCaptions] = useState(false);
@@ -256,22 +281,30 @@ function PublishingPage() {
   // the screen for the full ten-minute polling ceiling.
   const generationAbort = useRef<AbortController | null>(null);
 
+  // Recovery effect for transient state loss
+  useEffect(() => {
+    if (step === "ai_generating") {
+      setStep("ai_form");
+    }
+  }, []);
+
   // AI brief state
-  const [campaignName, setCampaignName] = useState("");
-  const [product, setProduct] = useState("");
-  const [audience, setAudience] = useState("");
-  const [location, setLocation] = useState("");
-  const [occasion, setOccasion] = useState("");
-  const [offer, setOffer] = useState("");
-  const [brandTone, setBrandTone] = useState("");
+  const [campaignName, setCampaignName] = useSessionState("pub_campaign", "");
+  const [product, setProduct] = useSessionState("pub_product", "");
+  const [audience, setAudience] = useSessionState("pub_audience", "");
+  const [location, setLocation] = useSessionState("pub_location", "");
+  const [occasion, setOccasion] = useSessionState("pub_occasion", "");
+  const [offer, setOffer] = useSessionState("pub_offer", "");
+  const [brandTone, setBrandTone] = useSessionState("pub_tone", "");
+  const [customInstructions, setCustomInstructions] = useSessionState("pub_custom", "");
 
   // What to generate, plus the per-type extras
-  const [contentType, setContentType] = useState<ContentType>("poster");
-  const [videoDuration, setVideoDuration] = useState(VIDEO_DURATIONS[1]!);
-  const [videoAspect, setVideoAspect] = useState(VIDEO_ASPECTS[0]!);
-  const [videoStyle, setVideoStyle] = useState(VIDEO_STYLES[0]!);
-  const [videoScript, setVideoScript] = useState("");
-  const [slides, setSlides] = useState<CarouselSlide[]>([newSlide(), newSlide(), newSlide()]);
+  const [contentType, setContentType] = useSessionState<ContentType>("pub_contentType", "poster");
+  const [videoDuration, setVideoDuration] = useSessionState("pub_videoDur", VIDEO_DURATIONS[1]!);
+  const [videoAspect, setVideoAspect] = useSessionState("pub_videoAsp", VIDEO_ASPECTS[0]!);
+  const [videoStyle, setVideoStyle] = useSessionState("pub_videoStyle", VIDEO_STYLES[0]!);
+  const [videoScript, setVideoScript] = useSessionState("pub_videoScript", "");
+  const [slides, setSlides] = useSessionState<CarouselSlide[]>("pub_slides", [newSlide(), newSlide(), newSlide()]);
 
   // Poster add-ons, defaulted from the workspace brand kit
   const { settings: brand } = useBrandSettings();
@@ -720,6 +753,7 @@ function PublishingPage() {
           occasion,
           offer,
           brandTone,
+          custom_instructions: customInstructions,
           referenceImageBase64,
           contentType,
           includeLogo: includeLogo && hasLogo,
@@ -1322,6 +1356,19 @@ function PublishingPage() {
                     placeholder={brand.brandTone || "e.g., Authoritative, Premium, Trustworthy"}
                     value={brandTone}
                     onChange={(e) => setBrandTone(e.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-2 sm:col-span-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">Custom instructions / Specific requirements</Label>
+                    <span className="text-[11px] text-muted-foreground">optional</span>
+                  </div>
+                  <Textarea
+                    placeholder="e.g., Ensure the poster has falling confetti, mention our winter discount code explicitly, etc."
+                    value={customInstructions}
+                    onChange={(e) => setCustomInstructions(e.target.value)}
+                    rows={3}
                   />
                 </div>
               </div>
