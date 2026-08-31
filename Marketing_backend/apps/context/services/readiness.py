@@ -10,6 +10,8 @@ Deliberately hard to score highly. A brand row with a name in it is 15% of the
 picture, and showing that as anywhere near ready is how a product talks a user
 out of the work that actually makes it good.
 """
+from django.db.models import CharField, Count, Value
+
 from apps.brands.services.brand_brain import compile_brand_brain
 from apps.inspirations.models import BrandInspiration, InspirationSignal
 from apps.knowledge.models import BrandMemory, BrandSource
@@ -32,6 +34,36 @@ def _filled(*values):
     return sum(1 for value in values if value)
 
 
+def _count_row(queryset, key):
+    """One labelled aggregate that can be UNIONed with other model counts."""
+    return (
+        queryset.order_by()
+        .annotate(_readiness_key=Value(key, output_field=CharField(max_length=32)))
+        .values('_readiness_key')
+        .annotate(_readiness_count=Count('pk'))
+        .values('_readiness_key', '_readiness_count')
+    )
+
+
+def _readiness_counts(querysets):
+    """Evaluate all evidence counts in one database round trip.
+
+    Each input is still the established eligibility queryset for its module;
+    UNION ALL only combines their scalar results. Missing evidence therefore
+    stays zero without weakening provenance or lifecycle filters.
+    """
+    counts = {key: 0 for key, _queryset in querysets}
+    count_rows = [_count_row(queryset, key) for key, queryset in querysets]
+    rows = count_rows[0].union(*count_rows[1:], all=True)
+    # A combined queryset retains the first model's metadata. Order by a
+    # projected union column so no model-level default ordering leaks into the
+    # compound SELECT (SQLite rejects such hidden terms; PostgreSQL needlessly
+    # sorts them).
+    for row in rows.order_by('_readiness_key'):
+        counts[row['_readiness_key']] = row['_readiness_count']
+    return counts
+
+
 def brand_readiness(brand, *, brain=None):
     """Deterministic completeness score for one brand.
 
@@ -52,14 +84,14 @@ def brand_readiness(brand, *, brain=None):
     ).eligible_for_retrieval()
     preferences = BrandPreference.objects.filter(brand=brand).active()
     rules = BrandRule.objects.filter(brand=brand, is_active=True)
-    counts = {
-        'sources': sources.count(),
-        'memories': memories.count(),
-        'inspirations': inspirations.count(),
-        'inspiration_signals': signals.count(),
-        'preferences': preferences.count(),
-        'rules': rules.count(),
-    }
+    counts = _readiness_counts((
+        ('sources', sources),
+        ('memories', memories),
+        ('inspirations', inspirations),
+        ('inspiration_signals', signals),
+        ('preferences', preferences),
+        ('rules', rules),
+    ))
 
     visual = brain.get('visual_language', {})
     voice = brain.get('voice', {})

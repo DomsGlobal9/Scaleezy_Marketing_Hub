@@ -16,7 +16,7 @@ import {
   Share2,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import {
   DropdownMenu,
@@ -32,7 +32,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AddClientDialog } from "@/components/marketing/add-client-dialog";
 import { SiteFooter } from "@/components/marketing/site-footer";
 import { apiPost } from "@/lib/api";
-import { fetchMe } from "@/lib/platform";
 import { clearWorkspaces, loadWorkspaces, selectWorkspace, useWorkspaces } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub")({
@@ -246,25 +245,6 @@ function NoClientsYet({ onAddClient }: { onAddClient: () => void }) {
   );
 }
 
-/**
- * Whether the signed-in person may open the Scaleezy console. Only decides if
- * the link is SHOWN — /platform re-checks on the server on every request, so a
- * stale or wrong answer here costs a redirect, never access.
- */
-function usePlatformAdmin(): boolean {
-  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    void fetchMe().then((me) => {
-      if (!cancelled) setIsPlatformAdmin(!!me?.is_platform_admin);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return isPlatformAdmin;
-}
-
 function NavList({
   isAdmin,
   isPlatformAdmin,
@@ -387,7 +367,7 @@ function HubLayout() {
     (workspace) => workspace.id === workspaces.selectedId,
   )?.role;
   const isAdmin = activeRole === "OWNER" || activeRole === "ADMIN";
-  const isPlatformAdmin = usePlatformAdmin();
+  const isPlatformAdmin = workspaces.isPlatformAdmin;
 
   return (
     <div className="min-h-screen bg-background">

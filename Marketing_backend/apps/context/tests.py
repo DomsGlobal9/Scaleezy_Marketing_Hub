@@ -335,7 +335,7 @@ class ReadinessTests(ContextTestBase):
             brand_readiness(self.brand1), brand_readiness(self.brand1)
         )
 
-    def test_each_readiness_count_is_queried_only_once(self):
+    def test_readiness_counts_share_one_database_round_trip(self):
         self.furnish()
         with CaptureQueriesContext(connection) as captured:
             readiness = brand_readiness(
@@ -348,9 +348,16 @@ class ReadinessTests(ContextTestBase):
         ]
         # Count-query cost, not the global request total, is the contract. This
         # remains stable if permission or serialization queries change later.
-        self.assertLessEqual(len(count_queries), 6, count_queries)
-        self.assertEqual(readiness['counts']['memories'], 2)
-        self.assertEqual(readiness['counts']['rules'], 1)
+        self.assertEqual(len(count_queries), 1, count_queries)
+        self.assertEqual(readiness['counts'], {
+            'sources': 1,
+            'memories': 2,
+            'inspirations': 1,
+            'inspiration_signals': 1,
+            'preferences': 1,
+            'rules': 1,
+            'unresolved_conflicts': 0,
+        })
 
     def test_readiness_falls_when_knowledge_is_revoked(self):
         self.furnish()

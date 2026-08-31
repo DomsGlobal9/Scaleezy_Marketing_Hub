@@ -42,6 +42,8 @@ export interface WorkspaceState {
   status: WorkspaceStatus;
   workspaces: Workspace[];
   selectedId: string | null;
+  /** Navigation hint only; every platform endpoint still authorises server-side. */
+  isPlatformAdmin: boolean;
   /** True from the moment a switch is committed until the document is gone. */
   switching: boolean;
   error: string | null;
@@ -72,6 +74,7 @@ const EMPTY: WorkspaceState = {
   status: "idle",
   workspaces: [],
   selectedId: null,
+  isPlatformAdmin: false,
   switching: false,
   error: null,
 };
@@ -186,10 +189,15 @@ async function fetchWorkspaces(): Promise<WorkspaceState> {
   setState({ status: "loading", error: null });
 
   let rows: Workspace[] | null = null;
+  let isPlatformAdmin = false;
   let failure: unknown = null;
 
   try {
-    const me = await api<{ memberships?: MeMembership[] } | null>(ME_PATH);
+    const me = await api<{
+      memberships?: MeMembership[];
+      is_platform_admin?: unknown;
+    } | null>(ME_PATH);
+    isPlatformAdmin = me?.is_platform_admin === true;
     const memberships = me?.memberships;
     if (Array.isArray(memberships)) rows = fromMemberships(memberships);
   } catch (err) {
@@ -214,6 +222,7 @@ async function fetchWorkspaces(): Promise<WorkspaceState> {
     // from a client they still belong to.
     setState({
       status: "error",
+      isPlatformAdmin: false,
       error: failure instanceof Error ? failure.message : "Could not load your clients.",
     });
     return state;
@@ -223,6 +232,7 @@ async function fetchWorkspaces(): Promise<WorkspaceState> {
     status: "ready",
     workspaces: rows,
     selectedId: reconcile(rows, state.selectedId),
+    isPlatformAdmin,
     error: null,
   });
   return state;
