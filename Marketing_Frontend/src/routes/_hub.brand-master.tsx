@@ -59,7 +59,7 @@ import {
   createRule,
   deactivateRule,
   fetchBrain,
-  fetchCurrentBrand,
+  fetchBrandMasterBootstrap,
   fetchKnowledge,
   fetchLearningEvents,
   fetchOverview,
@@ -80,7 +80,7 @@ import {
   type KnowledgeSource,
   type LearningEventRow,
 } from "@/lib/brand-master";
-import { useBrandSettings } from "@/lib/brand-settings";
+import { useBrandSettings, type BrandDto } from "@/lib/brand-settings";
 
 export const Route = createFileRoute("/_hub/brand-master")({
   validateSearch: (search: Record<string, unknown>): { tab?: BrandMasterTab } => {
@@ -1076,6 +1076,7 @@ function BrandMasterPage() {
   );
 
   const [brandId, setBrandId] = useState<string | null>(null);
+  const [initialBrand, setInitialBrand] = useState<BrandDto | null>(null);
   const [overview, setOverview] = useState<BrandMasterOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1088,11 +1089,13 @@ function BrandMasterPage() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetchCurrentBrand()
-      .then((brand) => {
-        if (cancelled) return null;
-        setBrandId(brand.id);
-        return loadOverview(brand.id);
+    fetchBrandMasterBootstrap()
+      .then((bootstrap) => {
+        if (cancelled) return;
+        setBrandId(bootstrap.brand.id);
+        setInitialBrand(bootstrap.brand);
+        setOverview(bootstrap.overview);
+        setError(null);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : "Could not load Brand Master.");
@@ -1103,7 +1106,7 @@ function BrandMasterPage() {
     return () => {
       cancelled = true;
     };
-  }, [loadOverview]);
+  }, []);
 
   /** Something that changes intelligence happened; the backend recompiled the
    *  brain, this refreshes readiness and the counts that show it. */
@@ -1111,7 +1114,7 @@ function BrandMasterPage() {
     if (brandId) void loadOverview(brandId).catch(() => undefined);
   }, [brandId, loadOverview]);
   const [adoptedNonce, setAdoptedNonce] = useState(0);
-  const brandEditor = useBrandSettings({ brandId, onSaved: refresh });
+  const brandEditor = useBrandSettings({ brandId, initialBrand, onSaved: refresh });
 
   const onRebuild = useCallback(async () => {
     if (!brandId) return;

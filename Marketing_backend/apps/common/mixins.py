@@ -7,7 +7,12 @@ mixin makes scoping the default rather than something each view remembers.
 """
 import logging
 
-from apps.common.permissions import WorkspaceMismatch, get_membership, resolve_workspace_id
+from apps.common.permissions import (
+    WorkspaceMismatch,
+    cached_membership_for_workspace,
+    get_membership,
+    resolve_workspace_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +43,13 @@ class WorkspaceScopedMixin:
             workspace_id = resolve_workspace_id(self.request, self)
         except WorkspaceMismatch:
             return []
-        if not workspace_id or get_membership(user, workspace_id) is None:
+        if not workspace_id:
+            return []
+
+        membership = cached_membership_for_workspace(self.request, workspace_id)
+        if membership is None:
+            membership = get_membership(user, workspace_id)
+        if membership is None:
             return []
         return [workspace_id]
 

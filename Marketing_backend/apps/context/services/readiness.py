@@ -52,6 +52,14 @@ def brand_readiness(brand, *, brain=None):
     ).eligible_for_retrieval()
     preferences = BrandPreference.objects.filter(brand=brand).active()
     rules = BrandRule.objects.filter(brand=brand, is_active=True)
+    counts = {
+        'sources': sources.count(),
+        'memories': memories.count(),
+        'inspirations': inspirations.count(),
+        'inspiration_signals': signals.count(),
+        'preferences': preferences.count(),
+        'rules': rules.count(),
+    }
 
     visual = brain.get('visual_language', {})
     voice = brain.get('voice', {})
@@ -74,8 +82,8 @@ def brand_readiness(brand, *, brain=None):
             'label': 'Brand knowledge',
             'weight': 20,
             'score': (
-                _ratio(sources.count(), 2) * 0.4
-                + _ratio(memories.count(), 5) * 0.6
+                _ratio(counts['sources'], 2) * 0.4
+                + _ratio(counts['memories'], 5) * 0.6
             ),
             'hint': 'Upload a brand document, deck or transcript.',
         },
@@ -117,8 +125,8 @@ def brand_readiness(brand, *, brain=None):
             'label': 'Inspirations',
             'weight': 10,
             'score': (
-                _ratio(inspirations.count(), 3) * 0.5
-                + _ratio(signals.count(), 5) * 0.5
+                _ratio(counts['inspirations'], 3) * 0.5
+                + _ratio(counts['inspiration_signals'], 5) * 0.5
             ),
             'hint': 'Add references and say what you like about them.',
         },
@@ -127,8 +135,8 @@ def brand_readiness(brand, *, brain=None):
             'label': 'Learning',
             'weight': 10,
             'score': (
-                _ratio(preferences.count(), 3) * 0.6
-                + _ratio(rules.count(), 2) * 0.4
+                _ratio(counts['preferences'], 3) * 0.6
+                + _ratio(counts['rules'], 2) * 0.4
             ),
             'hint': 'Review a few generations so Scaleezy can learn your taste.',
         },
@@ -193,13 +201,5 @@ def brand_readiness(brand, *, brain=None):
             for d in dimensions
         ],
         'recommended_next_action': next_action,
-        'counts': {
-            'sources': sources.count(),
-            'memories': memories.count(),
-            'inspirations': inspirations.count(),
-            'inspiration_signals': signals.count(),
-            'preferences': preferences.count(),
-            'rules': rules.count(),
-            'unresolved_conflicts': conflicts,
-        },
+        'counts': {**counts, 'unresolved_conflicts': conflicts},
     }

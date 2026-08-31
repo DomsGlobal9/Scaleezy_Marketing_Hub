@@ -11,7 +11,8 @@
  * authorises the brand against it, so the browser never gets to assert which
  * tenant's intelligence it is allowed to see.
  */
-import { api, apiFetch } from "@/lib/api";
+import { ApiError, api, apiFetch } from "@/lib/api";
+import type { BrandDto } from "@/lib/brand-settings";
 
 export type ReadinessLevel = "STARTING" | "LEARNING" | "STRONG" | "READY";
 
@@ -231,6 +232,11 @@ export interface CurrentBrand {
   name: string;
 }
 
+export interface BrandMasterBootstrap {
+  brand: BrandDto;
+  overview: BrandMasterOverview;
+}
+
 export interface CalibrationDirection {
   id: string;
   label: string;
@@ -376,10 +382,23 @@ export async function postMultipart<T>(path: string, form: FormData): Promise<T>
 
 /* ----------------------------------------------------------------- overview */
 
-export const fetchCurrentBrand = () => api<CurrentBrand>("/api/marketing/brands/current/");
+export const fetchCurrentBrand = () => api<BrandDto>("/api/marketing/brands/current/");
 
 export const fetchOverview = (brandId: string) =>
   api<BrandMasterOverview>(`/api/marketing/brand-master/${brandId}/`);
+
+export const fetchBrandMasterBootstrap = async (): Promise<BrandMasterBootstrap> => {
+  try {
+    return await api<BrandMasterBootstrap>("/api/marketing/brand-master/current/");
+  } catch (error) {
+    // During a rolling deploy Vercel can reach the previous backend briefly.
+    // Only an absent route is compatible with the legacy two-request path;
+    // auth, tenant and server failures must remain visible and never retry.
+    if (!(error instanceof ApiError) || error.status !== 404) throw error;
+    const brand = await fetchCurrentBrand();
+    return { brand, overview: await fetchOverview(brand.id) };
+  }
+};
 
 export const fetchBrain = (brandId: string) =>
   api<BrandBrain>(`/api/marketing/brand-master/${brandId}/brain/`);

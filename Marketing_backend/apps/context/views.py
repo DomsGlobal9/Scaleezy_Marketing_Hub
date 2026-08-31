@@ -15,7 +15,9 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 
 from apps.brands.models import Brand
+from apps.brands.serializers import BrandSerializer
 from apps.brands.services.brand_brain import compile_brand_brain, rebuild_brand_brain
+from apps.brands.services.current_brand import get_current_brand
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.permissions import (
     HasWorkspaceRole,
@@ -37,6 +39,35 @@ from .services.readiness import brand_readiness
 logger = logging.getLogger(__name__)
 
 
+def build_brand_master_overview(brand):
+    """Build the stable overview payload used by both Brand Master reads."""
+    brain = resolved_brain(brand)
+    readiness = brand_readiness(brand, brain=brain)
+
+    return {
+        'brand': {
+            'id': str(brand.pk),
+            'name': brand.name,
+            'industry': brand.industry,
+            'tagline': brand.tagline,
+            'brand_tone': brand.brand_tone,
+            'logo_url': brand.logo_url,
+            'palette': brand.palette or {},
+            'status': brand.status,
+        },
+        'readiness': readiness,
+        'brain': {
+            'compiled': bool(brand.creative_brain),
+            'brain_version': brain.get('brain_version', ''),
+            'schema_version': brain.get('schema_version'),
+            'compiled_at': (brand.creative_brain or {}).get('compiled_at'),
+            'positioning': brain.get('positioning', {}),
+            'unresolved_conflict_count': brain.get('unresolved_conflict_count', 0),
+        },
+        'conflicts': brain.get('conflicts', []),
+    }
+
+
 class BrandMasterViewSet(
     WorkspaceScopedMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet
 ):
@@ -56,31 +87,18 @@ class BrandMasterViewSet(
 
     def retrieve(self, request, pk=None):
         """The overview: how well Scaleezy understands this brand."""
-        brand = self.get_object()
-        brain = resolved_brain(brand)
-        readiness = brand_readiness(brand, brain=brain)
+        return APIResponse(success=True, data=build_brand_master_overview(self.get_object()))
 
+    @action(detail=False, methods=['get'])
+    def current(self, request):
+        """One selected-workspace bootstrap for the complete Brand Master."""
+        workspace, error = get_request_workspace(request)
+        if error:
+            return error
+        brand = get_current_brand(workspace, request.user)
         return APIResponse(success=True, data={
-            'brand': {
-                'id': str(brand.pk),
-                'name': brand.name,
-                'industry': brand.industry,
-                'tagline': brand.tagline,
-                'brand_tone': brand.brand_tone,
-                'logo_url': brand.logo_url,
-                'palette': brand.palette or {},
-                'status': brand.status,
-            },
-            'readiness': readiness,
-            'brain': {
-                'compiled': bool(brand.creative_brain),
-                'brain_version': brain.get('brain_version', ''),
-                'schema_version': brain.get('schema_version'),
-                'compiled_at': (brand.creative_brain or {}).get('compiled_at'),
-                'positioning': brain.get('positioning', {}),
-                'unresolved_conflict_count': brain.get('unresolved_conflict_count', 0),
-            },
-            'conflicts': brain.get('conflicts', []),
+            'brand': BrandSerializer(brand).data,
+            'overview': build_brand_master_overview(brand),
         })
 
     @action(detail=True, methods=['get'])

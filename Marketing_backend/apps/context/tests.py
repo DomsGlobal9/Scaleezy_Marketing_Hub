@@ -9,7 +9,9 @@ because the task did not seem to need it.
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from rest_framework import status
 
 from apps.brands.models import Brand
@@ -19,7 +21,7 @@ from apps.inspirations.models import BrandInspiration, InspirationSignal
 from apps.knowledge.models import BrandMemory, BrandSource
 from apps.learning.models import BrandRule
 from apps.learning.services import create_explicit_rule, record_event, reinforce_preference
-from apps.workspaces.models import WorkspaceMember
+from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
 from .services.context_gateway import (
     ContextError,
@@ -333,6 +335,23 @@ class ReadinessTests(ContextTestBase):
             brand_readiness(self.brand1), brand_readiness(self.brand1)
         )
 
+    def test_each_readiness_count_is_queried_only_once(self):
+        self.furnish()
+        with CaptureQueriesContext(connection) as captured:
+            readiness = brand_readiness(
+                self.brand1, brain=self.brand1.creative_brain
+            )
+
+        count_queries = [
+            query['sql'] for query in captured.captured_queries
+            if 'COUNT(' in query['sql'].upper()
+        ]
+        # Count-query cost, not the global request total, is the contract. This
+        # remains stable if permission or serialization queries change later.
+        self.assertLessEqual(len(count_queries), 6, count_queries)
+        self.assertEqual(readiness['counts']['memories'], 2)
+        self.assertEqual(readiness['counts']['rules'], 1)
+
     def test_readiness_falls_when_knowledge_is_revoked(self):
         self.furnish()
         before = brand_readiness(self.brand1)['readiness_score']
@@ -359,6 +378,62 @@ class ReadinessTests(ContextTestBase):
 
 
 class BrandMasterApiTests(ContextTestBase):
+    def test_current_returns_full_brand_and_the_exact_existing_overview(self):
+        self.furnish()
+        response = self.viewer_client.get(f'{MASTER_URL}current/', **self.ws1())
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        body = response.json()['data']
+
+        current_brand = self.viewer_client.get(
+            '/api/marketing/brands/current/', **self.ws1()
+        ).json()['data']
+        detail = self.viewer_client.get(
+            f'{MASTER_URL}{self.brand1.id}/', **self.ws1()
+        ).json()['data']
+        self.assertEqual(body['brand'], current_brand)
+        self.assertEqual(body['overview'], detail)
+
+    def test_current_uses_only_the_selected_tenant_and_ignores_a_brand_id(self):
+        WorkspaceMember.objects.create(
+            workspace=self.workspace2,
+            user=self.user1,
+            role=WorkspaceMember.Role.VIEWER,
+        )
+        response = self.client1.get(
+            f'{MASTER_URL}current/?brand_id={self.brand1.id}',
+            **workspace_header(self.workspace2),
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        body = response.json()['data']
+        self.assertEqual(body['brand']['id'], str(self.brand2.id))
+        self.assertEqual(body['brand']['workspace'], str(self.workspace2.id))
+        self.assertEqual(body['overview']['brand']['id'], str(self.brand2.id))
+
+    def test_current_reuses_rejected_archived_brand_semantics(self):
+        self.workspace1.approval_status = MarketingWorkspace.Approval.REJECTED
+        self.workspace1.status = MarketingWorkspace.Status.ARCHIVED
+        self.workspace1.save(update_fields=['approval_status', 'status', 'updated_at'])
+        self.brand1.is_default = True
+        self.brand1.status = Brand.Status.ARCHIVED
+        self.brand1.save(update_fields=['is_default', 'status', 'updated_at'])
+        self.sibling.status = Brand.Status.ARCHIVED
+        self.sibling.save(update_fields=['status', 'updated_at'])
+        before = Brand.objects.filter(workspace=self.workspace1).count()
+
+        brand_response = self.client1.get(
+            '/api/marketing/brands/current/', **self.ws1()
+        )
+        master_response = self.client1.get(f'{MASTER_URL}current/', **self.ws1())
+
+        self.assertEqual(brand_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(master_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            master_response.json()['data']['brand']['id'],
+            brand_response.json()['data']['id'],
+        )
+        self.assertEqual(master_response.json()['data']['brand']['status'], 'ARCHIVED')
+        self.assertEqual(Brand.objects.filter(workspace=self.workspace1).count(), before)
+
     def test_overview_returns_real_backend_data(self):
         self.furnish()
         body = self.client1.get(f'{MASTER_URL}{self.brand1.id}/', **self.ws1()).json()['data']

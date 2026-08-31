@@ -74,7 +74,7 @@ export const DEFAULT_BRAND_SETTINGS: BrandSettings = {
 };
 
 /** Raw Brand as the API returns it. */
-interface BrandDto {
+export interface BrandDto {
   id: string;
   name: string;
   industry: string;
@@ -193,6 +193,12 @@ const toPayload = (patch: Partial<BrandSettings>) => {
 export interface UseBrandSettingsOptions {
   onSaved?: () => void;
   /**
+   * A brand already returned by a parent bootstrap request. It is used only
+   * when its id exactly matches `brandId`; mismatched tenant data is ignored
+   * and the targeted brand is loaded from the API as usual.
+   */
+  initialBrand?: BrandDto | null;
+  /**
    * Which brand to edit. Omitted means the workspace default through
    * `/brands/current/` — the Brand Master behaviour. A string targets that
    * brand, which is how the Add Client wizard edits the brand it just created
@@ -215,10 +221,18 @@ export type BrandSaveState = "idle" | "pending" | "saving" | "saved" | "failed";
  */
 export function useBrandSettings(options: UseBrandSettingsOptions = {}) {
   const target = "brandId" in options ? options.brandId : undefined;
+  const matchingInitialBrand =
+    typeof target === "string" && options.initialBrand?.id === target
+      ? options.initialBrand
+      : null;
 
-  const [settings, setSettings] = useState<BrandSettings>(DEFAULT_BRAND_SETTINGS);
-  const [brandId, setBrandId] = useState<string | null>(typeof target === "string" ? target : null);
-  const [loading, setLoading] = useState(true);
+  const [settings, setSettings] = useState<BrandSettings>(() =>
+    matchingInitialBrand ? toSettings(matchingInitialBrand) : DEFAULT_BRAND_SETTINGS,
+  );
+  const [brandId, setBrandId] = useState<string | null>(
+    matchingInitialBrand?.id ?? (typeof target === "string" ? target : null),
+  );
+  const [loading, setLoading] = useState(!matchingInitialBrand);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -242,6 +256,20 @@ export function useBrandSettings(options: UseBrandSettingsOptions = {}) {
       return;
     }
 
+    // Brand Master already received this full DTO with its overview. Reuse it
+    // instead of issuing a second request from the force-mounted editors. A
+    // pending optimistic edit always wins over a later seed.
+    if (matchingInitialBrand) {
+      setBrandId(matchingInitialBrand.id);
+      if (!dirtyRef.current && !savingRef.current) {
+        setSettings(toSettings(matchingInitialBrand));
+        setSaveState("idle");
+      }
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
     let cancelled = false;
     setLoading(true);
     api<BrandDto>(target ? `/api/marketing/brands/${target}/` : "/api/marketing/brands/current/")
@@ -261,7 +289,7 @@ export function useBrandSettings(options: UseBrandSettingsOptions = {}) {
     return () => {
       cancelled = true;
     };
-  }, [target]);
+  }, [matchingInitialBrand, target]);
 
   const flush = useCallback(
     async ({ keepalive = true }: { keepalive?: boolean } = {}) => {

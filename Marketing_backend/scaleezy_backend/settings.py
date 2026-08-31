@@ -110,6 +110,11 @@ _RUNNING_TESTS = 'test' in sys.argv
 _DATABASE_URL = env('DATABASE_URL', default='')
 if _DATABASE_URL:
     DATABASES = {'default': env.db_url('DATABASE_URL')}
+    # Reuse production PostgreSQL connections instead of paying a new TLS and
+    # authentication handshake for every API request. Health checks discard a
+    # stale pooled connection before Django hands it to application code.
+    DATABASES['default']['CONN_MAX_AGE'] = env.int('DB_CONN_MAX_AGE', default=60)
+    DATABASES['default']['CONN_HEALTH_CHECKS'] = True
 elif DEBUG or _RUNNING_TESTS or env.bool('ALLOW_SQLITE_FALLBACK', default=False):
     DATABASES = {
         'default': {
@@ -135,6 +140,10 @@ if _RUNNING_TESTS:
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': ':memory:',
     }
+    # Password strength is a production concern, not a unit-test workload.
+    # Keeping the real hasher here made the 900+ test release gate spend most
+    # of its time deriving throwaway fixture passwords.
+    PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
     # Storage is stubbed under test for the same reason the database is.
     # Without this, any developer with a real .env runs the suite against the
     # live Supabase bucket: the brand-logo and poster-composition tests each

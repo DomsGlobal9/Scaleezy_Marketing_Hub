@@ -59,15 +59,42 @@ def get_membership(user, workspace_id):
     """
     if not user or not user.is_authenticated or not workspace_id:
         return None
-    return (
-        WorkspaceMember.objects.select_related('workspace')
-        .filter(
-            user=user,
-            workspace_id=workspace_id,
-            status=WorkspaceMember.Status.ACTIVE,
+    try:
+        return (
+            WorkspaceMember.objects.select_related('workspace')
+            .filter(
+                user=user,
+                workspace_id=workspace_id,
+                status=WorkspaceMember.Status.ACTIVE,
+            )
+            .first()
         )
-        .first()
-    )
+    except (ValueError, ValidationError):
+        # Invalid UUIDs are untrusted request data. Treat them exactly like a
+        # missing membership instead of letting a malformed header become a
+        # server error.
+        return None
+
+
+def cached_membership_for_workspace(request, workspace_id):
+    """Return the permission-layer membership only when it is safe to reuse.
+
+    ``IsWorkspaceMember`` stores a fully authorised, ``select_related``
+    membership on the request. Downstream helpers may avoid repeating that
+    query, but only for the exact same user and resolved workspace. A stale or
+    mismatched cache is ignored so it can never become a cross-tenant shortcut.
+    """
+    membership = getattr(request, 'workspace_membership', None)
+    user = getattr(request, 'user', None)
+    if membership is None or user is None:
+        return None
+    if str(getattr(membership, 'workspace_id', '')) != str(workspace_id):
+        return None
+    if getattr(membership, 'user_id', None) != getattr(user, 'pk', None):
+        return None
+    if getattr(membership, 'status', None) != WorkspaceMember.Status.ACTIVE:
+        return None
+    return membership
 
 
 class WorkspaceMismatch(Exception):
@@ -273,8 +300,6 @@ def get_request_workspace(request):
     from rest_framework import status
 
     from apps.common.responses import APIResponse
-    from apps.workspaces.models import MarketingWorkspace
-
     workspace_id = resolve_workspace_id(request)
     if not workspace_id:
         return None, APIResponse(
@@ -284,7 +309,11 @@ def get_request_workspace(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    if get_membership(request.user, workspace_id) is None:
+    membership = cached_membership_for_workspace(request, workspace_id)
+    if membership is None:
+        membership = get_membership(request.user, workspace_id)
+
+    if membership is None:
         # 404 rather than 403: revealing that a workspace exists but is barred
         # tells an attacker their guessed id was real.
         logger.warning(
@@ -298,15 +327,9 @@ def get_request_workspace(request):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    try:
-        return MarketingWorkspace.objects.get(id=workspace_id), None
-    except (MarketingWorkspace.DoesNotExist, ValueError, ValidationError):
-        return None, APIResponse(
-            success=False,
-            message="Workspace not found.",
-            error={"code": "WORKSPACE_NOT_FOUND", "message": "Workspace not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+    # get_membership() joins the workspace, so this is both the authorised
+    # object and the cheapest path: no second membership or workspace lookup.
+    return membership.workspace, None
 
 
 def _workspace_id_of(obj):

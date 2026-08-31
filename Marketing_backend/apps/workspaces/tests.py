@@ -4,6 +4,8 @@ Phase 1 — workspace membership, RBAC and queryset scoping.
 The critical assertions here are the negative ones: a member of workspace A
 must not be able to read, or even enumerate, workspace B.
 """
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory, TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
@@ -13,6 +15,7 @@ from apps.common.permissions import (
     HasWorkspaceRole,
     IsWorkspaceMember,
     get_membership,
+    get_request_workspace,
     resolve_workspace_id,
 )
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
@@ -176,6 +179,32 @@ class PermissionTests(TestCase):
             IsWorkspaceMember().has_object_permission(request, None, self.ws_a)
         )
 
+    def test_workspace_helper_reuses_permission_membership_without_a_query(self):
+        request = self._request(self.alice, self.ws_a.id)
+        self.assertTrue(IsWorkspaceMember().has_permission(request, None))
+
+        with self.assertNumQueries(0), patch(
+            'apps.common.permissions.get_membership'
+        ) as membership_lookup:
+            workspace, error = get_request_workspace(request)
+
+        self.assertIsNone(error)
+        self.assertEqual(workspace, self.ws_a)
+        membership_lookup.assert_not_called()
+
+    def test_workspace_helper_ignores_mismatched_cache_and_fails_closed(self):
+        request = self._request(self.alice, self.ws_b.id)
+        request.workspace_membership = get_membership(self.alice, self.ws_a.id)
+
+        with patch(
+            'apps.common.permissions.get_membership', wraps=get_membership
+        ) as membership_lookup:
+            workspace, error = get_request_workspace(request)
+
+        self.assertIsNone(workspace)
+        self.assertEqual(error.status_code, 404)
+        membership_lookup.assert_called_once_with(self.alice, str(self.ws_b.id))
+
 
 class QuerysetScopingTests(TestCase):
     """A correct permission class still leaks if the queryset is unfiltered."""
@@ -229,6 +258,30 @@ class QuerysetScopingTests(TestCase):
         results = list(self._view_for(self.alice).get_queryset())
 
         self.assertEqual(results, [])
+
+    def test_scoping_reuses_matching_permission_membership_without_a_query(self):
+        view = self._view_for(self.alice, self.ws_a)
+        view.request.workspace_membership = get_membership(self.alice, self.ws_a.id)
+
+        with self.assertNumQueries(0), patch(
+            'apps.common.mixins.get_membership'
+        ) as membership_lookup:
+            workspace_ids = view.accessible_workspace_ids()
+
+        self.assertEqual(workspace_ids, [str(self.ws_a.id)])
+        membership_lookup.assert_not_called()
+
+    def test_scoping_ignores_mismatched_cache_without_crossing_tenants(self):
+        view = self._view_for(self.alice, self.ws_b)
+        view.request.workspace_membership = get_membership(self.alice, self.ws_a.id)
+
+        with patch(
+            'apps.common.mixins.get_membership', wraps=get_membership
+        ) as membership_lookup:
+            results = list(view.get_queryset())
+
+        self.assertEqual(results, [])
+        membership_lookup.assert_called_once_with(self.alice, str(self.ws_b.id))
 
     def test_user_with_no_membership_sees_nothing(self):
         nobody = User.objects.create_user(username='nobody', password='p')
