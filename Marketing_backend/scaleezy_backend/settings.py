@@ -287,3 +287,44 @@ YOUTUBE_CLIENT_ID = env('YOUTUBE_CLIENT_ID', default='')
 YOUTUBE_CLIENT_SECRET = env('YOUTUBE_CLIENT_SECRET', default='')
 YOUTUBE_REDIRECT_URI = env('YOUTUBE_REDIRECT_URI', default='')
 YOUTUBE_SCOPES = env('YOUTUBE_SCOPES', default='https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly')
+
+
+# ─────────────────────────────────────────────────────────── shared state
+# Django's default cache is per-process memory. With more than one worker
+# that is not a cache, it is N caches — and one of them holds the OAuth
+# `state` and PKCE verifier between the redirect out and the callback back
+# (apps/social_accounts/integrations/*.py). The callback lands on whichever
+# worker the load balancer picks, so with 2 workers connecting a social
+# account succeeded about half the time. It is not a scaling nicety; it is
+# why connecting an account was a coin flip.
+#
+# The database is already the durable queue, so it is the cache too: one
+# fewer service to run, and correct across every worker and instance. The
+# table is created by `manage.py createcachetable` in the build.
+if _RUNNING_TESTS:
+    # Per-process is right under test: fast, isolated, and no table needed.
+    CACHES = {'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}}
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+            'LOCATION': 'scaleezy_cache',
+            'TIMEOUT': 600,
+            'OPTIONS': {'MAX_ENTRIES': 10000, 'CULL_FREQUENCY': 3},
+        }
+    }
+
+# Reuse a database connection for a minute instead of opening one per
+# request. Against a pooled Postgres this is most of the fixed cost of a
+# cheap request.
+if _DATABASE_URL and not _RUNNING_TESTS:
+    DATABASES['default']['CONN_MAX_AGE'] = 60
+    DATABASES['default']['CONN_HEALTH_CHECKS'] = True
+
+# A photo taken on a modern phone is 2-5 MB, and the poster upload path
+# sends it base64-encoded, which inflates it by a third. Django's 2.5 MB
+# default rejected most real camera images and the error blamed the file,
+# so people retried and failed again. Raised for the JSON body; the
+# multipart file limit is separate and already generous.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 25 * 1024 * 1024
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024

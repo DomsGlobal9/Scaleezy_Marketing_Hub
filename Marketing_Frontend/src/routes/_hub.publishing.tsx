@@ -461,8 +461,19 @@ function PublishingPage() {
   const toggle = (id: string) =>
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
-  const ensureDraftAsset = async (draft: DraftAsset): Promise<string> => {
-    if (draft.id) return draft.id;
+  /**
+   * The saved asset: its id AND the URL it was actually stored at.
+   *
+   * The URL is what matters. A freshly picked photo lives in the browser as a
+   * `data:` URL, and that was being sent on to ContentItem.preview_url, which
+   * is a URLField(max_length=1000) — wrong scheme and thousands of characters
+   * too long, so saving an uploaded poster failed every time. The asset
+   * upload below has always produced a real URL; nothing was passing it on.
+   */
+  const ensureDraftAsset = async (
+    draft: DraftAsset,
+  ): Promise<{ id: string; fileUrl: string }> => {
+    if (draft.id) return { id: draft.id, fileUrl: draft.previewUrl ?? "" };
     const workspaceId = readSelectedWorkspaceId();
     if (!workspaceId) throw new Error("Select a client before saving content.");
     if (!draft.previewUrl) throw new Error("Attach or generate media before saving this draft.");
@@ -481,7 +492,10 @@ function PublishingPage() {
       if (!response.ok || payload?.success === false || !payload?.data?.id) {
         throw new Error(payload?.message || "Could not save the media asset.");
       }
-      return String(payload.data.id);
+      return {
+        id: String(payload.data.id),
+        fileUrl: String(payload.data.file_url ?? ""),
+      };
     }
 
     const saved = await api<{ id: string }>("/api/marketing/assets/", {
@@ -494,14 +508,18 @@ function PublishingPage() {
       },
     });
     if (!saved.id) throw new Error("The media was saved without an id.");
-    return saved.id;
+    return { id: saved.id, fileUrl: draft.previewUrl };
   };
 
   const saveContentDraft = async ({ submit = false }: { submit?: boolean } = {}) => {
     if (!asset || contentLocked) return;
     setContentSaving(true);
     try {
-      const assetId = await ensureDraftAsset(asset);
+      const { id: assetId, fileUrl } = await ensureDraftAsset(asset);
+      // Never send a data: URL to the server. It is not a URL the model can
+      // store, and it is not one anything else could load either.
+      const storedUrl = (url: string | undefined | null) =>
+        url && !url.startsWith("data:") ? url : "";
       const contentFormat =
         asset.contentType === "video"
           ? "VIDEO"
@@ -514,11 +532,11 @@ function PublishingPage() {
         headline: asset.postTitle,
         caption: asset.postDescription,
         hashtags: asset.postHashtags,
-        preview_url: asset.previewUrl ?? "",
+        preview_url: storedUrl(asset.previewUrl) || storedUrl(fileUrl),
         slides: (asset.slides ?? []).map((slide, index) => ({
           position: index + 1,
           description: slide.description,
-          preview_url: slide.previewUrl ?? "",
+          preview_url: storedUrl(slide.previewUrl),
         })),
       };
 
