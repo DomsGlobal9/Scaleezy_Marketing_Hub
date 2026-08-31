@@ -1240,10 +1240,10 @@ function BrandMasterPage() {
               onGoToTab={setTab}
             />
           </TabsContent>
-          <TabsContent value="basics" forceMount>
+          <TabsContent value="basics" forceMount className="data-[state=inactive]:hidden">
             <BrandBasicsPanel editor={brandEditor} />
           </TabsContent>
-          <TabsContent value="products" forceMount>
+          <TabsContent value="products" forceMount className="data-[state=inactive]:hidden">
             <ProductsAudiencePanel editor={brandEditor} />
           </TabsContent>
           <TabsContent value="knowledge" className="space-y-6">
