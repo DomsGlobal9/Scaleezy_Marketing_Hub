@@ -49,6 +49,13 @@ import { api, apiPost } from "@/lib/api";
 export const AI_ADMIN_TABS = ["overview", "providers", "routing", "activity"] as const;
 export type AIAdminTab = (typeof AI_ADMIN_TABS)[number];
 
+const AI_ADMIN_TAB_LABELS: Record<AIAdminTab, string> = {
+  overview: "Overview",
+  providers: "Providers",
+  routing: "Routing & redundancy",
+  activity: "Activity",
+};
+
 interface CatalogueProvider {
   id: string;
   key: string;
@@ -207,6 +214,8 @@ export function AIProvidersPanel({
   const [resolved, setResolved] = useState<Record<string, ResolvedRoute>>({});
   const [usageSummary, setUsageSummary] = useState<UsageSummaryRow[]>([]);
   const [usage, setUsage] = useState<UsageRow[]>([]);
+  const [usageLoading, setUsageLoading] = useState(true);
+  const [usageError, setUsageError] = useState<string | null>(null);
   const [routeDrafts, setRouteDrafts] = useState<Record<string, RouteDraft>>({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -242,22 +251,35 @@ export function AIProvidersPanel({
     setRouteDrafts(next);
   }, []);
 
+  const loadUsage = useCallback(async () => {
+    setUsageLoading(true);
+    setUsageError(null);
+    try {
+      const [summary, recent] = await Promise.all([
+        api<UsageSummaryRow[]>("/api/marketing/ai/usage/summary/"),
+        api<UsageRow[] | Paginated<UsageRow>>("/api/marketing/ai/usage/"),
+      ]);
+      setUsageSummary(Array.isArray(summary) ? summary : []);
+      setUsage(asRows(recent));
+    } catch (error) {
+      setUsageError(error instanceof Error ? error.message : "Could not load AI activity.");
+    } finally {
+      setUsageLoading(false);
+    }
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     try {
-      const [cat, workspaceProviders, routeRows, activeRoutes, summary, recent] = await Promise.all(
-        [
-          api<{ providers: CatalogueProvider[]; capabilities: Vocab[]; strategies: Vocab[] }>(
-            "/api/marketing/ai/catalogue/",
-          ),
-          api<WorkspaceProvider[] | Paginated<WorkspaceProvider>>("/api/marketing/ai/providers/"),
-          api<RouteRow[] | Paginated<RouteRow>>("/api/marketing/ai/routes/"),
-          api<Record<string, ResolvedRoute>>("/api/marketing/ai/routes/resolved/"),
-          api<UsageSummaryRow[]>("/api/marketing/ai/usage/summary/"),
-          api<UsageRow[] | Paginated<UsageRow>>("/api/marketing/ai/usage/"),
-        ],
-      );
+      const [cat, workspaceProviders, routeRows, activeRoutes] = await Promise.all([
+        api<{ providers: CatalogueProvider[]; capabilities: Vocab[]; strategies: Vocab[] }>(
+          "/api/marketing/ai/catalogue/",
+        ),
+        api<WorkspaceProvider[] | Paginated<WorkspaceProvider>>("/api/marketing/ai/providers/"),
+        api<RouteRow[] | Paginated<RouteRow>>("/api/marketing/ai/routes/"),
+        api<Record<string, ResolvedRoute>>("/api/marketing/ai/routes/resolved/"),
+      ]);
 
       const providerRows = asRows(workspaceProviders);
       const routingRows = asRows(routeRows);
@@ -272,15 +294,14 @@ export function AIProvidersPanel({
         Object.fromEntries(providerRows.map((row) => [row.provider, row.model_override ?? ""])),
       );
       setResolved(activeRoutes ?? {});
-      setUsageSummary(Array.isArray(summary) ? summary : []);
-      setUsage(asRows(recent));
       buildDrafts(cat.capabilities ?? [], routingRows);
+      void loadUsage();
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "Could not load the Admin console.");
     } finally {
       setLoading(false);
     }
-  }, [buildDrafts]);
+  }, [buildDrafts, loadUsage]);
 
   useEffect(() => {
     void load();
@@ -600,7 +621,28 @@ export function AIProvidersPanel({
       onValueChange={(value) => onTabChange(value as AIAdminTab)}
       className="space-y-6"
     >
-      <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
+      <div className="sm:hidden">
+        <Label
+          htmlFor="ai-admin-section"
+          className="mb-2 block text-xs font-semibold tracking-wide uppercase"
+        >
+          Admin section
+        </Label>
+        <Select value={activeTab} onValueChange={(value) => onTabChange(value as AIAdminTab)}>
+          <SelectTrigger id="ai-admin-section" aria-label="Admin section">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {AI_ADMIN_TABS.map((value) => (
+              <SelectItem key={value} value={value}>
+                {AI_ADMIN_TAB_LABELS[value]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <TabsList className="hidden h-auto w-full flex-wrap justify-start gap-1 sm:flex">
         <TabsTrigger value="overview" className="gap-1.5">
           <Gauge className="size-3.5" /> Overview
         </TabsTrigger>
@@ -637,8 +679,14 @@ export function AIProvidersPanel({
           />
           <MetricCard
             title="Recorded calls"
-            value={String(totalCalls)}
-            hint={`${money(totalSpend)} attributed spend`}
+            value={usageLoading || usageError ? "—" : String(totalCalls)}
+            hint={
+              usageLoading
+                ? "Loading recorded usage…"
+                : usageError
+                  ? "Usage is temporarily unavailable"
+                  : `${money(totalSpend)} attributed spend`
+            }
             icon={<Activity className="size-4" />}
           />
         </div>
@@ -1007,7 +1055,7 @@ export function AIProvidersPanel({
                       <Input
                         type="password"
                         autoComplete="new-password"
-                        className="h-9 w-full max-w-sm"
+                        className="w-full max-w-sm lg:h-9"
                         aria-label={`${provider.display_name} API key`}
                         placeholder={
                           workspaceProvider?.has_credentials ? "•••••••• (saved)" : "API key"
@@ -1271,7 +1319,7 @@ export function AIProvidersPanel({
                                 type="button"
                                 size="icon"
                                 variant="ghost"
-                                className="size-8"
+                                className="size-11 lg:size-8"
                                 aria-label={`Move ${provider.display_name} up`}
                                 disabled={routeBusy || selectedIndex === 0}
                                 onClick={() => moveRouteProvider(capability.value, provider.id, -1)}
@@ -1282,7 +1330,7 @@ export function AIProvidersPanel({
                                 type="button"
                                 size="icon"
                                 variant="ghost"
-                                className="size-8"
+                                className="size-11 lg:size-8"
                                 aria-label={`Move ${provider.display_name} down`}
                                 disabled={
                                   routeBusy || selectedIndex === draft.providerIds.length - 1
@@ -1323,106 +1371,134 @@ export function AIProvidersPanel({
       </TabsContent>
 
       <TabsContent value="activity" className="space-y-5">
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard
-            title="Total calls"
-            value={String(totalCalls)}
-            hint="All recorded provider attempts"
-            icon={<Activity className="size-4" />}
-          />
-          <MetricCard
-            title="Attributed spend"
-            value={money(totalSpend)}
-            hint="Across every provider and capability"
-            icon={<Gauge className="size-4" />}
-          />
-          <MetricCard
-            title="Recent failures"
-            value={String(recentFailures)}
-            hint={`Across ${usage.length} recent attempts`}
-            icon={<XCircle className="size-4" />}
-          />
-          <MetricCard
-            title="Recent latency"
-            value={`${averageLatency} ms`}
-            hint="Average of the visible activity"
-            icon={<Network className="size-4" />}
-          />
-        </div>
+        {usageLoading ? (
+          <div
+            className="flex min-h-48 items-center justify-center rounded-xl border border-border"
+            role="status"
+          >
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" /> Loading provider activity…
+            </p>
+          </div>
+        ) : usageError ? (
+          <Alert variant="destructive">
+            <CircleAlert className="size-4" />
+            <AlertTitle>Provider activity could not load</AlertTitle>
+            <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+              <span>{usageError}</span>
+              <Button size="sm" variant="outline" onClick={() => void loadUsage()}>
+                <RefreshCw className="size-4" /> Retry
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <>
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <MetricCard
+                title="Total calls"
+                value={String(totalCalls)}
+                hint="All recorded provider attempts"
+                icon={<Activity className="size-4" />}
+              />
+              <MetricCard
+                title="Attributed spend"
+                value={money(totalSpend)}
+                hint="Across every provider and capability"
+                icon={<Gauge className="size-4" />}
+              />
+              <MetricCard
+                title="Recent failures"
+                value={String(recentFailures)}
+                hint={`Across ${usage.length} recent attempts`}
+                icon={<XCircle className="size-4" />}
+              />
+              <MetricCard
+                title="Recent latency"
+                value={`${averageLatency} ms`}
+                hint="Average of the visible activity"
+                icon={<Network className="size-4" />}
+              />
+            </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Usage by provider and capability</CardTitle>
-            <CardDescription>Workspace-scoped calls and attributed provider cost.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {!usageSummary.length ? (
-              <p className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-                No AI usage has been recorded for this client yet.
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {usageSummary.map((row) => (
-                  <div
-                    key={`${row.provider__key ?? "removed"}-${row.capability}`}
-                    className="grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center"
-                  >
-                    <div>
-                      <p className="text-sm font-medium">
-                        {row.provider__key ?? "Removed provider"}
-                      </p>
-                      <p className="text-xs text-muted-foreground">{humanize(row.capability)}</p>
-                    </div>
-                    <p className="text-sm text-muted-foreground">{row.calls} calls</p>
-                    <p className="text-sm font-medium">{money(Number(row.spend || 0))}</p>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Usage by provider and capability</CardTitle>
+                <CardDescription>
+                  Workspace-scoped calls and attributed provider cost.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {!usageSummary.length ? (
+                  <p className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+                    No AI usage has been recorded for this client yet.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {usageSummary.map((row) => (
+                      <div
+                        key={`${row.provider__key ?? "removed"}-${row.capability}`}
+                        className="grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center"
+                      >
+                        <div>
+                          <p className="text-sm font-medium">
+                            {row.provider__key ?? "Removed provider"}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {humanize(row.capability)}
+                          </p>
+                        </div>
+                        <p className="text-sm text-muted-foreground">{row.calls} calls</p>
+                        <p className="text-sm font-medium">{money(Number(row.spend || 0))}</p>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                )}
+              </CardContent>
+            </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Recent provider activity</CardTitle>
-            <CardDescription>
-              Every attempt is logged, including failover and best-of candidates.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {!usage.length ? (
-              <p className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-                Activity will appear after the first AI-backed task.
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {usage.slice(0, 25).map((row) => (
-                  <div
-                    key={row.id}
-                    className="grid gap-2 rounded-lg border border-border p-3 lg:grid-cols-[auto_minmax(0,1fr)_auto_auto] lg:items-center"
-                  >
-                    {row.success ? (
-                      <CheckCircle2 className="size-4 text-success" />
-                    ) : (
-                      <XCircle className="size-4 text-destructive" />
-                    )}
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">
-                        {row.provider_key ?? "Removed provider"} · {humanize(row.capability)}
-                      </p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {row.error ||
-                          `${humanize(row.strategy || "failover")}${row.selected ? " · selected" : " · candidate"}`}
-                      </p>
-                    </div>
-                    <p className="text-xs text-muted-foreground">{row.latency_ms} ms</p>
-                    <p className="text-xs text-muted-foreground">{when(row.created_at)}</p>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Recent provider activity</CardTitle>
+                <CardDescription>
+                  Every attempt is logged, including failover and best-of candidates.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {!usage.length ? (
+                  <p className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+                    Activity will appear after the first AI-backed task.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {usage.slice(0, 25).map((row) => (
+                      <div
+                        key={row.id}
+                        className="grid gap-2 rounded-lg border border-border p-3 lg:grid-cols-[auto_minmax(0,1fr)_auto_auto] lg:items-center"
+                      >
+                        {row.success ? (
+                          <CheckCircle2 className="size-4 text-success" />
+                        ) : (
+                          <XCircle className="size-4 text-destructive" />
+                        )}
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium">
+                            {row.provider_key ?? "Removed provider"} · {humanize(row.capability)}
+                          </p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {row.error ||
+                              `${humanize(row.strategy || "failover")}${row.selected ? " · selected" : " · candidate"}`}
+                          </p>
+                        </div>
+                        <p className="text-xs text-muted-foreground">{row.latency_ms} ms</p>
+                        <p className="text-xs text-muted-foreground">{when(row.created_at)}</p>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                )}
+              </CardContent>
+            </Card>
+          </>
+        )}
       </TabsContent>
     </Tabs>
   );

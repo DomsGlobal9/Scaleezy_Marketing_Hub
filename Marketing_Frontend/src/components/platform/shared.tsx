@@ -152,7 +152,13 @@ const STATUS_TONE: Record<string, string> = {
   REVOKED: "border-border bg-muted/60 text-muted-foreground",
 };
 
-export function StatusPill({ value, className }: { value: string | null | undefined; className?: string }) {
+export function StatusPill({
+  value,
+  className,
+}: {
+  value: string | null | undefined;
+  className?: string;
+}) {
   const text = value || "—";
   return (
     <span
@@ -218,7 +224,9 @@ export function renderCell(key: string, value: unknown): ReactNode {
   if (typeof value === "number") return String(value);
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
-    return value.length ? value.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).join(", ") : "—";
+    return value.length
+      ? value.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).join(", ")
+      : "—";
   }
   return <code className="text-[0.6875rem] break-all">{JSON.stringify(value)}</code>;
 }
@@ -248,35 +256,63 @@ export function RecordTable({
     }
   }
   return (
-    <div className="overflow-x-auto rounded-lg border border-border">
-      <table className="w-full text-left text-xs">
-        <thead className="bg-muted/50 text-[0.625rem] tracking-wide text-muted-foreground uppercase">
-          <tr>
-            {columns.map((column) => (
-              <th key={column} className="px-3 py-2 font-semibold whitespace-nowrap">
-                {column.replaceAll("_", " ")}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, maxRows).map((row, index) => (
-            <tr key={index} className="border-t border-border align-top">
+    <>
+      <div className="grid gap-3 lg:hidden">
+        {rows.slice(0, maxRows).map((row, index) => (
+          <article key={index} className="rounded-xl border border-border bg-card p-4">
+            <dl className="space-y-3">
               {columns.map((column) => (
-                <td key={column} className="max-w-[28rem] px-3 py-2 break-words">
-                  {renderCell(column, row[column])}
-                </td>
+                <div
+                  key={column}
+                  className="grid gap-1 sm:grid-cols-[10rem_minmax(0,1fr)] sm:gap-3"
+                >
+                  <dt className="text-[0.625rem] font-semibold tracking-wide text-muted-foreground uppercase">
+                    {column.replaceAll("_", " ")}
+                  </dt>
+                  <dd className="min-w-0 text-xs break-words text-foreground">
+                    {renderCell(column, row[column])}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </article>
+        ))}
+      </div>
+      <div className="hidden overflow-x-auto rounded-lg border border-border lg:block">
+        <table className="w-full text-left text-xs">
+          <thead className="bg-muted/50 text-[0.625rem] tracking-wide text-muted-foreground uppercase">
+            <tr>
+              {columns.map((column) => (
+                <th key={column} className="px-3 py-2 font-semibold whitespace-nowrap">
+                  {column.replaceAll("_", " ")}
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.slice(0, maxRows).map((row, index) => (
+              <tr key={index} className="border-t border-border align-top">
+                {columns.map((column) => (
+                  <td key={column} className="max-w-[28rem] px-3 py-2 break-words">
+                    {renderCell(column, row[column])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {rows.length > maxRows ? (
+          <p className="border-t border-border px-3 py-2 text-[0.6875rem] text-muted-foreground">
+            Showing {maxRows} of {rows.length}.
+          </p>
+        ) : null}
+      </div>
       {rows.length > maxRows ? (
-        <p className="border-t border-border px-3 py-2 text-[0.6875rem] text-muted-foreground">
+        <p className="mt-2 text-[0.6875rem] text-muted-foreground lg:hidden">
           Showing {maxRows} of {rows.length}.
         </p>
       ) : null}
-    </div>
+    </>
   );
 }
 
@@ -300,7 +336,9 @@ export function Panel({
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-semibold tracking-tight text-foreground">{title}</h2>
-          {description ? <p className="mt-0.5 text-xs text-muted-foreground">{description}</p> : null}
+          {description ? (
+            <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+          ) : null}
         </div>
         {action}
       </div>

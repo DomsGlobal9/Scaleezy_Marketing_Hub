@@ -93,7 +93,12 @@ export function InspirationsPanel({
   const [adding, setAdding] = useState(false);
 
   useEffect(() => {
-    if (!(inspirations.data ?? []).some((item) => ["QUEUED", "PROCESSING"].includes(item.analysis_status))) return;
+    if (
+      !(inspirations.data ?? []).some((item) =>
+        ["QUEUED", "PROCESSING"].includes(item.analysis_status),
+      )
+    )
+      return;
     const timer = window.setInterval(() => {
       inspirations.reload();
       signals.reload();
@@ -391,7 +396,7 @@ function AddInspirationCard({
                   type="button"
                   onClick={() => toggleFocus(c.value)}
                   className={cn(
-                    "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                    "min-h-11 rounded-full border px-3 py-1 text-xs transition-colors lg:min-h-0 lg:px-2.5",
                     focus.includes(c.value)
                       ? "border-primary bg-primary text-primary-foreground"
                       : "border-border text-muted-foreground hover:text-foreground",
@@ -492,7 +497,9 @@ function InspirationCard({
               playsInline
               className="size-24 shrink-0 rounded-lg border bg-black object-contain"
             />
-          ) : inspiration.file_url && inspiration.mime_type && !inspiration.mime_type.startsWith("image/") ? (
+          ) : inspiration.file_url &&
+            inspiration.mime_type &&
+            !inspiration.mime_type.startsWith("image/") ? (
             <a
               href={inspiration.file_url}
               target="_blank"
@@ -569,7 +576,9 @@ function InspirationCard({
                     ["QUEUED", "PROCESSING"].includes(inspiration.analysis_status) ? (
                       <Loader2 className="size-3.5 animate-spin" />
                     ) : null}
-                    {inspiration.analysis_status === "FAILED" ? "Retry analysis" : "Analyze with AI"}
+                    {inspiration.analysis_status === "FAILED"
+                      ? "Retry analysis"
+                      : "Analyze with AI"}
                   </Button>
                   <Button size="sm" variant="ghost" onClick={() => setConfirmArchive(true)}>
                     <Archive className="size-3.5" /> Archive

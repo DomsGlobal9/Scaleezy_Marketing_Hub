@@ -218,8 +218,8 @@ function LimitsEditor({
     >
       {!subscribed ? (
         <MutedNote>
-          No subscription is attached. The server decides whether limits can be set without one;
-          a refusal is shown here verbatim.
+          No subscription is attached. The server decides whether limits can be set without one; a
+          refusal is shown here verbatim.
         </MutedNote>
       ) : null}
       <div className="grid gap-3 sm:grid-cols-3">
@@ -233,7 +233,7 @@ function LimitsEditor({
               type="number"
               min={0}
               step={1}
-              className="mt-1 h-8 text-xs"
+              className="mt-1 text-xs lg:h-8"
               value={values[cap] ?? "0"}
               onChange={(e) => setValues((v) => ({ ...v, [cap]: e.target.value }))}
             />
@@ -286,13 +286,13 @@ function AttachUser({
         </Label>
         <Input
           id="attach-username"
-          className="mt-1 h-8 text-xs"
+          className="mt-1 text-xs lg:h-8"
           value={username}
           onChange={(e) => setUsername(e.target.value)}
         />
       </div>
       <Select value={role} onValueChange={setRole}>
-        <SelectTrigger className="h-8 w-28 text-xs">
+        <SelectTrigger className="w-28 text-xs lg:h-8">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -391,11 +391,15 @@ function ClientDetailPage() {
           </h1>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <StatusPill value={status} />
-            {client.brand ? <StatusPill value={`brand ${client.brand.status}`.toUpperCase()} /> : null}
+            {client.brand ? (
+              <StatusPill value={`brand ${client.brand.status}`.toUpperCase()} />
+            ) : null}
             <FlagChips flags={client.flags} />
           </div>
           {client.status_reason ? (
-            <p className="mt-2 text-xs text-muted-foreground">Reason on record: {client.status_reason}</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Reason on record: {client.status_reason}
+            </p>
           ) : null}
         </div>
         <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
@@ -445,12 +449,17 @@ function ClientDetailPage() {
           <KeyValue label="Onboarding status" value={client.onboarding?.status ?? "—"} />
           <KeyValue
             label="Readiness"
-            value={client.readiness ? `${client.readiness.score}/100 · ${client.readiness.level}` : "—"}
+            value={
+              client.readiness ? `${client.readiness.score}/100 · ${client.readiness.level}` : "—"
+            }
           />
           <KeyValue label="Knowledge sources" value={client.counts.knowledge_sources} />
           <KeyValue label="Confirmed facts" value={client.counts.confirmed_facts} />
           <KeyValue label="Inspirations" value={client.counts.inspirations} />
-          <KeyValue label="Rules / preferences" value={`${client.counts.rules} / ${client.counts.preferences}`} />
+          <KeyValue
+            label="Rules / preferences"
+            value={`${client.counts.rules} / ${client.counts.preferences}`}
+          />
           <KeyValue label="Team" value={client.counts.team} />
         </Panel>
 
@@ -552,7 +561,10 @@ function ClientDetailPage() {
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
-          <Panel title="Lifecycle" description="Suspend stops writes and scheduled work; archive also tears down routing and billing. Reads stay open.">
+          <Panel
+            title="Lifecycle"
+            description="Suspend stops writes and scheduled work; archive also tears down routing and billing. Reads stay open."
+          >
             <div className="flex flex-wrap gap-2">
               {status === "ACTIVE" ? (
                 <Button
@@ -565,7 +577,11 @@ function ClientDetailPage() {
                         "The client can still sign in and read their data, but nothing can be created, edited, generated or published until reactivated.",
                       confirmLabel: "Suspend",
                       destructive: true,
-                      reason: { label: "Reason", required: true, placeholder: "Shown to the client" },
+                      reason: {
+                        label: "Reason",
+                        required: true,
+                        placeholder: "Shown to the client",
+                      },
                       run: async (reason) => {
                         await suspendClient(client.workspace_id, reason);
                         toast.success("Suspended.");
@@ -620,7 +636,10 @@ function ClientDetailPage() {
             </div>
           </Panel>
 
-          <Panel title="Universal layer" description="Scaleezy standards and the curated library. Off means this client's generations never see them.">
+          <Panel
+            title="Universal layer"
+            description="Scaleezy standards and the curated library. Off means this client's generations never see them."
+          >
             <div className="space-y-3">
               <label className="flex items-center justify-between gap-3 text-sm">
                 <span>
@@ -667,7 +686,10 @@ function ClientDetailPage() {
             </div>
           </Panel>
 
-          <Panel title="Capability limits" description="Overrides on top of the plan's limits for this billing period.">
+          <Panel
+            title="Capability limits"
+            description="Overrides on top of the plan's limits for this billing period."
+          >
             <LimitsEditor detail={detail} onConfirm={ask} />
           </Panel>
 
@@ -695,13 +717,18 @@ function ClientDetailPage() {
                 </Label>
                 <Input
                   id="plan-key"
-                  className="mt-1 h-8 text-xs"
+                  className="mt-1 text-xs lg:h-8"
                   value={planKey}
                   onChange={(e) => setPlanKey(e.target.value)}
                   placeholder="e.g. starter"
                 />
               </div>
-              <Button type="submit" size="sm" variant="outline" disabled={!planKey.trim() || planKey.trim() === (client.plan?.key ?? "")}>
+              <Button
+                type="submit"
+                size="sm"
+                variant="outline"
+                disabled={!planKey.trim() || planKey.trim() === (client.plan?.key ?? "")}
+              >
                 Change plan…
               </Button>
             </form>
@@ -713,7 +740,10 @@ function ClientDetailPage() {
                 if (!cap || Number.isNaN(Number(cap)) || Number(cap) < 0) return;
                 ask({
                   title: `Set the AI spend cap to ${cap}?`,
-                  description: Number(cap) === 0 ? "0 removes the cap." : "Generation stops for the period once spend reaches it.",
+                  description:
+                    Number(cap) === 0
+                      ? "0 removes the cap."
+                      : "Generation stops for the period once spend reaches it.",
                   confirmLabel: "Set spend cap",
                   run: async () => {
                     await setClientSpendCap(client.workspace_id, cap);
@@ -728,7 +758,7 @@ function ClientDetailPage() {
                 </Label>
                 <Input
                   id="spend-cap"
-                  className="mt-1 h-8 text-xs"
+                  className="mt-1 text-xs lg:h-8"
                   inputMode="decimal"
                   value={spendCap}
                   onChange={(e) => setSpendCap(e.target.value)}
@@ -739,16 +769,30 @@ function ClientDetailPage() {
                 type="submit"
                 size="sm"
                 variant="outline"
-                disabled={!spendCap.trim() || Number.isNaN(Number(spendCap)) || spendCap.trim() === (client.usage.spend_cap ?? "")}
+                disabled={
+                  !spendCap.trim() ||
+                  Number.isNaN(Number(spendCap)) ||
+                  spendCap.trim() === (client.usage.spend_cap ?? "")
+                }
               >
                 Set cap…
               </Button>
             </form>
-            <MutedNote>Plan keys must exist on the server; an unknown key is refused, not guessed.</MutedNote>
+            <MutedNote>
+              Plan keys must exist on the server; an unknown key is refused, not guessed.
+            </MutedNote>
           </Panel>
 
-          <Panel title="Attach a user" description="The remedy for a colleague blocked by the duplicate-enrolment guard." className="lg:col-span-2">
-            <AttachUser workspaceId={client.workspace_id} clientName={client.name} onConfirm={ask} />
+          <Panel
+            title="Attach a user"
+            description="The remedy for a colleague blocked by the duplicate-enrolment guard."
+            className="lg:col-span-2"
+          >
+            <AttachUser
+              workspaceId={client.workspace_id}
+              clientName={client.name}
+              onConfirm={ask}
+            />
           </Panel>
         </div>
       </section>

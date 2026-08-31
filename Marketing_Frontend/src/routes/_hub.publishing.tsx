@@ -70,12 +70,7 @@ export const Route = createFileRoute("/_hub/publishing")({
 });
 
 type WorkflowStep =
-  | "create_or_upload"
-  | "ai_form"
-  | "ai_generating"
-  | "manual_upload"
-  | "preview"
-  | "publish_setup";
+  "create_or_upload" | "ai_form" | "ai_generating" | "manual_upload" | "preview" | "publish_setup";
 
 /** What the AI is asked to produce. Drives the extra fields on the brief. */
 type ContentType = "poster" | "video" | "carousel";
@@ -422,7 +417,9 @@ function PublishingPage() {
       .then((item) => {
         if (cancelled) return;
         if (item.status !== "APPROVED") {
-          throw new Error(`Content is ${item.status.replaceAll("_", " ").toLowerCase()}, not approved.`);
+          throw new Error(
+            `Content is ${item.status.replaceAll("_", " ").toLowerCase()}, not approved.`,
+          );
         }
         const mappedType: ContentType =
           item.content_format === "VIDEO"
@@ -494,9 +491,7 @@ function PublishingPage() {
    * too long, so saving an uploaded poster failed every time. The asset
    * upload below has always produced a real URL; nothing was passing it on.
    */
-  const ensureDraftAsset = async (
-    draft: DraftAsset,
-  ): Promise<{ id: string; fileUrl: string }> => {
+  const ensureDraftAsset = async (draft: DraftAsset): Promise<{ id: string; fileUrl: string }> => {
     if (draft.id) return { id: draft.id, fileUrl: draft.previewUrl ?? "" };
     const workspaceId = readSelectedWorkspaceId();
     if (!workspaceId) throw new Error("Select a client before saving content.");
@@ -1069,7 +1064,7 @@ function PublishingPage() {
               <div className="flex items-center gap-4">
                 <button
                   onClick={() => setStep("create_or_upload")}
-                  className="text-[#7C3AED]/70 hover:text-[#7C3AED] transition-colors p-2 -ml-2 rounded-full hover:bg-white/50"
+                  className="-ml-2 grid size-11 place-items-center rounded-full text-[#7C3AED]/70 transition-colors hover:bg-white/50 hover:text-[#7C3AED]"
                   aria-label="Go back"
                 >
                   <ArrowLeft className="size-5" />
@@ -1112,7 +1107,7 @@ function PublishingPage() {
                     </p>
                     <button
                       onClick={() => setReferenceImageBase64("")}
-                      className="text-xs text-red-500 font-medium flex items-center gap-1 mt-2 hover:underline"
+                      className="mt-2 flex min-h-11 items-center gap-1 text-xs font-medium text-red-500 hover:underline lg:min-h-0"
                     >
                       <X className="size-3" /> Remove image
                     </button>
@@ -1141,8 +1136,7 @@ function PublishingPage() {
                           active
                             ? "border-[#7C3AED] bg-[#7C3AED]/5"
                             : "border-border hover:bg-secondary/60",
-                          !ct.available &&
-                            "cursor-not-allowed opacity-60 hover:bg-transparent",
+                          !ct.available && "cursor-not-allowed opacity-60 hover:bg-transparent",
                         )}
                       >
                         <span
@@ -1487,7 +1481,7 @@ function PublishingPage() {
             <div className="flex items-center gap-3 mb-6">
               <button
                 onClick={() => setStep("create_or_upload")}
-                className="text-muted-foreground hover:text-foreground transition-colors p-2 -ml-2 rounded-full hover:bg-secondary/50"
+                className="-ml-2 grid size-11 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
                 aria-label="Go back"
               >
                 <ArrowLeft className="size-5" />
@@ -1556,7 +1550,7 @@ function PublishingPage() {
           <div className="space-y-4">
             <button
               onClick={() => setStep("create_or_upload")}
-              className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors w-fit p-2 pr-4 -ml-2 rounded-full hover:bg-secondary/50 text-sm font-medium"
+              className="-ml-2 flex min-h-11 w-fit items-center gap-2 rounded-full p-2 pr-4 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
             >
               {/* Renamed: this rewinds the wizard to step one. The dashboard
                   link is the one in the page header. */}
@@ -1715,7 +1709,8 @@ function PublishingPage() {
                       </div>
                     ) : (
                       <p className="mt-6 rounded-xl border border-emerald-500/25 bg-emerald-500/8 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
-                        This is the approved version. Its copy and media are locked while publishing.
+                        This is the approved version. Its copy and media are locked while
+                        publishing.
                       </p>
                     )}
                   </div>
@@ -1764,8 +1759,7 @@ function PublishingPage() {
                   <div className="mt-4 space-y-2">
                     {accountsLoading ? (
                       <p className="flex items-center gap-2 rounded-xl border border-dashed border-border px-3 py-6 text-sm text-muted-foreground">
-                        <Loader2 className="size-4 animate-spin" /> Loading your connected
-                        accounts…
+                        <Loader2 className="size-4 animate-spin" /> Loading your connected accounts…
                       </p>
                     ) : accounts.length === 0 ? (
                       <p className="rounded-xl border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">

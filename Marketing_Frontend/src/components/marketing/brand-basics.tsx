@@ -456,7 +456,7 @@ export function PosterDefaultsSection({ editor }: { editor: BrandEditor }) {
                   title={option.description}
                   onClick={() => update({ layoutPreference: option.key }, { immediate: true })}
                   className={cn(
-                    "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                    "min-h-11 rounded-full border px-3 py-1 text-xs transition-colors lg:min-h-0 lg:px-2.5",
                     settings.layoutPreference === option.key
                       ? "border-primary bg-primary text-primary-foreground"
                       : "border-border text-muted-foreground hover:text-foreground",

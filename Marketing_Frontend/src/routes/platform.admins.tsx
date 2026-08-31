@@ -119,7 +119,9 @@ function AdminsPage() {
                 ))}
               </div>
             ) : active.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No active platform admins were returned.</p>
+              <p className="text-sm text-muted-foreground">
+                No active platform admins were returned.
+              </p>
             ) : (
               <AdminTable rows={active} onRevoke={revoke} />
             )}
@@ -132,7 +134,10 @@ function AdminsPage() {
           ) : null}
         </div>
 
-        <Panel title="Grant access" description="By username. A note says why, for whoever reads the audit log later.">
+        <Panel
+          title="Grant access"
+          description="By username. A note says why, for whoever reads the audit log later."
+        >
           <form
             className="space-y-3"
             onSubmit={(e) => {
@@ -184,48 +189,96 @@ function AdminTable({
   onRevoke?: (row: PlatformAdminRow) => void;
 }) {
   return (
-    <div className="overflow-x-auto rounded-lg border border-border">
-      <table className="w-full text-left text-sm">
-        <thead className="bg-muted/50 text-[0.625rem] tracking-wide text-muted-foreground uppercase">
-          <tr>
-            <th className="px-3 py-2 font-semibold">User</th>
-            <th className="px-3 py-2 font-semibold">Note</th>
-            <th className="px-3 py-2 font-semibold">Granted</th>
-            <th className="px-3 py-2 font-semibold">Status</th>
-            {onRevoke ? <th className="px-3 py-2 font-semibold" /> : null}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={String(row.user_id)} className="border-t border-border align-top">
-              <td className="px-3 py-2">
+    <>
+      <div className="grid gap-3 lg:hidden">
+        {rows.map((row) => (
+          <article
+            key={String(row.user_id)}
+            className="rounded-xl border border-border bg-card p-4"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
                 <p className="flex items-center gap-1.5 font-medium text-foreground">
-                  <ShieldCheck className="size-3.5 text-slate-500" /> {row.username}
+                  <ShieldCheck className="size-4 shrink-0 text-slate-500" /> {row.username}
                 </p>
-                <p className="text-xs text-muted-foreground">{row.email || "—"}</p>
-              </td>
-              <td className="px-3 py-2 text-xs text-muted-foreground">{row.note || "—"}</td>
-              <td className="px-3 py-2 text-xs">
-                <p>{formatDateTime(row.granted_at)}</p>
-                <p className="text-muted-foreground">by {row.granted_by || "—"}</p>
+                <p className="mt-1 text-xs break-all text-muted-foreground">{row.email || "—"}</p>
+              </div>
+              <StatusPill value={row.is_active ? "ACTIVE" : "REVOKED"} />
+            </div>
+            <dl className="mt-4 space-y-3 text-xs">
+              <div>
+                <dt className="font-semibold tracking-wide text-muted-foreground uppercase">
+                  Note
+                </dt>
+                <dd className="mt-1 text-foreground">{row.note || "—"}</dd>
+              </div>
+              <div>
+                <dt className="font-semibold tracking-wide text-muted-foreground uppercase">
+                  Granted
+                </dt>
+                <dd className="mt-1 text-foreground">
+                  {formatDateTime(row.granted_at)} · by {row.granted_by || "—"}
+                </dd>
                 {row.revoked_at ? (
-                  <p className="text-muted-foreground">revoked {formatDateTime(row.revoked_at)}</p>
+                  <dd className="mt-1 text-muted-foreground">
+                    Revoked {formatDateTime(row.revoked_at)}
+                  </dd>
                 ) : null}
-              </td>
-              <td className="px-3 py-2">
-                <StatusPill value={row.is_active ? "ACTIVE" : "REVOKED"} />
-              </td>
-              {onRevoke ? (
-                <td className="px-3 py-2 text-right">
-                  <Button size="sm" variant="outline" onClick={() => onRevoke(row)}>
-                    <ShieldOff className="size-3.5" /> Revoke
-                  </Button>
-                </td>
-              ) : null}
+              </div>
+            </dl>
+            {onRevoke ? (
+              <Button className="mt-4 w-full" variant="outline" onClick={() => onRevoke(row)}>
+                <ShieldOff className="size-4" /> Revoke
+              </Button>
+            ) : null}
+          </article>
+        ))}
+      </div>
+      <div className="hidden overflow-x-auto rounded-lg border border-border lg:block">
+        <table className="w-full text-left text-sm">
+          <thead className="bg-muted/50 text-[0.625rem] tracking-wide text-muted-foreground uppercase">
+            <tr>
+              <th className="px-3 py-2 font-semibold">User</th>
+              <th className="px-3 py-2 font-semibold">Note</th>
+              <th className="px-3 py-2 font-semibold">Granted</th>
+              <th className="px-3 py-2 font-semibold">Status</th>
+              {onRevoke ? <th className="px-3 py-2 font-semibold" /> : null}
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={String(row.user_id)} className="border-t border-border align-top">
+                <td className="px-3 py-2">
+                  <p className="flex items-center gap-1.5 font-medium text-foreground">
+                    <ShieldCheck className="size-3.5 text-slate-500" /> {row.username}
+                  </p>
+                  <p className="text-xs text-muted-foreground">{row.email || "—"}</p>
+                </td>
+                <td className="px-3 py-2 text-xs text-muted-foreground">{row.note || "—"}</td>
+                <td className="px-3 py-2 text-xs">
+                  <p>{formatDateTime(row.granted_at)}</p>
+                  <p className="text-muted-foreground">by {row.granted_by || "—"}</p>
+                  {row.revoked_at ? (
+                    <p className="text-muted-foreground">
+                      revoked {formatDateTime(row.revoked_at)}
+                    </p>
+                  ) : null}
+                </td>
+                <td className="px-3 py-2">
+                  <StatusPill value={row.is_active ? "ACTIVE" : "REVOKED"} />
+                </td>
+                {onRevoke ? (
+                  <td className="px-3 py-2 text-right">
+                    <Button size="sm" variant="outline" onClick={() => onRevoke(row)}>
+                      <ShieldOff className="size-3.5" /> Revoke
+                    </Button>
+                  </td>
+                ) : null}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }

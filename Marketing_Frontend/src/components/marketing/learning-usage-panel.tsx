@@ -15,7 +15,13 @@
 import { RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Chip, Empty, InlineError, Loading, useSlice } from "@/components/marketing/brand-master-primitives";
+import {
+  Chip,
+  Empty,
+  InlineError,
+  Loading,
+  useSlice,
+} from "@/components/marketing/brand-master-primitives";
 import { SectionTitle } from "@/components/marketing/primitives";
 import { fetchLearningUsage, type LearningUsageRow } from "@/lib/brand-master";
 
@@ -85,11 +91,47 @@ export function LearningUsagePanel({ brandId }: { brandId: string }) {
               <Chip tone="warn">{data.totals.not_in_force} not reaching generation</Chip>
             ) : null}
             {data.totals.never_used > 0 ? (
-              <Chip tone="soft">{data.totals.never_used} in force but not seen in a generation yet</Chip>
+              <Chip tone="soft">
+                {data.totals.never_used} in force but not seen in a generation yet
+              </Chip>
             ) : null}
           </div>
 
-          <div className="overflow-x-auto rounded-xl border border-border">
+          <div className="grid gap-3 lg:hidden">
+            {rows.map((row) => (
+              <article key={row.id} className="rounded-xl border border-border bg-card p-4">
+                <p className="text-sm font-medium text-foreground">{row.text}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {kindChip(row)}
+                  {statusChip(row)}
+                </div>
+                <dl className="mt-4 grid grid-cols-3 gap-3 text-xs">
+                  <div>
+                    <dt className="font-semibold tracking-wide text-muted-foreground uppercase">
+                      Used
+                    </dt>
+                    <dd className="mt-1 text-foreground">
+                      {row.generations_used > 0 ? `${row.generations_used}×` : "0"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="font-semibold tracking-wide text-muted-foreground uppercase">
+                      Last used
+                    </dt>
+                    <dd className="mt-1 text-foreground">{ago(row.last_used_at)}</dd>
+                  </div>
+                  <div>
+                    <dt className="font-semibold tracking-wide text-muted-foreground uppercase">
+                      Evidence
+                    </dt>
+                    <dd className="mt-1 text-foreground">{row.evidence_count}</dd>
+                  </div>
+                </dl>
+              </article>
+            ))}
+          </div>
+
+          <div className="hidden overflow-x-auto rounded-xl border border-border lg:block">
             <table className="w-full min-w-[40rem] text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-[0.6875rem] tracking-wide text-muted-foreground uppercase">

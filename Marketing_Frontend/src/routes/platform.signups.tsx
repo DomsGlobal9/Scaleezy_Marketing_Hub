@@ -186,7 +186,15 @@ function ApproveDialog({
 
 /* -------------------------------------------------------------- attach user */
 
-function AttachUserForm({ row, onDone }: { row: SignupRow; onDone: () => void }) {
+function AttachUserForm({
+  row,
+  surface,
+  onDone,
+}: {
+  row: SignupRow;
+  surface: "card" | "table";
+  onDone: () => void;
+}) {
   const [username, setUsername] = useState("");
   const [role, setRole] = useState<string>("EDITOR");
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
@@ -213,19 +221,22 @@ function AttachUserForm({ row, onDone }: { row: SignupRow; onDone: () => void })
         }}
       >
         <div>
-          <Label htmlFor={`attach-${row.brand_id}`} className="text-[0.625rem] tracking-wide uppercase">
+          <Label
+            htmlFor={`attach-${surface}-${row.brand_id}`}
+            className="text-[0.625rem] tracking-wide uppercase"
+          >
             Attach user
           </Label>
           <Input
-            id={`attach-${row.brand_id}`}
-            className="mt-1 h-8 w-44 text-xs"
+            id={`attach-${surface}-${row.brand_id}`}
+            className="mt-1 w-44 text-xs lg:h-8"
             placeholder="username or email"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
           />
         </div>
         <Select value={role} onValueChange={setRole}>
-          <SelectTrigger className="h-8 w-28 text-xs">
+          <SelectTrigger className="w-28 text-xs lg:h-8">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -308,7 +319,7 @@ function SignupsPage() {
             type="button"
             onClick={() => setStatus(s.value)}
             className={cn(
-              "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+              "min-h-11 rounded-full border px-3 py-1 text-xs font-medium transition-colors lg:min-h-0",
               status === s.value
                 ? "border-slate-900 bg-slate-900 text-white"
                 : "border-border bg-background text-muted-foreground hover:text-foreground",
@@ -335,7 +346,9 @@ function SignupsPage() {
         </div>
       ) : queue && queue.signups.length === 0 ? (
         <div className="surface-card p-10 text-center">
-          <p className="font-medium text-foreground">Nothing {status === "PENDING" ? "waiting" : "here"}.</p>
+          <p className="font-medium text-foreground">
+            Nothing {status === "PENDING" ? "waiting" : "here"}.
+          </p>
           <p className="mt-1 text-sm text-muted-foreground">
             {status === "PENDING"
               ? "Every signup has been reviewed."
@@ -343,84 +356,193 @@ function SignupsPage() {
           </p>
         </div>
       ) : queue ? (
-        <div className="overflow-x-auto rounded-xl border border-border bg-card">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-muted/50 text-[0.625rem] tracking-wide text-muted-foreground uppercase">
-              <tr>
-                <th className="px-3 py-2 font-semibold">Client</th>
-                <th className="px-3 py-2 font-semibold">Website / industry</th>
-                <th className="px-3 py-2 font-semibold">Signed up</th>
-                <th className="px-3 py-2 font-semibold">Built so far</th>
-                <th className="px-3 py-2 font-semibold">Status</th>
-                <th className="px-3 py-2 font-semibold">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {queue.signups.map((row) => (
-                <tr key={row.brand_id} className="border-t border-border align-top">
-                  <td className="px-3 py-3">
+        <>
+          <div className="grid gap-3 lg:hidden">
+            {queue.signups.map((row) => (
+              <article
+                key={row.brand_id}
+                className="rounded-xl border border-border bg-card p-4 shadow-sm"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
                     <Link
                       to="/platform/clients/$workspaceId"
                       params={{ workspaceId: row.workspace_id }}
-                      className="font-medium text-foreground hover:underline"
+                      className="font-semibold text-foreground hover:underline"
                     >
                       {row.name || "Unnamed brand"}
                     </Link>
-                    <p className="font-mono text-[0.6875rem] text-muted-foreground">{row.client_code}</p>
-                  </td>
-                  <td className="px-3 py-3 text-xs">
-                    {row.website ? (
-                      <a
-                        href={row.website}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        className="break-all text-foreground underline-offset-2 hover:underline"
-                      >
-                        {row.website}
-                      </a>
-                    ) : (
-                      <span className="text-muted-foreground">No website</span>
-                    )}
-                    <p className="text-muted-foreground">{row.industry || "No industry"}</p>
-                  </td>
-                  <td className="px-3 py-3 text-xs">
-                    <p>{formatDateTime(row.signed_up_at)}</p>
-                    <p className="text-muted-foreground">by {row.signed_up_by || "—"}</p>
-                  </td>
-                  <td className="px-3 py-3 text-xs text-muted-foreground">
-                    <p>{row.knowledge_sources} knowledge source{row.knowledge_sources === 1 ? "" : "s"}</p>
-                    <p>{row.inspirations} inspiration{row.inspirations === 1 ? "" : "s"}</p>
-                    <p>{row.team_size} on the team</p>
-                  </td>
-                  <td className="px-3 py-3 text-xs">
-                    <StatusPill value={row.status} />
-                    {row.reviewed_at ? (
-                      <p className="mt-1 text-muted-foreground">
+                    <p className="mt-1 font-mono text-[0.6875rem] break-all text-muted-foreground">
+                      {row.client_code}
+                    </p>
+                  </div>
+                  <StatusPill value={row.status} />
+                </div>
+
+                <dl className="mt-4 grid gap-4 text-xs sm:grid-cols-2">
+                  <div>
+                    <dt className="font-semibold tracking-wide text-muted-foreground uppercase">
+                      Website / industry
+                    </dt>
+                    <dd className="mt-1 text-foreground">
+                      {row.website ? (
+                        <a
+                          href={row.website}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                          className="break-all underline-offset-2 hover:underline"
+                        >
+                          {row.website}
+                        </a>
+                      ) : (
+                        <span className="text-muted-foreground">No website</span>
+                      )}
+                      <span className="mt-1 block text-muted-foreground">
+                        {row.industry || "No industry"}
+                      </span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="font-semibold tracking-wide text-muted-foreground uppercase">
+                      Signed up
+                    </dt>
+                    <dd className="mt-1 text-foreground">
+                      {formatDateTime(row.signed_up_at)}
+                      <span className="mt-1 block text-muted-foreground">
+                        by {row.signed_up_by || "—"}
+                      </span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="font-semibold tracking-wide text-muted-foreground uppercase">
+                      Built so far
+                    </dt>
+                    <dd className="mt-1 space-y-1 text-foreground">
+                      <p>
+                        {row.knowledge_sources} knowledge source
+                        {row.knowledge_sources === 1 ? "" : "s"}
+                      </p>
+                      <p>
+                        {row.inspirations} inspiration{row.inspirations === 1 ? "" : "s"}
+                      </p>
+                      <p>{row.team_size} on the team</p>
+                    </dd>
+                  </div>
+                  {row.reviewed_at ? (
+                    <div>
+                      <dt className="font-semibold tracking-wide text-muted-foreground uppercase">
+                        Reviewed
+                      </dt>
+                      <dd className="mt-1 text-foreground">
                         {formatDateTime(row.reviewed_at)}
                         {row.reviewed_by ? ` · ${row.reviewed_by}` : ""}
-                      </p>
-                    ) : null}
-                  </td>
-                  <td className="px-3 py-3">
-                    <div className="flex flex-col gap-2">
-                      {row.status === "PENDING" ? (
-                        <div className="flex flex-wrap gap-2">
-                          <Button size="sm" onClick={() => setApproving(row)}>
-                            <Check className="size-3.5" /> Approve
-                          </Button>
-                          <Button size="sm" variant="outline" onClick={() => reject(row)}>
-                            <X className="size-3.5" /> Reject
-                          </Button>
-                        </div>
-                      ) : null}
-                      <AttachUserForm row={row} onDone={reload} />
+                      </dd>
                     </div>
-                  </td>
+                  ) : null}
+                </dl>
+
+                <div className="mt-4 space-y-3 border-t border-border pt-4">
+                  {row.status === "PENDING" ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button onClick={() => setApproving(row)}>
+                        <Check className="size-4" /> Approve
+                      </Button>
+                      <Button variant="outline" onClick={() => reject(row)}>
+                        <X className="size-4" /> Reject
+                      </Button>
+                    </div>
+                  ) : null}
+                  <AttachUserForm row={row} surface="card" onDone={reload} />
+                </div>
+              </article>
+            ))}
+          </div>
+          <div className="hidden overflow-x-auto rounded-xl border border-border bg-card lg:block">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-muted/50 text-[0.625rem] tracking-wide text-muted-foreground uppercase">
+                <tr>
+                  <th className="px-3 py-2 font-semibold">Client</th>
+                  <th className="px-3 py-2 font-semibold">Website / industry</th>
+                  <th className="px-3 py-2 font-semibold">Signed up</th>
+                  <th className="px-3 py-2 font-semibold">Built so far</th>
+                  <th className="px-3 py-2 font-semibold">Status</th>
+                  <th className="px-3 py-2 font-semibold">Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {queue.signups.map((row) => (
+                  <tr key={row.brand_id} className="border-t border-border align-top">
+                    <td className="px-3 py-3">
+                      <Link
+                        to="/platform/clients/$workspaceId"
+                        params={{ workspaceId: row.workspace_id }}
+                        className="font-medium text-foreground hover:underline"
+                      >
+                        {row.name || "Unnamed brand"}
+                      </Link>
+                      <p className="font-mono text-[0.6875rem] text-muted-foreground">
+                        {row.client_code}
+                      </p>
+                    </td>
+                    <td className="px-3 py-3 text-xs">
+                      {row.website ? (
+                        <a
+                          href={row.website}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                          className="break-all text-foreground underline-offset-2 hover:underline"
+                        >
+                          {row.website}
+                        </a>
+                      ) : (
+                        <span className="text-muted-foreground">No website</span>
+                      )}
+                      <p className="text-muted-foreground">{row.industry || "No industry"}</p>
+                    </td>
+                    <td className="px-3 py-3 text-xs">
+                      <p>{formatDateTime(row.signed_up_at)}</p>
+                      <p className="text-muted-foreground">by {row.signed_up_by || "—"}</p>
+                    </td>
+                    <td className="px-3 py-3 text-xs text-muted-foreground">
+                      <p>
+                        {row.knowledge_sources} knowledge source
+                        {row.knowledge_sources === 1 ? "" : "s"}
+                      </p>
+                      <p>
+                        {row.inspirations} inspiration{row.inspirations === 1 ? "" : "s"}
+                      </p>
+                      <p>{row.team_size} on the team</p>
+                    </td>
+                    <td className="px-3 py-3 text-xs">
+                      <StatusPill value={row.status} />
+                      {row.reviewed_at ? (
+                        <p className="mt-1 text-muted-foreground">
+                          {formatDateTime(row.reviewed_at)}
+                          {row.reviewed_by ? ` · ${row.reviewed_by}` : ""}
+                        </p>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="flex flex-col gap-2">
+                        {row.status === "PENDING" ? (
+                          <div className="flex flex-wrap gap-2">
+                            <Button size="sm" onClick={() => setApproving(row)}>
+                              <Check className="size-3.5" /> Approve
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => reject(row)}>
+                              <X className="size-3.5" /> Reject
+                            </Button>
+                          </div>
+                        ) : null}
+                        <AttachUserForm row={row} surface="table" onDone={reload} />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       ) : null}
 
       <ApproveDialog row={approving} onClose={() => setApproving(null)} onDone={reload} />

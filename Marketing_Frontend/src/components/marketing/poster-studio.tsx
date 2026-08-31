@@ -156,8 +156,7 @@ export function PosterStudio({
     <div className="mt-4 rounded-xl border border-border bg-secondary/20 p-4">
       <p className="text-xs font-medium text-foreground">Compose on-brand</p>
       <p className="mt-0.5 text-[0.6875rem] text-muted-foreground">
-        Built server-side from your palette, fonts and photo — identical every time, at any
-        size.
+        Built server-side from your palette, fonts and photo — identical every time, at any size.
       </p>
 
       <div className="mt-3 flex flex-wrap gap-1.5">
@@ -169,7 +168,7 @@ export function PosterStudio({
             disabled={busy !== null}
             onClick={() => setLayout(option.key)}
             className={cn(
-              "rounded-full border px-2.5 py-1 text-[0.6875rem] transition-colors",
+              "min-h-11 rounded-full border px-3 py-1 text-[0.6875rem] transition-colors lg:min-h-0 lg:px-2.5",
               layout === option.key
                 ? "border-primary bg-primary text-primary-foreground"
                 : "border-border bg-background text-muted-foreground hover:text-foreground",
@@ -203,7 +202,7 @@ export function PosterStudio({
             disabled={busy !== null}
             onClick={() => toggleSize(size.key)}
             className={cn(
-              "rounded-md border px-2 py-1 text-[0.6875rem] transition-colors",
+              "min-h-11 rounded-md border px-3 py-1 text-[0.6875rem] transition-colors lg:min-h-0 lg:px-2",
               chosen.includes(size.key)
                 ? "border-primary bg-primary/10 font-medium text-foreground"
                 : "border-border text-muted-foreground hover:text-foreground",

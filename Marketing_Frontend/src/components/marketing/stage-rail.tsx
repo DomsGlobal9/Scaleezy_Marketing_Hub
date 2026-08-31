@@ -28,7 +28,7 @@ export function StageRail({
   return (
     <ol className="flex flex-wrap items-center gap-2">
       {steps.map((step, index) => {
-        const className = `flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${
+        const className = `flex min-h-11 items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium lg:min-h-0 ${
           step.active
             ? "border-foreground bg-foreground text-background"
             : step.done

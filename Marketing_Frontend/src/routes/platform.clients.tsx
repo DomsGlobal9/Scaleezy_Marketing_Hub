@@ -13,12 +13,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  ErrorNote,
-  FlagChips,
-  PlatformPageHeader,
-  StatusPill,
-} from "@/components/platform/shared";
+import { ClientPortfolioCard } from "@/components/platform/client-portfolio-card";
+import { ErrorNote, FlagChips, PlatformPageHeader, StatusPill } from "@/components/platform/shared";
 import {
   errorText,
   fetchClients,
@@ -53,7 +49,11 @@ const FILTERS: Array<{ key: string; label: string; flags: string[] | null }> = [
     label: "At risk",
     flags: ["INACTIVE", "FAILING_PUBLISHES", "NO_AI_ROUTING", "BRAIN_STALE"],
   },
-  { key: "over_quota", label: "Over quota / spend cap", flags: ["OVER_QUOTA", "SPEND_CAP_REACHED"] },
+  {
+    key: "over_quota",
+    label: "Over quota / spend cap",
+    flags: ["OVER_QUOTA", "SPEND_CAP_REACHED"],
+  },
   { key: "never_generated", label: "Never generated", flags: ["NEVER_GENERATED"] },
   { key: "inactive", label: "Inactive", flags: ["INACTIVE"] },
   { key: "failing_publishes", label: "Failing publishes", flags: ["FAILING_PUBLISHES"] },
@@ -140,7 +140,13 @@ function ClientsPage() {
     return all.filter((row) => {
       if (activeFlags && !activeFlags.some((flag) => row.flags.includes(flag))) return false;
       if (needle) {
-        const hay = [row.name, row.client_code, row.brand?.name, row.brand?.website, row.brand?.industry]
+        const hay = [
+          row.name,
+          row.client_code,
+          row.brand?.name,
+          row.brand?.website,
+          row.brand?.industry,
+        ]
           .filter(Boolean)
           .join(" ")
           .toLowerCase();
@@ -170,7 +176,7 @@ function ClientsPage() {
             type="button"
             onClick={() => setFilter(f.key)}
             className={cn(
-              "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+              "min-h-11 rounded-full border px-3 py-1 text-xs font-medium transition-colors lg:min-h-0",
               filter === f.key
                 ? "border-slate-900 bg-slate-900 text-white"
                 : "border-border bg-background text-muted-foreground hover:text-foreground",
@@ -197,7 +203,7 @@ function ClientsPage() {
             type="number"
             min={1}
             max={365}
-            className="h-8 w-20 text-xs"
+            className="h-11 w-20 text-xs lg:h-8"
             value={days}
             onChange={(e) => {
               const next = Number(e.target.value);
@@ -231,102 +237,118 @@ function ClientsPage() {
           </p>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-border bg-card">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-muted/50 text-[0.625rem] tracking-wide text-muted-foreground uppercase">
-              <tr>
-                <th className="px-3 py-2 font-semibold">Code</th>
-                <th className="px-3 py-2 font-semibold">Name</th>
-                <th className="px-3 py-2 font-semibold">Status</th>
-                <th className="px-3 py-2 font-semibold">Plan</th>
-                <th className="px-3 py-2 font-semibold">Stage</th>
-                <th className="px-3 py-2 font-semibold">Readiness</th>
-                <th className="px-3 py-2 font-semibold">Usage</th>
-                <th className="px-3 py-2 font-semibold">Last active</th>
-                <th className="px-3 py-2 font-semibold">Flags</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.workspace_id} className="border-t border-border align-top hover:bg-muted/30">
-                  <td className="px-3 py-2.5 font-mono text-[0.6875rem] whitespace-nowrap">
-                    <Link
-                      to="/platform/clients/$workspaceId"
-                      params={{ workspaceId: row.workspace_id }}
-                      className="text-foreground hover:underline"
-                    >
-                      {row.client_code || "—"}
-                    </Link>
-                  </td>
-                  <td className="px-3 py-2.5">
-                    <Link
-                      to="/platform/clients/$workspaceId"
-                      params={{ workspaceId: row.workspace_id }}
-                      className="font-medium text-foreground hover:underline"
-                    >
-                      {row.name || "Untitled"}
-                    </Link>
-                    {row.brand ? (
-                      <p className="text-xs text-muted-foreground">
-                        {row.brand.name}
-                        {row.brand.industry ? ` · ${row.brand.industry}` : ""}
-                      </p>
-                    ) : (
-                      <p className="text-xs text-muted-foreground italic">No brand</p>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5">
-                    <StatusPill value={row.status} />
-                    {row.brand && row.brand.status !== "ACTIVE" ? (
-                      <p className="mt-1 text-[0.625rem] text-muted-foreground">
-                        brand {row.brand.status.toLowerCase()}
-                      </p>
-                    ) : null}
-                  </td>
-                  <td className="px-3 py-2.5 text-xs">
-                    {row.plan ? (
-                      <>
-                        <p className="text-foreground">{row.plan.name}</p>
-                        <p className="text-muted-foreground">{row.subscription_status ?? ""}</p>
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground">No plan</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5 text-xs">
-                    {row.onboarding ? (
-                      <>
-                        <p className="text-foreground">{row.onboarding.current_stage.replaceAll("_", " ")}</p>
-                        <p className="text-muted-foreground">{row.onboarding.status.toLowerCase()}</p>
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5 text-xs">
-                    {row.readiness ? (
-                      <>
-                        <p className="font-medium text-foreground">{row.readiness.score}/100</p>
-                        <p className="text-muted-foreground">{row.readiness.level.toLowerCase()}</p>
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5">
-                    <UsageCell row={row} />
-                  </td>
-                  <td className="px-3 py-2.5 text-xs whitespace-nowrap text-muted-foreground">
-                    {formatAgo(row.last_active_at)}
-                  </td>
-                  <td className="px-3 py-2.5">
-                    <FlagChips flags={row.flags} />
-                  </td>
+        <>
+          <div className="space-y-3 lg:hidden">
+            {rows.map((row) => (
+              <ClientPortfolioCard key={row.workspace_id} row={row} />
+            ))}
+          </div>
+          <div className="hidden overflow-x-auto rounded-xl border border-border bg-card lg:block">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-muted/50 text-[0.625rem] tracking-wide text-muted-foreground uppercase">
+                <tr>
+                  <th className="px-3 py-2 font-semibold">Code</th>
+                  <th className="px-3 py-2 font-semibold">Name</th>
+                  <th className="px-3 py-2 font-semibold">Status</th>
+                  <th className="px-3 py-2 font-semibold">Plan</th>
+                  <th className="px-3 py-2 font-semibold">Stage</th>
+                  <th className="px-3 py-2 font-semibold">Readiness</th>
+                  <th className="px-3 py-2 font-semibold">Usage</th>
+                  <th className="px-3 py-2 font-semibold">Last active</th>
+                  <th className="px-3 py-2 font-semibold">Flags</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr
+                    key={row.workspace_id}
+                    className="border-t border-border align-top hover:bg-muted/30"
+                  >
+                    <td className="px-3 py-2.5 font-mono text-[0.6875rem] whitespace-nowrap">
+                      <Link
+                        to="/platform/clients/$workspaceId"
+                        params={{ workspaceId: row.workspace_id }}
+                        className="text-foreground hover:underline"
+                      >
+                        {row.client_code || "—"}
+                      </Link>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <Link
+                        to="/platform/clients/$workspaceId"
+                        params={{ workspaceId: row.workspace_id }}
+                        className="font-medium text-foreground hover:underline"
+                      >
+                        {row.name || "Untitled"}
+                      </Link>
+                      {row.brand ? (
+                        <p className="text-xs text-muted-foreground">
+                          {row.brand.name}
+                          {row.brand.industry ? ` · ${row.brand.industry}` : ""}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground italic">No brand</p>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <StatusPill value={row.status} />
+                      {row.brand && row.brand.status !== "ACTIVE" ? (
+                        <p className="mt-1 text-[0.625rem] text-muted-foreground">
+                          brand {row.brand.status.toLowerCase()}
+                        </p>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs">
+                      {row.plan ? (
+                        <>
+                          <p className="text-foreground">{row.plan.name}</p>
+                          <p className="text-muted-foreground">{row.subscription_status ?? ""}</p>
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">No plan</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs">
+                      {row.onboarding ? (
+                        <>
+                          <p className="text-foreground">
+                            {row.onboarding.current_stage.replaceAll("_", " ")}
+                          </p>
+                          <p className="text-muted-foreground">
+                            {row.onboarding.status.toLowerCase()}
+                          </p>
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs">
+                      {row.readiness ? (
+                        <>
+                          <p className="font-medium text-foreground">{row.readiness.score}/100</p>
+                          <p className="text-muted-foreground">
+                            {row.readiness.level.toLowerCase()}
+                          </p>
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <UsageCell row={row} />
+                    </td>
+                    <td className="px-3 py-2.5 text-xs whitespace-nowrap text-muted-foreground">
+                      {formatAgo(row.last_active_at)}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <FlagChips flags={row.flags} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );

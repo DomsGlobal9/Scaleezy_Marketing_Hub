@@ -76,7 +76,7 @@ function ConsoleNav({ onNavigate }: { onNavigate?: () => void }) {
           to={item.to}
           activeOptions={{ exact: item.exact }}
           onClick={onNavigate}
-          className="group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-200/70 hover:text-slate-900 data-[status=active]:bg-slate-900 data-[status=active]:text-white"
+          className="group relative flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-200/70 hover:text-slate-900 data-[status=active]:bg-slate-900 data-[status=active]:text-white lg:min-h-0"
         >
           <item.icon className="size-4 shrink-0" strokeWidth={1.75} />
           <span className="truncate">{item.label}</span>

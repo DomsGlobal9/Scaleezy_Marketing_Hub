@@ -175,9 +175,7 @@ function WorkspaceSwitcher({
               }}
             >
               <Check
-                className={
-                  workspace.id === state.selectedId ? "text-gold" : "invisible"
-                }
+                className={workspace.id === state.selectedId ? "text-gold" : "invisible"}
                 aria-hidden
               />
               <span className="truncate">{workspace.name}</span>
@@ -265,7 +263,7 @@ function NavList({
           to={item.to}
           activeOptions={{ exact: item.to === "/" }}
           onClick={onNavigate}
-          className="group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground data-[status=active]:bg-brand-dark data-[status=active]:text-brand-dark-foreground"
+          className="group relative flex min-h-11 items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground data-[status=active]:bg-brand-dark data-[status=active]:text-brand-dark-foreground lg:min-h-0"
         >
           <span className="absolute top-1/2 left-0 hidden h-6 w-1 -translate-y-1/2 rounded-r-full bg-gold group-data-[status=active]:block" />
           <item.icon
@@ -281,7 +279,7 @@ function NavList({
           <Link
             to="/platform"
             onClick={onNavigate}
-            className="flex items-center gap-3 rounded-xl border border-slate-300 bg-slate-900 px-3 py-2.5 text-sm font-medium text-slate-100 transition-colors hover:bg-slate-800"
+            className="flex min-h-11 items-center gap-3 rounded-xl border border-slate-300 bg-slate-900 px-3 py-2.5 text-sm font-medium text-slate-100 transition-colors hover:bg-slate-800 lg:min-h-0"
           >
             <Landmark className="size-4.5 shrink-0 text-amber-300" strokeWidth={1.75} />
             <span className="truncate">Platform console</span>
@@ -426,11 +424,7 @@ function HubLayout() {
         <SiteFooter />
       </main>
 
-      <AddClientDialog
-        open={creating}
-        onOpenChange={setCreating}
-        onCreated={selectWorkspace}
-      />
+      <AddClientDialog open={creating} onOpenChange={setCreating} onCreated={selectWorkspace} />
       <WorkspaceSwitchOverlay />
     </div>
   );

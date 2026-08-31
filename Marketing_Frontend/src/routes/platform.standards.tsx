@@ -70,8 +70,16 @@ export const Route = createFileRoute("/platform/standards")({
 const SCOPES: Array<{ value: UniversalScope; label: string; hint: string }> = [
   { value: "GLOBAL", label: "Every client", hint: "Applies to every generation on the platform." },
   { value: "INDUSTRY", label: "One industry", hint: "Matched exactly against Brand.industry." },
-  { value: "CHANNEL", label: "One channel", hint: "Matched exactly against the generation's channel." },
-  { value: "CONTENT_TYPE", label: "One content type", hint: "Matched exactly against the content type." },
+  {
+    value: "CHANNEL",
+    label: "One channel",
+    hint: "Matched exactly against the generation's channel.",
+  },
+  {
+    value: "CONTENT_TYPE",
+    label: "One content type",
+    hint: "Matched exactly against the content type.",
+  },
 ];
 
 const EMPTY_FORM: StandardInput = {
@@ -197,9 +205,17 @@ function EditorSheet({
           </SheetHeader>
           <div className="mt-6 space-y-4">
             <Field label="Title" id="std-title">
-              <Input id="std-title" value={form.title} onChange={(e) => set("title", e.target.value)} />
+              <Input
+                id="std-title"
+                value={form.title}
+                onChange={(e) => set("title", e.target.value)}
+              />
             </Field>
-            <Field label="Rationale" id="std-rationale" hint="For the team. Never sent to a provider.">
+            <Field
+              label="Rationale"
+              id="std-rationale"
+              hint="For the team. Never sent to a provider."
+            >
               <Textarea
                 id="std-rationale"
                 rows={2}
@@ -223,10 +239,18 @@ function EditorSheet({
                 />
               </Field>
               <Field label="Value" id="std-value" hint="e.g. short">
-                <Input id="std-value" value={form.value} onChange={(e) => set("value", e.target.value)} />
+                <Input
+                  id="std-value"
+                  value={form.value}
+                  onChange={(e) => set("value", e.target.value)}
+                />
               </Field>
             </div>
-            <Field label="Guidance" id="std-guidance" hint="The sentence the generation actually receives.">
+            <Field
+              label="Guidance"
+              id="std-guidance"
+              hint="The sentence the generation actually receives."
+            >
               <Textarea
                 id="std-guidance"
                 rows={4}
@@ -340,9 +364,10 @@ function PreviewDialog({
             </p>
             {preview.exact_match_only ? (
               <p className="rounded-lg border border-amber-400/50 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                Scope matching is exact after trimming and case-folding. Brand industry is free text,
-                so "Apparel" and "Apparel &amp; fashion" are different industries here — a standard
-                that leaks into a neighbouring industry is worse than one that reaches nobody.
+                Scope matching is exact after trimming and case-folding. Brand industry is free
+                text, so "Apparel" and "Apparel &amp; fashion" are different industries here — a
+                standard that leaks into a neighbouring industry is worse than one that reaches
+                nobody.
               </p>
             ) : null}
             {preview.note ? <p className="text-xs text-muted-foreground">{preview.note}</p> : null}
@@ -450,13 +475,14 @@ function StandardsPage() {
             type="button"
             onClick={() => setFilter(value)}
             className={cn(
-              "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+              "min-h-11 rounded-full border px-3 py-1 text-xs font-medium transition-colors lg:min-h-0",
               filter === value
                 ? "border-slate-900 bg-slate-900 text-white"
                 : "border-border bg-background text-muted-foreground hover:text-foreground",
             )}
           >
-            {value === "ALL" ? "All" : value.charAt(0) + value.slice(1).toLowerCase()} · {counts[value]}
+            {value === "ALL" ? "All" : value.charAt(0) + value.slice(1).toLowerCase()} ·{" "}
+            {counts[value]}
           </button>
         ))}
       </div>
@@ -471,7 +497,9 @@ function StandardsPage() {
         </div>
       ) : visible.length === 0 ? (
         <div className="surface-card p-10 text-center">
-          <p className="font-medium text-foreground">No standards {filter === "ALL" ? "yet" : "with this status"}.</p>
+          <p className="font-medium text-foreground">
+            No standards {filter === "ALL" ? "yet" : "with this status"}.
+          </p>
           <p className="mt-1 text-sm text-muted-foreground">
             {filter === "ALL"
               ? "Write the first one. It stays a draft until you publish it."
@@ -479,79 +507,163 @@ function StandardsPage() {
           </p>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-border bg-card">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-muted/50 text-[0.625rem] tracking-wide text-muted-foreground uppercase">
-              <tr>
-                <th className="px-3 py-2 font-semibold">Standard</th>
-                <th className="px-3 py-2 font-semibold">Claim</th>
-                <th className="px-3 py-2 font-semibold">Scope</th>
-                <th className="px-3 py-2 font-semibold">Status</th>
-                <th className="px-3 py-2 font-semibold">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((standard) => (
-                <tr key={standard.id} className="border-t border-border align-top">
-                  <td className="max-w-md px-3 py-3">
-                    <p className="font-medium text-foreground">{standard.title}</p>
-                    <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{standard.guidance}</p>
-                  </td>
-                  <td className="px-3 py-3 font-mono text-[0.6875rem] text-muted-foreground">
-                    {standard.category} / {standard.attribute} = {standard.value}
-                  </td>
-                  <td className="px-3 py-3 text-xs">
-                    <p className="text-foreground">
-                      {SCOPES.find((s) => s.value === standard.scope)?.label ?? standard.scope}
-                    </p>
-                    {standard.scope_value ? (
-                      <p className="text-muted-foreground">= {standard.scope_value}</p>
-                    ) : null}
-                  </td>
-                  <td className="px-3 py-3 text-xs">
-                    <StatusPill value={standard.status} />
-                    <p className="mt-1 text-muted-foreground">
+        <>
+          <div className="grid gap-3 lg:hidden">
+            {visible.map((standard) => (
+              <article
+                key={standard.id}
+                className="rounded-xl border border-border bg-card p-4 shadow-sm"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-foreground">{standard.title}</p>
+                    <p className="mt-1 text-sm text-muted-foreground">{standard.guidance}</p>
+                  </div>
+                  <StatusPill value={standard.status} />
+                </div>
+
+                <dl className="mt-4 grid gap-4 text-xs sm:grid-cols-2">
+                  <div>
+                    <dt className="font-semibold tracking-wide text-muted-foreground uppercase">
+                      Claim
+                    </dt>
+                    <dd className="mt-1 font-mono break-words text-foreground">
+                      {standard.category} / {standard.attribute} = {standard.value}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="font-semibold tracking-wide text-muted-foreground uppercase">
+                      Scope
+                    </dt>
+                    <dd className="mt-1 text-foreground">
+                      {SCOPES.find((scope) => scope.value === standard.scope)?.label ??
+                        standard.scope}
+                      {standard.scope_value ? (
+                        <span className="mt-1 block text-muted-foreground">
+                          = {standard.scope_value}
+                        </span>
+                      ) : null}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="font-semibold tracking-wide text-muted-foreground uppercase">
+                      Lifecycle
+                    </dt>
+                    <dd className="mt-1 text-foreground">
                       {standard.status === "PUBLISHED"
-                        ? `since ${formatDate(standard.published_at)}`
+                        ? `Published since ${formatDate(standard.published_at)}`
                         : standard.status === "RETIRED"
-                          ? `retired ${formatDate(standard.retired_at)}`
-                          : `created ${formatDate(standard.updated_at ?? standard.created_at)}`}
-                    </p>
-                  </td>
-                  <td className="px-3 py-3">
-                    <div className="flex flex-wrap gap-1.5">
-                      <Button size="sm" variant="outline" onClick={() => setPreviewing(standard)}>
-                        <Eye className="size-3.5" /> Preview
-                      </Button>
-                      {standard.status !== "RETIRED" ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            setEditing(standard);
-                            setEditorOpen(true);
-                          }}
-                        >
-                          <Pencil className="size-3.5" /> Edit
-                        </Button>
-                      ) : null}
-                      {standard.status === "DRAFT" ? (
-                        <Button size="sm" onClick={() => publish(standard)}>
-                          <Send className="size-3.5" /> Publish
-                        </Button>
-                      ) : null}
-                      {standard.status === "PUBLISHED" ? (
-                        <Button size="sm" variant="outline" onClick={() => retire(standard)}>
-                          <Archive className="size-3.5" /> Retire
-                        </Button>
-                      ) : null}
-                    </div>
-                  </td>
+                          ? `Retired ${formatDate(standard.retired_at)}`
+                          : `Created ${formatDate(standard.updated_at ?? standard.created_at)}`}
+                    </dd>
+                  </div>
+                </dl>
+
+                <div className="mt-4 grid grid-cols-2 gap-2 border-t border-border pt-4 sm:flex sm:flex-wrap">
+                  <Button variant="outline" onClick={() => setPreviewing(standard)}>
+                    <Eye className="size-4" /> Preview
+                  </Button>
+                  {standard.status !== "RETIRED" ? (
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setEditing(standard);
+                        setEditorOpen(true);
+                      }}
+                    >
+                      <Pencil className="size-4" /> Edit
+                    </Button>
+                  ) : null}
+                  {standard.status === "DRAFT" ? (
+                    <Button onClick={() => publish(standard)}>
+                      <Send className="size-4" /> Publish
+                    </Button>
+                  ) : null}
+                  {standard.status === "PUBLISHED" ? (
+                    <Button variant="outline" onClick={() => retire(standard)}>
+                      <Archive className="size-4" /> Retire
+                    </Button>
+                  ) : null}
+                </div>
+              </article>
+            ))}
+          </div>
+          <div className="hidden overflow-x-auto rounded-xl border border-border bg-card lg:block">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-muted/50 text-[0.625rem] tracking-wide text-muted-foreground uppercase">
+                <tr>
+                  <th className="px-3 py-2 font-semibold">Standard</th>
+                  <th className="px-3 py-2 font-semibold">Claim</th>
+                  <th className="px-3 py-2 font-semibold">Scope</th>
+                  <th className="px-3 py-2 font-semibold">Status</th>
+                  <th className="px-3 py-2 font-semibold">Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {visible.map((standard) => (
+                  <tr key={standard.id} className="border-t border-border align-top">
+                    <td className="max-w-md px-3 py-3">
+                      <p className="font-medium text-foreground">{standard.title}</p>
+                      <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                        {standard.guidance}
+                      </p>
+                    </td>
+                    <td className="px-3 py-3 font-mono text-[0.6875rem] text-muted-foreground">
+                      {standard.category} / {standard.attribute} = {standard.value}
+                    </td>
+                    <td className="px-3 py-3 text-xs">
+                      <p className="text-foreground">
+                        {SCOPES.find((s) => s.value === standard.scope)?.label ?? standard.scope}
+                      </p>
+                      {standard.scope_value ? (
+                        <p className="text-muted-foreground">= {standard.scope_value}</p>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-3 text-xs">
+                      <StatusPill value={standard.status} />
+                      <p className="mt-1 text-muted-foreground">
+                        {standard.status === "PUBLISHED"
+                          ? `since ${formatDate(standard.published_at)}`
+                          : standard.status === "RETIRED"
+                            ? `retired ${formatDate(standard.retired_at)}`
+                            : `created ${formatDate(standard.updated_at ?? standard.created_at)}`}
+                      </p>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="flex flex-wrap gap-1.5">
+                        <Button size="sm" variant="outline" onClick={() => setPreviewing(standard)}>
+                          <Eye className="size-3.5" /> Preview
+                        </Button>
+                        {standard.status !== "RETIRED" ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setEditing(standard);
+                              setEditorOpen(true);
+                            }}
+                          >
+                            <Pencil className="size-3.5" /> Edit
+                          </Button>
+                        ) : null}
+                        {standard.status === "DRAFT" ? (
+                          <Button size="sm" onClick={() => publish(standard)}>
+                            <Send className="size-3.5" /> Publish
+                          </Button>
+                        ) : null}
+                        {standard.status === "PUBLISHED" ? (
+                          <Button size="sm" variant="outline" onClick={() => retire(standard)}>
+                            <Archive className="size-3.5" /> Retire
+                          </Button>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
 
       <EditorSheet

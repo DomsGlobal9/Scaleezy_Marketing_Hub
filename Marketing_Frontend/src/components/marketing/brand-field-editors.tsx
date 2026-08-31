@@ -121,14 +121,14 @@ export function PaletteEditor({
               <input
                 type="color"
                 aria-label={`${key} colour`}
-                className="size-7 shrink-0 cursor-pointer rounded border bg-transparent p-0 disabled:cursor-default"
+                className="size-11 shrink-0 cursor-pointer rounded border bg-transparent p-0 disabled:cursor-default lg:size-7"
                 value={isHex(colour) ? colour : "#000000"}
                 disabled={disabled}
                 onChange={(e) => onChange({ ...value, [key]: e.target.value })}
               />
               <span className="w-20 shrink-0 truncate text-xs text-muted-foreground">{key}</span>
               <Input
-                className="h-8 min-w-0 flex-1 font-mono text-xs"
+                className="min-w-0 flex-1 font-mono text-xs lg:h-8"
                 value={colour}
                 disabled={disabled}
                 onChange={(e) => onChange({ ...value, [key]: e.target.value })}
@@ -136,7 +136,7 @@ export function PaletteEditor({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-7 shrink-0"
+                className="size-11 shrink-0 lg:size-7"
                 disabled={disabled}
                 aria-label={`Remove ${key}`}
                 onClick={() => remove(key)}
@@ -150,7 +150,7 @@ export function PaletteEditor({
 
       <div className="flex flex-wrap items-center gap-2">
         <Input
-          className="h-8 w-40"
+          className="w-40 lg:h-8"
           placeholder="Role, e.g. accent"
           value={role}
           disabled={disabled}
@@ -171,7 +171,7 @@ export function PaletteEditor({
             type="button"
             disabled={disabled}
             onClick={() => onChange({ ...value, [suggestion]: "#221F3C" })}
-            className="rounded-full border border-dashed px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+            className="min-h-11 rounded-full border border-dashed px-3 py-1 text-xs text-muted-foreground hover:text-foreground lg:min-h-0 lg:px-2.5"
           >
             + {suggestion}
           </button>
@@ -231,7 +231,7 @@ export function KeyValueEditor({
             <li key={key} className="flex items-center gap-2 rounded-xl border px-3 py-2">
               <span className="w-24 shrink-0 truncate text-xs text-muted-foreground">{key}</span>
               <Input
-                className="h-8 min-w-0 flex-1"
+                className="min-w-0 flex-1 lg:h-8"
                 placeholder={valuePlaceholder}
                 value={entry}
                 disabled={disabled}
@@ -240,7 +240,7 @@ export function KeyValueEditor({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-7 shrink-0"
+                className="size-11 shrink-0 lg:size-7"
                 disabled={disabled}
                 aria-label={`Remove ${key}`}
                 onClick={() => remove(key)}
@@ -254,7 +254,7 @@ export function KeyValueEditor({
 
       <div className="flex flex-wrap items-center gap-2">
         <Input
-          className="h-8 w-44"
+          className="w-44 lg:h-8"
           placeholder={keyLabel}
           value={draft}
           disabled={disabled}
@@ -266,7 +266,12 @@ export function KeyValueEditor({
             }
           }}
         />
-        <Button size="sm" variant="outline" disabled={disabled || !draft.trim()} onClick={() => add(draft)}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={disabled || !draft.trim()}
+          onClick={() => add(draft)}
+        >
           <Plus className="size-3.5" /> Add
         </Button>
         {unused.map((suggestion) => (
@@ -275,7 +280,7 @@ export function KeyValueEditor({
             type="button"
             disabled={disabled}
             onClick={() => add(suggestion)}
-            className="rounded-full border border-dashed px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+            className="min-h-11 rounded-full border border-dashed px-3 py-1 text-xs text-muted-foreground hover:text-foreground lg:min-h-0 lg:px-2.5"
           >
             + {suggestion}
           </button>
@@ -331,7 +336,7 @@ export function TagListEditor({
                 type="button"
                 disabled={disabled}
                 aria-label={`Remove ${entry}`}
-                className="grid size-5 place-items-center rounded-full text-muted-foreground hover:text-foreground"
+                className="grid size-11 place-items-center rounded-full text-muted-foreground hover:text-foreground lg:size-5"
                 onClick={() => onChange(value.filter((_, i) => i !== index))}
               >
                 <X className="size-3" />
@@ -342,7 +347,7 @@ export function TagListEditor({
       )}
       <div className="flex flex-wrap items-center gap-2">
         <Input
-          className="h-8 w-56"
+          className="w-56 lg:h-8"
           placeholder={placeholder}
           value={draft}
           disabled={disabled}
@@ -391,7 +396,7 @@ export function ProductsEditor({
             <li key={index} className="space-y-2 rounded-xl border p-3">
               <div className="flex items-center gap-2">
                 <Input
-                  className="h-8 min-w-0 flex-1"
+                  className="min-w-0 flex-1 lg:h-8"
                   placeholder="Name — e.g. Single-origin subscription"
                   value={row.name}
                   disabled={disabled}
@@ -400,7 +405,7 @@ export function ProductsEditor({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-7 shrink-0"
+                  className="size-11 shrink-0 lg:size-7"
                   disabled={disabled}
                   aria-label={`Remove ${row.name || "product"}`}
                   onClick={() => onChange(value.filter((_, i) => i !== index))}

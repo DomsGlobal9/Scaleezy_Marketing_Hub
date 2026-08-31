@@ -86,7 +86,7 @@ export function FeedbackTagPicker({
               disabled={disabled}
               onClick={() => setOpenGroup(open ? null : group.group)}
               className={cn(
-                "rounded-full border px-2.5 py-1 text-[0.6875rem] transition-colors",
+                "min-h-11 rounded-full border px-3 py-1 text-[0.6875rem] transition-colors lg:min-h-0 lg:px-2.5",
                 open
                   ? "border-primary bg-primary text-primary-foreground"
                   : "border-border bg-secondary/40 text-muted-foreground hover:text-foreground",
@@ -113,7 +113,7 @@ export function FeedbackTagPicker({
                   disabled={disabled}
                   onClick={() => onToggle(element.key)}
                   className={cn(
-                    "rounded-md border px-2 py-1 text-[0.6875rem] transition-colors",
+                    "min-h-11 rounded-md border px-3 py-1 text-[0.6875rem] transition-colors lg:min-h-0 lg:px-2",
                     active
                       ? "border-primary bg-primary/10 font-medium text-foreground"
                       : "border-transparent text-muted-foreground hover:text-foreground",
@@ -128,8 +128,7 @@ export function FeedbackTagPicker({
 
       {selected.length > 0 ? (
         <p className="mt-2 text-[0.6875rem] text-muted-foreground">
-          {selected.length} tagged — raising the same one twice teaches the generator to
-          avoid it.
+          {selected.length} tagged — raising the same one twice teaches the generator to avoid it.
         </p>
       ) : null}
     </div>

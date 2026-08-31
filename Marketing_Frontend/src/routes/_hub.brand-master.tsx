@@ -33,6 +33,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BrandBasicsPanel } from "@/components/marketing/brand-basics";
@@ -102,6 +109,19 @@ export const Route = createFileRoute("/_hub/brand-master")({
   component: BrandMasterPage,
 });
 
+const BRAND_MASTER_TAB_LABELS: Record<BrandMasterTab, string> = {
+  overview: "Overview",
+  basics: "Brand basics",
+  products: "Products & Audience",
+  knowledge: "Knowledge",
+  inspirations: "Inspirations",
+  learning: "Learning",
+  rules: "Rules",
+  brain: "Brand Brain",
+  attention: "Attention",
+  teach: "Teach Scaleezy",
+};
+
 /* ---------------------------------------------------------------- overview */
 
 function ReadinessCard({
@@ -144,7 +164,7 @@ function ReadinessCard({
                 const t = tabForReadinessKey(dimension.key);
                 if (t !== "create") onGoToTab(t);
               }}
-              className="flex w-full items-center gap-3 rounded-md text-left hover:bg-muted/50"
+              className="flex min-h-11 w-full items-center gap-3 rounded-md px-2 text-left hover:bg-muted/50 lg:min-h-0 lg:px-0"
               title={dimension.hint}
             >
               <span className="w-44 shrink-0 truncate text-sm text-muted-foreground">
@@ -248,7 +268,7 @@ function OverviewTab({
               <Button
                 variant="link"
                 size="sm"
-                className="mt-1 h-auto px-0"
+                className="mt-1 min-h-11 px-0 lg:h-auto lg:min-h-0"
                 onClick={() => onGoToTab("basics")}
               >
                 Edit brand basics
@@ -1192,7 +1212,29 @@ function BrandMasterPage() {
           onValueChange={(value) => setTab(value as BrandMasterTab)}
           className="space-y-6"
         >
-          <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
+          <div className="sm:hidden">
+            <Label
+              htmlFor="brand-master-section"
+              className="mb-2 block text-xs font-semibold tracking-wide uppercase"
+            >
+              Brand Master section
+            </Label>
+            <Select value={tab} onValueChange={(value) => setTab(value as BrandMasterTab)}>
+              <SelectTrigger id="brand-master-section" aria-label="Brand Master section">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {BRAND_MASTER_TABS.map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {BRAND_MASTER_TAB_LABELS[value]}
+                    {value === "attention" && conflictCount > 0 ? ` (${conflictCount})` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <TabsList className="hidden h-auto w-full flex-wrap justify-start gap-1 sm:flex">
             <TabsTrigger value="overview" className="gap-1.5">
               <Sparkles className="size-3.5" /> Overview
             </TabsTrigger>
