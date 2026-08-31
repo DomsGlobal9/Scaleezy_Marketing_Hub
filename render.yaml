@@ -18,8 +18,15 @@ services:
     # exit) if the live schema, migrations, DB engine or required
     # configuration are not what the code expects - a deploy that would
     # serve 500s is stopped before it replaces the one that works.
-    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate && python manage.py sync_ai_catalogue && python manage.py production_integrity
-    startCommand: gunicorn scaleezy_backend.wsgi:application --workers 2 --timeout 120
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate && python manage.py createcachetable && python manage.py sync_ai_catalogue && python manage.py production_integrity
+    # Threads, not just workers. Sync workers serve exactly one request each,
+    # so two of them meant the whole deployment handled two requests at a
+    # time and everything else queued behind them. Almost all of a request
+    # here is spent waiting on Postgres or a provider rather than burning
+    # CPU, so threads convert that waiting into concurrency: 2 -> 16.
+    # `createcachetable` above builds the shared cache the OAuth handshake
+    # needs; it is idempotent and safe to re-run on every deploy.
+    startCommand: gunicorn scaleezy_backend.wsgi:application --worker-class gthread --workers 2 --threads 8 --timeout 120
     envVars:
       - key: PYTHON_VERSION
         value: 3.13.7

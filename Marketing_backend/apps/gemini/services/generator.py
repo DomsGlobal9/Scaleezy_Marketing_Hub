@@ -45,9 +45,20 @@ class GeminiGeneratorService:
             )
         return key
 
+    #: A provider call that never returns holds a gunicorn worker until the
+    #: server kills it. The client is built with no timeout by default, so
+    #: one hung socket used to cost a whole worker — and with threads it
+    #: would cost every request sharing it.
+    HTTP_TIMEOUT_MS = 60_000
+    #: How long to wait for Gemini to finish processing an uploaded video.
+    VIDEO_PROCESSING_TIMEOUT_SECONDS = 180
+
     @classmethod
     def _get_client(cls, api_key: str = ''):
-        return genai.Client(api_key=cls._resolve_api_key(api_key))
+        return genai.Client(
+            api_key=cls._resolve_api_key(api_key),
+            http_options={'timeout': cls.HTTP_TIMEOUT_MS},
+        )
         
     @staticmethod
     def _parse_base64_image(b64_string: str):
@@ -194,9 +205,18 @@ Return ONLY a valid JSON object with these exact keys:
             # 2. Upload to Gemini
             uploaded_file = client.files.upload(file=tmp_path)
             
-            # 3. Wait for processing
+            # 3. Wait for processing, but not forever. This loop had no
+            # deadline and no attempt cap: a video Gemini never finished
+            # processing pinned the request until gunicorn SIGKILLed the
+            # worker, taking every other request sharing it down too.
+            deadline = time.monotonic() + cls.VIDEO_PROCESSING_TIMEOUT_SECONDS
             while uploaded_file.state.name == "PROCESSING":
-                print(".", end="", flush=True)
+                if time.monotonic() > deadline:
+                    raise Exception(
+                        "Gemini did not finish processing this video within "
+                        f"{cls.VIDEO_PROCESSING_TIMEOUT_SECONDS}s. It was not "
+                        "analysed, and nothing was saved."
+                    )
                 time.sleep(2)
                 uploaded_file = client.files.get(name=uploaded_file.name)
                 
