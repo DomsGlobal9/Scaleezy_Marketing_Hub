@@ -238,7 +238,16 @@ export interface ClientDetail {
     stale: boolean;
   } | null;
   onboarding: Record<string, unknown> | null;
-  recent_content: Array<Record<string, unknown>>;
+  recent_content: Array<{
+    id: string;
+    headline?: string;
+    status?: string;
+    format?: string;
+    preview_url?: string;
+    caption?: string;
+    taught_learning?: boolean;
+    created_at?: string;
+  }>;
   recent_publishing: Array<Record<string, unknown>>;
   recent_ai_calls: Array<Record<string, unknown>>;
   team: Array<Record<string, unknown>>;

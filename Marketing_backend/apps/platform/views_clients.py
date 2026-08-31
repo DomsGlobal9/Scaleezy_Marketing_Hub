@@ -36,7 +36,12 @@ from apps.content.models import ContentItem
 from apps.context.services.readiness import brand_readiness
 from apps.inspirations.models import BrandInspiration
 from apps.knowledge.models import BrandMemory, BrandSource
-from apps.learning.models import BrandPreference, BrandRule
+from apps.learning.models import (
+    BrandPreference,
+    BrandRule,
+    LearningEvent,
+    SubjectType,
+)
 from apps.onboarding.services import ensure_onboarding, refresh_stage
 from apps.publishing.models import PublishingJob
 from apps.universal.services import settings_for
@@ -462,15 +467,43 @@ class ClientDetailView(PlatformView):
                 'skipped_steps': list(ob.skipped_steps or []),
             }
 
+        recent_items = list(
+            ContentItem.objects.filter(workspace=workspace)
+            .select_related('asset')
+            .order_by('-created_at')[:20]
+        )
+        # Which of these actually taught the brand something. Generating is
+        # not learning: only a human verdict in review (and calibration)
+        # writes to the ledger, so a card with no event here is work the
+        # system learned nothing from. One query for the whole page.
+        taught = set(
+            LearningEvent.objects.filter(
+                workspace=workspace,
+                subject_type=SubjectType.CONTENT_ITEM,
+                subject_id__in=[i.pk for i in recent_items],
+            )
+            .exclude(event_type=LearningEvent.EventType.PUBLISHED)
+            .values_list('subject_id', flat=True)
+        )
         recent_content = [
             {
                 'id': str(item.pk),
                 'headline': item.headline,
                 'status': item.status,
+                'format': item.content_format,
+                # The composed preview if there is one, else the asset the
+                # item was generated with. Blank renders as a placeholder
+                # rather than a broken image.
+                'preview_url': (
+                    item.preview_url
+                    or (item.asset.file_url if item.asset_id else '')
+                    or ''
+                ),
+                'caption': (item.caption or '')[:280],
+                'taught_learning': item.pk in taught,
                 'created_at': _iso(item.created_at),
             }
-            for item in ContentItem.objects.filter(workspace=workspace)
-            .order_by('-created_at')[:20]
+            for item in recent_items
         ]
         recent_publishing = [
             {
