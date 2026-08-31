@@ -12,7 +12,16 @@ class PublishingJobItemSerializer(serializers.ModelSerializer):
 
 class PublishingJobSerializer(serializers.ModelSerializer):
     items = PublishingJobItemSerializer(many=True, read_only=True)
-    
+    # What was actually published, not just its id. The history table had no
+    # way to name a post, so every row read the same hardcoded string and the
+    # creative was only reachable by leaving for the platform permalink.
+    content_headline = serializers.CharField(
+        source='content_item.headline', read_only=True, default='',
+    )
+    content_preview_url = serializers.CharField(
+        source='content_item.preview_url', read_only=True, default='',
+    )
+
     class Meta:
         model = PublishingJob
         fields = '__all__'

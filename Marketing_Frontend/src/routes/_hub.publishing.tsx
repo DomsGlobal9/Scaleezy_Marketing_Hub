@@ -46,6 +46,7 @@ import {
 } from "@/components/marketing/primitives";
 import { cn } from "@/lib/utils";
 import { useBrandSettings } from "@/lib/brand-settings";
+import { fetchCurrentBrand } from "@/lib/brand-master";
 import { api, apiFetch, apiPost } from "@/lib/api";
 import { readSelectedWorkspaceId } from "@/lib/workspace";
 
@@ -141,11 +142,14 @@ interface PublishingJobItemDto {
 
 interface PublishingJobDto {
   items?: PublishingJobItemDto[];
+  content_headline?: string;
+  content_preview_url?: string;
 }
 
 interface PublishingHistoryRow {
   id: string;
   content: string;
+  previewUrl?: string | undefined;
   platform: string;
   account: string;
   date: string;
@@ -240,6 +244,10 @@ function PublishingPage() {
   const [asset, setAsset] = useState<DraftAsset | null>(null);
   const [contentSaving, setContentSaving] = useState(false);
   const [contentLocked, setContentLocked] = useState(false);
+  // A pending client may do everything here except spend money. Knowing that
+  // BEFORE the seven-field brief is filled in is the difference between a
+  // disabled button with a reason and a red toast after the work.
+  const [awaitingApproval, setAwaitingApproval] = useState(false);
   const [showFullImage, setShowFullImage] = useState(false);
   const [referenceImageBase64, setReferenceImageBase64] = useState<string>("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -313,6 +321,18 @@ function PublishingPage() {
   const [accounts, setAccounts] = useState<PublishingAccount[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
 
+  useEffect(() => {
+    let cancelled = false;
+    void fetchCurrentBrand()
+      .then((brand) => {
+        if (!cancelled) setAwaitingApproval(brand?.status === "PENDING");
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const loadHistory = useCallback(async () => {
     try {
       const res = await apiFetch("/api/marketing/publishing/jobs/");
@@ -326,7 +346,11 @@ function PublishingPage() {
         (job.items ?? []).forEach((item) => {
           historyRows.push({
             id: item.id,
-            content: "Generated Marketing Post", // No text on asset currently, fallback
+            // The post's own headline. Every row used to read the same
+            // hardcoded string, so the table could not tell one post from
+            // another.
+            content: job.content_headline?.trim() || "Untitled post",
+            previewUrl: job.content_preview_url || undefined,
             platform: item.social_connection.platform,
             account:
               item.social_connection.account_name ||
@@ -621,6 +645,15 @@ function PublishingPage() {
         // The run is over; carrying these ticks back to step one would put
         // them on the next post as well.
         setSelected([]);
+        // And the lock goes with it. `contentLocked` is set when arriving
+        // from Review with an approved item — it was never cleared, so the
+        // NEXT post generated in this session was born locked and unsavable,
+        // still captioned "This is the approved version". Releasing it here
+        // is what makes a second post possible without a page reload.
+        setContentLocked(false);
+        if (typeof window !== "undefined" && window.location.search) {
+          window.history.replaceState({}, "", window.location.pathname);
+        }
       } else {
         toast.error(data.message || "Failed to publish.");
       }
@@ -1396,9 +1429,32 @@ function PublishingPage() {
                 </div>
               )}
 
+              {awaitingApproval ? (
+                <div
+                  role="status"
+                  className="mt-8 flex items-start gap-3 rounded-xl border border-gold/40 bg-gold/10 px-4 py-3 text-sm"
+                >
+                  <Sparkles className="mt-0.5 size-4 shrink-0 text-gold" />
+                  <p>
+                    <span className="font-medium text-foreground">Awaiting Scaleezy approval</span>
+                    <span className="text-muted-foreground">
+                      {" "}
+                      — generation unlocks once this client is approved. Everything you write here
+                      is kept, so you can set the brief up now.
+                    </span>
+                  </p>
+                </div>
+              ) : null}
+
               <div className="mt-8 flex items-center gap-4">
                 <Button
                   onClick={handleGenerate}
+                  disabled={awaitingApproval}
+                  title={
+                    awaitingApproval
+                      ? "Generation unlocks once Scaleezy approves this client."
+                      : undefined
+                  }
                   className="bg-[#7C3AED] hover:bg-[#6D28D9] text-white gap-2"
                 >
                   <Sparkles className="size-4" /> Generate with AI
@@ -1688,7 +1744,20 @@ function PublishingPage() {
                 )}
               </section>
 
-              {/* RIGHT: SELECT SOCIAL ACCOUNTS */}
+              {/* RIGHT: SELECT SOCIAL ACCOUNTS
+                  Shown at preview too, disabled, rather than appearing only
+                  after a round-trip through Review. The path was invisible:
+                  `publish_setup` is reachable solely via a URL parameter, so
+                  somebody on the Publishing page could not see that
+                  publishing existed, let alone what unlocks it. */}
+              {step === "preview" && (
+                <section className="surface-card p-5 opacity-70 sm:p-8">
+                  <p className="label-eyebrow text-primary">SELECT WHERE TO PUBLISH</p>
+                  <p className="mt-4 rounded-xl border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
+                    Submit this for review first. Once it is approved, publishing unlocks here.
+                  </p>
+                </section>
+              )}
               {step === "publish_setup" && (
                 <section className="surface-card p-5 sm:p-8 animate-in fade-in slide-in-from-bottom-4">
                   <p className="label-eyebrow text-primary">SELECT WHERE TO PUBLISH</p>
@@ -1857,7 +1926,19 @@ function PublishingPage() {
                 ) : null}
                 {publishingHistory.map((row, i) => (
                   <tr key={i} className="border-b border-border/70 last:border-0">
-                    <td className="max-w-[220px] truncate px-4 py-3 font-medium">{row.content}</td>
+                    <td className="max-w-[240px] px-4 py-3 font-medium">
+                      <span className="flex items-center gap-2">
+                        {row.previewUrl ? (
+                          <img
+                            src={row.previewUrl}
+                            alt=""
+                            loading="lazy"
+                            className="size-8 shrink-0 rounded border border-border object-cover"
+                          />
+                        ) : null}
+                        <span className="truncate">{row.content}</span>
+                      </span>
+                    </td>
                     <td className="px-4 py-3">{row.platform}</td>
                     <td className="px-4 py-3">{row.account}</td>
                     <td className="px-4 py-3 whitespace-nowrap">{row.date}</td>

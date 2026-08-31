@@ -230,6 +230,8 @@ export interface LearningEventRow {
 export interface CurrentBrand {
   id: string;
   name: string;
+  /** PENDING until Scaleezy approves the client; nothing that costs money runs before then. */
+  status?: string;
 }
 
 export interface BrandMasterBootstrap {
