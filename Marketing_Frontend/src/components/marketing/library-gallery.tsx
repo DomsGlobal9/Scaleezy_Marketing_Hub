@@ -20,7 +20,7 @@ import { SectionTitle } from "@/components/marketing/primitives";
 import {
   adoptLibraryItem,
   errorText,
-  fetchLibraryGallery,
+  fetchLibraryGalleryPage,
   type LibraryItem,
 } from "@/lib/platform";
 
@@ -30,18 +30,39 @@ export function LibraryGallery({ brandId, onChanged }: { brandId: string; onChan
   const [error, setError] = useState<string | null>(null);
   const [adopting, setAdopting] = useState<string | null>(null);
   const [adopted, setAdopted] = useState<Record<string, string>>({});
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      setItems(await fetchLibraryGallery());
+      const page = await fetchLibraryGalleryPage();
+      setItems(page.items);
+      setNextOffset(page.nextOffset);
     } catch (e: unknown) {
       setError(errorText(e, "Could not load the Scaleezy library."));
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const loadMore = async () => {
+    if (nextOffset === null || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchLibraryGalleryPage(nextOffset);
+      setItems((current) => {
+        const known = new Set((current ?? []).map((row) => row.id));
+        return [...(current ?? []), ...page.items.filter((row) => !known.has(row.id))];
+      });
+      setNextOffset(page.nextOffset);
+    } catch (e: unknown) {
+      setError(errorText(e, "More library references could not load."));
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   useEffect(() => {
     void load();
@@ -136,6 +157,15 @@ export function LibraryGallery({ brandId, onChanged }: { brandId: string; onChan
               </article>
             );
           })}
+        </div>
+      ) : null}
+
+      {!loading && items && nextOffset !== null ? (
+        <div className="mt-4 flex justify-center">
+          <Button size="sm" variant="outline" disabled={loadingMore} onClick={() => void loadMore()}>
+            {loadingMore ? <Loader2 className="size-3.5 animate-spin" /> : null}
+            {loadingMore ? "Loading more…" : "Load more references"}
+          </Button>
         </div>
       ) : null}
     </section>
