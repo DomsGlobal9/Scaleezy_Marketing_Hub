@@ -69,6 +69,37 @@ def ensure_onboarding(brand):
     return onboarding
 
 
+def derive_onboarding_state(
+    *, has_basics, has_knowledge, has_inspirations, has_calibration,
+    has_generated, skipped_steps=(),
+):
+    """Pure stage/status derivation shared by workflows and read models."""
+    skipped = set(skipped_steps or [])
+    stages = [
+        (BrandOnboarding.Stage.BASICS, has_basics),
+        (BrandOnboarding.Stage.KNOWLEDGE, has_knowledge),
+        (BrandOnboarding.Stage.INSPIRATIONS, has_inspirations),
+        (BrandOnboarding.Stage.CALIBRATION, has_calibration),
+        (BrandOnboarding.Stage.FIRST_GENERATION, has_generated),
+    ]
+
+    current = BrandOnboarding.Stage.DONE
+    for stage, done in stages:
+        if not done and stage not in skipped:
+            current = stage
+            break
+
+    if has_generated:
+        status = BrandOnboarding.Status.COMPLETED
+    elif current in (BrandOnboarding.Stage.FIRST_GENERATION, BrandOnboarding.Stage.DONE):
+        status = BrandOnboarding.Status.READY_FOR_GENERATION
+    elif any(done for _, done in stages):
+        status = BrandOnboarding.Status.IN_PROGRESS
+    else:
+        status = BrandOnboarding.Status.NOT_STARTED
+    return current, status
+
+
 def refresh_stage(onboarding):
     """Derive stage and status from what actually exists.
 
@@ -77,8 +108,6 @@ def refresh_stage(onboarding):
     stages stay behind; completed work can never be un-progressed by a skip.
     """
     brand = onboarding.brand
-    skipped = set(onboarding.skipped_steps or [])
-
     has_basics = bool(brand.name and (brand.industry or brand.tagline))
     has_knowledge = BrandSource.objects.filter(brand=brand).exclude(
         status=BrandSource.SourceStatus.ARCHIVED
@@ -105,28 +134,14 @@ def refresh_stage(onboarding):
     )
     has_generated = brand.content_items.exists()
 
-    stages = [
-        (BrandOnboarding.Stage.BASICS, has_basics),
-        (BrandOnboarding.Stage.KNOWLEDGE, has_knowledge),
-        (BrandOnboarding.Stage.INSPIRATIONS, has_inspirations),
-        (BrandOnboarding.Stage.CALIBRATION, has_calibration),
-        (BrandOnboarding.Stage.FIRST_GENERATION, has_generated),
-    ]
-
-    current = BrandOnboarding.Stage.DONE
-    for stage, done in stages:
-        if not done and stage not in skipped:
-            current = stage
-            break
-
-    if has_generated:
-        status = BrandOnboarding.Status.COMPLETED
-    elif current in (BrandOnboarding.Stage.FIRST_GENERATION, BrandOnboarding.Stage.DONE):
-        status = BrandOnboarding.Status.READY_FOR_GENERATION
-    elif any(done for _, done in stages):
-        status = BrandOnboarding.Status.IN_PROGRESS
-    else:
-        status = BrandOnboarding.Status.NOT_STARTED
+    current, status = derive_onboarding_state(
+        has_basics=has_basics,
+        has_knowledge=has_knowledge,
+        has_inspirations=has_inspirations,
+        has_calibration=has_calibration,
+        has_generated=has_generated,
+        skipped_steps=onboarding.skipped_steps,
+    )
 
     changed = (
         onboarding.current_stage != current or onboarding.status != status

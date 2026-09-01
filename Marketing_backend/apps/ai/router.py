@@ -27,21 +27,35 @@ class AIRouter:
         self.workspace = workspace
 
     # ── resolution ───────────────────────────────────────────────────────
-    def _candidates(self, capability: str) -> List[Dict[str, Any]]:
-        routes = (
-            WorkspaceAIRoute.objects.select_related('provider')
-            .filter(workspace=self.workspace, capability=capability, enabled=True)
-            .order_by('priority')
-        )
-        enabled = {
-            wp.provider_id: wp
-            for wp in WorkspaceAIProvider.objects.select_related('provider').filter(
-                workspace=self.workspace, enabled=True
+    def _routing_snapshot(self):
+        """Load this workspace's routing policy once for this request.
+
+        A route set is changed atomically, so repeatedly re-reading the same
+        policy for every capability adds latency without adding correctness.
+        Adapter instances are deliberately not cached: generation may execute
+        different capabilities concurrently and adapters need not be thread-safe.
+        """
+        if not hasattr(self, '_routes_snapshot'):
+            self._routes_snapshot = list(
+                WorkspaceAIRoute.objects.select_related('provider')
+                .filter(workspace=self.workspace, enabled=True)
+                .order_by('capability', 'priority')
             )
-        }
+            self._enabled_providers_snapshot = {
+                wp.provider_id: wp
+                for wp in WorkspaceAIProvider.objects.select_related('provider').filter(
+                    workspace=self.workspace, enabled=True
+                )
+            }
+        return self._routes_snapshot, self._enabled_providers_snapshot
+
+    def _candidates(self, capability: str) -> List[Dict[str, Any]]:
+        routes, enabled = self._routing_snapshot()
 
         out = []
         for route in routes:
+            if route.capability != capability:
+                continue
             wp = enabled.get(route.provider_id)
             if wp is None:
                 continue  # routed but the provider is switched off
@@ -84,12 +98,10 @@ class AIRouter:
         return candidates[0]['adapter'] if candidates else None
 
     def strategy_for(self, capability: str) -> str:
-        route = (
-            WorkspaceAIRoute.objects.filter(
-                workspace=self.workspace, capability=capability, enabled=True
-            )
-            .order_by('priority')
-            .first()
+        routes, _enabled = self._routing_snapshot()
+        route = next(
+            (row for row in routes if row.capability == capability),
+            None,
         )
         return route.strategy if route else Strategy.FAILOVER
 

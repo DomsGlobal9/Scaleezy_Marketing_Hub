@@ -76,6 +76,7 @@ export const DEFAULT_BRAND_SETTINGS: BrandSettings = {
 /** Raw Brand as the API returns it. */
 export interface BrandDto {
   id: string;
+  status: string;
   name: string;
   industry: string;
   website: string;
@@ -222,9 +223,7 @@ export type BrandSaveState = "idle" | "pending" | "saving" | "saved" | "failed";
 export function useBrandSettings(options: UseBrandSettingsOptions = {}) {
   const target = "brandId" in options ? options.brandId : undefined;
   const matchingInitialBrand =
-    typeof target === "string" && options.initialBrand?.id === target
-      ? options.initialBrand
-      : null;
+    typeof target === "string" && options.initialBrand?.id === target ? options.initialBrand : null;
 
   const [settings, setSettings] = useState<BrandSettings>(() =>
     matchingInitialBrand ? toSettings(matchingInitialBrand) : DEFAULT_BRAND_SETTINGS,

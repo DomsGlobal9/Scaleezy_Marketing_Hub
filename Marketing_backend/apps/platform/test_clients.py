@@ -11,7 +11,9 @@ import uuid
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -294,9 +296,52 @@ class ClientPortfolioTests(TenantFixtureMixin, TestCase):
         _, by_id = self.rows_for(q='nobody-here')
         self.assertEqual(by_id, {})
 
+    def test_portfolio_pages_before_building_client_rows(self):
+        created = []
+        for index in range(4):
+            workspace, _brand = self.other_workspace(f'Page {index}')
+            created.append(workspace)
+
+        first, first_rows = self.rows_for(page=1, page_size=2)
+        second, second_rows = self.rows_for(page=2, page_size=2)
+
+        self.assertEqual(first['total'], 5)
+        self.assertEqual(first['count'], 5)
+        self.assertEqual(first['page_size'], 2)
+        self.assertEqual(first['total_pages'], 3)
+        self.assertEqual(first['next_page'], 2)
+        self.assertIsNone(first['previous_page'])
+        self.assertEqual(second['previous_page'], 1)
+        self.assertTrue(set(first_rows).isdisjoint(second_rows))
+
+    def test_portfolio_get_never_creates_or_updates_onboarding_state(self):
+        from apps.onboarding.models import BrandOnboarding
+
+        self.assertFalse(BrandOnboarding.objects.filter(brand=self.acme_brand).exists())
+        _data, by_id = self.rows_for()
+        self.assertEqual(by_id[str(self.acme.pk)]['onboarding']['status'], 'COMPLETED')
+        self.assertFalse(BrandOnboarding.objects.filter(brand=self.acme_brand).exists())
+
+    def test_portfolio_query_count_is_bounded_as_clients_grow(self):
+        for index in range(8):
+            self.other_workspace(f'Scale {index}')
+        Subscription.objects.create(
+            workspace=self.acme,
+            plan=self.plan,
+            period_start=timezone.now() - timedelta(days=1),
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            response = self.staff_api.get(CLIENTS, {'page_size': 10})
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertLessEqual(len(queries), 27, [query['sql'] for query in queries])
+
     # ───────────────────────────────────────────── P3 detail
 
     def test_detail_returns_brain_team_audit_and_activity_sections(self):
+        from apps.onboarding.models import BrandOnboarding
+
         self.acme_brand.brain_failed_at = timezone.now()
         self.acme_brand.brain_last_error = 'conflict'
         self.acme_brand.save(update_fields=['brain_failed_at', 'brain_last_error'])
@@ -339,6 +384,7 @@ class ClientPortfolioTests(TenantFixtureMixin, TestCase):
         entry = PlatformAuditLog.objects.get(action='CLIENT_VIEWED')
         self.assertEqual(entry.workspace_id, self.acme.pk)
         self.assertEqual(entry.detail['workspace_id'], str(self.acme.pk))
+        self.assertFalse(BrandOnboarding.objects.filter(brand=self.acme_brand).exists())
 
     def test_unknown_client_is_404(self):
         response = self.staff_api.get(f'{CLIENTS}{uuid.uuid4()}/')

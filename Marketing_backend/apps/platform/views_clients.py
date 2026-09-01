@@ -21,7 +21,7 @@ from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Count, F, Max, Q
+from django.db.models import Count, F, Max, OuterRef, Q, Subquery, Sum
 from django.utils import timezone
 
 from apps.ai.models import AIUsageLog, WorkspaceAIRoute
@@ -29,20 +29,25 @@ from apps.audit.models import PlatformAuditLog
 from apps.billing import quota
 from apps.billing.models import Subscription
 from apps.brands.models import Brand
-from apps.brands.services.approval import spend_block
+from apps.brands.services.brand_brain import compile_brand_brain_from_records
 from apps.common.platform_health import DEFAULT_INACTIVE_DAYS
 from apps.common.responses import APIResponse
 from apps.content.models import ContentItem
-from apps.context.services.readiness import brand_readiness
-from apps.inspirations.models import BrandInspiration
+from apps.context.services.readiness import (
+    readiness_counts_for_brands,
+    score_brand_readiness,
+)
+from apps.inspirations.models import BrandInspiration, InspirationSignal
 from apps.knowledge.models import BrandMemory, BrandSource
 from apps.learning.models import (
     BrandPreference,
     BrandRule,
     LearningEvent,
+    LearningScope,
     SubjectType,
 )
-from apps.onboarding.services import ensure_onboarding, refresh_stage
+from apps.onboarding.models import BrandOnboarding, CalibrationDirection
+from apps.onboarding.services import derive_onboarding_state
 from apps.publishing.models import PublishingJob
 from apps.universal.services import settings_for
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
@@ -75,8 +80,8 @@ FILTER_FLAGS = {
     'archived': ('ARCHIVED',),
 }
 
-DEFAULT_LIMIT = 200
-MAX_LIMIT = 1000
+DEFAULT_LIMIT = 25
+MAX_LIMIT = 100
 
 
 def _iso(moment):
@@ -89,6 +94,56 @@ def _int_param(raw, default, *, lo, hi):
     except (TypeError, ValueError):
         return default
     return max(lo, min(hi, value))
+
+
+def _bulk_usage(workspace_ids):
+    """Exact quota summaries for many workspaces in three bounded queries."""
+    ids = list(workspace_ids)
+    subscriptions = {
+        sub.workspace_id: sub
+        for sub in Subscription.objects.filter(workspace_id__in=ids).select_related('plan')
+    }
+    period_filter = Q()
+    for workspace_id, subscription in subscriptions.items():
+        start, end = subscription.current_period()
+        period_filter |= Q(
+            workspace_id=workspace_id, created_at__gte=start, created_at__lt=end
+        )
+
+    generation_counts = {}
+    spend_by_workspace = defaultdict(lambda: Decimal('0'))
+    capability_counts = defaultdict(dict)
+    if subscriptions:
+        generation_counts = {
+            row['workspace_id']: row['n']
+            for row in (
+                ContentItem.objects.filter(period_filter)
+                .values('workspace_id')
+                .annotate(n=Count('id'))
+            )
+        }
+        for row in (
+            AIUsageLog.objects.filter(period_filter)
+            .values('workspace_id', 'capability')
+            .annotate(
+                spend=Sum('cost'),
+                used=Count('id', filter=Q(success=True, selected=True)),
+            )
+        ):
+            workspace_id = row['workspace_id']
+            spend_by_workspace[workspace_id] += row['spend'] or Decimal('0')
+            if row['used']:
+                capability_counts[workspace_id][row['capability']] = row['used']
+
+    summaries = {}
+    for workspace_id in ids:
+        summaries[workspace_id] = quota.summary_from_aggregates(
+            subscriptions.get(workspace_id),
+            generations=generation_counts.get(workspace_id, 0),
+            spend=spend_by_workspace[workspace_id],
+            per_capability_used=capability_counts[workspace_id],
+        )
+    return subscriptions, summaries
 
 
 # ───────────────────────────────────────────────── grouped aggregates
@@ -159,6 +214,7 @@ class PortfolioStats:
         # portfolio flags and the tiles count the same clients.
         self.routed = set(
             WorkspaceAIRoute.objects.filter(workspace_id__in=ids, enabled=True)
+            .order_by()
             .values_list('workspace_id', flat=True)
         )
         self.recently_active = set(
@@ -169,20 +225,151 @@ class PortfolioStats:
             ).values_list('workspace_id', flat=True)
         )
 
-        self.subscriptions = {
-            sub.workspace_id: sub
-            for sub in Subscription.objects.filter(workspace_id__in=ids).select_related('plan')
-        }
+        self.subscriptions, self.usage = _bulk_usage(ids)
 
         # The default brand, or the first non-archived one — Meta ordering is
         # (-is_default, name), so the first row seen per workspace is it.
         self.brands = {}
+        self.has_brand = set()
+        self.active_brand = set()
+        self.pending_brand = set()
         for brand in (
             Brand.objects.filter(workspace_id__in=ids)
-            .exclude(status=Brand.Status.ARCHIVED)
             .select_related('workspace')
         ):
-            self.brands.setdefault(brand.workspace_id, brand)
+            self.has_brand.add(brand.workspace_id)
+            if brand.status == Brand.Status.ACTIVE:
+                self.active_brand.add(brand.workspace_id)
+            elif brand.status == Brand.Status.PENDING:
+                self.pending_brand.add(brand.workspace_id)
+            if brand.status != Brand.Status.ARCHIVED:
+                self.brands.setdefault(brand.workspace_id, brand)
+
+        brand_ids = [brand.pk for brand in self.brands.values()]
+        self.readiness = readiness_counts_for_brands(brand_ids)
+        self.brains = {
+            brand.pk: brand.creative_brain
+            for brand in self.brands.values()
+            if brand.creative_brain
+        }
+        missing_brains = [
+            brand for brand in self.brands.values() if not brand.creative_brain
+        ]
+        if missing_brains:
+            missing_ids = [brand.pk for brand in missing_brains]
+            missing_workspace_ids = {brand.workspace_id for brand in missing_brains}
+            brand_scope = Q()
+            for brand in missing_brains:
+                brand_scope |= Q(brand_id=brand.pk, workspace_id=brand.workspace_id)
+            memories = defaultdict(list)
+            for row in (
+                BrandMemory.objects.filter(
+                    brand_scope,
+                    status=BrandMemory.MemoryStatus.CONFIRMED,
+                )
+                .exclude(source__status=BrandSource.SourceStatus.ARCHIVED)
+                .order_by('id')
+            ):
+                memories[row.brand_id].append(row)
+
+            signals = defaultdict(list)
+            for row in (
+                InspirationSignal.objects.filter(
+                    inspiration__brand_id__in=missing_ids
+                )
+                .eligible_for_retrieval()
+                .select_related('inspiration')
+                .order_by('id')
+            ):
+                signals[row.inspiration.brand_id].append(row)
+
+            rules = defaultdict(list)
+            rule_rows = (
+                BrandRule.objects.filter(
+                    workspace_id__in=missing_workspace_ids, is_active=True
+                )
+                .filter(
+                    brand_scope
+                    | Q(brand__isnull=True, scope=LearningScope.TENANT)
+                )
+                .order_by('id')
+            )
+            preferences = defaultdict(list)
+            preference_rows = (
+                BrandPreference.objects.filter(workspace_id__in=missing_workspace_ids)
+                .active()
+                .filter(
+                    brand_scope
+                    | Q(brand__isnull=True, scope=LearningScope.TENANT)
+                )
+                .order_by('id')
+            )
+            brands_by_workspace = defaultdict(list)
+            for brand in missing_brains:
+                brands_by_workspace[brand.workspace_id].append(brand.pk)
+            for row in rule_rows:
+                targets = (
+                    [row.brand_id] if row.brand_id else brands_by_workspace[row.workspace_id]
+                )
+                for brand_id in targets:
+                    rules[brand_id].append(row)
+            for row in preference_rows:
+                targets = (
+                    [row.brand_id] if row.brand_id else brands_by_workspace[row.workspace_id]
+                )
+                for brand_id in targets:
+                    preferences[brand_id].append(row)
+            for brand in missing_brains:
+                self.brains[brand.pk] = compile_brand_brain_from_records(
+                    brand,
+                    memories=memories[brand.pk],
+                    rules=rules[brand.pk],
+                    preferences=preferences[brand.pk],
+                    signals=signals[brand.pk],
+                )
+        self.generated_brands = set(
+            ContentItem.objects.filter(brand_id__in=brand_ids)
+            .order_by()
+            .values_list('brand_id', flat=True)
+            .distinct()
+        )
+        self.onboarding = {
+            row.brand_id: row
+            for row in BrandOnboarding.objects.filter(brand_id__in=brand_ids).only(
+                'brand_id', 'skipped_steps', 'started_at', 'completed_at'
+            )
+        }
+
+        latest_direction = (
+            CalibrationDirection.objects.filter(brand_id=OuterRef('pk'))
+            .order_by('-created_at')
+        )
+        self.latest_calibration_round = {
+            row['pk']: row['latest_round']
+            for row in (
+                Brand.objects.filter(pk__in=brand_ids)
+                .annotate(
+                    latest_round=Subquery(latest_direction.values('round_id')[:1])
+                )
+                .order_by()
+                .values('pk', 'latest_round')
+            )
+            if row['latest_round'] is not None
+        }
+        pending_filter = Q()
+        for brand_id, round_id in self.latest_calibration_round.items():
+            pending_filter |= Q(
+                brand_id=brand_id,
+                round_id=round_id,
+                verdict=CalibrationDirection.Verdict.PENDING,
+            )
+        self.pending_calibration = set()
+        if self.latest_calibration_round:
+            self.pending_calibration = set(
+                CalibrationDirection.objects.filter(pending_filter)
+                .values_list('brand_id', flat=True)
+                .distinct()
+            )
 
     @staticmethod
     def _grouped(queryset):
@@ -194,18 +381,42 @@ class PortfolioStats:
     def brand_for(self, workspace_id):
         return self.brands.get(workspace_id)
 
+    def pending_approval(self, workspace):
+        if workspace.approval_status == MarketingWorkspace.Approval.PENDING:
+            return True
+        return (
+            workspace.approval_status == MarketingWorkspace.Approval.APPROVED
+            and workspace.pk in self.has_brand
+            and workspace.pk not in self.active_brand
+            and workspace.pk in self.pending_brand
+        )
+
+    def onboarding_for(self, brand):
+        counts = self.readiness.get(brand.pk, {})
+        current, status = derive_onboarding_state(
+            has_basics=bool(brand.name and (brand.industry or brand.tagline)),
+            has_knowledge=bool(counts.get('sources')),
+            has_inspirations=bool(counts.get('inspirations')),
+            has_calibration=(
+                brand.pk in self.latest_calibration_round
+                and brand.pk not in self.pending_calibration
+            ),
+            has_generated=brand.pk in self.generated_brands,
+            skipped_steps=getattr(self.onboarding.get(brand.pk), 'skipped_steps', ()),
+        )
+        return {'current_stage': current, 'status': status}
+
+    def readiness_for(self, brand):
+        scored = score_brand_readiness(
+            brand, self.readiness[brand.pk], brain=self.brains[brand.pk]
+        )
+        return {
+            'score': scored['readiness_score'],
+            'level': scored['readiness_level'],
+        }
+
 
 # ───────────────────────────────────────────────────── the row
-
-def _onboarding_row(brand):
-    """Where the brand is in setup, derived from what exists right now.
-
-    `refresh_stage` is what the client's own onboarding screen calls, so the
-    operator sees the same stage the client does — not a stage frozen at the
-    last time the client opened that screen.
-    """
-    return refresh_stage(ensure_onboarding(brand))
-
 
 def _quota_flags(usage):
     """OVER_QUOTA / SPEND_CAP_REACHED from `quota.summary()`'s own numbers.
@@ -249,7 +460,7 @@ def client_row(workspace, stats=None):
 
     brand = stats.brand_for(ws_id)
     subscription = stats.subscriptions.get(ws_id)
-    usage = quota.summary(workspace)
+    usage = stats.usage[ws_id]
 
     content_by_status = dict(stats.content.get(ws_id, {}))
     content_total = sum(content_by_status.values())
@@ -259,18 +470,12 @@ def client_row(workspace, stats=None):
     onboarding = None
     readiness = None
     if brand is not None:
-        row = _onboarding_row(brand)
-        onboarding = {'current_stage': row.current_stage, 'status': row.status}
-        scored = brand_readiness(brand)
-        readiness = {
-            'score': scored['readiness_score'],
-            'level': scored['readiness_level'],
-        }
+        onboarding = stats.onboarding_for(brand)
+        readiness = stats.readiness_for(brand)
 
     # ── flags ────────────────────────────────────────────────────────
     flags = []
-    block = spend_block(workspace)
-    if block is not None and block.code == 'CLIENT_NOT_APPROVED':
+    if stats.pending_approval(workspace):
         flags.append('PENDING_APPROVAL')
     # Routing, activity and publishing failures are expected to be absent on
     # a suspended or archived client, so they only count against a live one
@@ -355,9 +560,15 @@ def _narrow(queryset, filter_key, *, days):
     if filter_key == 'archived':
         return queryset.filter(status=MarketingWorkspace.Status.ARCHIVED)
     if filter_key == 'pending':
-        # spend_block's definition: has brands, none ACTIVE, at least one PENDING.
-        return queryset.filter(brands__status=Brand.Status.PENDING).exclude(
-            brands__status=Brand.Status.ACTIVE
+        # Workspace approval is authoritative. The brand fallback preserves
+        # the stricter approved-workspace rule in spend_block().
+        return queryset.filter(
+            Q(approval_status=MarketingWorkspace.Approval.PENDING)
+            | (
+                Q(approval_status=MarketingWorkspace.Approval.APPROVED)
+                & Q(brands__status=Brand.Status.PENDING)
+                & ~Q(brands__status=Brand.Status.ACTIVE)
+            )
         ).distinct()
     if filter_key == 'never_generated':
         return queryset.exclude(id__in=ContentItem.objects.values('workspace_id'))
@@ -371,6 +582,7 @@ def _narrow(queryset, filter_key, *, days):
         routed = WorkspaceAIRoute.objects.filter(enabled=True).values('workspace_id')
         stale_brains = (
             Brand.objects.filter(brain_failed_at__isnull=False)
+            .exclude(status=Brand.Status.ARCHIVED)
             .exclude(brain_compiled_at__gt=F('brain_failed_at'))
             .values('workspace_id')
         )
@@ -389,7 +601,7 @@ def _narrow(queryset, filter_key, *, days):
 
 
 class ClientPortfolioView(PlatformView):
-    """GET /api/platform/clients/?filter=all&days=14&q=&limit=200"""
+    """GET /api/platform/clients/?filter=all&days=14&q=&page=1&page_size=25"""
 
     def get(self, request):
         filter_key = str(request.query_params.get('filter', 'all')).strip().lower()
@@ -398,7 +610,11 @@ class ClientPortfolioView(PlatformView):
         days = _int_param(
             request.query_params.get('days'), DEFAULT_INACTIVE_DAYS, lo=1, hi=3650
         )
-        limit = _int_param(request.query_params.get('limit'), DEFAULT_LIMIT, lo=1, hi=MAX_LIMIT)
+        page = _int_param(request.query_params.get('page'), 1, lo=1, hi=1_000_000)
+        requested_size = request.query_params.get(
+            'page_size', request.query_params.get('limit')
+        )
+        page_size = _int_param(requested_size, DEFAULT_LIMIT, lo=1, hi=MAX_LIMIT)
         q = str(request.query_params.get('q', '')).strip()
 
         queryset = MarketingWorkspace.objects.all()
@@ -409,8 +625,32 @@ class ClientPortfolioView(PlatformView):
                 | Q(brands__name__icontains=q)
             ).distinct()
         queryset = _narrow(queryset, filter_key, days=days).order_by('-created_at')
+        offset = (page - 1) * page_size
 
-        workspaces = list(queryset)
+        if filter_key == 'over_quota':
+            # Periods differ per subscription, so this filter cannot be one
+            # honest static WHERE clause. Count all candidates in bulk, then
+            # page the matching ids before building the expensive row model.
+            candidate_ids = list(queryset.values_list('pk', flat=True))
+            filtered_ids = []
+            for start in range(0, len(candidate_ids), MAX_LIMIT):
+                batch = candidate_ids[start:start + MAX_LIMIT]
+                _subscriptions, candidate_usage = _bulk_usage(batch)
+                filtered_ids.extend(
+                    workspace_id for workspace_id in batch
+                    if _quota_flags(candidate_usage[workspace_id])
+                )
+            total = len(filtered_ids)
+            page_ids = filtered_ids[offset:offset + page_size]
+            by_id = {
+                workspace.pk: workspace
+                for workspace in MarketingWorkspace.objects.filter(pk__in=page_ids)
+            }
+            workspaces = [by_id[workspace_id] for workspace_id in page_ids]
+        else:
+            total = queryset.count()
+            workspaces = list(queryset[offset:offset + page_size])
+
         stats = PortfolioStats([ws.pk for ws in workspaces], days=days)
         wanted = FILTER_FLAGS.get(filter_key)
 
@@ -420,14 +660,21 @@ class ClientPortfolioView(PlatformView):
             if wanted is not None and not any(flag in row['flags'] for flag in wanted):
                 continue
             rows.append(row)
-            if len(rows) >= limit:
-                break
+
+        total_pages = (total + page_size - 1) // page_size if total else 0
 
         self.audit('PORTFOLIO_VIEWED', detail={
-            'filter': filter_key, 'count': len(rows), 'days': days, 'q': q,
+            'filter': filter_key, 'count': len(rows), 'total': total,
+            'page': page, 'page_size': page_size, 'days': days, 'q': q,
         })
         return APIResponse(success=True, data={
-            'count': len(rows),
+            'count': total,
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': total_pages,
+            'next_page': page + 1 if page < total_pages else None,
+            'previous_page': page - 1 if page > 1 and total else None,
             'filter': filter_key,
             'days': days,
             'clients': rows,
@@ -458,13 +705,18 @@ class ClientDetailView(PlatformView):
                 'failed_at': _iso(brand.brain_failed_at),
                 'stale': brand.brain_is_stale,
             }
-            ob = _onboarding_row(brand)
+            saved_onboarding = stats.onboarding.get(brand.pk)
             onboarding = {
-                'current_stage': ob.current_stage,
-                'status': ob.status,
-                'started_at': _iso(ob.started_at),
-                'completed_at': _iso(ob.completed_at),
-                'skipped_steps': list(ob.skipped_steps or []),
+                **row['onboarding'],
+                'started_at': _iso(
+                    saved_onboarding.started_at if saved_onboarding else None
+                ),
+                'completed_at': _iso(
+                    saved_onboarding.completed_at if saved_onboarding else None
+                ),
+                'skipped_steps': list(
+                    saved_onboarding.skipped_steps if saved_onboarding else []
+                ),
             }
 
         recent_items = list(

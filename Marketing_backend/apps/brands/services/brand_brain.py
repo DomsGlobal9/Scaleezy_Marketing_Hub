@@ -358,10 +358,21 @@ def brain_fingerprint(content):
 
 def compile_brand_brain(brand):
     """Build the snapshot. Pure — reads authoritative records, writes nothing."""
-    memories = list(_memories(brand))
-    rules = list(_rules(brand))
-    preferences = list(_preferences(brand))
-    signals = list(_signals(brand))
+    return compile_brand_brain_from_records(
+        brand,
+        memories=_memories(brand),
+        rules=_rules(brand),
+        preferences=_preferences(brand),
+        signals=_signals(brand),
+    )
+
+
+def compile_brand_brain_from_records(brand, *, memories, rules, preferences, signals):
+    """Compile from an authoritative record snapshot already loaded by a caller."""
+    memories = list(memories)
+    rules = list(rules)
+    preferences = list(preferences)
+    signals = list(signals)
 
     resolved, overridden, conflicts = resolve_claims(
         _collect_claims(rules, preferences, signals) + _memory_claims(memories)

@@ -7,18 +7,13 @@
  * the server; a missing value renders as a dash, never as zero.
  */
 import { createFileRoute, Link, Outlet, useChildMatches } from "@tanstack/react-router";
-import { RefreshCw, Search } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, RefreshCw, Search } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  ErrorNote,
-  FlagChips,
-  PlatformPageHeader,
-  StatusPill,
-} from "@/components/platform/shared";
+import { ErrorNote, FlagChips, PlatformPageHeader, StatusPill } from "@/components/platform/shared";
 import {
   errorText,
   fetchClients,
@@ -53,7 +48,11 @@ const FILTERS: Array<{ key: string; label: string; flags: string[] | null }> = [
     label: "At risk",
     flags: ["INACTIVE", "FAILING_PUBLISHES", "NO_AI_ROUTING", "BRAIN_STALE"],
   },
-  { key: "over_quota", label: "Over quota / spend cap", flags: ["OVER_QUOTA", "SPEND_CAP_REACHED"] },
+  {
+    key: "over_quota",
+    label: "Over quota / spend cap",
+    flags: ["OVER_QUOTA", "SPEND_CAP_REACHED"],
+  },
   { key: "never_generated", label: "Never generated", flags: ["NEVER_GENERATED"] },
   { key: "inactive", label: "Inactive", flags: ["INACTIVE"] },
   { key: "failing_publishes", label: "Failing publishes", flags: ["FAILING_PUBLISHES"] },
@@ -104,51 +103,60 @@ function ClientsPage() {
   const [days, setDays] = useState(30);
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
+  const [page, setPage] = useState(1);
   const [list, setList] = useState<ClientList | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const loadVersion = useRef(0);
 
   useEffect(() => {
-    const handle = window.setTimeout(() => setDebouncedQ(q.trim()), 300);
+    const handle = window.setTimeout(() => {
+      setDebouncedQ(q.trim());
+      setPage(1);
+    }, 300);
     return () => window.clearTimeout(handle);
   }, [q]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const params: { filter?: string; days?: number; q?: string } = { days };
-      if (filter) params.filter = filter;
-      if (debouncedQ) params.q = debouncedQ;
-      setList(await fetchClients(params));
-    } catch (e: unknown) {
-      setError(errorText(e, "Could not load the portfolio."));
-    } finally {
-      setLoading(false);
-    }
-  }, [filter, days, debouncedQ]);
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      const version = ++loadVersion.current;
+      setLoading(true);
+      setError(null);
+      try {
+        const params: {
+          filter?: string;
+          days?: number;
+          q?: string;
+          page?: number;
+          pageSize?: number;
+        } = { days, page, pageSize: 25 };
+        if (filter) params.filter = filter;
+        if (debouncedQ) params.q = debouncedQ;
+        const next = await fetchClients(params, signal ? { signal } : undefined);
+        if (version === loadVersion.current) setList(next);
+      } catch (e: unknown) {
+        if (e instanceof DOMException && e.name === "AbortError") return;
+        if (version === loadVersion.current) {
+          setError(errorText(e, "Could not load the portfolio."));
+        }
+      } finally {
+        if (version === loadVersion.current) setLoading(false);
+      }
+    },
+    [filter, days, debouncedQ, page],
+  );
 
   useEffect(() => {
-    void load();
+    const controller = new AbortController();
+    setList(null);
+    void load(controller.signal);
+    return () => controller.abort();
   }, [load]);
 
-  const activeFlags = FILTERS.find((f) => f.key === filter)?.flags ?? null;
-  const needle = debouncedQ.toLowerCase();
-
-  const rows = useMemo(() => {
-    const all = list?.clients ?? [];
-    return all.filter((row) => {
-      if (activeFlags && !activeFlags.some((flag) => row.flags.includes(flag))) return false;
-      if (needle) {
-        const hay = [row.name, row.client_code, row.brand?.name, row.brand?.website, row.brand?.industry]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        if (!hay.includes(needle)) return false;
-      }
-      return true;
-    });
-  }, [list, activeFlags, needle]);
+  const rows = list?.clients ?? [];
+  const total = list?.total ?? list?.count ?? 0;
+  const currentPage = list?.page ?? page;
+  const totalPages = list?.total_pages ?? (total ? 1 : 0);
 
   return (
     <div>
@@ -168,7 +176,11 @@ function ClientsPage() {
           <button
             key={f.key}
             type="button"
-            onClick={() => setFilter(f.key)}
+            aria-pressed={filter === f.key}
+            onClick={() => {
+              setFilter(f.key);
+              setPage(1);
+            }}
             className={cn(
               "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
               filter === f.key
@@ -201,14 +213,17 @@ function ClientsPage() {
             value={days}
             onChange={(e) => {
               const next = Number(e.target.value);
-              if (Number.isFinite(next) && next > 0) setDays(Math.min(365, Math.round(next)));
+              if (Number.isFinite(next) && next > 0) {
+                setDays(Math.min(365, Math.round(next)));
+                setPage(1);
+              }
             }}
           />
           days
         </label>
         {list ? (
           <span className="ml-auto text-xs text-muted-foreground">
-            {rows.length} of {list.count} client{list.count === 1 ? "" : "s"}
+            {rows.length} of {total} client{total === 1 ? "" : "s"}
           </span>
         ) : null}
       </div>
@@ -231,102 +246,138 @@ function ClientsPage() {
           </p>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-border bg-card">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-muted/50 text-[0.625rem] tracking-wide text-muted-foreground uppercase">
-              <tr>
-                <th className="px-3 py-2 font-semibold">Code</th>
-                <th className="px-3 py-2 font-semibold">Name</th>
-                <th className="px-3 py-2 font-semibold">Status</th>
-                <th className="px-3 py-2 font-semibold">Plan</th>
-                <th className="px-3 py-2 font-semibold">Stage</th>
-                <th className="px-3 py-2 font-semibold">Readiness</th>
-                <th className="px-3 py-2 font-semibold">Usage</th>
-                <th className="px-3 py-2 font-semibold">Last active</th>
-                <th className="px-3 py-2 font-semibold">Flags</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.workspace_id} className="border-t border-border align-top hover:bg-muted/30">
-                  <td className="px-3 py-2.5 font-mono text-[0.6875rem] whitespace-nowrap">
-                    <Link
-                      to="/platform/clients/$workspaceId"
-                      params={{ workspaceId: row.workspace_id }}
-                      className="text-foreground hover:underline"
-                    >
-                      {row.client_code || "—"}
-                    </Link>
-                  </td>
-                  <td className="px-3 py-2.5">
-                    <Link
-                      to="/platform/clients/$workspaceId"
-                      params={{ workspaceId: row.workspace_id }}
-                      className="font-medium text-foreground hover:underline"
-                    >
-                      {row.name || "Untitled"}
-                    </Link>
-                    {row.brand ? (
-                      <p className="text-xs text-muted-foreground">
-                        {row.brand.name}
-                        {row.brand.industry ? ` · ${row.brand.industry}` : ""}
-                      </p>
-                    ) : (
-                      <p className="text-xs text-muted-foreground italic">No brand</p>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5">
-                    <StatusPill value={row.status} />
-                    {row.brand && row.brand.status !== "ACTIVE" ? (
-                      <p className="mt-1 text-[0.625rem] text-muted-foreground">
-                        brand {row.brand.status.toLowerCase()}
-                      </p>
-                    ) : null}
-                  </td>
-                  <td className="px-3 py-2.5 text-xs">
-                    {row.plan ? (
-                      <>
-                        <p className="text-foreground">{row.plan.name}</p>
-                        <p className="text-muted-foreground">{row.subscription_status ?? ""}</p>
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground">No plan</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5 text-xs">
-                    {row.onboarding ? (
-                      <>
-                        <p className="text-foreground">{row.onboarding.current_stage.replaceAll("_", " ")}</p>
-                        <p className="text-muted-foreground">{row.onboarding.status.toLowerCase()}</p>
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5 text-xs">
-                    {row.readiness ? (
-                      <>
-                        <p className="font-medium text-foreground">{row.readiness.score}/100</p>
-                        <p className="text-muted-foreground">{row.readiness.level.toLowerCase()}</p>
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5">
-                    <UsageCell row={row} />
-                  </td>
-                  <td className="px-3 py-2.5 text-xs whitespace-nowrap text-muted-foreground">
-                    {formatAgo(row.last_active_at)}
-                  </td>
-                  <td className="px-3 py-2.5">
-                    <FlagChips flags={row.flags} />
-                  </td>
+        <>
+          <div className="overflow-x-auto rounded-xl border border-border bg-card">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-muted/50 text-[0.625rem] tracking-wide text-muted-foreground uppercase">
+                <tr>
+                  <th className="px-3 py-2 font-semibold">Code</th>
+                  <th className="px-3 py-2 font-semibold">Name</th>
+                  <th className="px-3 py-2 font-semibold">Status</th>
+                  <th className="px-3 py-2 font-semibold">Plan</th>
+                  <th className="px-3 py-2 font-semibold">Stage</th>
+                  <th className="px-3 py-2 font-semibold">Readiness</th>
+                  <th className="px-3 py-2 font-semibold">Usage</th>
+                  <th className="px-3 py-2 font-semibold">Last active</th>
+                  <th className="px-3 py-2 font-semibold">Flags</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr
+                    key={row.workspace_id}
+                    className="border-t border-border align-top hover:bg-muted/30"
+                  >
+                    <td className="px-3 py-2.5 font-mono text-[0.6875rem] whitespace-nowrap">
+                      <Link
+                        to="/platform/clients/$workspaceId"
+                        params={{ workspaceId: row.workspace_id }}
+                        className="text-foreground hover:underline"
+                      >
+                        {row.client_code || "—"}
+                      </Link>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <Link
+                        to="/platform/clients/$workspaceId"
+                        params={{ workspaceId: row.workspace_id }}
+                        className="font-medium text-foreground hover:underline"
+                      >
+                        {row.name || "Untitled"}
+                      </Link>
+                      {row.brand ? (
+                        <p className="text-xs text-muted-foreground">
+                          {row.brand.name}
+                          {row.brand.industry ? ` · ${row.brand.industry}` : ""}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground italic">No brand</p>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <StatusPill value={row.status} />
+                      {row.brand && row.brand.status !== "ACTIVE" ? (
+                        <p className="mt-1 text-[0.625rem] text-muted-foreground">
+                          brand {row.brand.status.toLowerCase()}
+                        </p>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs">
+                      {row.plan ? (
+                        <>
+                          <p className="text-foreground">{row.plan.name}</p>
+                          <p className="text-muted-foreground">{row.subscription_status ?? ""}</p>
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">No plan</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs">
+                      {row.onboarding ? (
+                        <>
+                          <p className="text-foreground">
+                            {row.onboarding.current_stage.replaceAll("_", " ")}
+                          </p>
+                          <p className="text-muted-foreground">
+                            {row.onboarding.status.toLowerCase()}
+                          </p>
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs">
+                      {row.readiness ? (
+                        <>
+                          <p className="font-medium text-foreground">{row.readiness.score}/100</p>
+                          <p className="text-muted-foreground">
+                            {row.readiness.level.toLowerCase()}
+                          </p>
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <UsageCell row={row} />
+                    </td>
+                    <td className="px-3 py-2.5 text-xs whitespace-nowrap text-muted-foreground">
+                      {formatAgo(row.last_active_at)}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <FlagChips flags={row.flags} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {totalPages > 1 ? (
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">
+                Page {currentPage} of {totalPages}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={loading || !list?.previous_page}
+                  onClick={() => setPage(list?.previous_page ?? Math.max(1, page - 1))}
+                >
+                  <ChevronLeft className="size-4" /> Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={loading || !list?.next_page}
+                  onClick={() => setPage(list?.next_page ?? page + 1)}
+                >
+                  Next <ChevronRight className="size-4" />
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </>
       )}
     </div>
   );

@@ -10,7 +10,7 @@ Deliberately hard to score highly. A brand row with a name in it is 15% of the
 picture, and showing that as anywhere near ready is how a product talks a user
 out of the work that actually makes it good.
 """
-from django.db.models import CharField, Count, Value
+from django.db.models import CharField, Count, F, Value
 
 from apps.brands.services.brand_brain import compile_brand_brain
 from apps.inspirations.models import BrandInspiration, InspirationSignal
@@ -64,34 +64,83 @@ def _readiness_counts(querysets):
     return counts
 
 
-def brand_readiness(brand, *, brain=None):
-    """Deterministic completeness score for one brand.
+def _brand_count_row(queryset, key, brand_field='brand_id'):
+    """One labelled count per brand that can be UNIONed across models."""
+    return (
+        queryset.order_by()
+        .annotate(
+            _readiness_brand_id=F(brand_field),
+            _readiness_key=Value(key, output_field=CharField(max_length=32)),
+        )
+        .values('_readiness_brand_id', '_readiness_key')
+        .annotate(_readiness_count=Count('pk'))
+        .values('_readiness_brand_id', '_readiness_key', '_readiness_count')
+    )
+
+
+def readiness_counts_for_brands(brand_ids):
+    """Every readiness evidence count for many brands in one DB round trip."""
+    ids = list(dict.fromkeys(brand_ids))
+    keys = (
+        'sources', 'memories', 'inspirations', 'inspiration_signals',
+        'preferences', 'rules',
+    )
+    counts = {brand_id: {key: 0 for key in keys} for brand_id in ids}
+    if not ids:
+        return counts
+
+    rows = (
+        _brand_count_row(
+            BrandSource.objects.filter(brand_id__in=ids).exclude(
+                status=BrandSource.SourceStatus.ARCHIVED
+            ),
+            'sources',
+        )
+        .union(
+            _brand_count_row(
+                BrandMemory.objects.filter(
+                    brand_id__in=ids, status=BrandMemory.MemoryStatus.CONFIRMED
+                ).exclude(source__status=BrandSource.SourceStatus.ARCHIVED),
+                'memories',
+            ),
+            _brand_count_row(
+                BrandInspiration.objects.filter(
+                    brand_id__in=ids
+                ).eligible_for_retrieval(),
+                'inspirations',
+            ),
+            _brand_count_row(
+                InspirationSignal.objects.filter(
+                    inspiration__brand_id__in=ids
+                ).eligible_for_retrieval(),
+                'inspiration_signals', 'inspiration__brand_id',
+            ),
+            _brand_count_row(
+                BrandPreference.objects.filter(brand_id__in=ids).active(),
+                'preferences',
+            ),
+            _brand_count_row(
+                BrandRule.objects.filter(brand_id__in=ids, is_active=True),
+                'rules',
+            ),
+            all=True,
+        )
+        .order_by('_readiness_brand_id', '_readiness_key')
+    )
+    for row in rows:
+        brand_id = row['_readiness_brand_id']
+        if brand_id in counts:
+            counts[brand_id][row['_readiness_key']] = row['_readiness_count']
+    return counts
+
+
+def score_brand_readiness(brand, counts, *, brain=None):
+    """Deterministic completeness score from already-counted evidence.
 
     Returns the score, the level, which dimensions are done, which are not,
     and the single most useful thing to do next.
     """
     brain = brain if brain is not None else (brand.creative_brain or compile_brand_brain(brand))
-
-    sources = BrandSource.objects.filter(brand=brand).exclude(
-        status=BrandSource.SourceStatus.ARCHIVED
-    )
-    memories = BrandMemory.objects.filter(
-        brand=brand, status=BrandMemory.MemoryStatus.CONFIRMED
-    ).exclude(source__status=BrandSource.SourceStatus.ARCHIVED)
-    inspirations = BrandInspiration.objects.filter(brand=brand).eligible_for_retrieval()
-    signals = InspirationSignal.objects.filter(
-        inspiration__brand=brand
-    ).eligible_for_retrieval()
-    preferences = BrandPreference.objects.filter(brand=brand).active()
-    rules = BrandRule.objects.filter(brand=brand, is_active=True)
-    counts = _readiness_counts((
-        ('sources', sources),
-        ('memories', memories),
-        ('inspirations', inspirations),
-        ('inspiration_signals', signals),
-        ('preferences', preferences),
-        ('rules', rules),
-    ))
 
     visual = brain.get('visual_language', {})
     voice = brain.get('voice', {})
@@ -235,3 +284,9 @@ def brand_readiness(brand, *, brain=None):
         'recommended_next_action': next_action,
         'counts': {**counts, 'unresolved_conflicts': conflicts},
     }
+
+
+def brand_readiness(brand, *, brain=None):
+    """Deterministic completeness score for one brand."""
+    counts = readiness_counts_for_brands([brand.pk])[brand.pk]
+    return score_brand_readiness(brand, counts, brain=brain)

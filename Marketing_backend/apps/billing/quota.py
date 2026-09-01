@@ -152,6 +152,49 @@ def capability_usage(workspace, subscription=None, capability=None):
     }
 
 
+def _base_verdict(subscription, generations=0, spend=Decimal('0')) -> Verdict:
+    """The workspace-wide verdict from already-counted period usage.
+
+    Keeping this arithmetic separate from the queries lets bulk operator read
+    models use the exact billing verdict without re-querying every tenant.
+    """
+    if subscription is None:
+        return Verdict(allowed=True, code='NO_SUBSCRIPTION')
+
+    if not subscription.is_active:
+        return Verdict(
+            allowed=False,
+            code='SUBSCRIPTION_INACTIVE',
+            message=(
+                f"This workspace's subscription is "
+                f"{subscription.get_status_display().lower()}."
+            ),
+        )
+
+    limit = subscription.generation_limit
+    cap = money(subscription.spend_cap)
+    if limit and generations >= limit:
+        return Verdict(
+            allowed=False,
+            code='GENERATION_QUOTA_EXCEEDED',
+            message=(
+                f'This workspace has used all {limit} generations in the current '
+                'period.'
+            ),
+            used=generations, limit=limit, spend=spend, spend_cap=cap,
+        )
+    if cap and spend >= cap:
+        return Verdict(
+            allowed=False,
+            code='SPEND_CAP_REACHED',
+            message=f'This workspace has reached its spend cap of {cap} for the period.',
+            used=generations, limit=limit, spend=spend, spend_cap=cap,
+        )
+    return Verdict(
+        allowed=True, used=generations, limit=limit, spend=spend, spend_cap=cap,
+    )
+
+
 def check(workspace, capability=None) -> Verdict:
     """Whether this workspace may start another generation.
 
@@ -162,38 +205,16 @@ def check(workspace, capability=None) -> Verdict:
     enforced. Omitting it checks only the workspace-wide limits.
     """
     subscription = subscription_for(workspace)
-    if subscription is None:
-        return Verdict(allowed=True, code='NO_SUBSCRIPTION')
-
-    if not subscription.is_active:
-        return Verdict(
-            allowed=False,
-            code='SUBSCRIPTION_INACTIVE',
-            message=f"This workspace's subscription is {subscription.get_status_display().lower()}.",
-        )
+    if subscription is None or not subscription.is_active:
+        return _base_verdict(subscription)
 
     generations, spend = usage(workspace, subscription)
+    verdict = _base_verdict(subscription, generations, spend)
+    if not verdict.allowed:
+        return verdict
+
     limit = subscription.generation_limit
     cap = money(subscription.spend_cap)
-
-    if limit and generations >= limit:
-        return Verdict(
-            allowed=False,
-            code='GENERATION_QUOTA_EXCEEDED',
-            message=(
-                f"This workspace has used all {limit} generations in the current "
-                f"period."
-            ),
-            used=generations, limit=limit, spend=spend, spend_cap=cap,
-        )
-
-    if cap and spend >= cap:
-        return Verdict(
-            allowed=False,
-            code='SPEND_CAP_REACHED',
-            message=f"This workspace has reached its spend cap of {cap} for the period.",
-            used=generations, limit=limit, spend=spend, spend_cap=cap,
-        )
 
     capability_used = 0
     capability_limit = 0
@@ -236,11 +257,16 @@ def enforce(workspace, capability=None):
     return verdict
 
 
-def summary(workspace):
-    """The whole picture, for the settings screen."""
-    subscription = subscription_for(workspace)
-    verdict = check(workspace)
+def summary_from_aggregates(
+    subscription, *, generations=0, spend=Decimal('0'), per_capability_used=None
+):
+    """Shape the public summary from an authoritative, already-counted period.
 
+    This is the single formatting and verdict owner for both the normal
+    one-workspace settings read and the platform operator's bulk portfolio.
+    """
+    spend = money(spend)
+    verdict = _base_verdict(subscription, generations, spend)
     if subscription is None:
         return {
             'subscribed': False,
@@ -249,11 +275,10 @@ def summary(workspace):
         }
 
     start, end = subscription.current_period()
-    generations, spend = usage(workspace, subscription)
     limit = subscription.generation_limit
     cap = money(subscription.spend_cap)
 
-    per_capability_used = capability_usage(workspace, subscription)
+    per_capability_used = per_capability_used or {}
     capabilities = []
     for capability, capability_limit in sorted(subscription.all_capability_limits().items()):
         used_here = per_capability_used.get(capability, 0)
@@ -288,6 +313,21 @@ def summary(workspace):
         'code': verdict.code,
         'message': verdict.message,
     }
+
+
+def summary(workspace):
+    """The whole picture, for the settings screen."""
+    subscription = subscription_for(workspace)
+    if subscription is None:
+        return summary_from_aggregates(None)
+
+    generations, spend = usage(workspace, subscription)
+    return summary_from_aggregates(
+        subscription,
+        generations=generations,
+        spend=spend,
+        per_capability_used=capability_usage(workspace, subscription),
+    )
 
 
 def default_plan():

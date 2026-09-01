@@ -16,7 +16,7 @@ import {
   ShieldCheck,
   XCircle,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -207,6 +207,8 @@ export function AIProvidersPanel({
   const [resolved, setResolved] = useState<Record<string, ResolvedRoute>>({});
   const [usageSummary, setUsageSummary] = useState<UsageSummaryRow[]>([]);
   const [usage, setUsage] = useState<UsageRow[]>([]);
+  const [usageLoading, setUsageLoading] = useState(true);
+  const [usageError, setUsageError] = useState<string | null>(null);
   const [routeDrafts, setRouteDrafts] = useState<Record<string, RouteDraft>>({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -226,6 +228,7 @@ export function AIProvidersPanel({
   const [addIntegrationType, setAddIntegrationType] = useState("");
   const [addCapabilities, setAddCapabilities] = useState<string[]>([]);
   const [addEnabled, setAddEnabled] = useState(true);
+  const loadVersion = useRef(0);
 
   const buildDrafts = useCallback((caps: Vocab[], rows: RouteRow[]) => {
     const next: Record<string, RouteDraft> = {};
@@ -242,22 +245,43 @@ export function AIProvidersPanel({
     setRouteDrafts(next);
   }, []);
 
+  const loadUsage = useCallback(async (version: number) => {
+    setUsageLoading(true);
+    setUsageError(null);
+    setUsageSummary([]);
+    setUsage([]);
+    try {
+      const [summary, recent] = await Promise.all([
+        api<UsageSummaryRow[]>("/api/marketing/ai/usage/summary/"),
+        api<UsageRow[] | Paginated<UsageRow>>("/api/marketing/ai/usage/"),
+      ]);
+      if (version !== loadVersion.current) return;
+      setUsageSummary(Array.isArray(summary) ? summary : []);
+      setUsage(asRows(recent));
+    } catch (error) {
+      if (version !== loadVersion.current) return;
+      setUsageError(error instanceof Error ? error.message : "Could not load provider activity.");
+    } finally {
+      if (version === loadVersion.current) setUsageLoading(false);
+    }
+  }, []);
+
   const load = useCallback(async () => {
+    const version = ++loadVersion.current;
     setLoading(true);
     setLoadError(null);
+    let coreLoaded = false;
     try {
-      const [cat, workspaceProviders, routeRows, activeRoutes, summary, recent] = await Promise.all(
-        [
-          api<{ providers: CatalogueProvider[]; capabilities: Vocab[]; strategies: Vocab[] }>(
-            "/api/marketing/ai/catalogue/",
-          ),
-          api<WorkspaceProvider[] | Paginated<WorkspaceProvider>>("/api/marketing/ai/providers/"),
-          api<RouteRow[] | Paginated<RouteRow>>("/api/marketing/ai/routes/"),
-          api<Record<string, ResolvedRoute>>("/api/marketing/ai/routes/resolved/"),
-          api<UsageSummaryRow[]>("/api/marketing/ai/usage/summary/"),
-          api<UsageRow[] | Paginated<UsageRow>>("/api/marketing/ai/usage/"),
-        ],
-      );
+      const [cat, workspaceProviders, routeRows, activeRoutes] = await Promise.all([
+        api<{ providers: CatalogueProvider[]; capabilities: Vocab[]; strategies: Vocab[] }>(
+          "/api/marketing/ai/catalogue/",
+        ),
+        api<WorkspaceProvider[] | Paginated<WorkspaceProvider>>("/api/marketing/ai/providers/"),
+        api<RouteRow[] | Paginated<RouteRow>>("/api/marketing/ai/routes/"),
+        api<Record<string, ResolvedRoute>>("/api/marketing/ai/routes/resolved/"),
+      ]);
+
+      if (version !== loadVersion.current) return;
 
       const providerRows = asRows(workspaceProviders);
       const routingRows = asRows(routeRows);
@@ -272,18 +296,23 @@ export function AIProvidersPanel({
         Object.fromEntries(providerRows.map((row) => [row.provider, row.model_override ?? ""])),
       );
       setResolved(activeRoutes ?? {});
-      setUsageSummary(Array.isArray(summary) ? summary : []);
-      setUsage(asRows(recent));
       buildDrafts(cat.capabilities ?? [], routingRows);
+      coreLoaded = true;
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Could not load the Admin console.");
+      if (version === loadVersion.current) {
+        setLoadError(error instanceof Error ? error.message : "Could not load the Admin console.");
+      }
     } finally {
-      setLoading(false);
+      if (version === loadVersion.current) setLoading(false);
     }
-  }, [buildDrafts]);
+    if (coreLoaded && version === loadVersion.current) void loadUsage(version);
+  }, [buildDrafts, loadUsage]);
 
   useEffect(() => {
     void load();
+    return () => {
+      loadVersion.current += 1;
+    };
   }, [load]);
 
   const connectedFor = useCallback(
@@ -1323,29 +1352,45 @@ export function AIProvidersPanel({
       </TabsContent>
 
       <TabsContent value="activity" className="space-y-5">
+        {usageError ? (
+          <Alert variant="destructive">
+            <CircleAlert className="size-4" />
+            <AlertTitle>Provider activity could not load</AlertTitle>
+            <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+              <span>{usageError}</span>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void loadUsage(loadVersion.current)}
+              >
+                <RefreshCw className="size-4" /> Retry activity
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : null}
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard
             title="Total calls"
-            value={String(totalCalls)}
-            hint="All recorded provider attempts"
+            value={usageLoading ? "—" : String(totalCalls)}
+            hint={usageLoading ? "Loading activity…" : "All recorded provider attempts"}
             icon={<Activity className="size-4" />}
           />
           <MetricCard
             title="Attributed spend"
-            value={money(totalSpend)}
-            hint="Across every provider and capability"
+            value={usageLoading ? "—" : money(totalSpend)}
+            hint={usageLoading ? "Loading activity…" : "Across every provider and capability"}
             icon={<Gauge className="size-4" />}
           />
           <MetricCard
             title="Recent failures"
-            value={String(recentFailures)}
-            hint={`Across ${usage.length} recent attempts`}
+            value={usageLoading ? "—" : String(recentFailures)}
+            hint={usageLoading ? "Loading activity…" : `Across ${usage.length} recent attempts`}
             icon={<XCircle className="size-4" />}
           />
           <MetricCard
             title="Recent latency"
-            value={`${averageLatency} ms`}
-            hint="Average of the visible activity"
+            value={usageLoading ? "—" : `${averageLatency} ms`}
+            hint={usageLoading ? "Loading activity…" : "Average of the visible activity"}
             icon={<Network className="size-4" />}
           />
         </div>
@@ -1356,7 +1401,11 @@ export function AIProvidersPanel({
             <CardDescription>Workspace-scoped calls and attributed provider cost.</CardDescription>
           </CardHeader>
           <CardContent>
-            {!usageSummary.length ? (
+            {usageLoading ? (
+              <p className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border p-8 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" /> Loading usage summary…
+              </p>
+            ) : !usageSummary.length ? (
               <p className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
                 No AI usage has been recorded for this client yet.
               </p>
@@ -1390,7 +1439,11 @@ export function AIProvidersPanel({
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {!usage.length ? (
+            {usageLoading ? (
+              <p className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border p-8 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" /> Loading recent activity…
+              </p>
+            ) : !usage.length ? (
               <p className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
                 Activity will appear after the first AI-backed task.
               </p>

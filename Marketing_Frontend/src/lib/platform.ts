@@ -224,6 +224,12 @@ export interface ClientRow {
 
 export interface ClientList {
   count: number;
+  total?: number;
+  page?: number;
+  page_size?: number;
+  total_pages?: number;
+  next_page?: number | null;
+  previous_page?: number | null;
   filter: string;
   days: number;
   clients: ClientRow[];
@@ -255,13 +261,19 @@ export interface ClientDetail {
   universal: { standards_enabled: boolean; inspirations_enabled: boolean };
 }
 
-export const fetchClients = (params: { filter?: string; days?: number; q?: string } = {}) => {
+export const fetchClients = (
+  params: { filter?: string; days?: number; q?: string; page?: number; pageSize?: number } = {},
+  options: { signal?: AbortSignal } = {},
+) => {
   const search = new URLSearchParams();
   if (params.filter) search.set("filter", params.filter);
   if (params.days) search.set("days", String(params.days));
   if (params.q) search.set("q", params.q);
+  if (params.page) search.set("page", String(params.page));
+  if (params.pageSize) search.set("page_size", String(params.pageSize));
   const qs = search.toString();
-  return apiGet<ClientList>(`/api/platform/clients/${qs ? `?${qs}` : ""}`);
+  const requestOptions = options.signal ? { signal: options.signal } : undefined;
+  return apiGet<ClientList>(`/api/platform/clients/${qs ? `?${qs}` : ""}`, requestOptions);
 };
 
 export const fetchClient = (workspaceId: string) =>

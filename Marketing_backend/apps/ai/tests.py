@@ -159,6 +159,22 @@ class RouterTests(APITestCase):
         self.assertEqual(logs.filter(selected=True).count(), 1)
         self.assertEqual(logs.get(selected=True).provider.key, 'better')
 
+    def test_one_router_reads_the_route_policy_once_for_many_capabilities(self):
+        self.enable('fake', capability=Capability.TEXT)
+        self.enable('better', capability=Capability.IMAGE)
+        router = AIRouter(self.ws)
+
+        with _install(self.adapters), self.assertNumQueries(2):
+            text = router._candidates(Capability.TEXT)
+            image = router._candidates(Capability.IMAGE)
+            text_strategy = router.strategy_for(Capability.TEXT)
+            missing_strategy = router.strategy_for(Capability.VIDEO)
+
+        self.assertEqual([row['route'].provider.key for row in text], ['fake'])
+        self.assertEqual([row['route'].provider.key for row in image], ['better'])
+        self.assertEqual(text_strategy, Strategy.FAILOVER)
+        self.assertEqual(missing_strategy, Strategy.FAILOVER)
+
     # ── usage logging ────────────────────────────────────────────────────
     def test_a_successful_call_is_logged(self):
         self.enable('fake')
