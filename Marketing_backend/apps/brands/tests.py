@@ -33,7 +33,9 @@ class BrandModelTests(APITestCase):
         self.assertIn('primary', brand.fonts)
         self.assertEqual(brand.competitors, [])
         self.assertEqual(brand.creative_brain, {})
-        self.assertEqual(brand.layout_preference, Brand.Layout.AGENCY_COLUMN)
+        # Blank on purpose: a default that named a pattern acted as a phantom
+        # "preference" and pinned every brand's posters to one skeleton.
+        self.assertEqual(brand.layout_preference, '')
         self.assertFalse(brand.has_logo)
 
     def test_name_is_unique_within_a_workspace_but_not_across(self):

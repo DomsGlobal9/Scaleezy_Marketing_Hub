@@ -10,7 +10,7 @@ from rest_framework.test import APITestCase
 
 from apps.brands.models import Brand
 from apps.content.models import ContentItem
-from apps.layouts import export, fonts, images, registry, services
+from apps.layouts import export, fonts, images, registry, services, variants
 from apps.layouts.patterns.base import Spec
 from apps.layouts.render import compose, compose_at, spec_from
 from apps.marketing.models import MarketingAsset
@@ -73,6 +73,72 @@ class FontTests(APITestCase):
     def test_sizes_are_independent(self):
         small, large = fonts.load('DM Sans', 12), fonts.load('DM Sans', 96)
         self.assertNotEqual(small.getbbox('M'), large.getbbox('M'))
+
+
+class StyleVariantTests(APITestCase):
+    """A template is a (pattern, variant) pair; the space must be real."""
+
+    @staticmethod
+    def an_item(n):
+        import uuid as uuid_mod
+        from types import SimpleNamespace
+        return SimpleNamespace(pk=uuid_mod.UUID(int=n))
+
+    def test_the_catalogue_holds_more_than_a_thousand_templates(self):
+        self.assertGreater(variants.catalogue_size(), 1000)
+
+    def test_the_pick_is_deterministic_per_item(self):
+        item = self.an_item(42)
+        self.assertEqual(variants.variant_for(item), variants.variant_for(item))
+
+    def test_nearby_items_dress_differently(self):
+        seen = {tuple(sorted(variants.variant_for(self.an_item(n)).items()))
+                for n in range(48)}
+        self.assertGreater(len(seen), 24)
+
+    def test_a_flat_pattern_never_gets_a_photo_treatment(self):
+        for n in range(24):
+            picked = variants.variant_for(self.an_item(n), uses_photo=False)
+            self.assertEqual(picked['photo'], 'asis')
+
+    def test_coerce_degrades_junk_without_failing(self):
+        cleaned = variants.coerce({'palette': 'neon-explosion', 'photo': 42})
+        self.assertEqual(cleaned['palette'], 'classic')
+        self.assertEqual(cleaned['photo'], 'asis')
+        self.assertEqual(variants.coerce('not-a-dict')['casing'], 'asis')
+
+    def test_inverted_swaps_ink_and_paper(self):
+        spec = variants.apply(base_spec(), variants.coerce({'palette': 'inverted'}))
+        self.assertEqual(spec.palette['primary'], PALETTE['light'])
+        self.assertEqual(spec.palette['light'], PALETTE['primary'])
+
+    def test_upper_casing_and_flipped_pairing_apply(self):
+        spec = variants.apply(
+            base_spec(), variants.coerce({'casing': 'upper', 'pairing': 'flipped'})
+        )
+        self.assertEqual(spec.headline, spec.headline.upper())
+        self.assertEqual(spec.fonts['primary'], 'Noto Serif')
+        self.assertEqual(spec.fonts['secondary'], 'DM Sans')
+
+    def test_every_axis_option_still_composes(self):
+        """No variant may take down a render — the whole point is safety."""
+        for axis, options in (
+            ('palette', variants.PALETTES), ('photo', variants.PHOTOS),
+            ('paper', variants.PAPERS), ('casing', variants.CASINGS),
+            ('pairing', variants.PAIRINGS),
+        ):
+            for option in options:
+                spec = variants.apply(
+                    base_spec(photo=a_photo()), variants.coerce({axis: option})
+                )
+                image = compose(spec, 'agency_column')
+                self.assertEqual(image.size, (1080, 1350), f"{axis}={option}")
+
+    def test_derived_papers_are_valid_hex(self):
+        for paper in variants.PAPERS:
+            spec = variants.apply(base_spec(), variants.coerce({'paper': paper}))
+            value = spec.palette['light']
+            self.assertRegex(value, r'^#[0-9a-fA-F]{6}$')
 
 
 class ComposeTests(APITestCase):

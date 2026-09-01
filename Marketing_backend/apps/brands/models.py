@@ -58,8 +58,12 @@ class Brand(models.Model):
     # Visual identity
     palette = models.JSONField(default=default_palette, blank=True)
     fonts = models.JSONField(default=default_fonts, blank=True)
+    # Blank means "no preference", and the compose engine rotates the brand
+    # through the whole template catalogue. This must not default to a named
+    # pattern: it did, and the phantom "preference" pinned every brand's
+    # posters to one skeleton nobody had actually chosen.
     layout_preference = models.CharField(
-        max_length=64, choices=Layout.choices, default=Layout.AGENCY_COLUMN
+        max_length=64, choices=Layout.choices, default='', blank=True
     )
 
     # Voice

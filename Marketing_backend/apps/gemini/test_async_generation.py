@@ -297,10 +297,12 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
             headline='Drape yourself in teal', cta='30% OFF',
             review_note='Logo hides the border work.',
         )
+        # Copy AND visual elements flagged, so the default fixture exercises
+        # the full-regeneration path; the scoped tests below narrow it.
         capture(
             content_item=self.parent, user=self.manager,
             verdict=Feedback.Verdict.NEEDS_EDITS,
-            element_keys=['logo_placement'],
+            element_keys=['imagery_subject', 'headline'],
             feedback_text='Logo hides the border work.',
             fix_request='Move the logo to the top left.',
             learn=False,
@@ -333,7 +335,7 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
 
         instruction = dispatched.call_args.kwargs['instruction']
         self.assertIn('Move the logo to the top left', instruction)
-        self.assertIn('Logo placement', instruction)
+        self.assertIn('Imagery subject', instruction)
         self.assertIn('Logo hides the border work', instruction)
 
         self.revision.refresh_from_db()
@@ -392,6 +394,176 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         # The marker never lingers: a card must not claim to be regenerating
         # after the attempt has already failed.
         self.assertNotIn('regenerating', self.revision.layout_config)
+
+    # -- surgical scope: only what the reviewer flagged changes -------------
+
+    PLANTED_VARIANT = {
+        'palette': 'inverted', 'photo': 'bw', 'paper': 'pure',
+        'casing': 'asis', 'pairing': 'asis',
+    }
+
+    def with_inherited_look(self):
+        """Mirrors what request-edits copies onto a revision in production."""
+        from apps.marketing.models import MarketingAsset
+
+        photo = MarketingAsset.objects.create(
+            workspace=self.workspace,
+            asset_type=MarketingAsset.AssetType.IMAGE,
+            file_name='original.png',
+            file_url='https://storage.test/generated/original.png',
+            source=MarketingAsset.Source.AI_GENERATED,
+        )
+        self.revision.asset = photo
+        self.revision.layout_plugin = 'agency_column'
+        self.revision.layout_config = {
+            'regenerating': True,
+            'source_asset': str(photo.pk),
+            'style_variant': dict(self.PLANTED_VARIANT),
+        }
+        self.revision.save()
+        return photo
+
+    def scoped_feedback(self, elements, note='Fix exactly this.'):
+        from apps.feedback.models import Feedback
+        from apps.feedback.services import capture
+
+        capture(
+            content_item=self.parent, user=self.manager,
+            verdict=Feedback.Verdict.NEEDS_EDITS, element_keys=elements,
+            feedback_text=note, fix_request='', learn=False,
+        )
+
+    def run_scoped(self, copy_payload=None, image_result=None):
+        from apps.gemini.tasks import regenerate_revision
+
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload'
+        ) as full, patch(
+            'apps.context.services.generation.generate_copy_only',
+            return_value=copy_payload or {},
+        ) as copy_call, patch(
+            'apps.context.services.generation.retry_image',
+            return_value=image_result or {},
+        ) as image_call:
+            regenerate_revision.func(str(self.revision.pk))
+        return full, copy_call, image_call
+
+    def test_copy_only_feedback_keeps_the_photograph_and_the_look(self):
+        photo = self.with_inherited_look()
+        self.scoped_feedback(['headline', 'tone_of_voice'], 'Headline is flat.')
+
+        full, copy_call, image_call = self.run_scoped(
+            copy_payload={'postTitle': 'Sharper words', 'postDescription': 'New caption.'}
+        )
+
+        full.assert_not_called()
+        image_call.assert_not_called()
+        copy_call.assert_called_once()
+        self.revision.refresh_from_db()
+        config = self.revision.layout_config
+        self.assertEqual(self.revision.headline, 'Sharper words')
+        # The photograph the reviewer liked is still the composition source.
+        self.assertEqual(config.get('source_asset'), str(photo.pk))
+        # And so is the look.
+        self.assertEqual(config.get('style_variant'), self.PLANTED_VARIANT)
+        self.assertEqual(self.revision.layout_plugin, 'agency_column')
+        self.assertNotIn('regenerating', config)
+
+    def test_visual_only_feedback_keeps_the_words(self):
+        self.with_inherited_look()
+        self.scoped_feedback(['imagery_subject', 'lighting'], 'Wrong product entirely.')
+
+        full, copy_call, image_call = self.run_scoped(
+            image_result={
+                'image_url': 'https://storage.test/generated/new-photo.png',
+                'file_name': 'new-photo.png',
+            }
+        )
+
+        full.assert_not_called()
+        copy_call.assert_not_called()
+        image_call.assert_called_once()
+        self.revision.refresh_from_db()
+        self.assertEqual(self.revision.headline, 'Drape yourself in teal')
+        self.assertEqual(self.revision.caption, 'Original caption.')
+        # The composition source moved to the new photograph.
+        from apps.marketing.models import MarketingAsset
+
+        source = MarketingAsset.objects.get(
+            pk=self.revision.layout_config['source_asset']
+        )
+        self.assertEqual(
+            source.file_url, 'https://storage.test/generated/new-photo.png'
+        )
+        # The look the reviewer did not complain about survives.
+        self.assertEqual(
+            self.revision.layout_config.get('style_variant'), self.PLANTED_VARIANT
+        )
+
+    def test_style_only_feedback_re_dresses_without_any_provider_spend(self):
+        from apps.layouts import variants
+        from apps.layouts.services import generated_layout
+
+        photo = self.with_inherited_look()
+        self.scoped_feedback(['logo_placement', 'composition_balance'], 'Layout feels off.')
+
+        full, copy_call, image_call = self.run_scoped()
+
+        full.assert_not_called()
+        copy_call.assert_not_called()
+        image_call.assert_not_called()
+        self.revision.refresh_from_db()
+        config = self.revision.layout_config
+        # Words untouched, same photograph, but a freshly picked dress.
+        self.assertEqual(self.revision.headline, 'Drape yourself in teal')
+        self.assertEqual(config.get('source_asset'), str(photo.pk))
+        self.assertEqual(self.revision.layout_plugin, generated_layout(self.revision))
+        self.assertEqual(
+            config.get('style_variant'), variants.variant_for(self.revision)
+        )
+        self.assertNotEqual(config.get('style_variant'), self.PLANTED_VARIANT)
+
+    def test_colour_feedback_changes_photo_and_look_but_not_words(self):
+        self.with_inherited_look()
+        self.scoped_feedback(['brand_colours'], 'Colours are off palette.')
+
+        full, copy_call, image_call = self.run_scoped(
+            image_result={
+                'image_url': 'https://storage.test/generated/recoloured.png',
+                'file_name': 'recoloured.png',
+            }
+        )
+
+        full.assert_not_called()
+        copy_call.assert_not_called()
+        image_call.assert_called_once()
+        self.revision.refresh_from_db()
+        self.assertEqual(self.revision.headline, 'Drape yourself in teal')
+        self.assertNotEqual(
+            self.revision.layout_config.get('style_variant'), self.PLANTED_VARIANT
+        )
+
+    def test_the_revision_inherits_the_parents_style_variant(self):
+        from apps.common.testing import workspace_header
+
+        pending = ContentItem.objects.create(
+            workspace=self.workspace, brand=self.brand,
+            status=ContentItem.Status.PENDING_REVIEW,
+            headline='Second look', cta='30% OFF',
+            layout_config={'style_variant': dict(self.PLANTED_VARIANT)},
+        )
+        with patch('apps.gemini.tasks.regenerate_revision'):
+            res = self.api.post(
+                f'/api/marketing/content/{pending.id}/request-edits/',
+                {'note': 'headline is flat', 'elements': ['headline']},
+                format='json',
+                **workspace_header(self.workspace),
+            )
+        self.assertEqual(res.status_code, 200, res.content[:300])
+        revision = ContentItem.objects.get(parent=pending)
+        self.assertEqual(
+            revision.layout_config.get('style_variant'), self.PLANTED_VARIANT
+        )
 
     def test_request_edits_queues_the_regeneration(self):
         from apps.common.testing import workspace_header

@@ -803,6 +803,24 @@ def generate_carousel_and_copy(
     }
 
 
+def recent_headlines(workspace, limit=6):
+    """
+    The newest distinct headlines this workspace has generated.
+
+    Fed into the brief so the copy model knows what it must NOT say again;
+    trimmed hard because these ride inside a prompt.
+    """
+    from apps.content.models import ContentItem
+
+    rows = (
+        ContentItem.objects.filter(workspace=workspace)
+        .exclude(headline='')
+        .order_by('-created_at')
+        .values_list('headline', flat=True)[: limit * 2]
+    )
+    return list(dict.fromkeys(str(h)[:120] for h in rows if str(h).strip()))[:limit]
+
+
 def generate_marketing_payload(workspace, brief, *, instruction='', progress=None):
     """Return the legacy marketing payload without choosing a vendor.
 
@@ -836,6 +854,14 @@ def generate_marketing_payload(workspace, brief, *, instruction='', progress=Non
         }
 
     effective_instruction = instruction or str(brief.get('campaign_name', ''))[:500]
+
+    # What this workspace's last posters already said. Without it, two similar
+    # briefs produce the same headline and concept back to back — reviewers see
+    # "the same poster" — because the model has no idea what it said last time.
+    recent = recent_headlines(workspace)
+    if recent and 'recent_headlines' not in brief:
+        brief = {**brief, 'recent_headlines': recent}
+
     if content_type == 'video':
         outcome = generate_video_and_copy(
             workspace, brand, brief,
@@ -933,3 +959,27 @@ def retry_image(workspace, brand, brief_extra, *, instruction=''):
         return persist_generated_image(workspace, result)
     except NoProviderAvailable as exc:
         raise NoProviderConfigured(str(exc)) from exc
+
+
+def generate_copy_only(workspace, brand, brief_extra, *, instruction=''):
+    """Regenerate ONLY the words. The photograph the reviewer liked stays won.
+
+    The surgical half of request-edits: when every flagged element is about
+    copy, spending an image generation — and changing a picture the reviewer
+    did not complain about — would be worse than doing nothing."""
+    _require_spend_approved(workspace)
+    context = build_generation_context(
+        workspace, brand, TaskType.COPY, instruction=instruction,
+    )
+    brief = {**brief_extra, **context_as_brief(context)}
+    try:
+        result = AIRouter(workspace).dispatch(Capability.TEXT, brief)
+        validate_output(Capability.TEXT, result, context)
+    except NoProviderAvailable as exc:
+        raise NoProviderConfigured(str(exc)) from exc
+    raw = result.get('raw') or {}
+    return {
+        'postTitle': result.get('headline') or raw.get('postTitle', ''),
+        'postDescription': result.get('caption') or raw.get('postDescription', ''),
+        'postHashtags': result.get('hashtags') or raw.get('postHashtags', ''),
+    }
