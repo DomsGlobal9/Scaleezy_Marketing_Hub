@@ -1,13 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import {
-  Brain,
-  CheckCircle2,
-  Edit3,
-  FileImage,
-  Loader2,
-  Palette,
-  XCircle,
-} from "lucide-react";
+import { Brain, CheckCircle2, Edit3, FileImage, Loader2, Palette, XCircle } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -74,6 +66,7 @@ interface TrainingReport {
   by_verdict: Record<string, number>;
   top_elements: { key: string; label: string; group: string; count: number }[];
   brand_name: string;
+  brain_current: boolean;
   rules: LearnedRule[];
 }
 
@@ -121,10 +114,13 @@ function ReviewPage() {
 
   const loadReport = useCallback(async () => {
     try {
-      setReport(await api<TrainingReport>("/api/marketing/feedback/training-report/"));
+      const next = await api<TrainingReport>("/api/marketing/feedback/training-report/");
+      setReport(next);
+      return next;
     } catch {
       // The report is a read-out, not a dependency of reviewing.
       setReport(null);
+      return null;
     }
   }, []);
 
@@ -146,21 +142,52 @@ function ReviewPage() {
     });
 
   const act = async (id: string, verb: "approve" | "reject" | "request-edits") => {
+    const selected = tags[id] ?? [];
+    if (verb !== "approve" && selected.length === 0) {
+      toast.error("Select at least one issue so Scaleezy can learn the correction.");
+      return;
+    }
+    if (verb !== "approve" && !(notes[id] ?? "").trim() && !(fixes[id] ?? "").trim()) {
+      toast.error("Explain the problem or how it should be fixed.");
+      return;
+    }
+
     setBusy(id);
     try {
+      const reportWasLoaded = report !== null;
+      const previousOccurrences = new Map(
+        (report?.rules ?? []).map((rule) => [rule.element, rule.occurrences]),
+      );
       await apiPost(`/api/marketing/content/${id}/${verb}/`, {
         note: notes[id] ?? "",
-        elements: tags[id] ?? [],
+        elements: selected,
         fix_request: fixes[id] ?? "",
       });
-      toast.success(
-        verb === "approve"
-          ? "Approved — ready to publish."
-          : verb === "reject"
-            ? "Rejected."
-            : "Sent back for edits. A new version was opened.",
-      );
-      await Promise.all([load(), loadReport()]);
+      const [, nextReport] = await Promise.all([load(), loadReport()]);
+
+      if (verb === "approve") {
+        toast.success("Approved — ready to publish.");
+      } else {
+        const learningVerified =
+          reportWasLoaded &&
+          nextReport !== null &&
+          nextReport.brain_current &&
+          selected.every((element) => {
+            const next = nextReport.rules.find((rule) => rule.element === element);
+            return (next?.occurrences ?? 0) > (previousOccurrences.get(element) ?? 0);
+          });
+        if (learningVerified) {
+          toast.success(
+            verb === "reject"
+              ? "Rejected — the next generation has learned this correction."
+              : "Sent back for edits — the correction is active for the next generation.",
+          );
+        } else {
+          toast.warning(
+            "Review saved, but immediate learning could not be verified. Check Brand Master → Attention.",
+          );
+        }
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Action failed.");
     } finally {
@@ -168,7 +195,10 @@ function ReviewPage() {
     }
   };
 
-  const updateDraft = (id: string, patch: Partial<Pick<ContentItem, "headline" | "caption" | "hashtags">>) => {
+  const updateDraft = (
+    id: string,
+    patch: Partial<Pick<ContentItem, "headline" | "caption" | "hashtags">>,
+  ) => {
     setItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   };
 
@@ -228,10 +258,18 @@ function ReviewPage() {
             </ul>
           ) : (
             <p className="mt-2 text-xs text-muted-foreground">
-              {report.total_feedback} review{report.total_feedback === 1 ? "" : "s"} recorded.
-              Nothing is learned until the same problem is raised twice.
+              {report.total_feedback} review{report.total_feedback === 1 ? "" : "s"} recorded. No
+              active corrective rule yet. Select an issue and correction when rejecting or
+              requesting edits.
             </p>
           )}
+
+          {!report.brain_current ? (
+            <p className="mt-3 text-xs font-medium text-destructive">
+              The latest learning is saved, but Brand Brain needs attention before generation uses
+              it.
+            </p>
+          ) : null}
 
           {provisional ? (
             <p className="mt-3 text-[0.6875rem] text-muted-foreground">
@@ -382,7 +420,9 @@ function ReviewPage() {
                   <Button
                     className="mt-4 w-full"
                     onClick={() =>
-                      window.location.assign(`/publishing?content_item_id=${encodeURIComponent(item.id)}`)
+                      window.location.assign(
+                        `/publishing?content_item_id=${encodeURIComponent(item.id)}`,
+                      )
                     }
                   >
                     Publish approved version

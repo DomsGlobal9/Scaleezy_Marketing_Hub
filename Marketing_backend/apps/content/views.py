@@ -135,7 +135,15 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        payload_serializer = ReviewActionSerializer(data=request.data)
+        payload_serializer = ReviewActionSerializer(
+            data=request.data,
+            context={
+                'requires_learning_signal': new_status in {
+                    ContentItem.Status.REJECTED,
+                    ContentItem.Status.NEEDS_EDITS,
+                }
+            },
+        )
         payload_serializer.is_valid(raise_exception=True)
         payload = payload_serializer.validated_data
         note = payload.get('note', '')

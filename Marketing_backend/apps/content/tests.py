@@ -4,6 +4,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.content.models import ContentItem
+from apps.feedback.models import Feedback, FeedbackElement
 from apps.marketing.models import MarketingAsset
 from apps.social_accounts.models import SocialConnection
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
@@ -35,6 +36,7 @@ class ContentReviewTests(APITestCase):
         self.asset = MarketingAsset.objects.create(
             workspace=self.ws, file_name='draft.jpg', source='MANUAL_UPLOAD'
         )
+        self.feedback_element = FeedbackElement.objects.get(key='logo_placement')
 
     def as_(self, user, ws=None):
         self.client.force_authenticate(user=user)
@@ -131,10 +133,12 @@ class ContentReviewTests(APITestCase):
 
     def test_reject_records_the_note(self):
         self.as_(self.manager)
-        self.client.post(
+        response = self.client.post(
             f'/api/marketing/content/{self.item.id}/reject/',
-            {'note': 'Off-brand colours'}, format='json',
+            {'note': 'Off-brand colours', 'elements': [self.feedback_element.key]},
+            format='json',
         )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.item.refresh_from_db()
         self.assertEqual(self.item.status, ContentItem.Status.REJECTED)
         self.assertEqual(self.item.review_note, 'Off-brand colours')
@@ -143,7 +147,11 @@ class ContentReviewTests(APITestCase):
         self.as_(self.manager)
         res = self.client.post(
             f'/api/marketing/content/{self.item.id}/request-edits/',
-            {'note': 'Tighten the headline'}, format='json',
+            {
+                'note': 'Tighten the headline',
+                'elements': [self.feedback_element.key],
+            },
+            format='json',
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.item.refresh_from_db()
@@ -153,6 +161,55 @@ class ContentReviewTests(APITestCase):
         self.assertEqual(revision.version, 2)
         self.assertEqual(revision.status, ContentItem.Status.DRAFT)
         self.assertEqual(revision.headline, 'Festive drop')
+
+    def test_reject_requires_an_active_feedback_tag(self):
+        self.as_(self.manager)
+
+        response = self.client.post(
+            f'/api/marketing/content/{self.item.id}/reject/',
+            {'note': 'Off-brand colours'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('elements', response.data)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.status, ContentItem.Status.PENDING_REVIEW)
+        self.assertFalse(Feedback.objects.exists())
+
+    def test_request_edits_requires_actionable_guidance(self):
+        self.as_(self.manager)
+
+        response = self.client.post(
+            f'/api/marketing/content/{self.item.id}/request-edits/',
+            {'elements': [self.feedback_element.key]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('non_field_errors', response.data)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.status, ContentItem.Status.PENDING_REVIEW)
+        self.assertFalse(ContentItem.objects.filter(parent=self.item).exists())
+        self.assertFalse(Feedback.objects.exists())
+
+    def test_reject_accepts_fix_request_as_actionable_guidance(self):
+        self.as_(self.manager)
+
+        response = self.client.post(
+            f'/api/marketing/content/{self.item.id}/reject/',
+            {
+                'elements': [self.feedback_element.key],
+                'fix_request': 'Use only the approved brand palette.',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.status, ContentItem.Status.REJECTED)
+        feedback = Feedback.objects.get(content_item=self.item)
+        self.assertEqual(feedback.fix_request, 'Use only the approved brand palette.')
 
     def test_published_content_cannot_be_re_reviewed(self):
         self.item.status = ContentItem.Status.PUBLISHED

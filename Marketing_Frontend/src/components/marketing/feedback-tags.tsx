@@ -53,9 +53,8 @@ export function useFeedbackElements() {
 /**
  * What was wrong with this piece of content, in the shared vocabulary.
  *
- * The tags are what the training engine keys on: the same element raised
- * twice becomes a brand rule, so tagging is worth more than the free text
- * beside it.
+ * The tags are what the training engine keys on: a selected corrective issue
+ * becomes a soft brand rule immediately, and later occurrences strengthen it.
  */
 export function FeedbackTagPicker({
   groups,
@@ -128,8 +127,7 @@ export function FeedbackTagPicker({
 
       {selected.length > 0 ? (
         <p className="mt-2 text-[0.6875rem] text-muted-foreground">
-          {selected.length} tagged — raising the same one twice teaches the generator to
-          avoid it.
+          {selected.length} tagged — each selected issue teaches the next generation immediately.
         </p>
       ) : null}
     </div>

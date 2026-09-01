@@ -40,6 +40,8 @@ from .services import (
     reinforce_preference,
     resolve_preferences,
     resolve_rules,
+    upsert_learned_rule,
+    upsert_review_rule,
 )
 
 User = get_user_model()
@@ -372,6 +374,31 @@ class PreferenceThresholdTests(LearningTestBase):
 
 
 class RuleAuthorityTests(LearningTestBase):
+    def test_generic_inference_still_requires_corroboration(self):
+        event = self.make_event(dedupe_key='generic:one')
+        with self.assertRaises(LearningError):
+            upsert_learned_rule(
+                workspace=self.workspace1,
+                brand=self.brand1,
+                key='generic:headline',
+                text='Keep headlines short.',
+                evidence_events=[event],
+            )
+        self.assertFalse(BrandRule.objects.exists())
+
+    def test_immediate_review_path_refuses_non_feedback_evidence(self):
+        event = self.make_event(dedupe_key='feedback:forged-review')
+        with self.assertRaises(LearningError):
+            upsert_review_rule(
+                workspace=self.workspace1,
+                brand=self.brand1,
+                key='review:logo_placement',
+                text='Keep the logo clear of the product.',
+                evidence_events=[event],
+                structured={'source': 'review_feedback'},
+            )
+        self.assertFalse(BrandRule.objects.exists())
+
     def test_one_off_feedback_cannot_become_a_rule(self):
         """The PR3 acceptance criterion."""
         single_event = self.make_event()
