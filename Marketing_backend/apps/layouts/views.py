@@ -14,7 +14,7 @@ from apps.common.permissions import (
 from apps.common.responses import APIResponse
 from apps.content.models import ContentItem
 from apps.marketing.models import MarketingAsset
-from apps.marketing.services.storage import StorageError, SupabaseStorageService
+from apps.marketing.services.storage import StorageError
 from apps.workspaces.models import WorkspaceMember
 
 # Aliased: two actions below are named `render` and `export`, and a bare
@@ -23,6 +23,7 @@ from . import images, registry
 from . import export as export_engine
 from . import render as render_engine
 from .serializers import ExportSerializer, PreviewSerializer, RenderSerializer
+from .services import persist_composed, source_photo_asset
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +71,12 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
 
     def _spec_for(self, workspace, data, *, item=None, brand=None):
         brand = brand or self._brand(workspace, data.get('brand'))
+        # `source_photo_asset` prefers the original photograph over a poster
+        # this item already composed, so re-composing never bakes the words
+        # onto an image that already carries them.
         photo = render_engine.photo_for(
             photo_base64=data.get('photo_base64', ''),
-            asset=self._asset(workspace, data.get('asset'))
-            or (item.asset if item is not None else None),
+            asset=self._asset(workspace, data.get('asset')) or source_photo_asset(item),
         )
 
         size_key = data.get('size') or 'instagram_portrait'
@@ -201,9 +204,16 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
+        config = dict(data['config']) if data.get('config') else dict(item.layout_config or {})
+        # Remember which photograph this composition was built from — but only
+        # the first time, and never a composed poster itself.
+        if (
+            item.asset_id
+            and getattr(item.asset, 'source', '') != MarketingAsset.Source.COMPOSED
+        ):
+            config.setdefault('source_asset', str(item.asset_id))
         item.layout_plugin = layout
-        if data.get('config'):
-            item.layout_config = data['config']
+        item.layout_config = config
         item.asset = asset
         item.preview_url = asset.file_url or ''
         item.save(
@@ -346,27 +356,6 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
         )
 
     # -- persistence -----------------------------------------------------
-    @staticmethod
-    def _persist(workspace, user, item, image, fmt, layout, suffix=''):
-        """Uploads one composed image and records it as a MarketingAsset."""
-        extension = 'pdf' if fmt == 'PDF' else 'jpg'
-        stem = (item.headline or 'poster').lower()
-        stem = ''.join(c if c.isalnum() else '-' for c in stem).strip('-')[:40] or 'poster'
-        filename = f"{stem}-{layout}{('-' + suffix) if suffix else ''}.{extension}"
-
-        described = SupabaseStorageService.upload_and_describe(
-            str(workspace.id), export_engine.to_file(image, fmt), filename, prefix='composed'
-        )
-
-        return MarketingAsset.objects.create(
-            workspace=workspace,
-            asset_type=MarketingAsset.AssetType.POSTER,
-            file_name=filename,
-            file_url=described['url'],
-            storage_path=described['path'],
-            mime_type='application/pdf' if fmt == 'PDF' else 'image/jpeg',
-            width=image.width,
-            height=image.height,
-            source=MarketingAsset.Source.COMPOSED,
-            created_by=user if user and user.is_authenticated else None,
-        )
+    # Shared with the auto-compose path that runs after generation, so a
+    # poster composed on the queue is stored exactly like one composed here.
+    _persist = staticmethod(persist_composed)

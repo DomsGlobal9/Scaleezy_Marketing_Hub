@@ -10,7 +10,7 @@ from rest_framework.test import APITestCase
 
 from apps.brands.models import Brand
 from apps.content.models import ContentItem
-from apps.layouts import export, fonts, images, registry
+from apps.layouts import export, fonts, images, registry, services
 from apps.layouts.patterns.base import Spec
 from apps.layouts.render import compose, compose_at, spec_from
 from apps.marketing.models import MarketingAsset
@@ -361,7 +361,7 @@ class LayoutAPITests(APITestCase):
         self.assertEqual(self.item.layout_plugin, '')
         self.assertEqual(MarketingAsset.objects.count(), 1)
 
-    @patch('apps.layouts.views.SupabaseStorageService.upload_and_describe')
+    @patch('apps.layouts.services.SupabaseStorageService.upload_and_describe')
     def test_render_reports_a_storage_failure_rather_than_lying(self, upload):
         upload.side_effect = StorageError("Storage rejected the upload (500).")
         self.as_(self.editor)
@@ -415,3 +415,66 @@ class LayoutAPITests(APITestCase):
             format='json',
         )
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class AutoComposeTests(APITestCase):
+    """The compose engine running automatically after a generation persists."""
+
+    def setUp(self):
+        self.ws = MarketingWorkspace.objects.create(customer_id='c', workspace_name='Gamma')
+        self.brand = Brand.objects.create(
+            workspace=self.ws, name='Gamma Co', palette=dict(PALETTE), is_default=True,
+        )
+        self.photo = MarketingAsset.objects.create(
+            workspace=self.ws,
+            file_name='generated.png',
+            file_url='https://storage.test/generated/x/generated.png',
+            source=MarketingAsset.Source.AI_GENERATED,
+        )
+        self.item = ContentItem.objects.create(
+            workspace=self.ws, brand=self.brand, asset=self.photo,
+            headline='Festive drop', cta='50% OFF',
+            preview_url=self.photo.file_url,
+        )
+
+    def test_composes_and_points_the_item_at_the_poster(self):
+        asset = services.compose_generated_poster(self.item)
+
+        self.assertIsNotNone(asset)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.asset_id, asset.id)
+        self.assertEqual(asset.source, MarketingAsset.Source.COMPOSED)
+        self.assertEqual(self.item.preview_url, asset.file_url)
+        self.assertTrue(self.item.layout_plugin)
+        # The original photograph survives, recorded as the source.
+        self.assertEqual(self.item.layout_config['source_asset'], str(self.photo.id))
+        self.assertTrue(MarketingAsset.objects.filter(pk=self.photo.pk).exists())
+
+    def test_a_compose_failure_leaves_the_generation_untouched(self):
+        with patch(
+            'apps.layouts.services.SupabaseStorageService.upload_and_describe',
+            side_effect=StorageError('down'),
+        ):
+            self.assertIsNone(services.compose_generated_poster(self.item))
+
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.asset_id, self.photo.id)
+        self.assertEqual(self.item.preview_url, self.photo.file_url)
+
+    def test_only_posters_with_copy_and_media_are_composed(self):
+        bare = ContentItem.objects.create(
+            workspace=self.ws, brand=self.brand, headline='No media',
+        )
+        self.assertIsNone(services.compose_generated_poster(bare))
+
+        video = ContentItem.objects.create(
+            workspace=self.ws, brand=self.brand, asset=self.photo, headline='Video',
+            content_format=ContentItem.Format.VIDEO,
+        )
+        self.assertIsNone(services.compose_generated_poster(video))
+
+    def test_recomposing_reads_the_original_photo_not_the_poster(self):
+        services.compose_generated_poster(self.item)
+        self.item.refresh_from_db()
+        # The composed poster is the asset, but the photograph is the source.
+        self.assertEqual(services.source_photo_asset(self.item).pk, self.photo.pk)

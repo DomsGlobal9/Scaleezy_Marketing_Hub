@@ -243,6 +243,12 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if error:
             return error
 
+        # The revision inherits the layout and the original photograph's id —
+        # without them, re-composing the revision would build from the already
+        # composed poster and bake the words on twice. The generation trace is
+        # deliberately NOT copied: it describes the parent's generation, and
+        # carrying it would double-count rule usage.
+        parent_config = item.layout_config if isinstance(item.layout_config, dict) else {}
         revision = ContentItem.objects.create(
             workspace=item.workspace,
             brand=item.brand,
@@ -257,6 +263,12 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             hashtags=item.hashtags,
             preview_url=item.preview_url,
             slides=item.slides,
+            layout_plugin=item.layout_plugin,
+            layout_config=(
+                {'source_asset': parent_config['source_asset']}
+                if parent_config.get('source_asset')
+                else {}
+            ),
             created_by=request.user,
         )
         return APIResponse(

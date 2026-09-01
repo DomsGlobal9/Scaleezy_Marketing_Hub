@@ -5,13 +5,21 @@ import {
   Edit3,
   FileImage,
   Loader2,
+  Maximize2,
   Palette,
   XCircle,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { FeedbackTagPicker, useFeedbackElements } from "@/components/marketing/feedback-tags";
@@ -98,8 +106,26 @@ function ReviewPage() {
   const [tags, setTags] = useState<Record<string, string[]>>({});
   const [report, setReport] = useState<TrainingReport | null>(null);
   const [studio, setStudio] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<ContentItem | null>(null);
   const { groups, provisional } = useFeedbackElements();
   const { layouts, sizes } = useLayoutCatalogue();
+
+  // The issues this brand raises most, offered as one-tap tags on every
+  // pending card — the reviewer should recognise, not re-describe.
+  const suggestions = useMemo(
+    () =>
+      (report?.top_elements ?? [])
+        .slice(0, 6)
+        .map((e) => ({ key: e.key, label: e.label, count: e.count })),
+    [report],
+  );
+
+  // Element key -> the rule already learned for it, so tagging a known
+  // problem needs no typed explanation at all.
+  const ruleFor = useMemo(
+    () => new Map((report?.rules ?? []).map((rule) => [rule.element, rule.text])),
+    [report],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -156,12 +182,17 @@ function ReviewPage() {
         elements: tags[id] ?? [],
         fix_request: fixes[id] ?? "",
       });
+      const tagged = (tags[id] ?? []).length;
+      const learned =
+        tagged > 0
+          ? ` ${tagged} issue${tagged === 1 ? "" : "s"} sent to the trainer.`
+          : "";
       toast.success(
         verb === "approve"
           ? "Approved — ready to publish."
           : verb === "reject"
-            ? "Rejected."
-            : "Sent back for edits. A new version was opened.",
+            ? `Rejected.${learned}`
+            : `Sent back for edits — a new version was opened.${learned}`,
       );
       await Promise.all([load(), loadReport()]);
     } catch (e) {
@@ -244,11 +275,13 @@ function ReviewPage() {
         </div>
       ) : null}
 
-      <div className="mb-6 flex flex-wrap gap-2">
+      {/* One scrolling row on a phone instead of a three-deep wrap. */}
+      <div className="mb-6 flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-x-visible sm:pb-0">
         {TABS.map((t) => (
           <Button
             key={t.key}
             size="sm"
+            className="shrink-0"
             variant={tab === t.key ? "default" : "outline"}
             onClick={() => setTab(t.key)}
           >
@@ -291,11 +324,21 @@ function ReviewPage() {
           {items.map((item) => (
             <article key={item.id} className="surface-card overflow-hidden">
               {item.preview_url ? (
-                <img
-                  src={item.preview_url}
-                  alt=""
-                  className="h-48 w-full border-b border-border object-cover"
-                />
+                <button
+                  type="button"
+                  onClick={() => setLightbox(item)}
+                  aria-label="Preview full image"
+                  className="group relative block w-full cursor-zoom-in"
+                >
+                  <img
+                    src={item.preview_url}
+                    alt=""
+                    className="h-48 w-full border-b border-border object-cover"
+                  />
+                  <span className="absolute right-2 top-2 rounded-md bg-black/50 p-1.5 text-white opacity-70 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
+                    <Maximize2 className="size-3.5" />
+                  </span>
+                </button>
               ) : null}
               <div className="p-5">
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
@@ -430,18 +473,36 @@ function ReviewPage() {
                       selected={tags[item.id] ?? []}
                       onToggle={(key) => toggleTag(item.id, key)}
                       disabled={busy === item.id}
+                      suggestions={suggestions}
                     />
 
                     {(tags[item.id] ?? []).length > 0 ? (
-                      <Textarea
-                        rows={2}
-                        className="mt-2"
-                        placeholder="How should it be fixed next time? This becomes the rule."
-                        value={fixes[item.id] ?? ""}
-                        onChange={(e) =>
-                          setFixes((prev) => ({ ...prev, [item.id]: e.target.value }))
-                        }
-                      />
+                      <>
+                        {(tags[item.id] ?? [])
+                          .filter((key) => ruleFor.has(key))
+                          .slice(0, 2)
+                          .map((key) => (
+                            <p
+                              key={key}
+                              className="mt-2 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-[0.6875rem] text-muted-foreground"
+                            >
+                              <span className="font-medium text-foreground">
+                                Already learned:
+                              </span>{" "}
+                              {ruleFor.get(key)} — tagging it again strengthens the rule,
+                              no note needed.
+                            </p>
+                          ))}
+                        <Textarea
+                          rows={2}
+                          className="mt-2"
+                          placeholder="How should it be fixed next time? This becomes the rule."
+                          value={fixes[item.id] ?? ""}
+                          onChange={(e) =>
+                            setFixes((prev) => ({ ...prev, [item.id]: e.target.value }))
+                          }
+                        />
+                      </>
                     ) : null}
 
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -477,6 +538,41 @@ function ReviewPage() {
           ))}
         </div>
       )}
+
+      <Dialog open={lightbox !== null} onOpenChange={(open) => !open && setLightbox(null)}>
+        {lightbox ? (
+          <DialogContent className="max-h-[92vh] w-[calc(100vw-1.5rem)] max-w-3xl gap-3 overflow-y-auto rounded-lg p-4">
+            <DialogHeader>
+              <DialogTitle className="pr-8 text-base">
+                {lightbox.headline || "Untitled"}
+              </DialogTitle>
+              <DialogDescription>
+                {lightbox.content_format} · v{lightbox.version} ·{" "}
+                {new Date(lightbox.created_at).toLocaleDateString()}
+              </DialogDescription>
+            </DialogHeader>
+            <img
+              src={lightbox.preview_url}
+              alt={lightbox.headline || "Content preview"}
+              className="max-h-[60vh] w-full rounded-lg border border-border bg-secondary/20 object-contain"
+            />
+            {lightbox.caption ? (
+              <p className="text-sm text-muted-foreground">{lightbox.caption}</p>
+            ) : null}
+            {lightbox.hashtags ? (
+              <p className="text-xs text-muted-foreground">{lightbox.hashtags}</p>
+            ) : null}
+            <a
+              href={lightbox.preview_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-foreground underline underline-offset-2"
+            >
+              Open full size in a new tab
+            </a>
+          </DialogContent>
+        ) : null}
+      </Dialog>
     </div>
   );
 }

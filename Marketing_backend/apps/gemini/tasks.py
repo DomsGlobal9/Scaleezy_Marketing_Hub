@@ -79,7 +79,13 @@ def generate_content(request_id: str):
         generation_request=request,
         defaults={
             'generated_text': result_data.get('postDescription', ''),
-            'generated_asset_url': result_data.get('posterImageUrl', '') or '',
+            # The composed poster when auto-compose succeeded, the raw image
+            # otherwise — the poller must see what will actually be reviewed.
+            'generated_asset_url': (
+                (content_item.preview_url if content_item else '')
+                or result_data.get('posterImageUrl', '')
+                or ''
+            ),
             'metadata': {
                 'postTitle': result_data.get('postTitle', ''),
                 'postHashtags': result_data.get('postHashtags', ''),
@@ -135,7 +141,7 @@ def _persist(request, brief, result_data, provider_key, *, brain_version=''):
                 .order_by('-is_default')
                 .first()
             )
-            return ContentItem.objects.create(
+            item = ContentItem.objects.create(
                 workspace=request.workspace,
                 brand=brand,
                 asset=asset,
@@ -159,6 +165,14 @@ def _persist(request, brief, result_data, provider_key, *, brain_version=''):
                 ai_prompt=str(brief)[:5000],
                 created_by=request.user,
             )
+
+        # After the transaction commits, so a compose hiccup can never roll
+        # back the persisted generation. Best-effort: on failure the raw
+        # generated image stays in place.
+        from apps.layouts.services import compose_generated_poster
+
+        compose_generated_poster(item, user=request.user)
+        return item
     except Exception:
         logger.exception("Could not persist background generation %s", request.pk)
         return None
