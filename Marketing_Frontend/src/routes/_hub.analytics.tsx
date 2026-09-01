@@ -70,14 +70,6 @@ interface SyncRun {
   error: string;
   created_at: string;
 }
-interface Lead {
-  id: string;
-  name: string;
-  handle: string;
-  status: string;
-  source: string;
-  created_at: string;
-}
 interface RevenueEvent {
   id: string;
   source: string;
@@ -92,7 +84,6 @@ interface Dashboard {
   platform_perf: PlatformMetric[];
   observations: Observation[];
   sync_runs: SyncRun[];
-  leads: Lead[];
   revenue_events: RevenueEvent[];
   summary: {
     observation_count: number;
@@ -360,6 +351,39 @@ function AnalyticsPage() {
           <p className="mt-3 text-xs text-muted-foreground">
             For any other network, import its export below. Scaleezy does not restrict the platform.
           </p>
+          {data.sync_runs.length > 0 && (
+            <div className="mt-5 border-t pt-4">
+              <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                Recent syncs
+              </p>
+              <div className="mt-3 space-y-2">
+                {data.sync_runs.map((run) => (
+                  <div key={run.id} className="rounded-lg border p-3 text-xs">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="truncate font-semibold">
+                        {run.platform} · {run.account_name}
+                      </span>
+                      <StatusBadge
+                        status={run.status}
+                        tone={
+                          run.status === "FAILED"
+                            ? "danger"
+                            : run.status === "COMPLETED"
+                              ? "success"
+                              : "neutral"
+                        }
+                      />
+                    </div>
+                    <p className="mt-1 text-muted-foreground">
+                      {new Date(run.created_at).toLocaleString()}
+                      {run.status === "COMPLETED" && ` · ${run.observed_count} observed`}
+                    </p>
+                    {run.error && <p className="mt-1 break-words text-destructive">{run.error}</p>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
       </div>
 
@@ -367,7 +391,7 @@ function AnalyticsPage() {
         <TabsList className="flex h-auto flex-wrap justify-start">
           <TabsTrigger value="platforms">Platforms</TabsTrigger>
           <TabsTrigger value="sources">Source ledger</TabsTrigger>
-          <TabsTrigger value="leads">Leads & revenue</TabsTrigger>
+          <TabsTrigger value="revenue">Revenue</TabsTrigger>
           <TabsTrigger value="intake">Data intake</TabsTrigger>
         </TabsList>
         <TabsContent value="platforms" className="mt-5">
@@ -401,59 +425,31 @@ function AnalyticsPage() {
         <TabsContent value="sources" className="mt-5">
           <SourceLedger rows={data.observations} />
         </TabsContent>
-        <TabsContent value="leads" className="mt-5">
-          <div className="grid gap-5 xl:grid-cols-2">
-            <section className="surface-card p-5">
-              <SectionTitle
-                label="Pipeline"
-                title="Captured leads"
-                description="Governed engagement and team intake."
-              />
-              <div className="mt-5 space-y-3">
-                {data.leads.map((lead) => (
-                  <article
-                    key={lead.id}
-                    className="flex items-center justify-between gap-4 rounded-lg border p-4"
-                  >
-                    <div>
-                      <p className="font-semibold">{lead.name || lead.handle || "Unnamed lead"}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {lead.source} · {new Date(lead.created_at).toLocaleDateString()}
-                      </p>
-                    </div>
-                    <StatusBadge status={lead.status} />
-                  </article>
-                ))}
-                {!data.leads.length && (
-                  <p className="text-sm text-muted-foreground">No leads captured yet.</p>
-                )}
-              </div>
-            </section>
-            <section className="surface-card p-5">
-              <SectionTitle
-                label="Revenue lineage"
-                title="Attributed events"
-                description="Idempotent billing, CRM or operator events."
-              />
-              <div className="mt-5 space-y-3">
-                {data.revenue_events.map((event) => (
-                  <article
-                    key={event.id}
-                    className="flex items-center justify-between gap-4 rounded-lg border p-4"
-                  >
-                    <div>
-                      <p className="font-semibold">{event.campaign_name || event.source}</p>
-                      <p className="text-xs text-muted-foreground">{event.external_event_id}</p>
-                    </div>
-                    <strong>{money(event.amount, event.currency)}</strong>
-                  </article>
-                ))}
-                {!data.revenue_events.length && (
-                  <p className="text-sm text-muted-foreground">No attributed revenue yet.</p>
-                )}
-              </div>
-            </section>
-          </div>
+        <TabsContent value="revenue" className="mt-5">
+          <section className="surface-card p-5">
+            <SectionTitle
+              label="Revenue lineage"
+              title="Attributed events"
+              description="Idempotent billing, CRM or operator events."
+            />
+            <div className="mt-5 space-y-3">
+              {data.revenue_events.map((event) => (
+                <article
+                  key={event.id}
+                  className="flex items-center justify-between gap-4 rounded-lg border p-4"
+                >
+                  <div>
+                    <p className="font-semibold">{event.campaign_name || event.source}</p>
+                    <p className="text-xs text-muted-foreground">{event.external_event_id}</p>
+                  </div>
+                  <strong>{money(event.amount, event.currency)}</strong>
+                </article>
+              ))}
+              {!data.revenue_events.length && (
+                <p className="text-sm text-muted-foreground">No attributed revenue yet.</p>
+              )}
+            </div>
+          </section>
         </TabsContent>
         <TabsContent value="intake" className="mt-5">
           <div className="grid gap-5 xl:grid-cols-2">
