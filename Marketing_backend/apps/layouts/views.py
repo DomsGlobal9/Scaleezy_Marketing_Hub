@@ -47,9 +47,27 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
 
     def list(self, request):
         """The installed layouts and the destinations they can be exported to."""
+        from . import variants
+
         return APIResponse(
             success=True,
-            data={'layouts': registry.catalogue(), 'sizes': export_engine.catalogue()},
+            data={
+                'layouts': registry.catalogue(),
+                'sizes': export_engine.catalogue(),
+                # A template is a (pattern, style variant) pair; the axes are
+                # what the Templates gallery explains and the total is the
+                # number the founder asked for out loud.
+                'templates': {
+                    'total': variants.catalogue_size(),
+                    'axes': {
+                        'palette': list(variants.PALETTES),
+                        'photo': list(variants.PHOTOS),
+                        'paper': list(variants.PAPERS),
+                        'casing': list(variants.CASINGS),
+                        'pairing': list(variants.PAIRINGS),
+                    },
+                },
+            },
         )
 
     # -- helpers ---------------------------------------------------------

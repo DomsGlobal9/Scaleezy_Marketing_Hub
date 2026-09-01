@@ -8,6 +8,7 @@ class AgencyColumn(LayoutPattern):
     key = 'agency_column'
     display_name = 'Agency column'
     description = 'Ink column of type beside a full-bleed photograph.'
+    industries = ('fashion', 'retail', 'agency', 'hospitality')
 
     #: Share of the width the type column takes.
     COLUMN = 0.46

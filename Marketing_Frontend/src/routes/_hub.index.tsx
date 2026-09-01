@@ -277,16 +277,18 @@ function OverviewPage() {
         <p className="mb-6 text-xs font-bold tracking-[0.18em] text-foreground uppercase">
           Content lifecycle
         </p>
-        <div className="scrollbar-hide -mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-          <ol className="grid min-w-[800px] grid-cols-5 gap-8">
-            {LIFECYCLE.map((step, index) => (
-              <li key={step.label} className="relative">
-                {index < LIFECYCLE.length - 1 ? (
-                  <span
-                    className="absolute top-6 left-14 h-px w-[calc(100%-3rem)] bg-border"
-                    aria-hidden
-                  />
-                ) : null}
+        {/* Stacks instead of hiding behind a scrollbarless strip: a hidden
+            horizontal scroll is unreachable with a mouse, so on narrow
+            windows steps 4 and 5 simply did not exist. */}
+        <ol className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-5 lg:gap-8">
+          {LIFECYCLE.map((step, index) => (
+            <li key={step.label} className="relative">
+              {index < LIFECYCLE.length - 1 ? (
+                <span
+                  className="absolute top-6 left-14 hidden h-px w-[calc(100%-3rem)] bg-border lg:block"
+                  aria-hidden
+                />
+              ) : null}
                 <Link to={step.to} className="group relative block pr-4">
                   <span
                     className={
@@ -306,8 +308,7 @@ function OverviewPage() {
                 </Link>
               </li>
             ))}
-          </ol>
-        </div>
+        </ol>
       </section>
 
       <section className="app-section mt-10">

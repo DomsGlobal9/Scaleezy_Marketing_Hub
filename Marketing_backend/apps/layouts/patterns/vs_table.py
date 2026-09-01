@@ -9,6 +9,7 @@ class VsTable(LayoutPattern):
     display_name = 'Versus table'
     description = 'Two-column comparison — ours against theirs.'
     uses_photo = False
+    industries = ('saas', 'finance', 'education', 'services')
 
     DEFAULT_ROWS = [
         ('Price', 'Higher'),

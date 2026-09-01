@@ -8,6 +8,7 @@ class JilSander(LayoutPattern):
     key = 'jil_sander'
     display_name = 'Minimal centred'
     description = 'Small centred type and generous whitespace around one image.'
+    industries = ('luxury', 'beauty', 'real estate', 'wellness')
 
     def render(self):
         spec = self.spec

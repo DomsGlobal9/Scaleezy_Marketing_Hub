@@ -95,6 +95,10 @@ class LayoutPattern(ABC):
     description: str = ''
     #: False for patterns that are pure type and would be spoiled by a photo.
     uses_photo: bool = True
+    #: Lowercase industry tags this skeleton suits, used to group and filter
+    #: the template gallery. Empty means "fits anything". Purely descriptive:
+    #: nothing stops a brand using any pattern.
+    industries: tuple = ()
 
     def __init__(self, spec: Spec):
         self.spec = spec
@@ -248,6 +252,7 @@ class LayoutPattern(ABC):
             'display_name': cls.display_name or cls.key,
             'description': cls.description,
             'uses_photo': cls.uses_photo,
+            'industries': list(cls.industries),
         }
 
 

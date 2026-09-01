@@ -70,16 +70,16 @@ export const DEFAULT_BRAND_SETTINGS: BrandSettings = {
   competitors: [],
   productsServices: [],
   socialLinks: {},
-  layoutPreference: "agency_column",
+  // Blank = no preference: the engine rotates the whole template catalogue.
+  layoutPreference: "",
 };
 
 /** Raw Brand as the API returns it. */
 export interface BrandDto {
   id: string;
+  /** PENDING until Scaleezy approves the client; generation is refused before then. */
   status: string;
   name: string;
-  /** PENDING until Scaleezy approves the client; generation is refused before then. */
-  status?: string;
   industry: string;
   website: string;
   location: string;
