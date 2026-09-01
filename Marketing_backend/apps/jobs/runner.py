@@ -142,6 +142,7 @@ def enqueue_due_work():
     running on a timer, and a separate scheduler would be another thing to
     deploy and another thing to forget to deploy.
     """
+    from apps.gemini.tasks import sweep_stuck_generations
     from apps.publishing.scheduler import enqueue_due_jobs
     from apps.universal.tasks import enqueue_due_enrichment
 
@@ -154,4 +155,8 @@ def enqueue_due_work():
         count += enqueue_due_enrichment()
     except Exception:
         logger.exception("Recurring enrichment sweep failed")
+    try:
+        count += sweep_stuck_generations()
+    except Exception:
+        logger.exception("Stuck generation sweep failed")
     return count

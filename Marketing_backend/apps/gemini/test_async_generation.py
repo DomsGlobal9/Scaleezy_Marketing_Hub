@@ -17,15 +17,22 @@ long-tail fallback and became the product. Three things are proved:
   the queue must not vanish from "is this rule reaching the work?".
 """
 import json
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from apps.brands.models import Brand
 from apps.common.testing import TenantFixtureMixin
 from apps.content.models import ContentItem
 from apps.gemini.models import GeminiGenerationRequest, GeminiGenerationResult
-from apps.gemini.tasks import generate_content
+from apps.gemini.tasks import (
+    INTERRUPTED_MESSAGE,
+    generate_content,
+    sweep_stuck_generations,
+)
+from apps.jobs.models import TaskRun
 from apps.workspaces.models import WorkspaceMember
 
 ROUTED = {
@@ -130,6 +137,119 @@ class AsyncGenerationTaskTests(TenantFixtureMixin, TestCase):
             trace.get('rule_ids'),
             'a queued generation must name the rules it read, or the '
             'learning-usage report undercounts everything made on the queue',
+        )
+
+
+class StuckGenerationSweepTests(TenantFixtureMixin, TestCase):
+    """A killed worker's generation is rescued once, then failed honestly.
+
+    Observed in production: a Render deploy SIGKILLed the old worker after
+    its grace period, mid-generation. The request row sat GENERATING forever
+    while a healthy new worker polled past it — the frontend showed "AI is
+    working…" indefinitely and nothing was. The sweep runs on every worker
+    pass: one re-queue, then an honest FAILED the poller can show.
+    """
+
+    def setUp(self):
+        self.workspace = self.make_workspace('Acme', 'c1')
+        self.user, _ = self.authenticate_as(
+            self.workspace, WorkspaceMember.Role.EDITOR, 'editor@acme.test'
+        )
+        self.brand = Brand.objects.create(
+            workspace=self.workspace, name='Acme Coffee', is_default=True,
+            status=Brand.Status.ACTIVE,
+        )
+
+    def stuck_request(self, *, minutes_ago=11, retry_count=0):
+        request = GeminiGenerationRequest.objects.create(
+            workspace=self.workspace,
+            user=self.user,
+            prompt_data=json.dumps({'campaign_name': 'Launch', 'contentType': 'poster'}),
+            status=GeminiGenerationRequest.Status.GENERATING,
+            retry_count=retry_count,
+        )
+        # updated_at is auto_now, so only a queryset update can backdate it.
+        GeminiGenerationRequest.objects.filter(pk=request.pk).update(
+            updated_at=timezone.now() - timedelta(minutes=minutes_ago)
+        )
+        request.refresh_from_db()
+        return request
+
+    def test_an_abandoned_generation_is_requeued_once(self):
+        request = self.stuck_request()
+
+        self.assertEqual(sweep_stuck_generations(), 1)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.PENDING)
+        self.assertEqual(request.retry_count, 1)
+        run = TaskRun.objects.get()
+        self.assertEqual(run.task_path, 'apps.gemini.tasks.generate_content')
+        self.assertEqual(run.args, [str(request.pk)])
+
+    def test_the_rescue_is_bounded_then_fails_honestly(self):
+        request = self.stuck_request(retry_count=1)
+
+        self.assertEqual(sweep_stuck_generations(), 1)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.FAILED)
+        # The message the poller surfaces: the truth, not a spinner.
+        self.assertEqual(request.error_message, INTERRUPTED_MESSAGE)
+        self.assertEqual(TaskRun.objects.count(), 0)
+
+    def test_a_request_still_actively_generating_is_left_alone(self):
+        request = self.stuck_request(minutes_ago=5)
+
+        self.assertEqual(sweep_stuck_generations(), 0)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.GENERATING)
+        self.assertEqual(TaskRun.objects.count(), 0)
+
+    def test_a_row_from_before_the_updated_at_field_is_swept_by_created_at(self):
+        request = self.stuck_request()
+        GeminiGenerationRequest.objects.filter(pk=request.pk).update(
+            updated_at=None, created_at=timezone.now() - timedelta(minutes=20)
+        )
+
+        self.assertEqual(sweep_stuck_generations(), 1)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.PENDING)
+
+    def test_a_finished_generation_whose_final_save_was_lost_is_completed(self):
+        request = self.stuck_request()
+        GeminiGenerationResult.objects.create(
+            generation_request=request, generated_text='Already made.'
+        )
+
+        self.assertEqual(sweep_stuck_generations(), 1)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.COMPLETED)
+        self.assertIsNotNone(request.completed_at)
+        # The work already exists; re-buying it is exactly what must not
+        # happen here.
+        self.assertEqual(TaskRun.objects.count(), 0)
+
+    def test_the_worker_pass_rescues_and_finishes_a_killed_generation(self):
+        """A single worker pass sweeps the rescue in and runs it to done."""
+        from apps.jobs import runner
+
+        request = self.stuck_request()
+
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload',
+            return_value=dict(ROUTED),
+        ):
+            runner.run_once()
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.COMPLETED)
+        self.assertEqual(request.retry_count, 1)
+        self.assertTrue(
+            GeminiGenerationResult.objects.filter(generation_request=request).exists()
         )
 
 

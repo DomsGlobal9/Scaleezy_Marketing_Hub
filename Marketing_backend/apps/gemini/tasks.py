@@ -12,11 +12,27 @@ beginning, and was never populated. The frontend polls it.
 """
 import json
 import logging
+from datetime import timedelta
 
 from django.tasks import task
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+
+#: A request still GENERATING after this long belongs to a worker that died
+#: mid-task — a deploy's SIGKILL after the grace period, principally. Long
+#: enough that a slow video or carousel generation is not bought twice while
+#: it is still honestly running.
+STUCK_AFTER = timedelta(minutes=10)
+
+#: One rescue re-run, then the honest answer. Unbounded retries would spend
+#: provider money forever on a brief that kills the worker every time.
+MAX_RESCUE_ATTEMPTS = 1
+
+INTERRUPTED_MESSAGE = (
+    "Generation was interrupted by a server restart and could not be "
+    "completed. Please try again."
+)
 
 
 @task
@@ -108,6 +124,71 @@ def generate_content(request_id: str):
         'request': str(request.id),
         'content_item': str(content_item.id) if content_item else None,
     }
+
+
+def sweep_stuck_generations(now=None):
+    """
+    Rescues generation requests abandoned by a killed worker.
+
+    A worker SIGKILLed mid-generation (a deploy whose grace period ran out)
+    leaves the request row GENERATING with nothing queued to finish it: the
+    frontend polls "AI is working…" forever and nothing is. Each worker pass
+    sweeps rows GENERATING for longer than STUCK_AFTER: a row whose result
+    actually landed is completed (only the final bookkeeping was lost),
+    anything else is re-queued once, and after that it fails with an honest
+    message the poller can show. Returns how many rows were swept.
+    """
+    from django.db.models import Q
+
+    from apps.gemini.models import GeminiGenerationRequest
+
+    now = now or timezone.now()
+    cutoff = now - STUCK_AFTER
+    stuck = GeminiGenerationRequest.objects.filter(
+        # updated_at is null on rows from before the field existed;
+        # created_at is the only clock those have.
+        Q(updated_at__lt=cutoff) | Q(updated_at__isnull=True, created_at__lt=cutoff),
+        status=GeminiGenerationRequest.Status.GENERATING,
+    ).select_related('result')
+
+    swept = 0
+    for request in stuck:
+        generating = GeminiGenerationRequest.objects.filter(
+            pk=request.pk, status=GeminiGenerationRequest.Status.GENERATING
+        )
+        if getattr(request, 'result', None) is not None:
+            # The generation finished; the worker died between writing the
+            # result and the final status save. Finish the bookkeeping rather
+            # than paying for the same work again.
+            swept += generating.update(
+                status=GeminiGenerationRequest.Status.COMPLETED,
+                completed_at=now,
+                updated_at=now,
+            )
+        elif request.retry_count < MAX_RESCUE_ATTEMPTS:
+            # Compare-and-swap on retry_count so two workers sweeping at once
+            # cannot queue the same rescue twice.
+            claimed = generating.filter(retry_count=request.retry_count).update(
+                status=GeminiGenerationRequest.Status.PENDING,
+                retry_count=request.retry_count + 1,
+                updated_at=now,
+            )
+            if claimed:
+                logger.warning(
+                    "Generation %s abandoned by a dead worker; re-queued", request.pk
+                )
+                generate_content.enqueue(str(request.pk))
+                swept += 1
+        else:
+            swept += generating.update(
+                status=GeminiGenerationRequest.Status.FAILED,
+                error_message=INTERRUPTED_MESSAGE,
+                updated_at=now,
+            )
+            logger.warning(
+                "Generation %s still stuck after a rescue; marked FAILED", request.pk
+            )
+    return swept
 
 
 @task
