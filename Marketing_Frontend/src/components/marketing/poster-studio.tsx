@@ -305,7 +305,7 @@ export function PosterStudio({
 
       <div className="relative mt-3 overflow-hidden rounded-lg border border-border bg-background">
         {preview ? (
-          <img src={preview} alt="Composed poster preview" className="w-full" />
+          <img src={preview} alt="Composed poster preview" decoding="async" className="w-full" />
         ) : (
           <div className="grid h-40 place-items-center text-xs text-muted-foreground">
             {previewing ? "Composing…" : "No preview"}

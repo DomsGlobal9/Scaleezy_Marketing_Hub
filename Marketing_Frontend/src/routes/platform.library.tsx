@@ -305,6 +305,8 @@ function EditorSheet({
                     <img
                       src={filePreview}
                       alt=""
+                      loading="lazy"
+                      decoding="async"
                       className="mt-2 h-40 w-full rounded-lg border border-border object-cover"
                     />
                   ) : file ? (

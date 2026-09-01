@@ -388,10 +388,15 @@ function ReviewPage() {
                   className="group relative block w-full cursor-zoom-in"
                 >
                   {/* object-contain in a 4:5 frame: the whole poster is
-                      visible on the card — nothing is cropped away. */}
+                      visible on the card — nothing is cropped away. Lazy and
+                      async: storage serves these slowly, and a dozen eager
+                      full-size downloads held the whole page in "loading" for
+                      tens of seconds. */}
                   <img
                     src={item.preview_url}
                     alt=""
+                    loading="lazy"
+                    decoding="async"
                     className="aspect-[4/5] max-h-80 w-full border-b border-border bg-secondary/30 object-contain"
                   />
                   <span className="absolute right-2 top-2 rounded-md bg-black/50 p-1.5 text-white opacity-70 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
@@ -630,6 +635,7 @@ function ReviewPage() {
             <img
               src={lightbox.preview_url}
               alt={lightbox.headline || "Content preview"}
+              decoding="async"
               className="max-h-[60vh] w-full rounded-lg border border-border bg-secondary/20 object-contain"
             />
             {lightbox.caption ? (

@@ -1597,6 +1597,8 @@ function PublishingPage() {
                           <img
                             src={asset.previewUrl}
                             alt="Generated Poster"
+                            loading="lazy"
+                            decoding="async"
                             className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
                           />
                           <div className="absolute inset-0 bg-black/40 opacity-0 transition-opacity duration-300 group-hover:opacity-100 flex items-center justify-center pointer-events-none">
@@ -1687,6 +1689,8 @@ function PublishingPage() {
                                 <img
                                   src={slide.previewUrl}
                                   alt={`Slide ${i + 1}`}
+                                  loading="lazy"
+                                  decoding="async"
                                   className="size-12 shrink-0 rounded-lg border border-border object-cover"
                                 />
                               ) : (
@@ -2042,6 +2046,7 @@ function PublishingPage() {
             <img
               src={asset.previewUrl}
               alt="Full size poster"
+              decoding="async"
               className="w-full h-auto max-h-[90vh] object-contain rounded-lg"
             />
           )}
