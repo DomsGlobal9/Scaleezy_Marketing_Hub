@@ -586,8 +586,21 @@ export type LibraryItem = LibraryEntryFields;
  */
 const LIBRARY_PATH = "/api/marketing/universal/library/";
 
-export const fetchLibraryGallery = async () =>
-  rows<LibraryItem>(await apiGet<unknown>(LIBRARY_PATH), "inspirations");
+export interface LibraryGalleryPage {
+  items: LibraryItem[];
+  nextOffset: number | null;
+}
+
+export const fetchLibraryGalleryPage = async (offset = 0): Promise<LibraryGalleryPage> => {
+  const payload = await apiGet<unknown>(`${LIBRARY_PATH}?limit=50&offset=${offset}`);
+  const object = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  return {
+    items: rows<LibraryItem>(payload, "inspirations"),
+    nextOffset: typeof object["next_offset"] === "number" ? object["next_offset"] : null,
+  };
+};
+
+export const fetchLibraryGallery = async () => (await fetchLibraryGalleryPage()).items;
 
 export interface AdoptResult {
   inspiration_id: string;

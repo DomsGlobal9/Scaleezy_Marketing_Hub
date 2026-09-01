@@ -303,7 +303,7 @@ Return ONLY a valid JSON object with these exact keys:
         brand_tone = request_data.get('brand_tone', '')
         b64_img = request_data.get('reference_image_base64', '')
         # Rules the training engine has learned from repeated reviewer
-        # rejections, merged with the Context Gateway's brand-context lines —
+        # rejections, merged with the Context Gateway's brand-context lines -
         # the queued and revision paths send `brand_context` and not
         # `brand_rules`, and a constraint that only reaches one path is not a
         # constraint. Deduplicated because the synchronous path sends the same
@@ -313,6 +313,18 @@ Return ONLY a valid JSON object with these exact keys:
             *(request_data.get('brand_rules') or []),
             *(request_data.get('brand_context') or []),
         ]))
+        creative_direction = request_data.get('creative_direction') or {}
+        creative_lines = creative_direction.get('instructions') or []
+        creative_block = ''
+        if creative_lines:
+            creative_block = (
+                "\n\nUSER-SELECTED CREATIVE DIRECTION - these references were "
+                "chosen for this generation. USE means draw from only the named "
+                "qualities; AVOID means do not reproduce that quality. Never copy "
+                "protected artwork, logos or unverified claims:\n"
+                + "\n".join(f"- {str(line).strip()}" for line in creative_lines if str(line).strip())
+                + "\n"
+            )
 
         prompt_text = f"""You are an elite, award-winning creative director and social media marketing expert.
 
@@ -341,6 +353,7 @@ For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just 
 CRITICAL — NO TEXT IN THE IMAGE: the `imagePrompt` must describe a photograph/visual with absolutely no text, lettering, numbers, captions, watermarks or logos rendered anywhere in it. All headlines, offers and typography are composed onto the image later by a separate layout engine; text baked into the image gets cropped and fights the real typography. The `imagePrompt` itself must end with the sentence: "No text, no lettering, no words, no logos, no watermarks anywhere in the image."
 
 {cls._rules_block(brand_rules)}
+{creative_block}
 Respond ONLY with a valid JSON object (no markdown, no code fences, no extra text):
 {{
   "postTitle": "A catchy, short title (max 10 words)",

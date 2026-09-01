@@ -66,7 +66,8 @@ def platform_signals(*, inactive_days=DEFAULT_INACTIVE_DAYS):
     """
     from apps.ai.models import WorkspaceAIRoute
     from apps.brands.models import Brand
-    from apps.inspirations.models import BrandInspiration
+    from apps.engagement.models import EngagementItem, EngagementSyncRun
+    from apps.inspirations.models import BrandInspiration, ResearchRun
     from apps.jobs.models import TaskRun
     from apps.knowledge.models import BrandSource
     from apps.publishing.models import PublishingJob
@@ -129,6 +130,43 @@ def platform_signals(*, inactive_days=DEFAULT_INACTIVE_DAYS):
             value=BrandInspiration.objects.eligible_for_retrieval().filter(
                 workspace__in=active_workspaces,
                 analysis_status=BrandInspiration.AnalysisStatus.FAILED,
+            ).count(),
+            live=True,
+        ),
+        Signal(
+            key='creative_research_failed',
+            label='Creative research runs failed',
+            value=ResearchRun.objects.filter(
+                workspace__in=active_workspaces,
+                status=ResearchRun.Status.FAILED,
+            ).count(),
+            live=True,
+        ),
+        Signal(
+            key='engagement_sync_failed',
+            label='Engagement inbox syncs failed',
+            value=EngagementSyncRun.objects.filter(
+                workspace__in=active_workspaces,
+                status=EngagementSyncRun.Status.FAILED,
+            ).count(),
+            live=True,
+        ),
+        Signal(
+            key='engagement_drafts_failed',
+            label='Engagement reply drafts failed',
+            value=EngagementItem.objects.filter(
+                workspace__in=active_workspaces,
+                draft_status=EngagementItem.DraftStatus.FAILED,
+            ).count(),
+            live=True,
+        ),
+        Signal(
+            key='engagement_sends_stale',
+            label='Engagement replies stuck sending',
+            value=EngagementItem.objects.filter(
+                workspace__in=active_workspaces,
+                status=EngagementItem.Status.SENDING,
+                updated_at__lt=now - WORKER_SILENCE_ALERT,
             ).count(),
             live=True,
         ),

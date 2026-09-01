@@ -51,3 +51,23 @@ class FeedbackSerializer(serializers.ModelSerializer):
                 f"Unknown feedback element(s): {', '.join(unknown)}"
             )
         return keys
+
+    def validate(self, attrs):
+        """Every corrective entry path must carry an actionable signal."""
+        if attrs.get('verdict') not in Feedback.CORRECTIVE:
+            return attrs
+        if not attrs.get('element_keys'):
+            raise serializers.ValidationError(
+                {
+                    'element_keys': (
+                        'Select at least one issue so Scaleezy can learn from this correction.'
+                    )
+                }
+            )
+        if not str(attrs.get('feedback_text') or '').strip() and not str(
+            attrs.get('fix_request') or ''
+        ).strip():
+            raise serializers.ValidationError(
+                'Explain the problem or how it should be fixed so the learned rule is actionable.'
+            )
+        return attrs

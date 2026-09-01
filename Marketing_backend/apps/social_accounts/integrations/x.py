@@ -76,7 +76,7 @@ class XAdapter:
             "Content-Type": "application/x-www-form-urlencoded",
         }
 
-        response = requests.post(self.TOKEN_URL, data=data, auth=auth, headers=headers)
+        response = requests.post(self.TOKEN_URL, data=data, auth=auth, headers=headers, timeout=15)
         if not response.ok:
             raise Exception(f"Failed to exchange token: {response.text}")
             
@@ -98,7 +98,7 @@ class XAdapter:
         auth = (self.client_id, self.client_secret)
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-        response = requests.post(self.TOKEN_URL, data=data, auth=auth, headers=headers)
+        response = requests.post(self.TOKEN_URL, data=data, auth=auth, headers=headers, timeout=15)
         if not response.ok:
             raise Exception("REAUTHORIZATION_REQUIRED")
             
@@ -107,7 +107,7 @@ class XAdapter:
     def get_account_info(self, access_token: str):
         headers = {"Authorization": f"Bearer {access_token}"}
         params = {"user.fields": "profile_image_url,name,username"}
-        response = requests.get(f"{self.API_BASE}/users/me", headers=headers, params=params)
+        response = requests.get(f"{self.API_BASE}/users/me", headers=headers, params=params, timeout=15)
         
         if not response.ok:
             raise Exception(f"Failed to get user info: {response.text}")
@@ -153,7 +153,7 @@ class XAdapter:
             else:
                 payload["media"] = {"media_ids": [media_id]}
             
-        response = requests.post(f"{self.API_BASE}/tweets", headers=headers, json=payload)
+        response = requests.post(f"{self.API_BASE}/tweets", headers=headers, json=payload, timeout=15)
         
         if not response.ok:
             raise Exception(f"Publish failed: {response.text}")
@@ -165,3 +165,100 @@ class XAdapter:
             "id": post_id,
             "url": f"https://twitter.com/user/status/{post_id}"
         }
+
+    def fetch_mentions(self, access_token: str, user_id: str, *, cursor: str = ''):
+        """Return a bounded, normalized mention page for the engagement inbox."""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        params = {
+            'max_results': 50,
+            'tweet.fields': 'author_id,created_at,conversation_id,text',
+            'expansions': 'author_id',
+            'user.fields': 'name,username',
+        }
+        if cursor:
+            params['pagination_token'] = cursor
+        response = requests.get(
+            f"{self.API_BASE}/users/{user_id}/mentions",
+            headers=headers,
+            params=params,
+            timeout=15,
+        )
+        if not response.ok:
+            raise Exception(f"Could not sync X mentions ({response.status_code}).")
+        payload = response.json()
+        users = {
+            str(row.get('id')): row
+            for row in payload.get('includes', {}).get('users', [])
+            if isinstance(row, dict)
+        }
+        items = []
+        for row in payload.get('data', []):
+            if not isinstance(row, dict) or not row.get('id') or not row.get('text'):
+                continue
+            author = users.get(str(row.get('author_id')), {})
+            username = str(author.get('username') or '')
+            items.append({
+                'external_id': str(row['id']),
+                'thread_id': str(row.get('conversation_id') or row['id']),
+                'kind': 'MENTION',
+                'author_name': str(author.get('name') or username),
+                'author_handle': username,
+                'body': str(row['text']),
+                'source_url': f"https://x.com/{username or 'i'}/status/{row['id']}",
+                'occurred_at': row.get('created_at'),
+                'source_payload': {'author_id': row.get('author_id')},
+            })
+        return {
+            'items': items,
+            'cursor': str(payload.get('meta', {}).get('next_token') or ''),
+        }
+
+    def reply_to_post(self, access_token: str, external_id: str, text: str):
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+        response = requests.post(
+            f"{self.API_BASE}/tweets",
+            headers=headers,
+            json={'text': text, 'reply': {'in_reply_to_tweet_id': external_id}},
+            timeout=15,
+        )
+        if not response.ok:
+            raise Exception(f"X reply failed ({response.status_code}).")
+        row = response.json().get('data', {})
+        reply_id = str(row.get('id') or '')
+        if not reply_id:
+            raise Exception('X did not confirm the reply.')
+        return {'id': reply_id, 'url': f'https://x.com/i/status/{reply_id}'}
+
+    def fetch_post_metrics(self, access_token: str, post_ids):
+        """Fetch public metrics for at most 100 posts in one X API request."""
+        ids = [str(value) for value in post_ids if value][:100]
+        if not ids:
+            return []
+        response = requests.get(
+            f"{self.API_BASE}/tweets",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"ids": ",".join(ids), "tweet.fields": "public_metrics,created_at"},
+            timeout=15,
+        )
+        if not response.ok:
+            raise Exception(f"Could not sync X post metrics ({response.status_code}).")
+        rows = []
+        for post in response.json().get('data', []):
+            metrics = post.get('public_metrics') or {}
+            rows.append({
+                'external_post_id': str(post.get('id') or ''),
+                'impressions': int(metrics.get('impression_count') or 0),
+                'reach': int(metrics.get('impression_count') or 0),
+                'engagement': sum(int(metrics.get(key) or 0) for key in (
+                    'like_count', 'reply_count', 'retweet_count', 'quote_count',
+                    'bookmark_count',
+                )),
+                'clicks': 0,
+                'conversions': 0,
+                'observed_at': post.get('created_at'),
+                'source_payload': {'public_metrics': metrics},
+            })
+        return rows

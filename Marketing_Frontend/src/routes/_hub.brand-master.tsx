@@ -440,8 +440,8 @@ function LearningTab({ brandId, onChanged }: { brandId: string; onChanged: () =>
       <LearningUsagePanel brandId={brandId} />
       {active.length === 0 ? (
         <Empty
-          title="Nothing learned yet"
-          hint="React to calibration directions and review a few generations. Scaleezy needs more than one decision before it calls something a preference."
+          title="No learned preferences yet"
+          hint="Calibration builds preferences over time. Corrective review guidance appears under Rules immediately after the first tagged issue."
         />
       ) : (
         groups.map(([label, rows]) =>

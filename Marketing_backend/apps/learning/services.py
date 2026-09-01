@@ -1,9 +1,10 @@
 """
 Writing to the learning fabric, and reading back what a brand has learned.
 
-The one rule everything here exists to hold: evidence accumulates before it
-becomes an instruction. A single reviewer comment is an opinion. The second
-one is a pattern. Only a person can state a hard constraint outright.
+The one rule everything here exists to hold: instructions must cite real
+evidence. A direct corrective human review may become a low-confidence soft
+instruction immediately; generic inference still needs corroboration. Only a
+person can state a hard constraint outright.
 """
 import logging
 
@@ -400,7 +401,6 @@ def models_brand_filter(brand):
     return Q(brand=brand) | Q(brand__isnull=True, scope=LearningScope.TENANT)
 
 
-@transaction.atomic
 def upsert_learned_rule(
     *,
     workspace,
@@ -416,11 +416,10 @@ def upsert_learned_rule(
     """A rule inferred from repeated evidence, keyed so it sharpens rather
     than duplicates.
 
-    The entry point for anything that learns from a pattern rather than from a
-    person stating an instruction — today, the review/training engine. It
-    exists so that path writes into the fabric the Brand Brain compiles from,
-    instead of into the compiled snapshot itself, where the next compile would
-    silently overwrite it.
+    The generic entry point for anything that learns from a pattern rather
+    than from a person stating an instruction. Direct human review has a
+    narrower entry point below; other inference retains the corroboration
+    threshold.
 
     Guarantees the PR3 authority model, whoever calls it:
 
@@ -431,6 +430,124 @@ def upsert_learned_rule(
     * one active rule per `key`, whose text and evidence are updated in place,
       so the third occurrence sharpens the rule rather than adding a second.
     """
+    return _upsert_learned_rule(
+        workspace=workspace,
+        brand=brand,
+        key=key,
+        text=text,
+        evidence_events=evidence_events,
+        confidence=confidence,
+        priority=priority,
+        structured=structured,
+        scope=scope,
+        minimum_evidence=BrandRule.MIN_EVIDENCE_FOR_LEARNED_RULE,
+    )
+
+
+def upsert_review_rule(
+    *,
+    workspace,
+    brand,
+    key,
+    text,
+    evidence_events,
+    confidence=0.5,
+    priority=0,
+    structured=None,
+):
+    """Apply the first explicit human correction as a SOFT learned rule.
+
+    This is deliberately narrower than generic inference: every cited event
+    must be a negative review Feedback event for this brand. A publish,
+    performance observation, AI inference, neutral event, or fabricated
+    internal event can never use the one-evidence path.
+    """
+    # The fast path exists only for an actual, attributable human correction.
+    # Do not trust the denormalised LearningEvent shape by itself: internal
+    # callers can construct events, so resolve every source back to the
+    # immutable Feedback row it claims to represent.
+    from apps.feedback.models import Feedback
+
+    events = list(evidence_events or [])
+    details = structured if isinstance(structured, dict) else {}
+    if brand is None:
+        raise LearningError("A review rule must belong to a brand.")
+    if details.get('source') != 'review_feedback':
+        raise LearningError("The immediate review path requires review feedback provenance.")
+
+    corrective_types = {
+        LearningEvent.EventType.EDITED,
+        LearningEvent.EventType.REJECTED,
+    }
+    element = str(details.get('element') or '').strip()
+    if not element:
+        raise LearningError("An immediate review rule needs a tagged review element.")
+
+    expected_types = {
+        Feedback.Verdict.NEEDS_EDITS: LearningEvent.EventType.EDITED,
+        Feedback.Verdict.REJECT: LearningEvent.EventType.REJECTED,
+    }
+    has_attributable_human = False
+    for event in events:
+        feedback = Feedback.objects.filter(
+            pk=event.source_id,
+            workspace_id=workspace.pk,
+            brand_id=brand.pk,
+        ).first()
+        if (
+            event.event_type not in corrective_types
+            or event.outcome != LearningEvent.Outcome.NEGATIVE
+            or event.source_type != SubjectType.FEEDBACK
+            or event.source_id is None
+            or event.subject_type != SubjectType.CONTENT_ITEM
+            or feedback is None
+            or event.event_type != expected_types.get(feedback.verdict)
+            or event.subject_id != feedback.content_item_id
+            or event.created_by_id != feedback.user_id
+            or event.dedupe_key != f'feedback:{feedback.pk}'
+            or element not in (feedback.element_keys or [])
+            or not (feedback.fix_request or feedback.feedback_text or '').strip()
+        ):
+            raise LearningError(
+                "Only a negative, feedback-backed human correction can learn immediately."
+            )
+        has_attributable_human = has_attributable_human or feedback.user_id is not None
+
+    # Account deletion nulls historical attribution on both records. Those
+    # older events remain valid lineage, but a one-evidence fast-path batch
+    # must still contain at least one currently attributable human review.
+    if not has_attributable_human:
+        raise LearningError("Immediate review learning needs attributable human evidence.")
+
+    return _upsert_learned_rule(
+        workspace=workspace,
+        brand=brand,
+        key=key,
+        text=text,
+        evidence_events=events,
+        confidence=confidence,
+        priority=priority,
+        structured=details,
+        scope=LearningScope.BRAND,
+        minimum_evidence=1,
+    )
+
+
+@transaction.atomic
+def _upsert_learned_rule(
+    *,
+    workspace,
+    brand,
+    key,
+    text,
+    evidence_events,
+    confidence,
+    priority,
+    structured,
+    scope,
+    minimum_evidence,
+):
+    """Shared, tenant-safe writer. Public entry points choose the policy."""
     check_scope_matches_brand(scope, brand)
     if brand is not None and brand.workspace_id != workspace.id:
         raise LearningError("Brand must belong to the same workspace as the rule.")
@@ -445,11 +562,11 @@ def upsert_learned_rule(
             raise LearningError("Evidence must come from the same brand.")
 
     event_ids = sorted({str(event.pk) for event in events})
-    if len(event_ids) < BrandRule.MIN_EVIDENCE_FOR_LEARNED_RULE:
+    if len(event_ids) < minimum_evidence:
         raise LearningError(
-            f"A learned rule needs at least {BrandRule.MIN_EVIDENCE_FOR_LEARNED_RULE} "
+            f"A learned rule needs at least {minimum_evidence} "
             f"distinct supporting events; this one rests on {len(event_ids)}. "
-            "One-off feedback is an opinion."
+            "The evidence policy was not met."
         )
 
     payload = {
@@ -457,6 +574,14 @@ def upsert_learned_rule(
         'key': str(key),
         'evidence_count': len(event_ids),
     }
+
+    # Serialise the lookup/create sequence on a stable parent row. The rule
+    # key lives inside JSON, so a normal unique constraint cannot protect two
+    # concurrent first reviews from both observing "no rule" and creating a
+    # duplicate. Locking the brand (or workspace for a tenant rule) gives the
+    # sequence one database owner without changing the frozen schema.
+    lock_owner = brand if brand is not None else workspace
+    type(lock_owner).objects.select_for_update().only('pk').get(pk=lock_owner.pk)
 
     # Matched in Python rather than with a JSON lookup: the set of active
     # learned rules for one brand is small, and this behaves identically on
@@ -493,6 +618,11 @@ def upsert_learned_rule(
         # the list, a rule built on five reviews would cite two and the claim
         # and the evidence behind it would disagree.
         merged = sorted({*(existing.evidence_event_ids or []), *event_ids})
+        # A retry or an out-of-order replay that brings no new evidence is a
+        # semantic no-op. In particular, replaying review A after newer review
+        # B must not replace B's instruction text with A's stale wording.
+        if set(event_ids).issubset(set(existing.evidence_event_ids or [])):
+            return existing
         payload['evidence_count'] = len(merged)
         existing.text = text
         existing.structured = payload

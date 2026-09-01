@@ -21,6 +21,11 @@ class Capability(models.TextChoices):
     VIDEO = 'VIDEO', 'Video generation'
     VIDEO_ANALYSIS = 'VIDEO_ANALYSIS', 'Video analysis'
     EMBEDDING = 'EMBEDDING', 'Text embedding (feedback similarity)'
+    RESEARCH = 'RESEARCH', 'Public-web research and creative discovery'
+    ENGAGEMENT_RESPONSE = (
+        'ENGAGEMENT_RESPONSE',
+        'Engagement reply drafting and triage',
+    )
 
 
 class Strategy(models.TextChoices):

@@ -135,7 +135,15 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        payload_serializer = ReviewActionSerializer(data=request.data)
+        payload_serializer = ReviewActionSerializer(
+            data=request.data,
+            context={
+                'requires_learning_signal': new_status in {
+                    ContentItem.Status.REJECTED,
+                    ContentItem.Status.NEEDS_EDITS,
+                }
+            },
+        )
         payload_serializer.is_valid(raise_exception=True)
         payload = payload_serializer.validated_data
         note = payload.get('note', '')
@@ -289,6 +297,107 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 "regeneration_queued": queued,
             },
         )
+
+    @action(detail=True, methods=['post'], url_path='regenerate-slide')
+    def regenerate_slide(self, request, pk=None):
+        """Retry one carousel image without regenerating copy or other slides."""
+        item = self.get_object()
+        if item.status != ContentItem.Status.DRAFT:
+            return APIResponse(
+                success=False,
+                message="Only a draft carousel can regenerate a slide.",
+                error={"code": "CONTENT_LOCKED", "message": item.get_status_display()},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if item.content_format != ContentItem.Format.CAROUSEL:
+            return APIResponse(
+                success=False,
+                message="This content is not a carousel.",
+                error={"code": "NOT_CAROUSEL", "message": "Carousel required."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            wanted = int(request.data.get('position'))
+        except (TypeError, ValueError):
+            return APIResponse(
+                success=False, message="Choose a valid slide position.",
+                error={"code": "INVALID_SLIDE", "message": "Position required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        slides = list(item.slides or [])
+        target = next(
+            (row for index, row in enumerate(slides)
+             if int(row.get('position') or index + 1) == wanted),
+            None,
+        )
+        if target is None:
+            return APIResponse(
+                success=False, message="Slide not found.",
+                error={"code": "INVALID_SLIDE", "message": "Slide not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        from apps.context.services.generation import (
+            NoProviderConfigured,
+            OutputRejected,
+            create_generated_asset,
+            retry_image,
+        )
+
+        config = dict(item.layout_config or {})
+        try:
+            image = retry_image(
+                item.workspace,
+                item.brand,
+                {
+                    'contentType': 'carousel_slide',
+                    'slide': {
+                        'position': wanted,
+                        'count': len(slides),
+                        'description': str(target.get('description') or ''),
+                    },
+                    'creative_direction': config.get('creative_direction') or {},
+                    'layout': item.layout_plugin,
+                },
+                instruction=str(target.get('description') or '')[:2400],
+            )
+        except NoProviderConfigured as exc:
+            return APIResponse(
+                success=False, message=str(exc),
+                error={"code": "NO_PROVIDER", "message": str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except OutputRejected as exc:
+            return APIResponse(
+                success=False, message=str(exc),
+                error={"code": "OUTPUT_REJECTED", "message": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        for index, row in enumerate(slides):
+            if int(row.get('position') or index + 1) == wanted:
+                slides[index] = {**row, 'position': wanted, 'preview_url': image['image_url']}
+                break
+        item.slides = slides
+        if wanted == 1:
+            asset = create_generated_asset(
+                item.workspace,
+                {'metadata': {'generated_image': image}},
+                user=request.user,
+            )
+            if asset is not None:
+                item.asset = asset
+                item.preview_url = asset.file_url or ''
+        retries = list(config.get('carousel_retries') or [])
+        retries.append({
+            'position': wanted,
+            'provider': image.get('provider', ''),
+            'at': timezone.now().isoformat(),
+        })
+        config['carousel_retries'] = retries[-50:]
+        item.layout_config = config
+        item.save(update_fields=['slides', 'asset', 'preview_url', 'layout_config', 'updated_at'])
+        return APIResponse(success=True, data=ContentItemSerializer(item).data)
 
     @staticmethod
     def _queue_regeneration(revision):

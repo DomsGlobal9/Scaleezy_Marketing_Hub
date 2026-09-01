@@ -107,10 +107,10 @@ function Chip({
 /**
  * What was wrong with this piece of content, in the shared vocabulary.
  *
- * The tags are what the training engine keys on: the same element raised
- * twice becomes a brand rule, so tagging is worth more than the free text
- * beside it. One flat row of the likeliest tags, then search for the rest —
- * the reviewer recognises, they never navigate a taxonomy.
+ * The tags are what the training engine keys on: a selected corrective issue
+ * becomes a soft brand rule immediately, and later occurrences strengthen it.
+ * One flat row of the likeliest tags, then search for the rest - the reviewer
+ * recognises, they never navigate a taxonomy.
  */
 export function FeedbackTagPicker({
   groups,
@@ -270,8 +270,7 @@ export function FeedbackTagPicker({
             ))}
           </div>
           <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
-            {selected.length} tagged — raising the same one twice teaches the generator to
-            avoid it.
+            {selected.length} tagged — each selected issue teaches the next generation immediately.
           </p>
         </div>
       ) : null}

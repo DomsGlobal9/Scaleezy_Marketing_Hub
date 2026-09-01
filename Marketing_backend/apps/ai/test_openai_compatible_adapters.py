@@ -26,7 +26,7 @@ def response(payload, status_code=200):
 
 
 class OpenAICompatibleAdapterTests(SimpleTestCase):
-    def test_all_installed_providers_are_discoverable_and_text_only(self):
+    def test_all_installed_providers_are_discoverable_and_support_safe_text_tasks(self):
         adapters = {
             'groq': GroqAdapter,
             'mistral': MistralAdapter,
@@ -38,7 +38,10 @@ class OpenAICompatibleAdapterTests(SimpleTestCase):
         for key, adapter_class in adapters.items():
             with self.subTest(key=key):
                 self.assertIs(get_adapter_class(key), adapter_class)
-                self.assertEqual(tuple(adapter_class.capabilities), (Capability.TEXT,))
+                self.assertEqual(
+                    tuple(adapter_class.capabilities),
+                    (Capability.TEXT, Capability.ENGAGEMENT_RESPONSE),
+                )
                 self.assertTrue(adapter_class.base_url.startswith('https://'))
                 self.assertNotIn('{', adapter_class.base_url)
 
@@ -127,6 +130,35 @@ class OpenAICompatibleAdapterTests(SimpleTestCase):
 
         with self.assertRaisesMessage(AIProviderError, 'DeepSeek request timed out.'):
             DeepSeekAdapter(credentials='workspace-test-key').generate_text({})
+
+    def test_chat_completion_protocol_does_not_claim_live_web_research(self):
+        adapter = MistralAdapter(credentials='workspace-test-key')
+        self.assertNotIn(Capability.RESEARCH, adapter.capabilities)
+        with self.assertRaisesMessage(
+            AIProviderError,
+            'does not expose verified live-web research',
+        ):
+            adapter.research({'query': 'current poster trends'})
+
+    @patch('apps.ai.adapters.openai_compatible.httpx.post')
+    def test_engagement_drafting_is_supported_without_sending(self, post):
+        post.return_value = response({
+            'id': 'reply-test',
+            'model': 'mistral-small-latest',
+            'choices': [{'message': {'content': json.dumps({
+                'reply': 'Thanks — the team will review this.',
+                'sentiment': 'NEGATIVE',
+                'urgency': 'HIGH',
+                'risk_flags': ['complaint'],
+            })}}],
+        })
+
+        result = MistralAdapter(credentials='workspace-test-key').draft_engagement_response({
+            'message': 'This is not right.',
+        })
+
+        self.assertEqual(result['reply'], 'Thanks — the team will review this.')
+        self.assertEqual(result['risk_flags'], ['complaint'])
 
 
 class OpenAICompatibleCatalogueMigrationTests(TestCase):

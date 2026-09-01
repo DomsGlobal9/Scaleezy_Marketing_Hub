@@ -18,11 +18,14 @@ import base64
 import binascii
 import logging
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 from django.core.files.base import ContentFile
+from django.core.exceptions import ValidationError as DjangoValidationError
 
+from apps.ai.endpoint_security import validate_public_https_endpoint
 from apps.ai.models import Capability
 from apps.ai.router import AIRouter, NoProviderAvailable
 
@@ -65,6 +68,74 @@ class OutputRejected(Exception):
 
 
 MAX_GENERATED_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_GENERATED_VIDEO_BYTES = 250 * 1024 * 1024
+MAX_MEDIA_REDIRECTS = 4
+
+
+def _public_media_url(value: str) -> str:
+    """Validate a signed media URL without discarding its query string."""
+    raw = str(value or '').strip()
+    parsed = urlsplit(raw)
+    if parsed.username or parsed.password:
+        raise OutputRejected("Generated media URL cannot contain credentials.")
+    # The endpoint validator deliberately rejects queries because it protects
+    # saved API base URLs. Provider media commonly uses signed query strings,
+    # so validate the same host/path boundary and then retain the original URL.
+    validation_target = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, '', ''))
+    try:
+        validate_public_https_endpoint(validation_target)
+    except DjangoValidationError as exc:
+        raise OutputRejected("Generated media URL must be public HTTPS.") from exc
+    return raw
+
+
+def _download_generated_media(url: str, *, max_bytes: int, expected_type: str):
+    """Stream one provider file with redirect revalidation and a byte cap."""
+    current = _public_media_url(url)
+    for redirect_count in range(MAX_MEDIA_REDIRECTS + 1):
+        try:
+            with httpx.stream(
+                'GET', current, timeout=60.0, follow_redirects=False
+            ) as response:
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    if redirect_count >= MAX_MEDIA_REDIRECTS:
+                        raise OutputRejected("Generated media redirected too many times.")
+                    location = response.headers.get('location', '')
+                    if not location:
+                        raise OutputRejected("Generated media returned an invalid redirect.")
+                    current = _public_media_url(urljoin(current, location))
+                    continue
+                response.raise_for_status()
+                mime_type = response.headers.get('content-type', '').split(';', 1)[0].strip()
+                if not mime_type.startswith(f'{expected_type}/'):
+                    raise OutputRejected(
+                        f"Generated media is not {expected_type}."
+                    )
+                advertised = response.headers.get('content-length')
+                if advertised:
+                    try:
+                        if int(advertised) > max_bytes:
+                            raise OutputRejected("Generated media exceeds the size limit.")
+                    except ValueError:
+                        pass
+                chunks = []
+                total = 0
+                for chunk in response.iter_bytes():
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise OutputRejected("Generated media exceeds the size limit.")
+                    chunks.append(chunk)
+                payload = b''.join(chunks)
+                if not payload:
+                    raise OutputRejected("Generated media is empty.")
+                return payload, mime_type
+        except OutputRejected:
+            raise
+        except httpx.HTTPError as exc:
+            raise OutputRejected(
+                "Provider media could not be copied to durable storage."
+            ) from exc
+    raise OutputRejected("Generated media could not be retrieved.")
 
 
 def persist_generated_image(workspace, result):
@@ -93,12 +164,10 @@ def persist_generated_image(workspace, result):
         if encoded:
             payload = base64.b64decode(encoded, validate=True)
         elif result.get('image_url_ephemeral'):
-            if not image_url.startswith('https://'):
-                raise OutputRejected("Ephemeral image URL must use HTTPS.")
-            response = httpx.get(image_url, timeout=30.0, follow_redirects=True)
-            response.raise_for_status()
-            payload = response.content
-            mime_type = mime_type or response.headers.get('content-type', '').split(';', 1)[0]
+            payload, downloaded_type = _download_generated_media(
+                image_url, max_bytes=MAX_GENERATED_IMAGE_BYTES, expected_type='image'
+            )
+            mime_type = mime_type or downloaded_type
         else:
             return result
     except (ValueError, binascii.Error) as exc:
@@ -139,6 +208,68 @@ def persist_generated_image(workspace, result):
     }
 
 
+def persist_generated_video(workspace, result):
+    """Copy provider video output into the workspace's durable storage."""
+    if not isinstance(result, dict):
+        raise OutputRejected("Video provider returned no structured result.")
+
+    video_url = str(result.get('video_url') or '')
+    encoded = str(result.get('video_base64') or '')
+    mime_type = str(result.get('mime_type') or '')
+
+    if not encoded and video_url.startswith('data:'):
+        try:
+            header, encoded = video_url.split(',', 1)
+            mime_type = mime_type or header[5:].split(';', 1)[0]
+        except ValueError as exc:
+            raise OutputRejected("Video provider returned an invalid data URL.") from exc
+
+    try:
+        if encoded:
+            payload = base64.b64decode(encoded, validate=True)
+        elif video_url:
+            # Unlike stable image CDN URLs, video delivery URLs are commonly
+            # short-lived. Always copy the completed clip before recording it.
+            payload, downloaded_type = _download_generated_media(
+                video_url, max_bytes=MAX_GENERATED_VIDEO_BYTES, expected_type='video'
+            )
+            mime_type = mime_type or downloaded_type
+        else:
+            raise OutputRejected("Video provider returned no video.")
+    except (ValueError, binascii.Error) as exc:
+        raise OutputRejected("Video provider returned invalid base64 data.") from exc
+
+    if not payload or len(payload) > MAX_GENERATED_VIDEO_BYTES:
+        raise OutputRejected("Generated video is empty or exceeds the 250 MB limit.")
+    if not mime_type.startswith('video/'):
+        raise OutputRejected("Generated media is not a video.")
+
+    suffix = {
+        'video/mp4': 'mp4',
+        'video/webm': 'webm',
+        'video/quicktime': 'mov',
+    }.get(mime_type, 'video')
+    filename = f'generated-{uuid.uuid4().hex}.{suffix}'
+    upload = ContentFile(payload, name=filename)
+    upload.content_type = mime_type
+
+    from apps.marketing.services.storage import SupabaseStorageService
+
+    stored = SupabaseStorageService.upload_and_describe(
+        str(workspace.pk), upload, filename, prefix='generated'
+    )
+    return {
+        **result,
+        'video_url': stored['url'],
+        'storage_path': stored['path'],
+        'mime_type': mime_type,
+        'file_size': len(payload),
+        'file_name': filename,
+        'video_base64': '',
+        'video_url_ephemeral': False,
+    }
+
+
 def intelligence_in_force(brand, brain_version):
     """Which rules and preferences a generation actually read.
 
@@ -167,20 +298,29 @@ def intelligence_in_force(brand, brain_version):
 def create_generated_asset(workspace, result_data, *, user=None):
     """Create the durable MarketingAsset described by a normalized payload."""
     metadata = result_data.get('metadata') or {}
+    video = metadata.get('generated_video') or {}
     image = metadata.get('generated_image') or {}
-    if not isinstance(image, dict) or not image.get('image_url'):
+    media = video if isinstance(video, dict) and video.get('video_url') else image
+    if not isinstance(media, dict):
+        return None
+    media_url = media.get('video_url') or media.get('image_url')
+    if not media_url:
         return None
 
     from apps.marketing.models import MarketingAsset
 
     return MarketingAsset.objects.create(
         workspace=workspace,
-        asset_type=MarketingAsset.AssetType.IMAGE,
-        file_name=str(image.get('file_name') or 'generated-image')[:255],
-        file_url=str(image['image_url'])[:1000],
-        storage_path=str(image.get('storage_path') or '')[:1000] or None,
-        mime_type=str(image.get('mime_type') or '')[:100] or None,
-        file_size=image.get('file_size') or None,
+        asset_type=(
+            MarketingAsset.AssetType.VIDEO
+            if media is video else MarketingAsset.AssetType.IMAGE
+        ),
+        file_name=str(media.get('file_name') or 'generated-media')[:255],
+        file_url=str(media_url)[:1000],
+        storage_path=str(media.get('storage_path') or '')[:1000] or None,
+        mime_type=str(media.get('mime_type') or '')[:100] or None,
+        file_size=media.get('file_size') or None,
+        duration=media.get('duration') or None,
         source=MarketingAsset.Source.AI_GENERATED,
         created_by=user,
     )
@@ -192,6 +332,7 @@ def create_generated_asset(workspace, result_data, *, user=None):
 REQUIRED_FIELDS = {
     Capability.TEXT: ('headline',),
     Capability.IMAGE: ('image_url',),
+    Capability.VIDEO: ('video_url',),
 }
 
 
@@ -202,7 +343,15 @@ def validate_output(capability, result, context):
 
     for field in REQUIRED_FIELDS.get(capability, ()):
         raw = result.get('raw') or {}
-        if not (result.get(field) or raw.get('postTitle' if field == 'headline' else field)):
+        inline_field = {
+            Capability.IMAGE: 'image_base64',
+            Capability.VIDEO: 'video_base64',
+        }.get(capability, '')
+        if not (
+            result.get(field)
+            or (inline_field and result.get(inline_field))
+            or raw.get('postTitle' if field == 'headline' else field)
+        ):
             raise OutputRejected(f"{capability} output is missing '{field}'.")
 
     if capability == Capability.TEXT:
@@ -394,7 +543,267 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
     return {'text': text, 'image': image, 'trace': trace}
 
 
-def generate_marketing_payload(workspace, brief, *, instruction=''):
+def _compact_text_result(result):
+    """Checkpoint only the provider-neutral copy, never a large raw payload."""
+    raw = result.get('raw') or {}
+    return {
+        'headline': result.get('headline') or raw.get('postTitle', ''),
+        'caption': result.get('caption') or raw.get('postDescription', ''),
+        'hashtags': result.get('hashtags') or raw.get('postHashtags', ''),
+        'provider': result.get('provider', ''),
+        'provider_name': result.get('provider_name', ''),
+        'latency_ms': result.get('latency_ms'),
+    }
+
+
+def _production_state(brief):
+    state = brief.get('production_state') or {}
+    return state if isinstance(state, dict) else {}
+
+
+def _save_progress(progress, state):
+    if progress is not None:
+        progress(state)
+
+
+def generate_video_and_copy(workspace, brand, brief_extra, *, instruction='', progress=None):
+    """Generate copy plus one real VIDEO capability result with checkpoints."""
+    router = AIRouter(workspace)
+    router.require_spend_approved()
+    text_context = build_generation_context(
+        workspace, brand, TaskType.COPY, instruction=instruction,
+    )
+    video_context = build_generation_context(
+        workspace, brand, TaskType.VIDEO, instruction=instruction,
+    )
+    state = _production_state(brief_extra)
+    trace = {
+        'brain_version': text_context['brain_version'],
+        'context_schema_version': CONTEXT_SCHEMA_VERSION,
+        'universal_version': text_context.get('universal_version', ''),
+        'learned_pattern_version': text_context.get('learned_pattern_version', ''),
+        'capabilities': {},
+    }
+
+    text = state.get('text') if isinstance(state.get('text'), dict) else None
+    if text:
+        trace['capabilities'][Capability.TEXT] = {
+            'status': 'OK', 'resumed': True, 'provider': text.get('provider', ''),
+        }
+    else:
+        text = router.dispatch(
+            Capability.TEXT,
+            {**context_as_brief(text_context), **brief_extra},
+        )
+        validate_output(Capability.TEXT, text, text_context)
+        text = _compact_text_result(text)
+        state['text'] = text
+        _save_progress(progress, state)
+        trace['capabilities'][Capability.TEXT] = {
+            'status': 'OK', 'provider': text.get('provider', ''),
+            'latency_ms': text.get('latency_ms'),
+        }
+
+    video = state.get('video') if isinstance(state.get('video'), dict) else None
+    if video and video.get('video_url'):
+        trace['capabilities'][Capability.VIDEO] = {
+            'status': 'OK', 'resumed': True, 'provider': video.get('provider', ''),
+        }
+    else:
+        video_brief = {
+            **context_as_brief(video_context),
+            **brief_extra,
+            'generated_copy': {
+                key: text.get(key, '') for key in ('headline', 'caption', 'hashtags')
+            },
+            'instruction': (
+                str(brief_extra.get('video_script') or '').strip()
+                or instruction
+            )[:4000],
+        }
+        try:
+            video = router.dispatch(Capability.VIDEO, video_brief)
+        except NoProviderAvailable as exc:
+            raise NoProviderConfigured(str(exc)) from exc
+        validate_output(Capability.VIDEO, video, video_context)
+        video = persist_generated_video(workspace, video)
+        state['video'] = {
+            key: video.get(key)
+            for key in (
+                'video_url', 'storage_path', 'mime_type', 'file_size', 'file_name',
+                'duration', 'provider', 'provider_name', 'latency_ms',
+            )
+            if video.get(key) not in (None, '')
+        }
+        video = state['video']
+        _save_progress(progress, state)
+        trace['capabilities'][Capability.VIDEO] = {
+            'status': 'OK', 'provider': video.get('provider', ''),
+            'latency_ms': video.get('latency_ms'),
+        }
+    return {'text': text, 'video': video, 'trace': trace, 'production_state': state}
+
+
+def generate_carousel_and_copy(
+    workspace, brand, brief_extra, *, instruction='', progress=None
+):
+    """Generate every ordered carousel slide through IMAGE with resume state."""
+    slides = brief_extra.get('slides') or []
+    if not isinstance(slides, list) or not slides:
+        raise OutputRejected("A carousel requires at least one slide.")
+    if any(not isinstance(row, dict) for row in slides):
+        raise OutputRejected("Every carousel slide must be an object.")
+
+    router = AIRouter(workspace)
+    router.require_spend_approved()
+    # Prime the immutable route snapshot on the main thread before concurrent
+    # slide calls, matching the existing poster accelerator's safety pattern.
+    router._routing_snapshot()
+    text_context = build_generation_context(
+        workspace, brand, TaskType.COPY, instruction=instruction,
+    )
+    image_context = build_generation_context(
+        workspace, brand, TaskType.IMAGE, instruction=instruction,
+    )
+    state = _production_state(brief_extra)
+    slide_state = state.get('slides')
+    if not isinstance(slide_state, dict):
+        slide_state = {}
+        state['slides'] = slide_state
+    trace = {
+        'brain_version': text_context['brain_version'],
+        'context_schema_version': CONTEXT_SCHEMA_VERSION,
+        'universal_version': text_context.get('universal_version', ''),
+        'learned_pattern_version': text_context.get('learned_pattern_version', ''),
+        'capabilities': {},
+        'carousel_slides': [],
+    }
+
+    text = state.get('text') if isinstance(state.get('text'), dict) else None
+    if text:
+        trace['capabilities'][Capability.TEXT] = {
+            'status': 'OK', 'resumed': True, 'provider': text.get('provider', ''),
+        }
+    else:
+        text = router.dispatch(
+            Capability.TEXT,
+            {**context_as_brief(text_context), **brief_extra},
+        )
+        validate_output(Capability.TEXT, text, text_context)
+        text = _compact_text_result(text)
+        state['text'] = text
+        _save_progress(progress, state)
+        trace['capabilities'][Capability.TEXT] = {
+            'status': 'OK', 'provider': text.get('provider', ''),
+            'latency_ms': text.get('latency_ms'),
+        }
+
+    ordered = []
+    pending = []
+    for index, raw_slide in enumerate(slides):
+        position = int(raw_slide.get('position') or index + 1)
+        description = str(raw_slide.get('description') or '').strip()
+        key = str(position)
+        saved = slide_state.get(key)
+        if isinstance(saved, dict) and saved.get('image_url'):
+            ordered.append((position, description, saved))
+            trace['carousel_slides'].append({
+                'position': position, 'status': 'OK', 'resumed': True,
+                'provider': saved.get('provider', ''),
+            })
+        else:
+            pending.append((position, description))
+
+    def generate_slide(position, description):
+        slide_brief = {
+            **context_as_brief(image_context),
+            **brief_extra,
+            'contentType': 'carousel_slide',
+            'slide': {
+                'position': position,
+                'count': len(slides),
+                'description': description,
+            },
+            'instruction': (
+                f"Create slide {position} of {len(slides)}. {description}"
+            )[:2400],
+        }
+        image = router.dispatch(Capability.IMAGE, slide_brief)
+        validate_output(Capability.IMAGE, image, image_context)
+        image = persist_generated_image(workspace, image)
+        return {
+            key: image.get(key)
+            for key in (
+                'image_url', 'storage_path', 'mime_type', 'file_size', 'file_name',
+                'provider', 'provider_name', 'latency_ms',
+            )
+            if image.get(key) not in (None, '')
+        }
+
+    failures = []
+    if pending:
+        with ThreadPoolExecutor(max_workers=min(4, len(pending))) as pool:
+            futures = {
+                pool.submit(generate_slide, position, description): (position, description)
+                for position, description in pending
+            }
+            for future in as_completed(futures):
+                position, description = futures[future]
+                try:
+                    image = future.result()
+                    slide_state[str(position)] = image
+                    ordered.append((position, description, image))
+                    trace['carousel_slides'].append({
+                        'position': position, 'status': 'OK',
+                        'provider': image.get('provider', ''),
+                        'latency_ms': image.get('latency_ms'),
+                    })
+                    _save_progress(progress, state)
+                except Exception as exc:
+                    failures.append((position, exc))
+                    trace['carousel_slides'].append({
+                        'position': position, 'status': 'FAILED',
+                        'error': str(exc)[:300], 'error_type': type(exc).__name__,
+                    })
+
+    trace['carousel_slides'].sort(key=lambda row: row['position'])
+    if failures:
+        if len(failures) == len(pending) and all(
+            isinstance(exc, NoProviderAvailable) for _position, exc in failures
+        ):
+            raise NoProviderConfigured(
+                "No AI provider is enabled for IMAGE in this workspace."
+            )
+        failed_positions = ', '.join(str(position) for position, _ in sorted(failures))
+        raise OutputRejected(
+            f"Carousel slide generation failed for position(s) {failed_positions}. "
+            "Completed slides were saved and will not be regenerated on retry."
+        )
+
+    ordered.sort(key=lambda row: row[0])
+    generated_slides = [
+        {
+            'position': position,
+            'description': description,
+            'preview_url': image['image_url'],
+            'provider': image.get('provider', ''),
+            'storage_path': image.get('storage_path', ''),
+        }
+        for position, description, image in ordered
+    ]
+    trace['capabilities'][Capability.IMAGE] = {
+        'status': 'OK', 'count': len(generated_slides),
+    }
+    return {
+        'text': text,
+        'slides': generated_slides,
+        'slide_media': [image for _position, _description, image in ordered],
+        'trace': trace,
+        'production_state': state,
+    }
+
+
+def generate_marketing_payload(workspace, brief, *, instruction='', progress=None):
     """Return the legacy marketing payload without choosing a vendor.
 
     This is the shared boundary used by both foreground and queued generation.
@@ -404,7 +813,12 @@ def generate_marketing_payload(workspace, brief, *, instruction=''):
     from apps.brands.models import Brand
 
     brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
+    content_type = str(brief.get('contentType') or '').strip().lower()
     if brand is None:
+        if content_type in {'video', 'carousel'}:
+            raise OutputRejected(
+                f"A brand is required before {content_type} production can start."
+            )
         text = AIRouter(workspace).dispatch(Capability.TEXT, brief)
         raw = text.get('raw') or {}
         return {
@@ -421,11 +835,59 @@ def generate_marketing_payload(workspace, brief, *, instruction=''):
             },
         }
 
+    effective_instruction = instruction or str(brief.get('campaign_name', ''))[:500]
+    if content_type == 'video':
+        outcome = generate_video_and_copy(
+            workspace, brand, brief,
+            instruction=effective_instruction, progress=progress,
+        )
+        text = outcome['text'] or {}
+        video = outcome['video'] or {}
+        return {
+            'provider': text.get('provider', '') or video.get('provider', ''),
+            'provider_name': text.get('provider_name', '') or video.get('provider_name', ''),
+            'brain_version': outcome['trace'].get('brain_version', ''),
+            'trace': outcome['trace'],
+            'payload': {
+                'postTitle': text.get('headline', ''),
+                'postDescription': text.get('caption', ''),
+                'postHashtags': text.get('hashtags', ''),
+                'posterImageUrl': '',
+                'videoUrl': video.get('video_url', ''),
+                'slideImageUrls': [],
+                'metadata': {'generated_video': video},
+            },
+        }
+    if content_type == 'carousel':
+        outcome = generate_carousel_and_copy(
+            workspace, brand, brief,
+            instruction=effective_instruction, progress=progress,
+        )
+        text = outcome['text'] or {}
+        media = outcome['slide_media']
+        first = media[0] if media else {}
+        return {
+            'provider': text.get('provider', '') or first.get('provider', ''),
+            'provider_name': text.get('provider_name', '') or first.get('provider_name', ''),
+            'brain_version': outcome['trace'].get('brain_version', ''),
+            'trace': outcome['trace'],
+            'payload': {
+                'postTitle': text.get('headline', ''),
+                'postDescription': text.get('caption', ''),
+                'postHashtags': text.get('hashtags', ''),
+                'posterImageUrl': first.get('image_url', ''),
+                'videoUrl': '',
+                'slideImageUrls': [row['preview_url'] for row in outcome['slides']],
+                'slides': outcome['slides'],
+                'metadata': {
+                    'generated_image': first,
+                    'carousel_slides': media,
+                },
+            },
+        }
+
     outcome = generate_copy_and_image(
-        workspace,
-        brand,
-        brief,
-        instruction=instruction or str(brief.get('campaign_name', ''))[:500],
+        workspace, brand, brief, instruction=effective_instruction,
     )
     text = outcome['text'] or {}
     image = outcome['image'] or {}
@@ -444,6 +906,8 @@ def generate_marketing_payload(workspace, brief, *, instruction=''):
             'postDescription': text.get('caption') or raw.get('postDescription', ''),
             'postHashtags': text.get('hashtags') or raw.get('postHashtags', ''),
             'posterImageUrl': image.get('image_url', ''),
+            'videoUrl': '',
+            'slideImageUrls': [],
             'metadata': {
                 **(raw.get('metadata', {}) or {}),
                 **({'generated_image': {

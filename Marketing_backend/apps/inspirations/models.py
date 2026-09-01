@@ -252,6 +252,149 @@ class BrandInspiration(models.Model):
         return {'eligible': True, 'reason': 'ACTIVE'}
 
 
+class ResearchRun(models.Model):
+    """One bounded, provider-neutral public-web discovery request."""
+
+    class Status(models.TextChoices):
+        QUEUED = 'QUEUED', 'Queued'
+        PROCESSING = 'PROCESSING', 'Processing'
+        NEEDS_REVIEW = 'NEEDS_REVIEW', 'Needs review'
+        COMPLETED = 'COMPLETED', 'Completed'
+        FAILED = 'FAILED', 'Failed'
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    workspace = models.ForeignKey(
+        'workspaces.MarketingWorkspace', on_delete=models.CASCADE,
+        related_name='creative_research_runs',
+    )
+    brand = models.ForeignKey(
+        'brands.Brand', on_delete=models.CASCADE, related_name='research_runs'
+    )
+    query = models.CharField(max_length=1000)
+    objectives = models.JSONField(default=list, blank=True)
+    sources = models.JSONField(default=list, blank=True)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.QUEUED
+    )
+    result_count = models.PositiveIntegerField(default=0)
+    provider_key = models.CharField(max_length=100, blank=True)
+    provider_name = models.CharField(max_length=100, blank=True)
+    task_id = models.CharField(max_length=64, blank=True)
+    error = models.TextField(blank=True)
+    initiated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+        related_name='creative_research_runs',
+    )
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['workspace', 'brand', '-created_at']),
+            models.Index(fields=['workspace', 'status']),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.brand_id and self.brand.workspace_id != self.workspace_id:
+            raise ValidationError('ResearchRun.brand must belong to its workspace.')
+        return super().save(*args, **kwargs)
+
+
+class ResearchFinding(models.Model):
+    """A cited discovery candidate; never brand intelligence until adopted."""
+
+    class Kind(models.TextChoices):
+        POSTER = 'POSTER', 'Poster / static creative'
+        SOCIAL_POST = 'SOCIAL_POST', 'Social post'
+        VIDEO = 'VIDEO', 'Video / reel'
+        CAMPAIGN = 'CAMPAIGN', 'Campaign'
+        COMPETITOR = 'COMPETITOR', 'Competitor'
+        TREND = 'TREND', 'Trend'
+        HOOK = 'HOOK', 'Hook / copy pattern'
+        OTHER = 'OTHER', 'Other'
+
+    class RightsStatus(models.TextChoices):
+        UNKNOWN = 'UNKNOWN', 'Rights unknown'
+        PUBLIC_REFERENCE = 'PUBLIC_REFERENCE', 'Public reference only'
+        OWNED = 'OWNED', 'Owned by this workspace'
+        LICENSED = 'LICENSED', 'Licensed for reuse'
+        RESTRICTED = 'RESTRICTED', 'Restricted / do not reuse'
+
+    class VerificationStatus(models.TextChoices):
+        PENDING = 'PENDING', 'Pending verification'
+        VERIFIED = 'VERIFIED', 'Source verified'
+        FAILED = 'FAILED', 'Source unavailable or unsafe'
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    run = models.ForeignKey(
+        ResearchRun, on_delete=models.CASCADE, related_name='findings'
+    )
+    workspace = models.ForeignKey(
+        'workspaces.MarketingWorkspace', on_delete=models.CASCADE,
+        related_name='creative_research_findings',
+    )
+    brand = models.ForeignKey(
+        'brands.Brand', on_delete=models.CASCADE, related_name='research_findings'
+    )
+    kind = models.CharField(max_length=20, choices=Kind.choices, default=Kind.OTHER)
+    title = models.CharField(max_length=255)
+    source_url = models.URLField(max_length=1000)
+    preview_url = models.URLField(max_length=1000, blank=True)
+    source_name = models.CharField(max_length=255, blank=True)
+    platform = models.CharField(max_length=100, blank=True)
+    excerpt = models.TextField(blank=True)
+    observed_at = models.DateTimeField(null=True, blank=True)
+    rights_status = models.CharField(
+        max_length=24, choices=RightsStatus.choices, default=RightsStatus.UNKNOWN
+    )
+    verification_status = models.CharField(
+        max_length=20, choices=VerificationStatus.choices,
+        default=VerificationStatus.PENDING,
+    )
+    verification_error = models.TextField(blank=True)
+    source_content_hash = models.CharField(max_length=64, blank=True)
+    dedupe_key = models.CharField(max_length=64)
+    metadata = models.JSONField(default=dict, blank=True)
+    adopted_inspiration = models.OneToOneField(
+        BrandInspiration, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='research_finding',
+    )
+    adopted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='adopted_research_findings',
+    )
+    adopted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['run', 'dedupe_key'], name='uniq_research_finding_per_run'
+            )
+        ]
+        indexes = [
+            models.Index(fields=['workspace', 'brand', '-created_at']),
+            models.Index(fields=['workspace', 'verification_status']),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.run_id:
+            if self.run.workspace_id != self.workspace_id or self.run.brand_id != self.brand_id:
+                raise ValidationError('ResearchFinding must match its run workspace and brand.')
+        if self.brand_id and self.brand.workspace_id != self.workspace_id:
+            raise ValidationError('ResearchFinding.brand must belong to its workspace.')
+        if self.adopted_inspiration_id:
+            adopted = self.adopted_inspiration
+            if adopted.workspace_id != self.workspace_id or adopted.brand_id != self.brand_id:
+                raise ValidationError('Adopted inspiration must match the finding tenant and brand.')
+        return super().save(*args, **kwargs)
+
+
 class SupersessionReason(models.TextChoices):
     """Why a preference stopped being the active one.
 

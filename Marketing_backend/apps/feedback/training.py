@@ -1,8 +1,8 @@
 """
 The training engine.
 
-One job: notice when a reviewer objects to the same thing twice, and turn that
-into a rule the generator obeys next time.
+One job: turn a reviewer's first structured correction into a traceable soft
+rule the generator follows next time, then strengthen it when it recurs.
 
     embed -> find similar past feedback -> extract the pattern
           -> LEARNED soft rule in the learning fabric -> Brand Brain -> prompt
@@ -35,8 +35,9 @@ SIMILARITY_THRESHOLD = 0.55
 #: review click into an unbounded query.
 SCAN_LIMIT = 500
 
-#: A single complaint is an opinion; the second one is a pattern.
-MIN_OCCURRENCES = 2
+#: A direct tagged human correction is actionable evidence immediately.
+#: Repeats strengthen the same SOFT rule; they are not required to start it.
+MIN_OCCURRENCES = 1
 
 _NEGATIVE_HINTS = frozenset(
     """not no dont avoid wrong bad poor too never unreadable ugly cluttered off
@@ -168,8 +169,7 @@ class TrainingEngine:
         feedback = self.feedback
         occurrences = len(similar) + 1  # this one included
 
-        # An element is "recurring" once it has been raised on a previous
-        # piece of content too.
+        # Selected review elements are actionable on the first correction.
         counts: Dict[str, int] = {key: 1 for key in feedback.element_keys or []}
         for match in similar:
             for key in match['shared_elements']:
@@ -210,17 +210,15 @@ class TrainingEngine:
 
     def _apply_rules(self, pattern: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Turns a repeated objection into a LEARNED soft rule in the fabric.
-
-        Nothing is written for a first-time complaint -- that is the whole
-        point of MIN_OCCURRENCES. Rules are keyed by element, so a third
-        rejection sharpens the existing rule instead of adding a duplicate.
+        Turns an explicit tagged objection into a LEARNED soft rule in the
+        fabric immediately. Rules are keyed by element, so later corrections
+        sharpen the existing rule instead of adding a duplicate.
         The Brand Brain is recompiled afterwards so the next generation is cut
         from a snapshot that already contains the rule.
         """
         from apps.brands.services.brand_brain import rebuild_brand_brain_safely
         from apps.learning.adapters import events_for_feedback
-        from apps.learning.services import LearningError, upsert_learned_rule
+        from apps.learning.services import LearningError, upsert_review_rule
 
         feedback = self.feedback
         brand = feedback.brand
@@ -246,7 +244,7 @@ class TrainingEngine:
             support = self._supporting_feedback(pattern, key)
 
             try:
-                rule = upsert_learned_rule(
+                rule = upsert_review_rule(
                     workspace=feedback.workspace,
                     brand=brand,
                     key=f'review:{key}',
@@ -281,7 +279,8 @@ class TrainingEngine:
             })
 
         if written:
-            rebuild_brand_brain_safely(brand)
+            brain = rebuild_brand_brain_safely(brand)
+            pattern['brain_rebuilt'] = brain is not None
             logger.info(
                 "Training: brand %s learned %d rule(s) from feedback %s",
                 brand.pk, len(written), feedback.pk,
@@ -290,7 +289,11 @@ class TrainingEngine:
 
     @staticmethod
     def _rule_text(label: str, instruction: str, occurrences: int) -> str:
-        base = f"{label}: reviewers have rejected this {occurrences} times."
+        base = (
+            f"{label}: a reviewer flagged this."
+            if occurrences == 1
+            else f"{label}: reviewers flagged this {occurrences} times."
+        )
         return f"{base} {instruction}".strip() if instruction else base
 
 
@@ -380,6 +383,10 @@ def training_report(workspace, brand=None) -> Dict[str, Any]:
         ],
         'brand': str(brand.pk) if brand else None,
         'brand_name': brand.name if brand else '',
+        # The rule store is authoritative, but generation reads the compiled
+        # Brand Brain. Expose whether that snapshot reflects the latest rule
+        # so the UI never presents a failed compile as successful learning.
+        'brain_current': bool(brand and not brand.brain_is_stale),
         'rules': rules,
         'rules_updated_at': rules_updated_at,
     }

@@ -62,6 +62,8 @@ INSTALLED_APPS = [
     'apps.onboarding',
     'apps.universal',
     'apps.platform',
+    'apps.engagement',
+    'apps.autopilot',
 ]
 
 MIDDLEWARE = [
@@ -292,7 +294,14 @@ LINKEDIN_SCOPES = env('LINKEDIN_SCOPES', default='openid profile email w_member_
 YOUTUBE_CLIENT_ID = env('YOUTUBE_CLIENT_ID', default='')
 YOUTUBE_CLIENT_SECRET = env('YOUTUBE_CLIENT_SECRET', default='')
 YOUTUBE_REDIRECT_URI = env('YOUTUBE_REDIRECT_URI', default='')
-YOUTUBE_SCOPES = env('YOUTUBE_SCOPES', default='https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly')
+YOUTUBE_SCOPES = env(
+    'YOUTUBE_SCOPES',
+    default=(
+        'https://www.googleapis.com/auth/youtube.upload '
+        'https://www.googleapis.com/auth/youtube.readonly '
+        'https://www.googleapis.com/auth/youtube.force-ssl'
+    ),
+)
 
 
 # ─────────────────────────────────────────────────────────── shared state

@@ -58,7 +58,8 @@ def generate_content(request_id: str):
         return {'request': str(request_id), 'status': 'ALREADY_COMPLETED'}
 
     request.status = GeminiGenerationRequest.Status.GENERATING
-    request.save(update_fields=['status'])
+    request.error_message = ''
+    request.save(update_fields=['status', 'error_message'])
 
     # prompt_data is a TextField that predates this path, so the brief is
     # stored as JSON in it rather than adding a parallel column.
@@ -69,61 +70,117 @@ def generate_content(request_id: str):
     if not isinstance(brief, dict):
         brief = {}
 
+    def checkpoint(state):
+        # Successful expensive capabilities are durable before this is called.
+        # Persist their compact state so a worker retry resumes only the
+        # missing video/slide instead of buying completed work again.
+        brief['production_state'] = state
+        request.prompt_data = json.dumps(brief)
+        request.save(update_fields=['prompt_data'])
+
     try:
-        routed = generate_marketing_payload(request.workspace, brief)
+        creative = brief.get('creative_direction') or {}
+        if creative.get('selections'):
+            from apps.brands.models import Brand
+            from apps.context.services.creative_direction import resolve_creative_direction
+
+            brand = Brand.objects.filter(workspace=request.workspace).order_by('-is_default').first()
+            creative = resolve_creative_direction(
+                request.workspace,
+                brand,
+                creative.get('selections'),
+                layout=brief.get('layout', ''),
+            )
+            brief['creative_direction'] = creative
+        routed = generate_marketing_payload(
+            request.workspace, brief, progress=checkpoint
+        )
         result_data = routed['payload']
     except Exception as exc:
         logger.exception("Generation %s failed", request_id)
         request.status = GeminiGenerationRequest.Status.FAILED
         request.error_message = str(exc)[:2000]
         request.save(update_fields=['status', 'error_message'])
+        _queue_autopilot_followups(request)
         # Re-raised so the worker records the traceback and can retry.
         raise
 
-    content_item = _persist(
-        request, brief, result_data, routed['provider'],
-        brain_version=str(routed.get('brain_version') or ''),
-    )
+    try:
+        content_item = _persist(request, brief, result_data, routed)
+        if content_item is None:
+            raise RuntimeError("Generated content could not be saved.")
 
-    # `generation_request`, not `request` — the field's actual name. With
-    # the wrong keyword this line raised FieldError on every run, AFTER the
-    # provider had been paid and the draft persisted: the task then retried
-    # up to three times, spending and persisting again each round, and the
-    # request row ended FAILED. Queued carousel and video generation has
-    # never completed successfully because of this line.
-    GeminiGenerationResult.objects.update_or_create(
-        generation_request=request,
-        defaults={
-            'generated_text': result_data.get('postDescription', ''),
-            # The composed poster when auto-compose succeeded, the raw image
-            # otherwise — the poller must see what will actually be reviewed.
-            'generated_asset_url': (
-                (content_item.preview_url if content_item else '')
-                or result_data.get('posterImageUrl', '')
-                or ''
-            ),
-            'metadata': {
-                'postTitle': result_data.get('postTitle', ''),
-                'postHashtags': result_data.get('postHashtags', ''),
-                'provider': routed['provider'],
-                'provider_name': routed['provider_name'],
-                'brain_version': routed['brain_version'],
-                'completed_at': timezone.now().isoformat(),
-                'contentItemId': str(content_item.id) if content_item else None,
-                'assetId': str(content_item.asset_id) if content_item and content_item.asset_id else None,
+        GeminiGenerationResult.objects.update_or_create(
+            generation_request=request,
+            defaults={
+                'generated_text': result_data.get('postDescription', ''),
+                # The composed poster when auto-compose succeeded, the raw
+                # media otherwise - the poller must see what will actually
+                # be reviewed. Video output has no composition step.
+                'generated_asset_url': (
+                    result_data.get('videoUrl')
+                    or (content_item.preview_url if content_item else '')
+                    or result_data.get('posterImageUrl', '')
+                    or ''
+                ),
+                'metadata': {
+                    'postTitle': result_data.get('postTitle', ''),
+                    'postHashtags': result_data.get('postHashtags', ''),
+                    'videoUrl': result_data.get('videoUrl', ''),
+                    'slideImageUrls': result_data.get('slideImageUrls') or [],
+                    'provider': routed['provider'],
+                    'provider_name': routed['provider_name'],
+                    'brain_version': routed['brain_version'],
+                    'creative_direction': {
+                        'selection_count': (brief.get('creative_direction') or {}).get(
+                            'selection_count', 0
+                        ),
+                        'layout': brief.get('layout', ''),
+                    },
+                    'completed_at': timezone.now().isoformat(),
+                    'contentItemId': str(content_item.id),
+                    'assetId': str(content_item.asset_id) if content_item.asset_id else None,
+                },
             },
-        },
-    )
+        )
+    except Exception as exc:
+        logger.exception("Generation %s could not be persisted", request_id)
+        request.status = GeminiGenerationRequest.Status.FAILED
+        request.error_message = str(exc)[:2000]
+        request.save(update_fields=['status', 'error_message'])
+        _queue_autopilot_followups(request)
+        raise
 
     request.status = GeminiGenerationRequest.Status.COMPLETED
     request.provider = routed['provider']
     request.completed_at = timezone.now()
     request.save(update_fields=['status', 'provider', 'completed_at'])
 
+    # A manually authorised autopilot run is event-driven: generation queues
+    # the follow-up that moves its durable draft to the configured review
+    # state. No recurring scheduler, hidden spend or external publish is
+    # involved, and ordinary generation requests have no related rows.
+    _queue_autopilot_followups(request)
+
     return {
         'request': str(request.id),
         'content_item': str(content_item.id) if content_item else None,
     }
+
+
+def _queue_autopilot_followups(request):
+    try:
+        from apps.autopilot.models import AutopilotRun
+        from apps.autopilot.tasks import execute_autopilot_run
+
+        for run_id in request.autopilot_runs.filter(
+            status=AutopilotRun.Status.WAITING_GENERATION
+        ).values_list('id', flat=True):
+            execute_autopilot_run.enqueue(str(run_id))
+    except Exception:
+        logger.exception(
+            "Autopilot follow-up could not be queued for generation %s", request.pk
+        )
 
 
 def sweep_stuck_generations(now=None):
@@ -306,7 +363,7 @@ def regenerate_revision(revision_id: str):
     return {'revision': str(revision_id), 'status': 'OK'}
 
 
-def _persist(request, brief, result_data, provider_key, *, brain_version=''):
+def _persist(request, brief, result_data, routed):
     """
     Mirrors the synchronous path's persistence so a background generation
     produces exactly the same ContentItem a foreground one would.
@@ -320,14 +377,18 @@ def _persist(request, brief, result_data, provider_key, *, brain_version=''):
         intelligence_in_force,
     )
 
+    content_format = {
+        'video': ContentItem.Format.VIDEO,
+        'carousel': ContentItem.Format.CAROUSEL,
+    }.get(str(brief.get('contentType', '')).lower(), ContentItem.Format.POSTER)
+
+    slides = (
+        result_data.get('slides')
+        if str(brief.get('contentType', '')).lower() == 'carousel'
+        else brief.get('slides')
+    ) or []
+
     try:
-        content_format = {
-            'video': ContentItem.Format.VIDEO,
-            'carousel': ContentItem.Format.CAROUSEL,
-        }.get(str(brief.get('contentType', '')).lower(), ContentItem.Format.POSTER)
-
-        slides = brief.get('slides') or []
-
         with transaction.atomic():
             asset = create_generated_asset(
                 request.workspace, result_data, user=request.user
@@ -341,30 +402,41 @@ def _persist(request, brief, result_data, provider_key, *, brain_version=''):
                 workspace=request.workspace,
                 brand=brand,
                 asset=asset,
-                # The same attribution the synchronous path records. Without
-                # it a poster made on the queue vanished from "is this rule
-                # reaching the work?" — the learning-usage report reads
-                # exactly this key.
-                layout_config={'generation_trace': {
-                    'brain_version': brain_version,
-                    **intelligence_in_force(brand, brain_version),
-                }},
                 content_format=content_format,
                 status=ContentItem.Status.DRAFT,
                 headline=(result_data.get('postTitle') or '')[:500],
                 caption=result_data.get('postDescription') or '',
                 hashtags=result_data.get('postHashtags') or '',
                 cta=(brief.get('offer') or '')[:255],
-                preview_url=(result_data.get('posterImageUrl') or '')[:1000],
+                preview_url=(
+                    result_data.get('videoUrl')
+                    or result_data.get('posterImageUrl')
+                    or ''
+                )[:1000],
                 slides=slides if isinstance(slides, list) else [],
-                ai_provider=(provider_key or 'UNKNOWN')[:100],
+                ai_provider=(routed.get('provider') or 'UNKNOWN')[:100],
                 ai_prompt=str(brief)[:5000],
+                layout_plugin=str(brief.get('layout') or '')[:64],
+                # Creative direction and the generation trace, including which
+                # rules were in force - the learning-usage report reads
+                # exactly this key, and a poster made on the queue must be as
+                # attributable as one made in the request.
+                layout_config={
+                    'creative_direction': brief.get('creative_direction') or {},
+                    'generation_trace': {
+                        'brain_version': routed.get('brain_version', ''),
+                        **(routed.get('trace') or {}),
+                        **intelligence_in_force(
+                            brand, str(routed.get('brain_version') or '')
+                        ),
+                    },
+                },
                 created_by=request.user,
             )
 
         # After the transaction commits, so a compose hiccup can never roll
-        # back the persisted generation. Best-effort: on failure the raw
-        # generated image stays in place.
+        # back the persisted generation. Only posters compose; the service
+        # skips video and carousel output on its own.
         from apps.layouts.services import compose_generated_poster
 
         compose_generated_poster(item, user=request.user)

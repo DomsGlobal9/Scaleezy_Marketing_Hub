@@ -7,6 +7,7 @@ when nothing recorded a compile outcome. A tile reading zero because the
 sensor is disconnected is worse than no tile, because it is indistinguishable
 from good news.
 """
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -19,8 +20,10 @@ from apps.brands.services.brand_brain import (
 )
 from apps.common.permissions import LAST_ACTIVE_RESOLUTION, touch_last_active
 from apps.common.platform_health import Signal, platform_health, platform_signals
-from apps.inspirations.models import BrandInspiration
+from apps.engagement.models import EngagementItem, EngagementSyncRun
+from apps.inspirations.models import BrandInspiration, ResearchRun
 from apps.knowledge.models import BrandSource
+from apps.social_accounts.models import SocialConnection
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
 
@@ -153,6 +156,36 @@ class ProcessingHealthTests(TestCase):
             title='Broken inspiration',
             analysis_status=BrandInspiration.AnalysisStatus.FAILED,
         )
+        ResearchRun.objects.create(
+            workspace=self.workspace, brand=self.brand, query='retail posters',
+            status=ResearchRun.Status.FAILED, error='provider unavailable',
+        )
+        connection = SocialConnection.objects.create(
+            workspace=self.workspace,
+            platform=SocialConnection.Platform.X,
+            external_account_id='x-health',
+            account_name='X Health',
+            status=SocialConnection.Status.CONNECTED,
+        )
+        EngagementSyncRun.objects.create(
+            workspace=self.workspace, brand=self.brand, social_connection=connection,
+            status=EngagementSyncRun.Status.FAILED, error='sync unavailable',
+        )
+        EngagementItem.objects.create(
+            workspace=self.workspace, brand=self.brand, social_connection=connection,
+            platform=connection.platform, kind=EngagementItem.Kind.MENTION,
+            external_id='mention-health', body='Help', occurred_at=timezone.now(),
+            draft_status=EngagementItem.DraftStatus.FAILED,
+        )
+        stale_send = EngagementItem.objects.create(
+            workspace=self.workspace, brand=self.brand, social_connection=connection,
+            platform=connection.platform, kind=EngagementItem.Kind.MENTION,
+            external_id='mention-stale', body='Still sending', occurred_at=timezone.now(),
+            status=EngagementItem.Status.SENDING,
+        )
+        EngagementItem.objects.filter(pk=stale_send.pk).update(
+            updated_at=timezone.now() - timedelta(hours=1)
+        )
 
         payload = platform_health()
         by_key = {row['key']: row for row in payload['signals']}
@@ -160,6 +193,10 @@ class ProcessingHealthTests(TestCase):
             'knowledge_failed',
             'knowledge_needs_review',
             'inspiration_analysis_failed',
+            'creative_research_failed',
+            'engagement_sync_failed',
+            'engagement_drafts_failed',
+            'engagement_sends_stale',
         ):
             self.assertTrue(by_key[key]['live'], key)
             self.assertEqual(by_key[key]['value'], 1, key)
@@ -175,6 +212,10 @@ class ProcessingHealthTests(TestCase):
             'knowledge_failed',
             'knowledge_needs_review',
             'inspiration_analysis_failed',
+            'creative_research_failed',
+            'engagement_sync_failed',
+            'engagement_drafts_failed',
+            'engagement_sends_stale',
         }.issubset(raised))
         self.assertEqual(payload['needs_attention'], len(raised))
 
@@ -235,8 +276,12 @@ class UnmonitoredSignalTests(TestCase):
         payload = platform_health()
         by_key = {s['key']: s for s in payload['signals']}
 
-        for key in ('knowledge_failed', 'knowledge_needs_review',
-                    'inspiration_analysis_failed'):
+        for key in (
+            'knowledge_failed', 'knowledge_needs_review',
+            'inspiration_analysis_failed', 'creative_research_failed',
+            'engagement_sync_failed', 'engagement_drafts_failed',
+            'engagement_sends_stale',
+        ):
             row = by_key[key]
             self.assertTrue(row['live'], key)
             self.assertEqual(row['value'], 0, key)

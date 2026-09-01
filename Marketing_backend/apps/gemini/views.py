@@ -116,9 +116,9 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         """
         Saves a generation as a DRAFT ContentItem.
 
-        Best-effort: a storage hiccup here must not lose the user the content
-        they just waited for, so failures are logged and the payload is still
-        returned.
+        Persistence is part of completion. A response without a durable draft
+        cannot enter review or publishing, so storage failure must be reported
+        honestly rather than returning a success the user cannot recover.
         """
         from django.db import transaction
 
@@ -126,43 +126,51 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         from apps.content.models import ContentItem
         from apps.context.services.generation import create_generated_asset
 
-        try:
-            workspace, error = get_request_workspace(request)
-            if error:
-                return None
+        workspace, error = get_request_workspace(request)
+        if error:
+            raise PermissionDenied("No accessible workspace for this request.")
 
-            content_format = {
-                'video': ContentItem.Format.VIDEO,
-                'carousel': ContentItem.Format.CAROUSEL,
-            }.get(str(request.data.get('contentType', '')).lower(), ContentItem.Format.POSTER)
+        content_format = {
+            'video': ContentItem.Format.VIDEO,
+            'carousel': ContentItem.Format.CAROUSEL,
+        }.get(str(request.data.get('contentType', '')).lower(), ContentItem.Format.POSTER)
 
-            slides = request.data.get('slides') or []
+        slides = (
+            result.get('slides')
+            if content_format == ContentItem.Format.CAROUSEL
+            else request.data.get('slides')
+        ) or []
 
-            creator = request.user if request.user.is_authenticated else None
-            with transaction.atomic():
-                asset = create_generated_asset(workspace, result, user=creator)
-                return ContentItem.objects.create(
-                    workspace=workspace,
-                    brand=Brand.objects.filter(workspace=workspace).order_by('-is_default').first(),
-                    asset=asset,
-                    content_format=content_format,
-                    status=ContentItem.Status.DRAFT,
-                    headline=(result.get('postTitle') or '')[:500],
-                    caption=result.get('postDescription') or '',
-                    hashtags=result.get('postHashtags') or '',
-                    cta=(brief.get('offer') or '')[:255],
-                    preview_url=(result.get('posterImageUrl') or '')[:1000],
-                    slides=slides if isinstance(slides, list) else [],
-                    # Whichever provider the router actually selected. This
-                    # used to be hard-coded, so every generation claimed Gemini
-                    # produced it however it was routed.
-                    ai_provider=(provider_key or 'UNKNOWN')[:100],
-                    ai_prompt=str(brief)[:5000],
-                    created_by=creator,
-                )
-        except Exception:
-            logger.exception("Could not persist generated content")
-            return None
+        creator = request.user if request.user.is_authenticated else None
+        with transaction.atomic():
+            asset = create_generated_asset(workspace, result, user=creator)
+            return ContentItem.objects.create(
+                workspace=workspace,
+                brand=Brand.objects.filter(workspace=workspace).order_by('-is_default').first(),
+                asset=asset,
+                content_format=content_format,
+                status=ContentItem.Status.DRAFT,
+                headline=(result.get('postTitle') or '')[:500],
+                caption=result.get('postDescription') or '',
+                hashtags=result.get('postHashtags') or '',
+                cta=(brief.get('offer') or '')[:255],
+                preview_url=(
+                    result.get('videoUrl')
+                    or result.get('posterImageUrl')
+                    or ''
+                )[:1000],
+                slides=slides if isinstance(slides, list) else [],
+                # Whichever provider the router actually selected. This
+                # used to be hard-coded, so every generation claimed Gemini
+                # produced it however it was routed.
+                ai_provider=(provider_key or 'UNKNOWN')[:100],
+                ai_prompt=str(brief)[:5000],
+                layout_plugin=str(brief.get('layout') or '')[:64],
+                layout_config={
+                    'creative_direction': brief.get('creative_direction') or {},
+                },
+                created_by=creator,
+            )
 
     @action(detail=False, methods=['post'])
     def generate(self, request):
@@ -192,6 +200,12 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'offer': offer,
             'brand_tone': brand_tone,
             'reference_image_base64': reference_image_base64,
+            'contentType': data.get('contentType', ''),
+            'slides': data.get('slides') or [],
+            'video_duration': data.get('videoDuration', data.get('video_duration', '')),
+            'video_aspect': data.get('videoAspect', data.get('video_aspect', '')),
+            'video_style': data.get('videoStyle', data.get('video_style', '')),
+            'video_script': data.get('videoScript', data.get('video_script', '')),
             # Closes the training loop: what reviewers have repeatedly
             # rejected becomes a constraint on the next generation.
             'brand_rules': self._brand_rules(request),
@@ -209,6 +223,31 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         workspace, workspace_error = get_request_workspace(request)
         if workspace_error:
             return workspace_error
+
+        from apps.brands.models import Brand
+        from apps.context.services.creative_direction import (
+            CreativeDirectionError,
+            resolve_creative_direction,
+        )
+
+        brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
+        try:
+            creative_direction = resolve_creative_direction(
+                workspace,
+                brand,
+                data.get('inspirationSelections', data.get('inspiration_selections', [])),
+                layout=data.get('layout', ''),
+            )
+        except CreativeDirectionError as exc:
+            return APIResponse(
+                success=False,
+                message=str(exc),
+                error={'code': exc.code, 'message': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        request_data['creative_direction'] = creative_direction
+        request_data['layout'] = creative_direction['layout']
+
         quota_error = self._quota_error(workspace)
         if quota_error:
             return quota_error
@@ -244,9 +283,21 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         # Persist the generation. Previously this was returned to the browser
         # and never stored, so the copy existed only in React state and was
         # lost on refresh.
-        content_item = self._persist_content(
-            request, data, result_data, provider_key=routed['provider']
-        )
+        try:
+            content_item = self._persist_content(
+                request, request_data, result_data, provider_key=routed['provider']
+            )
+        except Exception:
+            logger.exception("Generated content could not be persisted")
+            return APIResponse(
+                success=False,
+                message="The content was generated but could not be saved. Please retry.",
+                error={
+                    'code': 'PERSISTENCE_FAILED',
+                    'message': 'No draft or publishable asset was created.',
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         if content_item is not None:
             # Lightweight generation trace for future optimisation: which
             # brain, which providers, what failed. No prompt material.
@@ -259,6 +310,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                         content_item.brand, routed.get('brain_version', '')
                     ),
                 },
+                'creative_direction': creative_direction,
             }
             content_item.save(update_fields=['layout_config'])
 
@@ -278,17 +330,23 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'postTitle': result_data.get('postTitle', ''),
             'postDescription': result_data.get('postDescription', ''),
             'postHashtags': result_data.get('postHashtags', ''),
-            # The composed poster when there is one, the raw image otherwise —
+            # The composed poster when there is one, the raw image otherwise -
             # the preview must show what will actually be reviewed.
             'posterImageUrl': (
                 (content_item.preview_url if content_item else '')
                 or result_data.get('posterImageUrl', '')
             ),
+            'videoUrl': result_data.get('videoUrl', ''),
+            'slideImageUrls': result_data.get('slideImageUrls') or [],
             'metadata': {
                 **(result_data.get('metadata') or {}),
                 'provider': routed['provider'],
                 'provider_name': routed['provider_name'],
                 'brain_version': routed['brain_version'],
+                'creative_direction': {
+                    'selection_count': creative_direction['selection_count'],
+                    'layout': creative_direction['layout'],
+                },
             },
             'contentItemId': str(content_item.id) if content_item else None,
             'assetId': str(content_item.asset_id) if content_item and content_item.asset_id else None,
@@ -348,6 +406,28 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             return approval_error
 
         data = request.data
+        from apps.brands.models import Brand
+        from apps.context.services.creative_direction import (
+            CreativeDirectionError,
+            resolve_creative_direction,
+        )
+
+        brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
+        try:
+            creative_direction = resolve_creative_direction(
+                workspace,
+                brand,
+                data.get('inspirationSelections', data.get('inspiration_selections', [])),
+                layout=data.get('layout', ''),
+            )
+        except CreativeDirectionError as exc:
+            return APIResponse(
+                success=False,
+                message=str(exc),
+                error={'code': exc.code, 'message': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         brief = {
             'campaign_name': data.get('campaignName', data.get('campaign_name', '')),
             'product': data.get('product', ''),
@@ -359,7 +439,13 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'reference_image_base64': data.get('referenceImageBase64', ''),
             'contentType': data.get('contentType', ''),
             'slides': data.get('slides') or [],
+            'video_duration': data.get('videoDuration', data.get('video_duration', '')),
+            'video_aspect': data.get('videoAspect', data.get('video_aspect', '')),
+            'video_style': data.get('videoStyle', data.get('video_style', '')),
+            'video_script': data.get('videoScript', data.get('video_script', '')),
             'brand_rules': self._brand_rules(request),
+            'creative_direction': creative_direction,
+            'layout': creative_direction['layout'],
         }
 
         generation = GeminiGenerationRequest.objects.create(

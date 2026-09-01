@@ -337,7 +337,7 @@ def publish_inspiration(inspiration, *, by=None):
     return inspiration
 
 
-def gallery_for(workspace, *, industry='', kind='', limit=50):
+def gallery_for(workspace, *, industry='', kind='', limit=50, offset=0):
     """What a client may browse. Empty when they opted out."""
     if not settings_for(workspace).inspirations_enabled:
         return []
@@ -346,7 +346,9 @@ def gallery_for(workspace, *, industry='', kind='', limit=50):
         rows = rows.filter(industry__iexact=industry)
     if kind:
         rows = rows.filter(kind=str(kind).upper())
-    return list(rows[:limit])
+    safe_offset = max(0, int(offset or 0))
+    safe_limit = max(1, min(int(limit or 50), 101))
+    return list(rows[safe_offset:safe_offset + safe_limit])
 
 
 def _adopted_fields(platform_inspiration):

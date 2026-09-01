@@ -377,7 +377,7 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         with patch('apps.gemini.tasks.regenerate_revision') as task_mock:
             res = self.api.post(
                 f'/api/marketing/content/{pending.id}/request-edits/',
-                {'note': 'colours are off'},
+                {'note': 'colours are off', 'elements': ['brand_colours']},
                 format='json',
                 **workspace_header(self.workspace),
             )

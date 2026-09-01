@@ -13,7 +13,13 @@ from apps.brands.models import Brand
 from apps.common.permissions import get_request_workspace
 from apps.knowledge.models import BrandSource
 
-from .models import BrandInspiration, InspirationSignal, SignalCategory
+from .models import (
+    BrandInspiration,
+    InspirationSignal,
+    ResearchFinding,
+    ResearchRun,
+    SignalCategory,
+)
 
 VALID_FOCUS_AREAS = {choice.value for choice in SignalCategory}
 
@@ -326,4 +332,77 @@ class InspirationSignalSerializer(serializers.ModelSerializer):
                     {"inspiration": "Archived inspirations cannot receive new signals."}
                 )
 
+        return data
+
+
+class ResearchFindingSerializer(serializers.ModelSerializer):
+    workspace = serializers.UUIDField(source='workspace_id', read_only=True)
+    brand = serializers.UUIDField(source='brand_id', read_only=True)
+    run = serializers.UUIDField(source='run_id', read_only=True)
+    adopted_inspiration = serializers.UUIDField(
+        source='adopted_inspiration_id', read_only=True
+    )
+
+    class Meta:
+        model = ResearchFinding
+        fields = [
+            'id', 'run', 'workspace', 'brand', 'kind', 'title', 'source_url', 'preview_url',
+            'source_name', 'platform', 'excerpt', 'observed_at', 'rights_status',
+            'verification_status', 'verification_error', 'source_content_hash',
+            'adopted_inspiration', 'adopted_at', 'created_at',
+        ]
+        read_only_fields = fields
+
+
+class ResearchRunSerializer(serializers.ModelSerializer):
+    workspace = serializers.UUIDField(source='workspace_id', read_only=True)
+    findings = ResearchFindingSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = ResearchRun
+        fields = [
+            'id', 'workspace', 'brand', 'query', 'objectives', 'sources',
+            'status', 'result_count', 'provider_key', 'provider_name', 'task_id',
+            'error', 'started_at', 'completed_at', 'created_at', 'findings',
+        ]
+        read_only_fields = [
+            'id', 'workspace', 'status', 'result_count', 'provider_key',
+            'provider_name', 'task_id', 'error', 'started_at', 'completed_at',
+            'created_at', 'findings',
+        ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get('request')
+        if request is None:
+            return
+        workspace, error = get_request_workspace(request)
+        if error or not workspace:
+            return
+        self.fields['brand'].queryset = Brand.objects.filter(workspace=workspace)
+
+    @staticmethod
+    def _bounded_strings(value, field):
+        if not isinstance(value, list):
+            raise serializers.ValidationError({field: 'Must be a list.'})
+        out = []
+        for item in value[:12]:
+            text = ' '.join(str(item or '').split())[:255]
+            if text and text not in out:
+                out.append(text)
+        return out
+
+    def validate(self, data):
+        workspace = request_workspace_or_raise(self)
+        brand = data.get('brand')
+        if brand is None or brand.workspace_id != workspace.id:
+            raise serializers.ValidationError(
+                {'brand': 'Brand must belong to the authorized workspace.'}
+            )
+        query = ' '.join(str(data.get('query') or '').split())
+        if len(query) < 3:
+            raise serializers.ValidationError({'query': 'Describe what to research.'})
+        data['query'] = query[:1000]
+        data['objectives'] = self._bounded_strings(data.get('objectives') or [], 'objectives')
+        data['sources'] = self._bounded_strings(data.get('sources') or [], 'sources')
         return data
