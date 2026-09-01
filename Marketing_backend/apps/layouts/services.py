@@ -97,7 +97,9 @@ def compose_generated_poster(item, *, user=None):
         return None
 
     try:
-        photo = render_engine.photo_for(asset=item.asset)
+        # The recorded source photograph when there is one — composing from an
+        # already composed poster would bake the words on twice.
+        photo = render_engine.photo_for(asset=source_photo_asset(item))
         layout = (
             item.layout_plugin
             or (item.brand.layout_preference or '')

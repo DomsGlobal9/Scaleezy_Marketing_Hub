@@ -44,6 +44,8 @@ export const Route = createFileRoute("/_hub/review")({
 
 interface ContentItem {
   id: string;
+  parent: string | null;
+  layout_config: Record<string, unknown> | null;
   layout_plugin: string;
   headline: string;
   caption: string;
@@ -56,19 +58,34 @@ interface ContentItem {
   created_at: string;
 }
 
-// Every state a piece of work can be in, so this screen answers "show me my
-// stuff" rather than only "what needs me". Published items were already being
-// fetched and counted here and then thrown away — there was simply no tab
-// able to show them, which is why the product had nowhere to see finished
-// work with its picture attached.
+// Four ways work can relate to you, not six machine states. A reviewer should
+// not need to understand the status field to find their work — the precise
+// status still shows on every card's badge.
 const TABS = [
-  { key: "PENDING_REVIEW", label: "Pending" },
-  { key: "APPROVED", label: "Approved" },
-  { key: "PUBLISHED", label: "Published" },
-  { key: "NEEDS_EDITS", label: "Needs edits" },
-  { key: "REJECTED", label: "Rejected" },
-  { key: "DRAFT", label: "Drafts" },
+  { key: "REVIEW", label: "Needs review", statuses: ["PENDING_REVIEW"] },
+  { key: "WORKING", label: "In progress", statuses: ["DRAFT", "NEEDS_EDITS"] },
+  { key: "DONE", label: "Done", statuses: ["APPROVED", "PUBLISHED"] },
+  { key: "REJECTED", label: "Rejected", statuses: ["REJECTED"] },
 ] as const;
+
+const EMPTY_COPY: Record<string, { title: string; description: string }> = {
+  REVIEW: {
+    title: "Nothing waiting on you",
+    description: "Content submitted for review lands here.",
+  },
+  WORKING: {
+    title: "No work in progress",
+    description: "Create or upload content, save it, and it will remain here when you return.",
+  },
+  DONE: {
+    title: "Nothing approved yet",
+    description: "Approve content in the review queue and it moves here, ready to publish.",
+  },
+  REJECTED: {
+    title: "Nothing rejected",
+    description: "Content you reject is kept here as a record.",
+  },
+};
 
 interface LearnedRule {
   element: string;
@@ -96,9 +113,8 @@ const TONE: Record<string, "success" | "warning" | "danger" | "neutral"> = {
 };
 
 function ReviewPage() {
-  const [tab, setTab] = useState<string>("PENDING_REVIEW");
-  const [items, setItems] = useState<ContentItem[]>([]);
-  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [tab, setTab] = useState<string>("REVIEW");
+  const [all, setAll] = useState<ContentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
@@ -130,23 +146,54 @@ function ReviewPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const all = await api<unknown>("/api/marketing/content/");
+      const data = await api<unknown>("/api/marketing/content/");
       // Tolerates both the bare array and a paginated envelope, so this page
       // cannot silently go empty if the endpoint is ever paginated by default.
-      const list = asList<ContentItem>(all);
-      setItems(list.filter((i) => i.status === tab));
-      setCounts(
-        list.reduce<Record<string, number>>((acc, i) => {
-          acc[i.status] = (acc[i.status] ?? 0) + 1;
-          return acc;
-        }, {}),
-      );
+      setAll(asList<ContentItem>(data));
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not load content.");
     } finally {
       setLoading(false);
     }
-  }, [tab]);
+  }, []);
+
+  // A returned item spawns a revision carrying the same image, so both used
+  // to show — the "same poster in two tabs" confusion. The superseded version
+  // is hidden and its reviewer note travels with the revision instead.
+  const superseded = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of all) if (item.parent) ids.add(item.parent);
+    return ids;
+  }, [all]);
+
+  const shown = useMemo(
+    () => all.filter((i) => !(i.status === "NEEDS_EDITS" && superseded.has(i.id))),
+    [all, superseded],
+  );
+
+  const counts = useMemo(() => {
+    const acc: Record<string, number> = {};
+    for (const t of TABS) {
+      acc[t.key] = shown.filter((i) =>
+        (t.statuses as readonly string[]).includes(i.status),
+      ).length;
+    }
+    return acc;
+  }, [shown]);
+
+  const items = useMemo(() => {
+    const active = TABS.find((t) => t.key === tab) ?? TABS[0];
+    return shown.filter((i) => (active.statuses as readonly string[]).includes(i.status));
+  }, [shown, tab]);
+
+  // The note a creator must read: their own, or the one left on the version
+  // this revision replaces.
+  const noteFor = useCallback(
+    (item: ContentItem) =>
+      item.review_note ||
+      (item.parent ? (all.find((p) => p.id === item.parent)?.review_note ?? "") : ""),
+    [all],
+  );
 
   const loadReport = useCallback(async () => {
     try {
@@ -177,11 +224,14 @@ function ReviewPage() {
   const act = async (id: string, verb: "approve" | "reject" | "request-edits") => {
     setBusy(id);
     try {
-      await apiPost(`/api/marketing/content/${id}/${verb}/`, {
-        note: notes[id] ?? "",
-        elements: tags[id] ?? [],
-        fix_request: fixes[id] ?? "",
-      });
+      const result = await apiPost<{ regeneration_queued?: boolean }>(
+        `/api/marketing/content/${id}/${verb}/`,
+        {
+          note: notes[id] ?? "",
+          elements: tags[id] ?? [],
+          fix_request: fixes[id] ?? "",
+        },
+      );
       const tagged = (tags[id] ?? []).length;
       const learned =
         tagged > 0
@@ -192,7 +242,9 @@ function ReviewPage() {
           ? "Approved — ready to publish."
           : verb === "reject"
             ? `Rejected.${learned}`
-            : `Sent back for edits — a new version was opened.${learned}`,
+            : result?.regeneration_queued
+              ? `Sent back — Scaleezy is regenerating it from your feedback.${learned}`
+              : `Sent back for edits — a new version was opened.${learned}`,
       );
       await Promise.all([load(), loadReport()]);
     } catch (e) {
@@ -203,7 +255,7 @@ function ReviewPage() {
   };
 
   const updateDraft = (id: string, patch: Partial<Pick<ContentItem, "headline" | "caption" | "hashtags">>) => {
-    setItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+    setAll((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   };
 
   const saveDraft = async (item: ContentItem, submit = false) => {
@@ -307,14 +359,10 @@ function ReviewPage() {
       ) : items.length === 0 ? (
         <EmptyState
           icon={FileImage}
-          title={tab === "DRAFT" ? "No saved drafts" : "Nothing here"}
-          description={
-            tab === "DRAFT"
-              ? "Create or upload content, save it, and it will remain here when you return."
-              : "Content appears here after it has been submitted for this review stage."
-          }
+          title={EMPTY_COPY[tab]?.title ?? "Nothing here"}
+          description={EMPTY_COPY[tab]?.description ?? ""}
           action={
-            tab === "DRAFT" ? (
+            tab === "WORKING" ? (
               <Button onClick={() => window.location.assign("/publishing")}>Create content</Button>
             ) : undefined
           }
@@ -330,10 +378,12 @@ function ReviewPage() {
                   aria-label="Preview full image"
                   className="group relative block w-full cursor-zoom-in"
                 >
+                  {/* object-contain in a 4:5 frame: the whole poster is
+                      visible on the card — nothing is cropped away. */}
                   <img
                     src={item.preview_url}
                     alt=""
-                    className="h-48 w-full border-b border-border object-cover"
+                    className="aspect-[4/5] max-h-80 w-full border-b border-border bg-secondary/30 object-contain"
                   />
                   <span className="absolute right-2 top-2 rounded-md bg-black/50 p-1.5 text-white opacity-70 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
                     <Maximize2 className="size-3.5" />
@@ -351,7 +401,8 @@ function ReviewPage() {
                   />
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {item.content_format} · v{item.version} ·{" "}
+                  {item.content_format} · v{item.version}
+                  {item.parent ? " · revision" : ""} ·{" "}
                   {new Date(item.created_at).toLocaleDateString()}
                 </p>
 
@@ -359,10 +410,17 @@ function ReviewPage() {
                   <p className="mt-3 line-clamp-3 text-sm text-muted-foreground">{item.caption}</p>
                 ) : null}
 
-                {item.review_note ? (
+                {item.layout_config?.["regenerating"] === true ? (
+                  <p className="mt-3 flex items-center gap-2 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
+                    <Loader2 className="size-3.5 shrink-0 animate-spin" />
+                    Regenerating from your feedback — check back in a moment.
+                  </p>
+                ) : null}
+
+                {noteFor(item) ? (
                   <p className="mt-3 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
                     <span className="font-medium text-foreground">Reviewer note:</span>{" "}
-                    {item.review_note}
+                    {noteFor(item)}
                   </p>
                 ) : null}
 
