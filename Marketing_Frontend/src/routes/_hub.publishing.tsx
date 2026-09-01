@@ -714,7 +714,12 @@ function PublishingPage() {
       };
     }
 
-    throw new Error("Generation is taking longer than expected. Check back shortly.");
+    // The backend sweeps stuck generations at the same ten-minute mark: one
+    // rescue re-run, then an honest FAILED. So past the ceiling the truth is
+    // "it may still land in your drafts" — not "keep watching this spinner".
+    throw new Error(
+      "Generation is taking longer than expected. If it finishes, it will appear in your drafts — or try again now.",
+    );
   };
 
   /** Stops the wait. Anything already queued keeps running on the server. */

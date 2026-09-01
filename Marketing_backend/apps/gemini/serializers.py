@@ -7,7 +7,8 @@ class GeminiGenerationRequestSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = [
             'id', 'workspace', 'user', 'status', 'provider', 'model',
-            'error_message', 'created_at', 'completed_at',
+            'error_message', 'retry_count', 'created_at', 'updated_at',
+            'completed_at',
         ]
 
 class GeminiGenerationResultSerializer(serializers.ModelSerializer):

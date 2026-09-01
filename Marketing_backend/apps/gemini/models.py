@@ -40,7 +40,15 @@ class GeminiGenerationRequest(models.Model):
 
     error_message = models.TextField(blank=True, null=True)
 
+    #: How many times the stuck-generation sweep has re-queued this request
+    #: after a worker died mid-generation. Bounds the rescue: one re-run,
+    #: then an honest FAILED.
+    retry_count = models.PositiveSmallIntegerField(default=0)
+
     created_at = models.DateTimeField(auto_now_add=True)
+    #: Null on rows from before the field existed; the sweep falls back to
+    #: created_at for those.
+    updated_at = models.DateTimeField(auto_now=True, null=True)
     completed_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
