@@ -32,6 +32,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { apiGet, apiPost } from "@/lib/api";
 import { fetchCurrentBrand } from "@/lib/brand-master";
+import type { BrandDto } from "@/lib/brand-settings";
+import { buildGuidedResearchText } from "@/lib/guided-workflows";
 
 export const Route = createFileRoute("/_hub/growth")({
   head: () => ({
@@ -120,8 +122,7 @@ const ACTIVE_RESEARCH = new Set(["QUEUED", "PROCESSING"]);
 const ACTIVE_DRAFT = new Set(["QUEUED", "PROCESSING"]);
 
 function GrowthEnginePage() {
-  const [brandId, setBrandId] = useState("");
-  const [brandName, setBrandName] = useState("");
+  const [brand, setBrand] = useState<BrandDto | null>(null);
   const [runs, setRuns] = useState<ResearchRun[]>([]);
   const [items, setItems] = useState<InboxItem[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -134,8 +135,7 @@ function GrowthEnginePage() {
 
   const load = useCallback(async () => {
     const brand = await fetchCurrentBrand();
-    setBrandId(brand.id);
-    setBrandName(brand.name);
+    setBrand(brand);
     const [runPayload, itemPayload, accountPayload, replyPayload] = await Promise.all([
       apiGet<ResearchRun[] | ListEnvelope<ResearchRun>>(
         `/api/marketing/research-runs/?brand_id=${brand.id}`,
@@ -208,7 +208,7 @@ function GrowthEnginePage() {
       <PageHeader
         eyebrow="Autonomous social operating system"
         title="Growth Engine"
-        subtitle={`Discover what is working, turn it into governed brand direction, and respond from one workspace for ${brandName || "this client"}.`}
+        subtitle={`Discover what is working, turn it into governed brand direction, and respond from one workspace for ${brand?.name || "this client"}.`}
         backTo="/"
       />
 
@@ -248,7 +248,8 @@ function GrowthEnginePage() {
 
         <TabsContent value="research">
           <ResearchPanel
-            brandId={brandId}
+            key={brand?.id ?? "loading"}
+            brand={brand}
             runs={runs}
             loading={loading}
             working={working}
@@ -258,7 +259,7 @@ function GrowthEnginePage() {
 
         <TabsContent value="inbox">
           <InboxPanel
-            brandId={brandId}
+            brandId={brand?.id ?? ""}
             connections={connections}
             selectedConnection={selectedConnection}
             setSelectedConnection={setSelectedConnection}
@@ -276,20 +277,21 @@ function GrowthEnginePage() {
 }
 
 function ResearchPanel({
-  brandId,
+  brand,
   runs,
   loading,
   working,
   act,
 }: {
-  brandId: string;
+  brand: BrandDto | null;
   runs: ResearchRun[];
   loading: boolean;
   working: string;
   act: <T>(key: string, request: () => Promise<T>, success: string) => Promise<void>;
 }) {
-  const [query, setQuery] = useState("");
-  const [objectives, setObjectives] = useState("");
+  const guided = brand ? buildGuidedResearchText(brand) : { query: "", objectives: "" };
+  const [query, setQuery] = useState(guided.query);
+  const [objectives, setObjectives] = useState(guided.objectives);
   const [sources, setSources] = useState("");
   const latest = runs[0];
 
@@ -298,7 +300,7 @@ function ResearchPanel({
       "research",
       () =>
         apiPost("/api/marketing/research-runs/", {
-          brand: brandId,
+          brand: brand?.id,
           query,
           objectives: objectives
             .split(",")
@@ -310,17 +312,16 @@ function ResearchPanel({
             .filter(Boolean),
         }),
       "Research queued. Scaleezy will verify every cited source.",
-    ).then(() => setQuery(""));
+    );
 
   return (
     <div className="grid gap-6 xl:grid-cols-[22rem_minmax(0,1fr)]">
       <section className="surface-card h-fit p-5 xl:sticky xl:top-6">
         <p className="label-eyebrow">Creative discovery</p>
-        <h2 className="mt-2 text-2xl font-bold tracking-tight">Search without a template cage.</h2>
+        <h2 className="mt-2 text-2xl font-bold tracking-tight">Start with a ready brief.</h2>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          Ask for any industry, campaign, visual language, competitor, hook, poster or format. The
-          routed research provider finds cited public references; you decide what enters Brand
-          Master.
+          Scaleezy drafted this from Brand Master. Edit anything, or run it as-is to discover cited
+          public references from any industry. You decide what enters Brand Master.
         </p>
         <div className="mt-5 space-y-4">
           <div>
@@ -333,33 +334,40 @@ function ResearchPanel({
               className="mt-2 min-h-28"
             />
           </div>
-          <div>
-            <Label htmlFor="research-objectives">Focus areas (optional)</Label>
-            <Input
-              id="research-objectives"
-              value={objectives}
-              onChange={(event) => setObjectives(event.target.value)}
-              placeholder="layout, hook, product staging"
-              className="mt-2"
-            />
-          </div>
-          <div>
-            <Label htmlFor="research-sources">Preferred places (optional)</Label>
-            <Input
-              id="research-sources"
-              value={sources}
-              onChange={(event) => setSources(event.target.value)}
-              placeholder="ad libraries, design publications, any public web source"
-              className="mt-2"
-            />
-          </div>
+          <details className="rounded-xl border p-4">
+            <summary className="cursor-pointer text-sm font-semibold">
+              Fine-tune focus or preferred sources (optional)
+            </summary>
+            <div className="mt-4 space-y-4">
+              <div>
+                <Label htmlFor="research-objectives">Focus areas</Label>
+                <Input
+                  id="research-objectives"
+                  value={objectives}
+                  onChange={(event) => setObjectives(event.target.value)}
+                  placeholder="layout, hook, product staging"
+                  className="mt-2"
+                />
+              </div>
+              <div>
+                <Label htmlFor="research-sources">Preferred places</Label>
+                <Input
+                  id="research-sources"
+                  value={sources}
+                  onChange={(event) => setSources(event.target.value)}
+                  placeholder="Leave blank to search the unrestricted public web"
+                  className="mt-2"
+                />
+              </div>
+            </div>
+          </details>
           <Button
             className="w-full"
-            disabled={!brandId || query.trim().length < 3 || working === "research"}
+            disabled={!brand?.id || query.trim().length < 3 || working === "research"}
             onClick={start}
           >
             {working === "research" ? <Loader2 className="animate-spin" /> : <Search />}
-            Research the public web
+            Find ideas for {brand?.name || "this brand"}
           </Button>
           <p className="text-xs leading-5 text-muted-foreground">
             References default to “rights unknown.” Scaleezy does not copy or grant rights to

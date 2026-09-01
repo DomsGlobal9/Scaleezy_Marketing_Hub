@@ -17,6 +17,7 @@ import {
   GraduationCap,
   IdCard,
   Image as ImageIcon,
+  LayoutGrid,
   Lightbulb,
   Loader2,
   Package,
@@ -53,6 +54,7 @@ import { EnrichFromWebsite, NlNoteBox } from "@/components/marketing/nl-note-box
 import { PageHeader, SectionTitle } from "@/components/marketing/primitives";
 import { ProductsAudiencePanel } from "@/components/marketing/products-audience-panel";
 import { TeachScaleezy } from "@/components/marketing/teach-scaleezy";
+import { TemplatesPanel } from "@/components/marketing/templates-panel";
 import {
   BRAND_MASTER_TABS,
   READINESS_COPY,
@@ -1192,11 +1194,12 @@ function BrandMasterPage() {
           onValueChange={(value) => setTab(value as BrandMasterTab)}
           className="space-y-6"
         >
-          <div className="scrollbar-hide -mx-4 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
-            <TabsList
-              aria-label="Brand Master sections"
-              className="flex h-auto min-w-max flex-nowrap justify-start gap-1"
-            >
+          {/* Wrapping, not horizontally scrolling: a hidden-scrollbar strip is
+              unreachable with a mouse, so overflowing tabs simply vanished. */}
+          <TabsList
+            aria-label="Brand Master sections"
+            className="flex h-auto w-full flex-wrap justify-start gap-1"
+          >
               <TabsTrigger value="overview" className="shrink-0 gap-1.5">
                 <Sparkles className="size-3.5" /> Overview
               </TabsTrigger>
@@ -1211,6 +1214,9 @@ function BrandMasterPage() {
               </TabsTrigger>
               <TabsTrigger value="inspirations" className="shrink-0 gap-1.5">
                 <Lightbulb className="size-3.5" /> Inspirations
+              </TabsTrigger>
+              <TabsTrigger value="templates" className="shrink-0 gap-1.5">
+                <LayoutGrid className="size-3.5" /> Templates
               </TabsTrigger>
               <TabsTrigger value="learning" className="shrink-0 gap-1.5">
                 <TrendingUp className="size-3.5" /> Learning
@@ -1238,7 +1244,6 @@ function BrandMasterPage() {
                 <GraduationCap className="size-3.5" /> Teach Scaleezy
               </TabsTrigger>
             </TabsList>
-          </div>
 
           <TabsContent value="overview">
             <OverviewTab
@@ -1269,6 +1274,9 @@ function BrandMasterPage() {
                 refresh();
               }}
             />
+          </TabsContent>
+          <TabsContent value="templates">
+            <TemplatesPanel />
           </TabsContent>
           <TabsContent value="learning">
             <LearningTab brandId={brandId} onChanged={refresh} />
