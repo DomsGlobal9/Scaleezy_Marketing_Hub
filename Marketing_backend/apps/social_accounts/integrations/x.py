@@ -231,3 +231,34 @@ class XAdapter:
         if not reply_id:
             raise Exception('X did not confirm the reply.')
         return {'id': reply_id, 'url': f'https://x.com/i/status/{reply_id}'}
+
+    def fetch_post_metrics(self, access_token: str, post_ids):
+        """Fetch public metrics for at most 100 posts in one X API request."""
+        ids = [str(value) for value in post_ids if value][:100]
+        if not ids:
+            return []
+        response = requests.get(
+            f"{self.API_BASE}/tweets",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"ids": ",".join(ids), "tweet.fields": "public_metrics,created_at"},
+            timeout=15,
+        )
+        if not response.ok:
+            raise Exception(f"Could not sync X post metrics ({response.status_code}).")
+        rows = []
+        for post in response.json().get('data', []):
+            metrics = post.get('public_metrics') or {}
+            rows.append({
+                'external_post_id': str(post.get('id') or ''),
+                'impressions': int(metrics.get('impression_count') or 0),
+                'reach': int(metrics.get('impression_count') or 0),
+                'engagement': sum(int(metrics.get(key) or 0) for key in (
+                    'like_count', 'reply_count', 'retweet_count', 'quote_count',
+                    'bookmark_count',
+                )),
+                'clicks': 0,
+                'conversions': 0,
+                'observed_at': post.get('created_at'),
+                'source_payload': {'public_metrics': metrics},
+            })
+        return rows

@@ -50,3 +50,25 @@ class XEngagementAdapterTests(SimpleTestCase):
             'tweet-1',
         )
         self.assertEqual(post.call_args.kwargs['timeout'], 15)
+
+    @patch('apps.social_accounts.integrations.x.requests.get')
+    def test_fetch_post_metrics_normalizes_public_metrics(self, get):
+        response = MagicMock(ok=True, status_code=200)
+        response.json.return_value = {'data': [{
+            'id': 'tweet-1',
+            'created_at': '2026-09-01T10:00:00Z',
+            'public_metrics': {
+                'impression_count': 100,
+                'like_count': 4,
+                'reply_count': 2,
+                'retweet_count': 3,
+                'quote_count': 1,
+            },
+        }]}
+        get.return_value = response
+
+        rows = self.adapter.fetch_post_metrics('token', ['tweet-1'])
+
+        self.assertEqual(rows[0]['reach'], 100)
+        self.assertEqual(rows[0]['engagement'], 10)
+        self.assertEqual(get.call_args.kwargs['params']['tweet.fields'], 'public_metrics,created_at')

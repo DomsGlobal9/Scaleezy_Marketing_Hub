@@ -6,7 +6,12 @@
 // You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
+// Nitro defaults temporary build output to node_modules/.nitro. Keep generated
+// files in the project build directory so installs may remain read-only.
+const nitroBuild = { buildDir: ".nitro" } as unknown as { preset?: string };
+
 export default defineConfig({
+  nitro: nitroBuild,
   tanstackStart: {
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
     // nitro/vite builds from this

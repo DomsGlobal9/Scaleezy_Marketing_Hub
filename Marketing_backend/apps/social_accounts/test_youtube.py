@@ -214,3 +214,19 @@ class YouTubeAdapterTests(TestCase):
             'comment-1',
         )
         self.assertEqual(mock_post.call_args.kwargs['timeout'], 15)
+
+    @patch('apps.social_accounts.integrations.youtube.youtube.requests.get')
+    def test_fetch_video_metrics_normalizes_public_statistics(self, mock_get):
+        mock_res = MagicMock(ok=True)
+        mock_res.json.return_value = {'items': [{
+            'id': 'video-1',
+            'snippet': {'publishedAt': '2026-09-01T10:00:00Z'},
+            'statistics': {'viewCount': '100', 'likeCount': '7', 'commentCount': '2'},
+        }]}
+        mock_get.return_value = mock_res
+
+        rows = self.adapter.fetch_video_metrics('token', ['video-1'])
+
+        self.assertEqual(rows[0]['reach'], 100)
+        self.assertEqual(rows[0]['engagement'], 9)
+        self.assertIn('views', rows[0]['source_payload']['measure_note'])

@@ -77,6 +77,7 @@ def generate_content(request_id: str):
         request.status = GeminiGenerationRequest.Status.FAILED
         request.error_message = str(exc)[:2000]
         request.save(update_fields=['status', 'error_message'])
+        _queue_autopilot_followups(request)
         # Re-raised so the worker records the traceback and can retry.
         raise
 
@@ -119,6 +120,7 @@ def generate_content(request_id: str):
         request.status = GeminiGenerationRequest.Status.FAILED
         request.error_message = str(exc)[:2000]
         request.save(update_fields=['status', 'error_message'])
+        _queue_autopilot_followups(request)
         raise
 
     request.status = GeminiGenerationRequest.Status.COMPLETED
@@ -126,10 +128,31 @@ def generate_content(request_id: str):
     request.completed_at = timezone.now()
     request.save(update_fields=['status', 'provider', 'completed_at'])
 
+    # A manually authorised autopilot run is event-driven: generation queues
+    # the follow-up that moves its durable draft to the configured review
+    # state. No recurring scheduler, hidden spend or external publish is
+    # involved, and ordinary generation requests have no related rows.
+    _queue_autopilot_followups(request)
+
     return {
         'request': str(request.id),
         'content_item': str(content_item.id) if content_item else None,
     }
+
+
+def _queue_autopilot_followups(request):
+    try:
+        from apps.autopilot.models import AutopilotRun
+        from apps.autopilot.tasks import execute_autopilot_run
+
+        for run_id in request.autopilot_runs.filter(
+            status=AutopilotRun.Status.WAITING_GENERATION
+        ).values_list('id', flat=True):
+            execute_autopilot_run.enqueue(str(run_id))
+    except Exception:
+        logger.exception(
+            "Autopilot follow-up could not be queued for generation %s", request.pk
+        )
 
 
 def _persist(request, brief, result_data, routed):

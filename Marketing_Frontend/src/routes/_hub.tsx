@@ -1,6 +1,7 @@
 import { createFileRoute, Link, Outlet, redirect, useNavigate } from "@tanstack/react-router";
 import {
   BarChart3,
+  Bot,
   Brain,
   Check,
   CheckCircle2,
@@ -82,6 +83,7 @@ const NAV = [
   { to: "/analytics", label: "Analytics", icon: BarChart3, adminOnly: false },
   { to: "/settings", label: "Settings", icon: Settings, adminOnly: false },
   { to: "/admin", label: "Admin", icon: ShieldCheck, adminOnly: true },
+  { to: "/autopilot", label: "Autopilot", icon: Bot, adminOnly: true },
 ] as const;
 
 function Brand() {

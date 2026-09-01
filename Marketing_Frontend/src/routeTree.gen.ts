@@ -19,6 +19,7 @@ import { Route as HubIndexRouteImport } from './routes/_hub.index'
 import { Route as HubAccountsRouteImport } from './routes/_hub.accounts'
 import { Route as HubAdminRouteImport } from './routes/_hub.admin'
 import { Route as HubAnalyticsRouteImport } from './routes/_hub.analytics'
+import { Route as HubAutopilotRouteImport } from './routes/_hub.autopilot'
 import { Route as HubBrandMasterRouteImport } from './routes/_hub.brand-master'
 import { Route as HubGrowthRouteImport } from './routes/_hub.growth'
 import { Route as HubOnboardingRouteImport } from './routes/_hub.onboarding'
@@ -85,6 +86,11 @@ const HubAdminRoute = HubAdminRouteImport.update({
 const HubAnalyticsRoute = HubAnalyticsRouteImport.update({
   id: '/analytics',
   path: '/analytics',
+  getParentRoute: () => HubRoute,
+} as any)
+const HubAutopilotRoute = HubAutopilotRouteImport.update({
+  id: '/autopilot',
+  path: '/autopilot',
   getParentRoute: () => HubRoute,
 } as any)
 const HubBrandMasterRoute = HubBrandMasterRouteImport.update({
@@ -189,6 +195,7 @@ export interface FileRoutesByFullPath {
   '/accounts': typeof HubAccountsRoute
   '/admin': typeof HubAdminRoute
   '/analytics': typeof HubAnalyticsRoute
+  '/autopilot': typeof HubAutopilotRoute
   '/brand-master': typeof HubBrandMasterRoute
   '/growth': typeof HubGrowthRoute
   '/onboarding': typeof HubOnboardingRoute
@@ -216,6 +223,7 @@ export interface FileRoutesByTo {
   '/accounts': typeof HubAccountsRoute
   '/admin': typeof HubAdminRoute
   '/analytics': typeof HubAnalyticsRoute
+  '/autopilot': typeof HubAutopilotRoute
   '/brand-master': typeof HubBrandMasterRoute
   '/growth': typeof HubGrowthRoute
   '/onboarding': typeof HubOnboardingRoute
@@ -247,6 +255,7 @@ export interface FileRoutesById {
   '/_hub/accounts': typeof HubAccountsRoute
   '/_hub/admin': typeof HubAdminRoute
   '/_hub/analytics': typeof HubAnalyticsRoute
+  '/_hub/autopilot': typeof HubAutopilotRoute
   '/_hub/brand-master': typeof HubBrandMasterRoute
   '/_hub/growth': typeof HubGrowthRoute
   '/_hub/onboarding': typeof HubOnboardingRoute
@@ -279,6 +288,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/admin'
     | '/analytics'
+    | '/autopilot'
     | '/brand-master'
     | '/growth'
     | '/onboarding'
@@ -306,6 +316,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/admin'
     | '/analytics'
+    | '/autopilot'
     | '/brand-master'
     | '/growth'
     | '/onboarding'
@@ -336,6 +347,7 @@ export interface FileRouteTypes {
     | '/_hub/accounts'
     | '/_hub/admin'
     | '/_hub/analytics'
+    | '/_hub/autopilot'
     | '/_hub/brand-master'
     | '/_hub/growth'
     | '/_hub/onboarding'
@@ -440,6 +452,13 @@ declare module '@tanstack/react-router' {
       path: '/analytics'
       fullPath: '/analytics'
       preLoaderRoute: typeof HubAnalyticsRouteImport
+      parentRoute: typeof HubRoute
+    }
+    '/_hub/autopilot': {
+      id: '/_hub/autopilot'
+      path: '/autopilot'
+      fullPath: '/autopilot'
+      preLoaderRoute: typeof HubAutopilotRouteImport
       parentRoute: typeof HubRoute
     }
     '/_hub/brand-master': {
@@ -575,6 +594,7 @@ interface HubRouteChildren {
   HubAccountsRoute: typeof HubAccountsRoute
   HubAdminRoute: typeof HubAdminRoute
   HubAnalyticsRoute: typeof HubAnalyticsRoute
+  HubAutopilotRoute: typeof HubAutopilotRoute
   HubBrandMasterRoute: typeof HubBrandMasterRoute
   HubGrowthRoute: typeof HubGrowthRoute
   HubOnboardingRoute: typeof HubOnboardingRoute
@@ -588,6 +608,7 @@ const HubRouteChildren: HubRouteChildren = {
   HubAccountsRoute: HubAccountsRoute,
   HubAdminRoute: HubAdminRoute,
   HubAnalyticsRoute: HubAnalyticsRoute,
+  HubAutopilotRoute: HubAutopilotRoute,
   HubBrandMasterRoute: HubBrandMasterRoute,
   HubGrowthRoute: HubGrowthRoute,
   HubOnboardingRoute: HubOnboardingRoute,

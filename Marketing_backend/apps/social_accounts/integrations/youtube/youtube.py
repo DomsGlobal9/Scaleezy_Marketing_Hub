@@ -370,6 +370,43 @@ class YouTubeAdapter(SocialPlatformAdapter):
             raise YouTubePublishingError('YouTube did not confirm the reply.')
         return {'id': reply_id, 'url': ''}
 
+    def fetch_video_metrics(self, access_token: str, video_ids):
+        """Fetch public video statistics; YouTube Analytics scope is not implied."""
+        ids = [str(value) for value in video_ids if value][:50]
+        if not ids:
+            return []
+        response = requests.get(
+            f"{self.API_BASE}/videos",
+            params={'part': 'statistics,snippet', 'id': ','.join(ids)},
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=15,
+        )
+        self._handle_api_errors(response)
+        rows = []
+        for video in response.json().get('items', []):
+            metrics = video.get('statistics') or {}
+            snippet = video.get('snippet') or {}
+            views = int(metrics.get('viewCount') or 0)
+            rows.append({
+                'external_post_id': str(video.get('id') or ''),
+                # The Data API supplies views, not unique viewers or impressions.
+                # Preserve that distinction in provenance while using views as
+                # the dashboard's closest comparable reach measure.
+                'impressions': views,
+                'reach': views,
+                'engagement': sum(int(metrics.get(key) or 0) for key in (
+                    'likeCount', 'commentCount', 'favoriteCount',
+                )),
+                'clicks': 0,
+                'conversions': 0,
+                'observed_at': snippet.get('publishedAt'),
+                'source_payload': {
+                    'statistics': metrics,
+                    'measure_note': 'reach represents public video views',
+                },
+            })
+        return rows
+
     def disconnect(self, access_token: str) -> bool:
         """
         Revokes the token at Google. Revoking a refresh token also invalidates

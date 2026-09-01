@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     'apps.universal',
     'apps.platform',
     'apps.engagement',
+    'apps.autopilot',
 ]
 
 MIDDLEWARE = [
