@@ -647,6 +647,7 @@ export type BrandMasterTab =
   | "products"
   | "knowledge"
   | "inspirations"
+  | "templates"
   | "learning"
   | "rules"
   | "brain"
@@ -659,6 +660,7 @@ export const BRAND_MASTER_TABS: BrandMasterTab[] = [
   "products",
   "knowledge",
   "inspirations",
+  "templates",
   "learning",
   "rules",
   "brain",

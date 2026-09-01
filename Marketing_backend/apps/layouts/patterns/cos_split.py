@@ -8,6 +8,7 @@ class CosSplit(LayoutPattern):
     key = 'cos_split'
     display_name = 'Split tone'
     description = 'Photograph above, a solid block of type below.'
+    industries = ('retail', 'food', 'beauty', 'fashion')
 
     #: Share of the height the photograph takes.
     SPLIT = 0.58

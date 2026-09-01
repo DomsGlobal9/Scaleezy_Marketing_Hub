@@ -14,6 +14,7 @@ class DataHero(LayoutPattern):
     display_name = 'Data hero'
     description = 'One enormous figure, with the message as caption.'
     uses_photo = False
+    industries = ('saas', 'finance', 'retail', 'fitness')
 
     def split_offer(self):
         """Figure and remainder, falling back to the whole string as figure."""

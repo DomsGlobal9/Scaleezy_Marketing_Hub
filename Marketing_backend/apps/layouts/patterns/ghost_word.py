@@ -8,6 +8,7 @@ class GhostWord(LayoutPattern):
     key = 'ghost_word'
     display_name = 'Ghost word'
     description = 'An oversized word ghosted behind the image.'
+    industries = ('fashion', 'events', 'fitness', 'lifestyle')
 
     def ghost_text(self) -> str:
         """The single word to blow up: the occasion, else the longest word."""
