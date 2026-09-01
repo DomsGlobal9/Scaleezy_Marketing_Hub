@@ -3,8 +3,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { api, apiPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
+
+/** The words on the poster, editable in place. Blank means "use the item's own". */
+interface PosterCopy {
+  headline: string;
+  subheadline: string;
+  offer: string;
+  cta: string;
+}
 
 export interface LayoutOption {
   key: string;
@@ -62,27 +71,54 @@ export function PosterStudio({
   layouts,
   sizes,
   defaultLayout,
+  initialHeadline,
+  initialOffer,
+  initialSubheadline,
+  initialCta,
   onRendered,
 }: {
   contentItemId: string;
   layouts: LayoutOption[];
   sizes: SizeOption[];
   defaultLayout?: string | undefined;
+  initialHeadline?: string | undefined;
+  initialOffer?: string | undefined;
+  initialSubheadline?: string | undefined;
+  initialCta?: string | undefined;
   onRendered?: (() => void) | undefined;
 }) {
   const [layout, setLayout] = useState(defaultLayout || layouts[0]?.key || "");
+  const [copy, setCopy] = useState<PosterCopy>({
+    headline: initialHeadline ?? "",
+    subheadline: initialSubheadline ?? "",
+    offer: initialOffer ?? "",
+    cta: initialCta ?? "",
+  });
   const [preview, setPreview] = useState<string>("");
   const [previewing, setPreviewing] = useState(false);
   const [busy, setBusy] = useState<"render" | "export" | null>(null);
   const [chosen, setChosen] = useState<string[]>(["instagram_portrait"]);
   const [exported, setExported] = useState<{ label: string; url: string }[]>([]);
 
-  // Preview requests are superseded as the user clicks through layouts; only
-  // the newest response may paint, or a slow earlier one wins the race.
+  // Preview requests are superseded as the user clicks through layouts or
+  // types; only the newest response may paint, or a slow earlier one wins.
   const request = useRef(0);
 
+  // Headline and offer are omitted when blank, so the server falls back to
+  // the item's generated copy. Subheadline and CTA are ALWAYS sent — an
+  // explicit blank is how a saved line gets removed rather than resurrected.
+  const copyOverrides = useCallback(
+    (values: PosterCopy) => ({
+      ...(values.headline.trim() !== "" ? { headline: values.headline } : {}),
+      ...(values.offer.trim() !== "" ? { offer: values.offer } : {}),
+      subheadline: values.subheadline,
+      cta: values.cta,
+    }),
+    [],
+  );
+
   const loadPreview = useCallback(
-    async (key: string) => {
+    async (key: string, values: PosterCopy) => {
       if (!key) return;
       const ticket = ++request.current;
       setPreviewing(true);
@@ -90,6 +126,7 @@ export function PosterStudio({
         const data = await apiPost<{ preview: string }>("/api/marketing/layouts/preview/", {
           content_item: contentItemId,
           layout: key,
+          ...copyOverrides(values),
         });
         if (ticket === request.current) setPreview(data.preview);
       } catch (e) {
@@ -101,12 +138,20 @@ export function PosterStudio({
         if (ticket === request.current) setPreviewing(false);
       }
     },
-    [contentItemId],
+    [contentItemId, copyOverrides],
   );
 
+  // One debounced effect covers layout clicks and typing alike: the preview
+  // follows whatever is on screen, 400ms behind the last keystroke.
   useEffect(() => {
-    void loadPreview(layout);
-  }, [layout, loadPreview]);
+    const timer = setTimeout(() => {
+      void loadPreview(layout, copy);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [layout, copy, loadPreview]);
+
+  const setField = (field: keyof PosterCopy) => (value: string) =>
+    setCopy((prev) => ({ ...prev, [field]: value }));
 
   const render = async () => {
     setBusy("render");
@@ -114,6 +159,9 @@ export function PosterStudio({
       await apiPost("/api/marketing/layouts/render/", {
         content_item: contentItemId,
         layout,
+        // The same words as the preview on screen — the render must never
+        // quietly differ from what was approved by eye.
+        ...copyOverrides(copy),
       });
       toast.success("Composed on-brand and saved.");
       onRendered?.();
@@ -135,6 +183,9 @@ export function PosterStudio({
         content_item: contentItemId,
         layout,
         sizes: chosen,
+        // The words on screen, on every exported size — an export must never
+        // quietly ship different copy than the preview beside its button.
+        ...copyOverrides(copy),
       });
       setExported(data.exports ?? []);
       if (data.failures?.length) {
@@ -179,6 +230,78 @@ export function PosterStudio({
           </button>
         ))}
       </div>
+
+      {/* The words on the poster, editable next to the preview they change. */}
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <div className="space-y-1">
+          <label
+            htmlFor={`studio-headline-${contentItemId}`}
+            className="text-[0.6875rem] font-medium text-foreground"
+          >
+            Headline
+          </label>
+          <Input
+            id={`studio-headline-${contentItemId}`}
+            value={copy.headline}
+            maxLength={500}
+            disabled={busy !== null}
+            placeholder="The big line on the poster"
+            onChange={(e) => setField("headline")(e.target.value)}
+          />
+        </div>
+        <div className="space-y-1">
+          <label
+            htmlFor={`studio-subheadline-${contentItemId}`}
+            className="text-[0.6875rem] font-medium text-foreground"
+          >
+            Subheadline
+          </label>
+          <Input
+            id={`studio-subheadline-${contentItemId}`}
+            value={copy.subheadline}
+            maxLength={500}
+            disabled={busy !== null}
+            placeholder="Supporting line (optional)"
+            onChange={(e) => setField("subheadline")(e.target.value)}
+          />
+        </div>
+        <div className="space-y-1">
+          <label
+            htmlFor={`studio-offer-${contentItemId}`}
+            className="text-[0.6875rem] font-medium text-foreground"
+          >
+            Offer
+          </label>
+          <Input
+            id={`studio-offer-${contentItemId}`}
+            value={copy.offer}
+            maxLength={255}
+            disabled={busy !== null}
+            placeholder="e.g. 50% OFF"
+            onChange={(e) => setField("offer")(e.target.value)}
+          />
+        </div>
+        <div className="space-y-1">
+          <label
+            htmlFor={`studio-cta-${contentItemId}`}
+            className="text-[0.6875rem] font-medium text-foreground"
+          >
+            Call to action
+          </label>
+          <Input
+            id={`studio-cta-${contentItemId}`}
+            value={copy.cta}
+            maxLength={255}
+            disabled={busy !== null}
+            placeholder="e.g. Shop the collection"
+            onChange={(e) => setField("cta")(e.target.value)}
+          />
+        </div>
+      </div>
+      <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
+        The preview follows as you type. A blank headline or offer falls back to the
+        generated copy; a blank subheadline or call to action removes that line.
+      </p>
 
       <div className="relative mt-3 overflow-hidden rounded-lg border border-border bg-background">
         {preview ? (

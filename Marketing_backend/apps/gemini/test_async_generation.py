@@ -131,3 +131,140 @@ class AsyncGenerationTaskTests(TenantFixtureMixin, TestCase):
             'a queued generation must name the rules it read, or the '
             'learning-usage report undercounts everything made on the queue',
         )
+
+
+REVISED = {
+    'payload': {
+        'postTitle': 'Sharper teal drop',
+        'postDescription': 'Rewritten after your notes.',
+        'postHashtags': '#saree',
+        'posterImageUrl': 'https://storage.test/generated/take-two.png',
+        'metadata': {
+            'generated_image': {
+                'image_url': 'https://storage.test/generated/take-two.png',
+            },
+        },
+    },
+    'provider': 'openai',
+    'provider_name': 'OpenAI',
+    'brain_version': '',
+}
+
+
+class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
+    """'Request edits' queues a regeneration that applies the feedback.
+
+    Before this, the action archived the reviewed version and opened an
+    identical copy — the reviewer's note, tags and fix request drove nothing,
+    and "nothing happens after I request edits" was literally true.
+    """
+
+    def setUp(self):
+        from apps.feedback.models import Feedback
+        from apps.feedback.services import capture
+
+        self.workspace = self.make_workspace('Acme', 'c1')
+        self.manager, self.api = self.authenticate_as(
+            self.workspace, WorkspaceMember.Role.MANAGER, 'manager@acme.test'
+        )
+        self.brand = Brand.objects.create(
+            workspace=self.workspace, name='Acme Sarees', is_default=True,
+            status=Brand.Status.ACTIVE,
+        )
+        self.parent = ContentItem.objects.create(
+            workspace=self.workspace, brand=self.brand,
+            status=ContentItem.Status.NEEDS_EDITS,
+            headline='Drape yourself in teal', cta='30% OFF',
+            review_note='Logo hides the border work.',
+        )
+        capture(
+            content_item=self.parent, user=self.manager,
+            verdict=Feedback.Verdict.NEEDS_EDITS,
+            element_keys=['logo_placement'],
+            feedback_text='Logo hides the border work.',
+            fix_request='Move the logo to the top left.',
+            learn=False,
+        )
+        self.revision = ContentItem.objects.create(
+            workspace=self.workspace, brand=self.brand,
+            status=ContentItem.Status.DRAFT, version=2, parent=self.parent,
+            headline='Drape yourself in teal', caption='Original caption.',
+            layout_config={'regenerating': True},
+        )
+
+    def regenerate(self, *, side_effect=None):
+        from apps.gemini.tasks import regenerate_revision
+
+        kwargs = (
+            {'side_effect': side_effect}
+            if side_effect is not None
+            else {'return_value': dict(REVISED)}
+        )
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload', **kwargs
+        ) as dispatched:
+            regenerate_revision.func(str(self.revision.pk))
+        return dispatched
+
+    def test_the_feedback_becomes_the_instruction_and_the_revision_is_rewritten(self):
+        from apps.marketing.models import MarketingAsset
+
+        dispatched = self.regenerate()
+
+        instruction = dispatched.call_args.kwargs['instruction']
+        self.assertIn('Move the logo to the top left', instruction)
+        self.assertIn('Logo placement', instruction)
+        self.assertIn('Logo hides the border work', instruction)
+
+        self.revision.refresh_from_db()
+        self.assertEqual(self.revision.headline, 'Sharper teal drop')
+        self.assertEqual(self.revision.caption, 'Rewritten after your notes.')
+        self.assertNotIn('regenerating', self.revision.layout_config)
+        # The new photograph was made durable, then composed over: the card
+        # shows a poster with the copy on it, and the photo is the source.
+        self.assertEqual(self.revision.asset.source, MarketingAsset.Source.COMPOSED)
+        self.assertTrue(
+            self.revision.preview_url.startswith('https://storage.test/composed/'),
+            self.revision.preview_url,
+        )
+        source = MarketingAsset.objects.get(
+            pk=self.revision.layout_config['source_asset']
+        )
+        self.assertEqual(
+            source.file_url, 'https://storage.test/generated/take-two.png'
+        )
+
+    def test_a_failed_regeneration_leaves_the_editable_copy(self):
+        self.regenerate(side_effect=RuntimeError('provider down'))
+
+        self.revision.refresh_from_db()
+        self.assertEqual(self.revision.headline, 'Drape yourself in teal')
+        self.assertEqual(self.revision.caption, 'Original caption.')
+        # The marker never lingers: a card must not claim to be regenerating
+        # after the attempt has already failed.
+        self.assertNotIn('regenerating', self.revision.layout_config)
+
+    def test_request_edits_queues_the_regeneration(self):
+        from apps.common.testing import workspace_header
+
+        pending = ContentItem.objects.create(
+            workspace=self.workspace, brand=self.brand,
+            status=ContentItem.Status.PENDING_REVIEW,
+            headline='Second look', cta='30% OFF',
+        )
+        # The task object itself is frozen; replace the module attribute the
+        # view imports instead.
+        with patch('apps.gemini.tasks.regenerate_revision') as task_mock:
+            res = self.api.post(
+                f'/api/marketing/content/{pending.id}/request-edits/',
+                {'note': 'colours are off'},
+                format='json',
+                **workspace_header(self.workspace),
+            )
+
+        self.assertEqual(res.status_code, 200, res.content[:300])
+        body = res.json()['data']
+        self.assertTrue(body['regeneration_queued'])
+        revision = ContentItem.objects.get(parent=pending)
+        task_mock.enqueue.assert_called_once_with(str(revision.pk))
+        self.assertTrue(revision.layout_config.get('regenerating'))

@@ -110,6 +110,121 @@ def generate_content(request_id: str):
     }
 
 
+@task
+def regenerate_revision(revision_id: str):
+    """
+    Applies a reviewer's feedback by regenerating a returned item's revision.
+
+    "Request edits" used to open an identical copy of the rejected version and
+    then wait for a human to rewrite it by hand — the note, tags and fix
+    request drove nothing. Here they become the instruction for a fresh
+    generation, and the result lands on the revision as new copy and a newly
+    composed poster. Best-effort throughout: any refusal or failure leaves the
+    revision exactly as the editable copy it already was.
+    """
+    from apps.billing.quota import QuotaExceeded, enforce
+    from apps.content.models import ContentItem
+    from apps.context.services.generation import (
+        create_generated_asset,
+        generate_marketing_payload,
+    )
+    from apps.feedback.models import Feedback
+    from apps.feedback.training import element_labels
+    from apps.layouts.services import compose_generated_poster
+
+    revision = (
+        ContentItem.objects.select_related('workspace', 'brand')
+        .filter(pk=revision_id, status=ContentItem.Status.DRAFT)
+        .first()
+    )
+    if revision is None or revision.parent_id is None:
+        logger.info("Revision %s gone or already moved on; nothing to regenerate", revision_id)
+        return {'revision': str(revision_id), 'status': 'MISSING'}
+
+    def finish(status, **updates):
+        """Clears the in-progress marker in every exit path, so a card can
+        never claim to be regenerating forever."""
+        config = dict(revision.layout_config or {})
+        config.pop('regenerating', None)
+        config.update(updates)
+        revision.layout_config = config
+        revision.save(update_fields=['layout_config', 'updated_at'])
+        return {'revision': str(revision_id), 'status': status}
+
+    try:
+        enforce(revision.workspace)
+    except QuotaExceeded:
+        logger.info("Revision %s left for manual edits: quota exhausted", revision_id)
+        return finish('QUOTA')
+
+    # The verdict that sent this back lives on the parent — it is the
+    # instruction for what to do differently this time.
+    feedback = (
+        Feedback.objects.filter(content_item_id=revision.parent_id)
+        .order_by('-created_at')
+        .first()
+    )
+    corrections = []
+    if feedback is not None:
+        if feedback.feedback_text:
+            corrections.append(f"Reviewer note: {feedback.feedback_text}")
+        if feedback.fix_request:
+            corrections.append(f"How it should be fixed: {feedback.fix_request}")
+        if feedback.element_keys:
+            labels = element_labels(feedback.element_keys)
+            named = ', '.join(
+                labels.get(key, {}).get('label', key) for key in feedback.element_keys
+            )
+            corrections.append(f"Elements flagged as wrong: {named}")
+
+    instruction = ' '.join([
+        "Revise the previous version of this content. Keep what worked, fix what was flagged.",
+        *corrections,
+    ])[:500]
+
+    brief = {
+        'campaign_name': (revision.headline or '')[:255],
+        'offer': revision.cta or '',
+        'previous_headline': revision.headline or '',
+        'previous_caption': (revision.caption or '')[:2000],
+        'revision_feedback': corrections,
+    }
+
+    try:
+        routed = generate_marketing_payload(
+            revision.workspace, brief, instruction=instruction
+        )
+        payload = routed['payload']
+    except Exception:
+        logger.exception("Regeneration failed for revision %s; copy left as-is", revision_id)
+        return finish('FAILED')
+
+    asset = create_generated_asset(revision.workspace, payload, user=revision.created_by)
+    revision.headline = (payload.get('postTitle') or revision.headline or '')[:500]
+    revision.caption = payload.get('postDescription') or revision.caption or ''
+    revision.hashtags = payload.get('postHashtags') or revision.hashtags or ''
+    revision.ai_provider = (routed.get('provider') or revision.ai_provider or '')[:100]
+
+    config = dict(revision.layout_config or {})
+    config.pop('regenerating', None)
+    if asset is not None:
+        revision.asset = asset
+        revision.preview_url = (payload.get('posterImageUrl') or '')[:1000] or revision.preview_url
+        # A new photograph replaces the parent's; the old source no longer
+        # describes what any future composition should build from.
+        config.pop('source_asset', None)
+    revision.layout_config = config
+    revision.save(
+        update_fields=[
+            'headline', 'caption', 'hashtags', 'ai_provider',
+            'asset', 'preview_url', 'layout_config', 'updated_at',
+        ]
+    )
+
+    compose_generated_poster(revision, user=revision.created_by)
+    return {'revision': str(revision_id), 'status': 'OK'}
+
+
 def _persist(request, brief, result_data, provider_key, *, brain_version=''):
     """
     Mirrors the synchronous path's persistence so a background generation

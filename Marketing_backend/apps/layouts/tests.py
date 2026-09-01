@@ -323,6 +323,97 @@ class LayoutAPITests(APITestCase):
         self.assertEqual(self.item.asset.source, MarketingAsset.Source.COMPOSED)
         self.assertEqual((self.item.asset.width, self.item.asset.height), (1080, 1350))
 
+    def test_render_persists_the_copy_it_composed_with(self):
+        """The studio's edited words survive the render: headline/offer land on
+        the item, the slots without columns land in layout_config['copy'], so
+        an export — whose serializer carries no copy fields — reproduces the
+        poster that was actually on screen."""
+        self.as_(self.editor)
+        res = self.client.post(
+            '/api/marketing/layouts/render/',
+            {
+                'content_item': str(self.item.id),
+                'layout': 'data_hero',
+                'headline': 'Rewritten in the studio',
+                'subheadline': 'Handloom silk, forty pieces.',
+                'offer': '60% OFF',
+                'cta': 'Shop the edit',
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.headline, 'Rewritten in the studio')
+        self.assertEqual(self.item.cta, '60% OFF')
+        copy = self.item.layout_config['copy']
+        self.assertEqual(copy['subheadline'], 'Handloom silk, forty pieces.')
+        self.assertEqual(copy['cta'], 'Shop the edit')
+
+        # And a later export composes without error from the persisted copy.
+        export = self.client.post(
+            '/api/marketing/layouts/export/',
+            {'content_item': str(self.item.id), 'sizes': ['instagram_portrait']},
+            format='json',
+        )
+        self.assertEqual(export.status_code, status.HTTP_201_CREATED)
+
+    def test_an_explicit_blank_clears_a_saved_line(self):
+        """Deleting a subheadline in the studio must remove it — not have the
+        saved value resurrected on every later compose."""
+        self.as_(self.editor)
+        first = self.client.post(
+            '/api/marketing/layouts/render/',
+            {
+                'content_item': str(self.item.id),
+                'subheadline': 'Weekend drop only.',
+            },
+            format='json',
+        )
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        self.item.refresh_from_db()
+        self.assertEqual(
+            self.item.layout_config['copy']['subheadline'], 'Weekend drop only.'
+        )
+
+        second = self.client.post(
+            '/api/marketing/layouts/render/',
+            {'content_item': str(self.item.id), 'subheadline': ''},
+            format='json',
+        )
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED)
+        self.item.refresh_from_db()
+        self.assertNotIn('subheadline', self.item.layout_config.get('copy', {}))
+
+    def test_export_accepts_the_copy_on_screen(self):
+        """The export serializer takes the same overrides as preview/render,
+        so exporting without a prior save cannot ship different words."""
+        self.as_(self.editor)
+        res = self.client.post(
+            '/api/marketing/layouts/export/',
+            {
+                'content_item': str(self.item.id),
+                'sizes': ['instagram_portrait'],
+                'headline': 'Words from the screen',
+                'subheadline': 'Exactly as previewed.',
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.content[:300])
+
+    def test_a_poisoned_copy_config_degrades_instead_of_500ing(self):
+        """layout_config is client-writable JSON; a malformed 'copy' must fall
+        back to defaults, never brick every later preview of the item."""
+        self.item.layout_config = {'copy': ['not', 'a', 'dict']}
+        self.item.save(update_fields=['layout_config'])
+        self.as_(self.editor)
+        res = self.client.post(
+            '/api/marketing/layouts/preview/',
+            {'content_item': str(self.item.id)},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.content[:300])
+
     def test_render_of_another_tenants_content_is_a_404(self):
         theirs = ContentItem.objects.create(workspace=self.other, headline='Theirs')
         self.as_(self.editor)

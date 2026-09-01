@@ -51,6 +51,30 @@ def persist_composed(workspace, user, item, image, fmt, layout, suffix=''):
     )
 
 
+def saved_copy(item):
+    """
+    The copy dict a render persisted on this item, or {} — never a poisoned
+    shape. `layout_config` is client-writable JSON, so the stored 'copy'
+    cannot be trusted to be a dict of strings; anything malformed degrades to
+    defaults rather than failing every later compose with a 500.
+    """
+    if item is None or not isinstance(item.layout_config, dict):
+        return {}
+    candidate = item.layout_config.get('copy')
+    if not isinstance(candidate, dict):
+        return {}
+    cleaned = {}
+    for key in ('subheadline', 'cta', 'phone'):
+        value = candidate.get(key)
+        if isinstance(value, str) and value:
+            cleaned[key] = value
+    for key in ('include_logo', 'include_phone'):
+        value = candidate.get(key)
+        if isinstance(value, bool):
+            cleaned[key] = value
+    return cleaned
+
+
 def source_photo_asset(item):
     """
     The photograph a composition should be built from.
@@ -97,20 +121,31 @@ def compose_generated_poster(item, *, user=None):
         return None
 
     try:
-        photo = render_engine.photo_for(asset=item.asset)
+        # The recorded source photograph when there is one — composing from an
+        # already composed poster would bake the words on twice.
+        photo = render_engine.photo_for(asset=source_photo_asset(item))
         layout = (
             item.layout_plugin
             or (item.brand.layout_preference or '')
             or registry.DEFAULT_KEY
         )
         _label, width, height, _platform = export_engine.SIZES['instagram_portrait']
+        # The copy a studio render saved on this item travels into automatic
+        # composes too, so a regenerated revision carries the same words the
+        # studio showed — not a stripped-down subset of them.
+        saved = saved_copy(item)
         spec = render_engine.spec_from(
             item.brand,
             headline=item.headline,
+            subheadline=saved.get('subheadline', ''),
             offer=item.cta,
+            cta=saved.get('cta', ''),
             width=width,
             height=height,
             photo=photo,
+            include_logo=saved.get('include_logo'),
+            include_phone=saved.get('include_phone'),
+            phone=saved.get('phone', ''),
         )
         image = render_engine.compose(spec, layout)
         source = item.asset

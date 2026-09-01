@@ -314,6 +314,17 @@ def context_as_brief(context):
         lines.append(f"Voice: {context['voice']['tone']}")
     for truth in context['verified_truth']:
         lines.append(f"Verified: {truth}")
+    if context['task_type'] == TaskType.IMAGE:
+        # The composition engine owns every word on the poster. An image model
+        # that renders its own headline produces the half-cropped double text
+        # reviewers called "unfinished": its lettering fights the composed
+        # typography and gets clipped by the layout. Stated with MUST weight so
+        # every adapter carries it like a hard rule.
+        lines.append(
+            "MUST: The image is a photograph/visual only - absolutely no text, "
+            "lettering, numbers, captions, watermarks or logos rendered in the "
+            "image. All typography is composed onto it later."
+        )
     for rule in context['hard_rules']:
         lines.append(f"MUST: {rule.get('text', '')}")
     for rule in context['soft_rules']:
