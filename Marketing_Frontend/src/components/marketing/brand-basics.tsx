@@ -18,7 +18,6 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Field,
   KeyValueEditor,
@@ -26,7 +25,6 @@ import {
   TagListEditor,
   Toggle,
 } from "@/components/marketing/brand-field-editors";
-import { useLayoutCatalogue } from "@/components/marketing/poster-studio";
 import { SectionTitle } from "@/components/marketing/primitives";
 import type { BrandEditor } from "@/lib/brand-settings";
 import { cn } from "@/lib/utils";
@@ -401,7 +399,6 @@ export function MarketSection({ editor }: { editor: BrandEditor }) {
 
 export function PosterDefaultsSection({ editor }: { editor: BrandEditor }) {
   const { settings, update, loading } = editor;
-  const { layouts } = useLayoutCatalogue();
   const hasLogo = !!settings.logoUrl;
 
   return (
@@ -441,37 +438,6 @@ export function PosterDefaultsSection({ editor }: { editor: BrandEditor }) {
           disabled={!settings.phoneNumber.trim()}
           onChange={(v) => update({ showPhoneOnPosters: v }, { immediate: true })}
         />
-        <div>
-          <Label className="text-xs tracking-wide uppercase">Default poster layout</Label>
-          {layouts.length === 0 ? (
-            <p className="mt-1.5 text-xs text-muted-foreground">
-              Layout catalogue unavailable right now.
-            </p>
-          ) : (
-            <div className="mt-1.5 flex flex-wrap gap-1.5">
-              {layouts.map((option) => (
-                <button
-                  key={option.key}
-                  type="button"
-                  title={option.description}
-                  onClick={() => update({ layoutPreference: option.key }, { immediate: true })}
-                  className={cn(
-                    "rounded-full border px-2.5 py-1 text-xs transition-colors",
-                    settings.layoutPreference === option.key
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-border text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {option.display_name}
-                </button>
-              ))}
-            </div>
-          )}
-          <p className="mt-1.5 text-xs text-muted-foreground">
-            Used whenever a poster is composed from your brand rather than generated. Can be changed
-            per poster in Review.
-          </p>
-        </div>
       </div>
     </section>
   );
