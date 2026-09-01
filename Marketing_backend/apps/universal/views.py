@@ -189,11 +189,24 @@ class InspirationLibraryView(TenantView):
         workspace = self._workspace()
         industry = str(request.query_params.get('industry', '')).strip()
         kind = str(request.query_params.get('kind', '')).strip().upper()
-        rows = gallery_for(workspace, industry=industry, kind=kind)
+        try:
+            limit = max(1, min(int(request.query_params.get('limit', 50)), 100))
+            offset = max(0, int(request.query_params.get('offset', 0)))
+        except (TypeError, ValueError):
+            return _bad_request('limit and offset must be whole numbers.', code='INVALID_PAGE')
+        # Ask for one extra row so the response can say whether more exists
+        # without running an additional COUNT query on every gallery visit.
+        page = gallery_for(
+            workspace, industry=industry, kind=kind, limit=limit + 1, offset=offset
+        )
+        has_more = len(page) > limit
+        rows = page[:limit]
         return APIResponse(success=True, data={
             'industry': industry,
             'kind': kind,
             'count': len(rows),
+            'offset': offset,
+            'next_offset': offset + limit if has_more else None,
             'inspirations': [
                 inspiration_payload(row, include_curator=False) for row in rows
             ],

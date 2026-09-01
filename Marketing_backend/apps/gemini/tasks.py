@@ -46,6 +46,19 @@ def generate_content(request_id: str):
         brief = {}
 
     try:
+        creative = brief.get('creative_direction') or {}
+        if creative.get('selections'):
+            from apps.brands.models import Brand
+            from apps.context.services.creative_direction import resolve_creative_direction
+
+            brand = Brand.objects.filter(workspace=request.workspace).order_by('-is_default').first()
+            creative = resolve_creative_direction(
+                request.workspace,
+                brand,
+                creative.get('selections'),
+                layout=brief.get('layout', ''),
+            )
+            brief['creative_direction'] = creative
         routed = generate_marketing_payload(request.workspace, brief)
         result_data = routed['payload']
     except Exception as exc:
@@ -56,10 +69,10 @@ def generate_content(request_id: str):
         # Re-raised so the worker records the traceback and can retry.
         raise
 
-    content_item = _persist(request, brief, result_data, routed['provider'])
+    content_item = _persist(request, brief, result_data, routed)
 
     GeminiGenerationResult.objects.update_or_create(
-        request=request,
+        generation_request=request,
         defaults={
             'generated_text': result_data.get('postDescription', ''),
             'generated_asset_url': result_data.get('posterImageUrl', '') or '',
@@ -69,6 +82,12 @@ def generate_content(request_id: str):
                 'provider': routed['provider'],
                 'provider_name': routed['provider_name'],
                 'brain_version': routed['brain_version'],
+                'creative_direction': {
+                    'selection_count': (brief.get('creative_direction') or {}).get(
+                        'selection_count', 0
+                    ),
+                    'layout': brief.get('layout', ''),
+                },
                 'completed_at': timezone.now().isoformat(),
                 'contentItemId': str(content_item.id) if content_item else None,
                 'assetId': str(content_item.asset_id) if content_item and content_item.asset_id else None,
@@ -87,7 +106,7 @@ def generate_content(request_id: str):
     }
 
 
-def _persist(request, brief, result_data, provider_key):
+def _persist(request, brief, result_data, routed):
     """
     Mirrors the synchronous path's persistence so a background generation
     produces exactly the same ContentItem a foreground one would.
@@ -124,8 +143,16 @@ def _persist(request, brief, result_data, provider_key):
                 cta=(brief.get('offer') or '')[:255],
                 preview_url=(result_data.get('posterImageUrl') or '')[:1000],
                 slides=slides if isinstance(slides, list) else [],
-                ai_provider=(provider_key or 'UNKNOWN')[:100],
+                ai_provider=(routed.get('provider') or 'UNKNOWN')[:100],
                 ai_prompt=str(brief)[:5000],
+                layout_plugin=str(brief.get('layout') or '')[:64],
+                layout_config={
+                    'creative_direction': brief.get('creative_direction') or {},
+                    'generation_trace': {
+                        'brain_version': routed.get('brain_version', ''),
+                        **(routed.get('trace') or {}),
+                    },
+                },
                 created_by=request.user,
             )
     except Exception:

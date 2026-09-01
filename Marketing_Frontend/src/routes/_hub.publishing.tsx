@@ -44,6 +44,7 @@ import {
   SectionTitle,
   StatusBadge,
 } from "@/components/marketing/primitives";
+import { CreativeCommand, type CreativeSelection } from "@/components/marketing/creative-command";
 import { cn } from "@/lib/utils";
 import { useBrandSettings } from "@/lib/brand-settings";
 import { fetchCurrentBrand } from "@/lib/brand-master";
@@ -263,6 +264,8 @@ function PublishingPage() {
   const [occasion, setOccasion] = useState("");
   const [offer, setOffer] = useState("");
   const [brandTone, setBrandTone] = useState("");
+  const [creativeSelections, setCreativeSelections] = useState<CreativeSelection[]>([]);
+  const [creativeLayout, setCreativeLayout] = useState("");
 
   // What to generate, plus the per-type extras
   const [contentType, setContentType] = useState<ContentType>("poster");
@@ -273,10 +276,18 @@ function PublishingPage() {
   const [slides, setSlides] = useState<CarouselSlide[]>([newSlide(), newSlide(), newSlide()]);
 
   // Poster add-ons, defaulted from the workspace brand kit
-  const { settings: brand } = useBrandSettings();
+  const { settings: brand, brandId } = useBrandSettings();
+  const creativeBrand = useRef<string | null>(null);
   const [includeLogo, setIncludeLogo] = useState(false);
   const [includePhone, setIncludePhone] = useState(false);
   const [phoneOverride, setPhoneOverride] = useState("");
+
+  useEffect(() => {
+    if (brandId && creativeBrand.current && creativeBrand.current !== brandId) {
+      setCreativeSelections([]);
+    }
+    if (brandId) creativeBrand.current = brandId;
+  }, [brandId]);
 
   // Adopt the brand-kit defaults once they load from storage
   useEffect(() => {
@@ -743,6 +754,8 @@ function PublishingPage() {
           offer,
           brandTone,
           referenceImageBase64,
+          inspirationSelections: creativeSelections,
+          layout: creativeLayout,
           // contentType and slides are read and persisted on both the sync and
           // the async path. The video settings, the derived slideCount and the
           // logo/phone overlay keys that used to ride along here were read by
@@ -1422,6 +1435,14 @@ function PublishingPage() {
                   </div>
                 </div>
               )}
+
+              <CreativeCommand
+                brandId={brandId}
+                selections={creativeSelections}
+                onSelectionsChange={setCreativeSelections}
+                layout={creativeLayout}
+                onLayoutChange={setCreativeLayout}
+              />
 
               {awaitingApproval ? (
                 <div

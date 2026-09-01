@@ -174,6 +174,10 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                     # produced it however it was routed.
                     ai_provider=(provider_key or 'UNKNOWN')[:100],
                     ai_prompt=str(brief)[:5000],
+                    layout_plugin=str(brief.get('layout') or '')[:64],
+                    layout_config={
+                        'creative_direction': brief.get('creative_direction') or {},
+                    },
                     created_by=creator,
                 )
         except Exception:
@@ -225,6 +229,31 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         workspace, workspace_error = get_request_workspace(request)
         if workspace_error:
             return workspace_error
+
+        from apps.brands.models import Brand
+        from apps.context.services.creative_direction import (
+            CreativeDirectionError,
+            resolve_creative_direction,
+        )
+
+        brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
+        try:
+            creative_direction = resolve_creative_direction(
+                workspace,
+                brand,
+                data.get('inspirationSelections', data.get('inspiration_selections', [])),
+                layout=data.get('layout', ''),
+            )
+        except CreativeDirectionError as exc:
+            return APIResponse(
+                success=False,
+                message=str(exc),
+                error={'code': exc.code, 'message': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        request_data['creative_direction'] = creative_direction
+        request_data['layout'] = creative_direction['layout']
+
         quota_error = self._quota_error(workspace)
         if quota_error:
             return quota_error
@@ -261,7 +290,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         # and never stored, so the copy existed only in React state and was
         # lost on refresh.
         content_item = self._persist_content(
-            request, data, result_data, provider_key=routed['provider']
+            request, request_data, result_data, provider_key=routed['provider']
         )
         if content_item is not None:
             # Lightweight generation trace for future optimisation: which
@@ -275,6 +304,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                         content_item.brand, routed.get('brain_version', '')
                     ),
                 },
+                'creative_direction': creative_direction,
             }
             content_item.save(update_fields=['layout_config'])
 
@@ -288,6 +318,10 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 'provider': routed['provider'],
                 'provider_name': routed['provider_name'],
                 'brain_version': routed['brain_version'],
+                'creative_direction': {
+                    'selection_count': creative_direction['selection_count'],
+                    'layout': creative_direction['layout'],
+                },
             },
             'contentItemId': str(content_item.id) if content_item else None,
             'assetId': str(content_item.asset_id) if content_item and content_item.asset_id else None,
@@ -347,6 +381,28 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             return approval_error
 
         data = request.data
+        from apps.brands.models import Brand
+        from apps.context.services.creative_direction import (
+            CreativeDirectionError,
+            resolve_creative_direction,
+        )
+
+        brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
+        try:
+            creative_direction = resolve_creative_direction(
+                workspace,
+                brand,
+                data.get('inspirationSelections', data.get('inspiration_selections', [])),
+                layout=data.get('layout', ''),
+            )
+        except CreativeDirectionError as exc:
+            return APIResponse(
+                success=False,
+                message=str(exc),
+                error={'code': exc.code, 'message': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         brief = {
             'campaign_name': data.get('campaignName', data.get('campaign_name', '')),
             'product': data.get('product', ''),
@@ -359,6 +415,8 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'contentType': data.get('contentType', ''),
             'slides': data.get('slides') or [],
             'brand_rules': self._brand_rules(request),
+            'creative_direction': creative_direction,
+            'layout': creative_direction['layout'],
         }
 
         generation = GeminiGenerationRequest.objects.create(
