@@ -34,7 +34,8 @@ def generate_content(request_id: str):
         return {'request': str(request_id), 'status': 'MISSING'}
 
     request.status = GeminiGenerationRequest.Status.GENERATING
-    request.save(update_fields=['status'])
+    request.error_message = ''
+    request.save(update_fields=['status', 'error_message'])
 
     # prompt_data is a TextField that predates this path, so the brief is
     # stored as JSON in it rather than adding a parallel column.
@@ -44,6 +45,14 @@ def generate_content(request_id: str):
         brief = {}
     if not isinstance(brief, dict):
         brief = {}
+
+    def checkpoint(state):
+        # Successful expensive capabilities are durable before this is called.
+        # Persist their compact state so a worker retry resumes only the
+        # missing video/slide instead of buying completed work again.
+        brief['production_state'] = state
+        request.prompt_data = json.dumps(brief)
+        request.save(update_fields=['prompt_data'])
 
     try:
         creative = brief.get('creative_direction') or {}
@@ -59,7 +68,9 @@ def generate_content(request_id: str):
                 layout=brief.get('layout', ''),
             )
             brief['creative_direction'] = creative
-        routed = generate_marketing_payload(request.workspace, brief)
+        routed = generate_marketing_payload(
+            request.workspace, brief, progress=checkpoint
+        )
         result_data = routed['payload']
     except Exception as exc:
         logger.exception("Generation %s failed", request_id)
@@ -69,31 +80,46 @@ def generate_content(request_id: str):
         # Re-raised so the worker records the traceback and can retry.
         raise
 
-    content_item = _persist(request, brief, result_data, routed)
+    try:
+        content_item = _persist(request, brief, result_data, routed)
+        if content_item is None:
+            raise RuntimeError("Generated content could not be saved.")
 
-    GeminiGenerationResult.objects.update_or_create(
-        generation_request=request,
-        defaults={
-            'generated_text': result_data.get('postDescription', ''),
-            'generated_asset_url': result_data.get('posterImageUrl', '') or '',
-            'metadata': {
-                'postTitle': result_data.get('postTitle', ''),
-                'postHashtags': result_data.get('postHashtags', ''),
-                'provider': routed['provider'],
-                'provider_name': routed['provider_name'],
-                'brain_version': routed['brain_version'],
-                'creative_direction': {
-                    'selection_count': (brief.get('creative_direction') or {}).get(
-                        'selection_count', 0
-                    ),
-                    'layout': brief.get('layout', ''),
+        GeminiGenerationResult.objects.update_or_create(
+            generation_request=request,
+            defaults={
+                'generated_text': result_data.get('postDescription', ''),
+                'generated_asset_url': (
+                    result_data.get('videoUrl')
+                    or result_data.get('posterImageUrl', '')
+                    or ''
+                ),
+                'metadata': {
+                    'postTitle': result_data.get('postTitle', ''),
+                    'postHashtags': result_data.get('postHashtags', ''),
+                    'videoUrl': result_data.get('videoUrl', ''),
+                    'slideImageUrls': result_data.get('slideImageUrls') or [],
+                    'provider': routed['provider'],
+                    'provider_name': routed['provider_name'],
+                    'brain_version': routed['brain_version'],
+                    'creative_direction': {
+                        'selection_count': (brief.get('creative_direction') or {}).get(
+                            'selection_count', 0
+                        ),
+                        'layout': brief.get('layout', ''),
+                    },
+                    'completed_at': timezone.now().isoformat(),
+                    'contentItemId': str(content_item.id),
+                    'assetId': str(content_item.asset_id) if content_item.asset_id else None,
                 },
-                'completed_at': timezone.now().isoformat(),
-                'contentItemId': str(content_item.id) if content_item else None,
-                'assetId': str(content_item.asset_id) if content_item and content_item.asset_id else None,
             },
-        },
-    )
+        )
+    except Exception as exc:
+        logger.exception("Generation %s could not be persisted", request_id)
+        request.status = GeminiGenerationRequest.Status.FAILED
+        request.error_message = str(exc)[:2000]
+        request.save(update_fields=['status', 'error_message'])
+        raise
 
     request.status = GeminiGenerationRequest.Status.COMPLETED
     request.provider = routed['provider']
@@ -117,44 +143,48 @@ def _persist(request, brief, result_data, routed):
     from apps.content.models import ContentItem
     from apps.context.services.generation import create_generated_asset
 
-    try:
-        content_format = {
-            'video': ContentItem.Format.VIDEO,
-            'carousel': ContentItem.Format.CAROUSEL,
-        }.get(str(brief.get('contentType', '')).lower(), ContentItem.Format.POSTER)
+    content_format = {
+        'video': ContentItem.Format.VIDEO,
+        'carousel': ContentItem.Format.CAROUSEL,
+    }.get(str(brief.get('contentType', '')).lower(), ContentItem.Format.POSTER)
 
-        slides = brief.get('slides') or []
+    slides = (
+        result_data.get('slides')
+        if str(brief.get('contentType', '')).lower() == 'carousel'
+        else brief.get('slides')
+    ) or []
 
-        with transaction.atomic():
-            asset = create_generated_asset(
-                request.workspace, result_data, user=request.user
-            )
-            return ContentItem.objects.create(
-                workspace=request.workspace,
-                brand=Brand.objects.filter(workspace=request.workspace)
-                .order_by('-is_default')
-                .first(),
-                asset=asset,
-                content_format=content_format,
-                status=ContentItem.Status.DRAFT,
-                headline=(result_data.get('postTitle') or '')[:500],
-                caption=result_data.get('postDescription') or '',
-                hashtags=result_data.get('postHashtags') or '',
-                cta=(brief.get('offer') or '')[:255],
-                preview_url=(result_data.get('posterImageUrl') or '')[:1000],
-                slides=slides if isinstance(slides, list) else [],
-                ai_provider=(routed.get('provider') or 'UNKNOWN')[:100],
-                ai_prompt=str(brief)[:5000],
-                layout_plugin=str(brief.get('layout') or '')[:64],
-                layout_config={
-                    'creative_direction': brief.get('creative_direction') or {},
-                    'generation_trace': {
-                        'brain_version': routed.get('brain_version', ''),
-                        **(routed.get('trace') or {}),
-                    },
+    with transaction.atomic():
+        asset = create_generated_asset(
+            request.workspace, result_data, user=request.user
+        )
+        return ContentItem.objects.create(
+            workspace=request.workspace,
+            brand=Brand.objects.filter(workspace=request.workspace)
+            .order_by('-is_default')
+            .first(),
+            asset=asset,
+            content_format=content_format,
+            status=ContentItem.Status.DRAFT,
+            headline=(result_data.get('postTitle') or '')[:500],
+            caption=result_data.get('postDescription') or '',
+            hashtags=result_data.get('postHashtags') or '',
+            cta=(brief.get('offer') or '')[:255],
+            preview_url=(
+                result_data.get('videoUrl')
+                or result_data.get('posterImageUrl')
+                or ''
+            )[:1000],
+            slides=slides if isinstance(slides, list) else [],
+            ai_provider=(routed.get('provider') or 'UNKNOWN')[:100],
+            ai_prompt=str(brief)[:5000],
+            layout_plugin=str(brief.get('layout') or '')[:64],
+            layout_config={
+                'creative_direction': brief.get('creative_direction') or {},
+                'generation_trace': {
+                    'brain_version': routed.get('brain_version', ''),
+                    **(routed.get('trace') or {}),
                 },
-                created_by=request.user,
-            )
-    except Exception:
-        logger.exception("Could not persist background generation %s", request.pk)
-        return None
+            },
+            created_by=request.user,
+        )

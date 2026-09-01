@@ -206,7 +206,12 @@ class CreativeCommandTests(TenantFixtureMixin, TestCase):
         with patch('apps.gemini.tasks.generate_content', new=queued_task):
             response = self.client.post(
                 GENERATE_ASYNC_URL,
-                self.payload(selection, contentType='carousel', layout='data_hero'),
+                self.payload(
+                    selection,
+                    contentType='carousel',
+                    layout='data_hero',
+                    slides=[{'position': 1, 'description': 'Opening slide'}],
+                ),
                 format='json',
                 **workspace_header(self.workspace),
             )
