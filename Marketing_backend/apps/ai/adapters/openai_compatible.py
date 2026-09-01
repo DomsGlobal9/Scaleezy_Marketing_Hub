@@ -25,7 +25,10 @@ class OpenAICompatibleTextAdapter(AIProviderAdapter):
     # Installed subclasses in this module intentionally remain TEXT-only.
     # The manually configured subclass below exposes the wider standard
     # protocol only when an administrator explicitly selects those functions.
-    capabilities = (Capability.TEXT,)
+    capabilities = (
+        Capability.TEXT,
+        Capability.ENGAGEMENT_RESPONSE,
+    )
     base_url = ''
     unit_cost = 0.04
     enforce_public_endpoint = False
@@ -299,6 +302,52 @@ class OpenAICompatibleTextAdapter(AIProviderAdapter):
             raise AIProviderError(self._detail('returned an invalid embedding.')) from exc
         return {'embedding': values, 'model': str(response.get('model') or self.model)}
 
+    def research(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        # Chat Completions is not, by itself, proof that a model can access the
+        # live web. Treating citations invented from model memory as research
+        # would make the source-verification layer look safer than it is. A
+        # real web-capable adapter (OpenAI Responses below, or SCALEEZY_JSON)
+        # must own this capability explicitly.
+        raise AIProviderError(
+            self._detail('does not expose verified live-web research through this protocol.')
+        )
+
+    def draft_engagement_response(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        response = self._post('chat/completions', {
+            'model': self.model,
+            'messages': [
+                {
+                    'role': 'system',
+                    'content': (
+                        'Draft one concise social response using only the supplied '
+                        'brand context and message. Never promise refunds, legal '
+                        'outcomes, medical outcomes or facts not in the brief. Return '
+                        'JSON with reply, sentiment, urgency and risk_flags. This is '
+                        'a draft for human approval, never a sent response.'
+                    ),
+                },
+                {
+                    'role': 'user',
+                    'content': 'ENGAGEMENT_BRIEF_JSON:\n' + self._brief_json(brief),
+                },
+            ],
+            'response_format': {'type': 'json_object'},
+            'temperature': float(self.config.get('engagement_temperature', 0.4)),
+            'max_tokens': int(self.config.get('engagement_max_tokens', 900)),
+        })
+        parsed = self._decode_json(self._response_text(response))
+        reply = self._required_string(parsed, 'reply')
+        return {
+            'reply': reply,
+            'sentiment': str(parsed.get('sentiment') or 'UNKNOWN').upper(),
+            'urgency': str(parsed.get('urgency') or 'NORMAL').upper(),
+            'risk_flags': parsed.get('risk_flags') if isinstance(parsed.get('risk_flags'), list) else [],
+            'raw': {
+                'response_id': str(response.get('id') or ''),
+                'model': str(response.get('model') or self.model),
+            },
+        }
+
     def health_check(self) -> Dict[str, Any]:
         if not self._api_key() and not self.allow_anonymous:
             return {'ok': False, 'detail': self._detail('API key is not configured.')}
@@ -333,6 +382,7 @@ class CustomOpenAICompatibleAdapter(OpenAICompatibleTextAdapter):
         Capability.IMAGE_ANALYSIS,
         Capability.IMAGE_CAPTION,
         Capability.EMBEDDING,
+        Capability.ENGAGEMENT_RESPONSE,
     )
 
 

@@ -170,3 +170,47 @@ class YouTubeAdapterTests(TestCase):
         
         with self.assertRaises(YouTubeAuthenticationError):
             self.adapter._handle_api_errors(mock_res)
+
+    @patch('apps.social_accounts.integrations.youtube.youtube.requests.get')
+    def test_fetch_comments_normalizes_a_bounded_page(self, mock_get):
+        mock_res = MagicMock(ok=True)
+        mock_res.json.return_value = {
+            'nextPageToken': 'next-page',
+            'items': [{
+                'id': 'thread-1',
+                'snippet': {'topLevelComment': {
+                    'id': 'comment-1',
+                    'snippet': {
+                        'textDisplay': 'Love this',
+                        'authorDisplayName': 'Viewer',
+                        'authorChannelUrl': 'https://youtube.com/@viewer',
+                        'videoId': 'video-1',
+                        'publishedAt': '2026-09-01T10:00:00Z',
+                    },
+                }},
+            }],
+        }
+        mock_get.return_value = mock_res
+
+        result = self.adapter.fetch_comments('token', 'channel-1', cursor='page-1')
+
+        self.assertEqual(result['cursor'], 'next-page')
+        self.assertEqual(result['items'][0]['external_id'], 'comment-1')
+        self.assertEqual(result['items'][0]['kind'], 'COMMENT')
+        self.assertEqual(mock_get.call_args.kwargs['timeout'], 15)
+        self.assertEqual(mock_get.call_args.kwargs['params']['pageToken'], 'page-1')
+
+    @patch('apps.social_accounts.integrations.youtube.youtube.requests.post')
+    def test_reply_to_comment_returns_external_lineage(self, mock_post):
+        mock_res = MagicMock(ok=True)
+        mock_res.json.return_value = {'id': 'reply-1'}
+        mock_post.return_value = mock_res
+
+        result = self.adapter.reply_to_comment('token', 'comment-1', 'Thank you')
+
+        self.assertEqual(result['id'], 'reply-1')
+        self.assertEqual(
+            mock_post.call_args.kwargs['json']['snippet']['parentId'],
+            'comment-1',
+        )
+        self.assertEqual(mock_post.call_args.kwargs['timeout'], 15)

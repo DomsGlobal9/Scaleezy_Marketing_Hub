@@ -55,6 +55,8 @@ class OpenAIAdapterTests(SimpleTestCase):
                 Capability.IMAGE_ANALYSIS,
                 Capability.IMAGE_CAPTION,
                 Capability.EMBEDDING,
+                Capability.RESEARCH,
+                Capability.ENGAGEMENT_RESPONSE,
             },
         )
 
@@ -175,6 +177,62 @@ class OpenAIAdapterTests(SimpleTestCase):
         self.assertEqual(result['captions']['postTitle'], 'Start Fresh')
         self.assertEqual(post.call_args.args[0], 'https://api.openai.test/v1/responses')
 
+    @patch('apps.ai.adapters.openai.httpx.post')
+    def test_research_requires_and_records_a_real_web_search_call(self, post):
+        upstream = responses_json({
+            'findings': [{
+                'title': 'Retail launch',
+                'source_url': 'https://example.test/campaign',
+                'preview_url': '',
+                'source_name': 'Example',
+                'platform': 'Web',
+                'kind': 'CAMPAIGN',
+                'excerpt': 'A public campaign reference.',
+                'observed_at': '',
+            }],
+        })
+        upstream.json.return_value['output'].insert(0, {
+            'type': 'web_search_call', 'id': 'ws_test', 'status': 'completed',
+        })
+        post.return_value = upstream
+
+        result = OpenAIAdapter(credentials='workspace-test-key').research({
+            'query': 'premium retail launch posters',
+        })
+
+        self.assertTrue(result['raw']['web_search_used'])
+        payload = post.call_args.kwargs['json']
+        self.assertEqual(payload['tools'][0]['type'], 'web_search')
+        self.assertFalse(payload['store'])
+        self.assertEqual(payload['text']['format']['type'], 'json_schema')
+
+    @patch('apps.ai.adapters.openai.httpx.post')
+    def test_research_refuses_model_memory_without_web_search(self, post):
+        post.return_value = responses_json({'findings': []})
+
+        with self.assertRaisesMessage(
+            AIProviderError,
+            'OpenAI returned research without using live web search.',
+        ):
+            OpenAIAdapter(credentials='workspace-test-key').research({'query': 'current'})
+
+    @patch('apps.ai.adapters.openai.httpx.post')
+    def test_engagement_draft_is_structured_and_never_sent(self, post):
+        post.return_value = responses_json({
+            'reply': 'Thanks for reaching out — we will check this with the team.',
+            'sentiment': 'NEGATIVE',
+            'urgency': 'HIGH',
+            'risk_flags': ['refund_request'],
+        })
+
+        result = OpenAIAdapter(credentials='workspace-test-key').draft_engagement_response({
+            'message': 'Where is my refund?',
+        })
+
+        self.assertEqual(result['urgency'], 'HIGH')
+        self.assertEqual(result['risk_flags'], ['refund_request'])
+        self.assertEqual(post.call_args.args[0], 'https://api.openai.test/v1/responses')
+
     @patch('apps.ai.adapters.openai.httpx.get')
     @patch('apps.ai.adapters.openai.httpx.post')
     def test_missing_key_fails_before_http_and_health_check_is_not_paid(self, post, get):
@@ -262,12 +320,53 @@ class OpenAICatalogueMigrationTests(TestCase):
         openai = AIProvider.objects.get(key='openai')
         gemini = AIProvider.objects.get(key='gemini')
         self.assertGreater(openai.unit_cost, gemini.unit_cost)
-        self.assertEqual(set(openai.capabilities), set(OpenAIAdapter.capabilities))
+        self.assertEqual(
+            set(openai.capabilities),
+            {
+                Capability.TEXT,
+                Capability.IMAGE,
+                Capability.IMAGE_ANALYSIS,
+                Capability.IMAGE_CAPTION,
+                Capability.EMBEDDING,
+            },
+        )
         self.assertFalse(
             WorkspaceAIProvider.objects.filter(
                 workspace=workspace, provider=openai
             ).exists()
         )
+
+    def test_capability_migration_adds_only_real_live_web_research(self):
+        workspace = MarketingWorkspace.objects.create(
+            customer_id='capability-existing', workspace_name='Capability tenant'
+        )
+        openai = AIProvider.objects.get(key='openai')
+        gemini = AIProvider.objects.get(key='gemini')
+        configured_openai = WorkspaceAIProvider.objects.create(
+            workspace=workspace,
+            provider=openai,
+            capabilities=[Capability.TEXT],
+        )
+        configured_gemini = WorkspaceAIProvider.objects.create(
+            workspace=workspace,
+            provider=gemini,
+            capabilities=[Capability.TEXT],
+        )
+        migration = importlib.import_module(
+            'apps.ai.migrations.0010_research_engagement_capabilities'
+        )
+
+        migration.add_real_capabilities(django_apps, None)
+
+        openai.refresh_from_db()
+        gemini.refresh_from_db()
+        configured_openai.refresh_from_db()
+        configured_gemini.refresh_from_db()
+        self.assertIn(Capability.RESEARCH, openai.capabilities)
+        self.assertNotIn(Capability.RESEARCH, gemini.capabilities)
+        self.assertIn(Capability.ENGAGEMENT_RESPONSE, gemini.capabilities)
+        self.assertIn(Capability.RESEARCH, configured_openai.capabilities)
+        self.assertNotIn(Capability.RESEARCH, configured_gemini.capabilities)
         self.assertFalse(
             WorkspaceAIRoute.objects.filter(
                 workspace=workspace, provider=openai

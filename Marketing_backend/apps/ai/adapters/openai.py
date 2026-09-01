@@ -28,6 +28,8 @@ class OpenAIAdapter(AIProviderAdapter):
         Capability.IMAGE_ANALYSIS,
         Capability.IMAGE_CAPTION,
         Capability.EMBEDDING,
+        Capability.RESEARCH,
+        Capability.ENGAGEMENT_RESPONSE,
     )
     default_model = 'gpt-4.1-mini'
     image_model = 'gpt-image-1'
@@ -65,6 +67,58 @@ class OpenAIAdapter(AIProviderAdapter):
             'postHashtags': {'type': 'string'},
         },
         'required': ['postTitle', 'postDescription', 'postHashtags'],
+        'additionalProperties': False,
+    }
+    _RESEARCH_SCHEMA = {
+        'type': 'object',
+        'properties': {
+            'findings': {
+                'type': 'array',
+                'maxItems': 16,
+                'items': {
+                    'type': 'object',
+                    'properties': {
+                        'title': {'type': 'string'},
+                        'source_url': {'type': 'string'},
+                        'preview_url': {'type': 'string'},
+                        'source_name': {'type': 'string'},
+                        'platform': {'type': 'string'},
+                        'kind': {
+                            'type': 'string',
+                            'enum': [
+                                'POSTER', 'SOCIAL_POST', 'VIDEO', 'CAMPAIGN',
+                                'COMPETITOR', 'TREND', 'HOOK', 'OTHER',
+                            ],
+                        },
+                        'excerpt': {'type': 'string'},
+                        'observed_at': {'type': 'string'},
+                    },
+                    'required': [
+                        'title', 'source_url', 'preview_url', 'source_name',
+                        'platform', 'kind', 'excerpt', 'observed_at',
+                    ],
+                    'additionalProperties': False,
+                },
+            },
+        },
+        'required': ['findings'],
+        'additionalProperties': False,
+    }
+    _ENGAGEMENT_SCHEMA = {
+        'type': 'object',
+        'properties': {
+            'reply': {'type': 'string'},
+            'sentiment': {
+                'type': 'string',
+                'enum': ['UNKNOWN', 'POSITIVE', 'NEUTRAL', 'NEGATIVE'],
+            },
+            'urgency': {
+                'type': 'string',
+                'enum': ['LOW', 'NORMAL', 'HIGH', 'CRITICAL'],
+            },
+            'risk_flags': {'type': 'array', 'items': {'type': 'string'}},
+        },
+        'required': ['reply', 'sentiment', 'urgency', 'risk_flags'],
         'additionalProperties': False,
     }
 
@@ -466,6 +520,74 @@ class OpenAIAdapter(AIProviderAdapter):
         return {
             'embedding': vector,
             'model': str(response.get('model') or model),
+        }
+
+    def research(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        response = self._post('responses', {
+            'model': str(self.config.get('research_model') or self.model),
+            'instructions': (
+                'Research the live public web for creative references. Cite only '
+                'real public HTTPS pages returned by web search. Return references, '
+                'not copied assets; never claim or infer reuse rights. Empty strings '
+                'are valid when a preview URL or observation date is unavailable.'
+            ),
+            'tools': [{
+                'type': 'web_search',
+                'search_context_size': str(
+                    self.config.get('research_context_size') or 'medium'
+                ),
+            }],
+            'tool_choice': 'auto',
+            'input': 'RESEARCH_BRIEF_JSON:\n' + self._brief_json(brief),
+            'text': {
+                'format': {
+                    'type': 'json_schema',
+                    'name': 'scaleezy_creative_research',
+                    'strict': True,
+                    'schema': self._RESEARCH_SCHEMA,
+                },
+            },
+            'store': False,
+        })
+        parsed = self._decode_json(self._response_text(response))
+        findings = parsed.get('findings')
+        if not isinstance(findings, list):
+            raise AIProviderError('OpenAI returned no research findings list.')
+        web_search_used = any(
+            isinstance(item, Mapping) and item.get('type') == 'web_search_call'
+            for item in (response.get('output') or [])
+        )
+        if not web_search_used:
+            raise AIProviderError('OpenAI returned research without using live web search.')
+        return {
+            'findings': findings[:16],
+            'raw': {
+                'response_id': str(response.get('id') or ''),
+                'model': str(response.get('model') or self.model),
+                'web_search_used': True,
+            },
+        }
+
+    def draft_engagement_response(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        generated, response = self._responses_json(
+            prompt=(
+                'Draft one concise social response from this provider-neutral brief. '
+                'Do not invent facts, commitments, refunds, legal or medical outcomes. '
+                'Flag risk explicitly; this is a draft for human approval only.\n'
+                'ENGAGEMENT_BRIEF_JSON:\n' + self._brief_json(brief)
+            ),
+            schema_name='scaleezy_engagement_response',
+            schema=self._ENGAGEMENT_SCHEMA,
+        )
+        return {
+            'reply': self._required_string(generated, 'reply'),
+            'sentiment': str(generated.get('sentiment') or 'UNKNOWN').upper(),
+            'urgency': str(generated.get('urgency') or 'NORMAL').upper(),
+            'risk_flags': generated.get('risk_flags') or [],
+            'raw': {
+                'response_id': str(response.get('id') or ''),
+                'model': str(response.get('model') or self.model),
+            },
         }
 
     def health_check(self) -> Dict[str, Any]:

@@ -57,6 +57,12 @@ class AIProviderAdapter(ABC):
     def generate_embedding(self, brief: Dict[str, Any]) -> Dict[str, Any]:
         raise AIProviderError(f"{self.key} does not support embeddings.")
 
+    def research(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        raise AIProviderError(f"{self.key} does not support research.")
+
+    def draft_engagement_response(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        raise AIProviderError(f"{self.key} does not support engagement responses.")
+
     @abstractmethod
     def health_check(self) -> Dict[str, Any]:
         """{'ok': bool, 'detail': str}. Must never raise."""
@@ -85,4 +91,6 @@ class AIProviderAdapter(ABC):
             Capability.VIDEO: self.generate_video,
             Capability.VIDEO_ANALYSIS: self.analyze_video,
             Capability.EMBEDDING: self.generate_embedding,
+            Capability.RESEARCH: self.research,
+            Capability.ENGAGEMENT_RESPONSE: self.draft_engagement_response,
         }[capability](brief)

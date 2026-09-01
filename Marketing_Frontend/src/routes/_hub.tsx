@@ -7,6 +7,7 @@ import {
   ChevronsUpDown,
   Landmark,
   LayoutDashboard,
+  Radar,
   LogOut,
   Menu,
   Plus,
@@ -77,6 +78,7 @@ const NAV = [
   // Named for the object, not for one stage of its lifecycle: this is where
   // every piece of work lives, whatever state it is in.
   { to: "/review", label: "Content", icon: CheckCircle2, adminOnly: false },
+  { to: "/growth", label: "Growth Engine", icon: Radar, adminOnly: false },
   { to: "/analytics", label: "Analytics", icon: BarChart3, adminOnly: false },
   { to: "/settings", label: "Settings", icon: Settings, adminOnly: false },
   { to: "/admin", label: "Admin", icon: ShieldCheck, adminOnly: true },

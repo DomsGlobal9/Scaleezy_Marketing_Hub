@@ -10,7 +10,7 @@ import mimetypes
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError as DRFValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 
@@ -25,12 +25,15 @@ from apps.brands.services.brand_brain import rebuild_brand_brain_safely
 from apps.marketing.services.storage import StorageError, SupabaseStorageService
 from apps.workspaces.models import WorkspaceMember
 
-from .models import BrandInspiration, InspirationSignal
+from .models import BrandInspiration, InspirationSignal, ResearchFinding, ResearchRun
 from .serializers import (
     BrandInspirationSerializer,
     BrandInspirationUploadSerializer,
     InspirationSignalSerializer,
+    ResearchFindingSerializer,
+    ResearchRunSerializer,
 )
+from .research import ResearchError, adopt_finding
 from .services import (
     InspirationSignalError,
     confirm_signal,
@@ -324,3 +327,152 @@ class InspirationSignalViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
                 pk=inspiration.pk,
                 analysis_status=BrandInspiration.AnalysisStatus.NEEDS_REVIEW,
             ).update(analysis_status=BrandInspiration.AnalysisStatus.READY)
+
+
+class ResearchRunViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
+    queryset = ResearchRun.objects.select_related('workspace', 'brand', 'initiated_by').prefetch_related(
+        'findings'
+    )
+    serializer_class = ResearchRunSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        brand_id = self.request.query_params.get('brand_id')
+        if brand_id:
+            queryset = queryset.filter(brand_id=brand_id)
+        return queryset
+
+    def perform_create(self, serializer):
+        from .tasks import research_creative_task
+
+        run = serializer.save(
+            workspace=self._authorised_workspace(), initiated_by=self.request.user
+        )
+        task_result = research_creative_task.enqueue(str(run.pk))
+        run.task_id = str(task_result.id)
+        run.save(update_fields=['task_id', 'updated_at'])
+
+    def update(self, request, *args, **kwargs):
+        return APIResponse(
+            success=False,
+            message='Research runs are immutable. Start a new run instead.',
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        return APIResponse(
+            success=False,
+            message='Research history cannot be deleted.',
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    @action(detail=True, methods=['post'])
+    def retry(self, request, pk=None):
+        from .tasks import research_creative_task
+
+        run = self.get_object()
+        if run.status != ResearchRun.Status.FAILED:
+            return APIResponse(
+                success=False, message='Only a failed research run can be retried.',
+                status=status.HTTP_409_CONFLICT,
+            )
+        run.status = ResearchRun.Status.QUEUED
+        run.error = ''
+        task_result = research_creative_task.enqueue(str(run.pk))
+        run.task_id = str(task_result.id)
+        run.save(update_fields=['status', 'error', 'task_id', 'updated_at'])
+        return APIResponse(
+            success=True,
+            message='Research queued again.',
+            data=self.get_serializer(run).data,
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=True, methods=['post'])
+    def complete(self, request, pk=None):
+        run = self.get_object()
+        if run.status not in (ResearchRun.Status.NEEDS_REVIEW, ResearchRun.Status.COMPLETED):
+            return APIResponse(
+                success=False, message='This run is not ready to close.',
+                status=status.HTTP_409_CONFLICT,
+            )
+        run.status = ResearchRun.Status.COMPLETED
+        run.save(update_fields=['status', 'updated_at'])
+        return APIResponse(success=True, data=self.get_serializer(run).data)
+
+
+class ResearchFindingViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSet):
+    queryset = ResearchFinding.objects.select_related(
+        'workspace', 'brand', 'run', 'adopted_inspiration'
+    )
+    serializer_class = ResearchFindingSerializer
+    permission_classes = [IsAuthenticated, IsWorkspaceMember, HasWorkspaceRole]
+    required_role = WorkspaceMember.Role.EDITOR
+    required_read_role = WorkspaceMember.Role.VIEWER
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        run_id = self.request.query_params.get('run_id')
+        brand_id = self.request.query_params.get('brand_id')
+        if run_id:
+            queryset = queryset.filter(run_id=run_id)
+        if brand_id:
+            queryset = queryset.filter(brand_id=brand_id)
+        return queryset
+
+    @action(detail=True, methods=['post'], url_path='set-rights')
+    def set_rights(self, request, pk=None):
+        finding = self.get_object()
+        value = str(request.data.get('rights_status') or '').upper()
+        if value not in ResearchFinding.RightsStatus.values:
+            return APIResponse(
+                success=False,
+                error={'rights_status': 'Choose a valid rights status.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if finding.adopted_inspiration_id:
+            return APIResponse(
+                success=False,
+                message='Rights cannot be rewritten after adoption.',
+                status=status.HTTP_409_CONFLICT,
+            )
+        finding.rights_status = value
+        finding.save(update_fields=['rights_status', 'updated_at'])
+        return APIResponse(success=True, data=self.get_serializer(finding).data)
+
+    @action(detail=True, methods=['post'])
+    def adopt(self, request, pk=None):
+        finding = self.get_object()
+        usage_scope = request.data.get(
+            'usage_scope', BrandInspiration.UsageScope.FULL_REFERENCE
+        )
+        focus_areas = request.data.get('focus_areas') or []
+        from .serializers import validate_reference_graph
+        try:
+            validate_reference_graph(
+                finding.workspace, finding.brand, None, usage_scope, focus_areas
+            )
+        except DRFValidationError as exc:
+            return APIResponse(
+                success=False, error=exc.detail, status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            inspiration, created = adopt_finding(
+                finding,
+                user=request.user,
+                annotation=request.data.get('annotation', ''),
+                usage_scope=usage_scope,
+                focus_areas=focus_areas,
+            )
+        except ResearchError as exc:
+            return APIResponse(
+                success=False, message=str(exc), status=status.HTTP_409_CONFLICT
+            )
+        return APIResponse(
+            success=True,
+            message='Reference adopted into Brand Master.' if created else 'Reference was already adopted.',
+            data=BrandInspirationSerializer(
+                inspiration, context=self.get_serializer_context()
+            ).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )

@@ -31,6 +31,7 @@ class GeminiAdapter(AIProviderAdapter):
         Capability.IMAGE_CAPTION,
         Capability.VIDEO_ANALYSIS,
         Capability.EMBEDDING,
+        Capability.ENGAGEMENT_RESPONSE,
     )
     default_model = 'gemini-1.5-pro'
     unit_cost = 0.02
@@ -157,6 +158,40 @@ class GeminiAdapter(AIProviderAdapter):
         if not vector:
             raise AIProviderError("Gemini returned an empty embedding.")
         return {'embedding': vector, 'model': model}
+
+    def draft_engagement_response(self, brief: Dict[str, Any]) -> Dict[str, Any]:
+        prompt = (
+            'Draft one concise social response using only the supplied brand context '
+            'and message. Never promise refunds, legal or medical outcomes, or facts '
+            'not in the brief. Return one JSON object with reply, sentiment '
+            '(UNKNOWN/POSITIVE/NEUTRAL/NEGATIVE), urgency '
+            '(LOW/NORMAL/HIGH/CRITICAL), and risk_flags. This is a human-review '
+            'draft only.\nENGAGEMENT_BRIEF_JSON:\n'
+            + json.dumps(brief, ensure_ascii=False, sort_keys=True, default=str)
+        )
+        try:
+            response = self._service()._get_client(self.credentials).models.generate_content(
+                model=self.model or self._service().TEXT_MODEL,
+                contents=[prompt],
+            )
+            value = (response.text or '').strip()
+            if value.startswith('```') and value.endswith('```'):
+                value = value[3:-3].strip()
+                if value.casefold().startswith('json'):
+                    value = value[4:].strip()
+            parsed = json.loads(value)
+        except Exception as exc:
+            raise AIProviderError(f'Gemini engagement drafting failed: {exc}') from exc
+        if not isinstance(parsed, dict) or not str(parsed.get('reply') or '').strip():
+            raise AIProviderError('Gemini returned an invalid engagement draft.')
+        return {
+            'reply': str(parsed['reply']).strip(),
+            'sentiment': str(parsed.get('sentiment') or 'UNKNOWN').upper(),
+            'urgency': str(parsed.get('urgency') or 'NORMAL').upper(),
+            'risk_flags': (
+                parsed.get('risk_flags') if isinstance(parsed.get('risk_flags'), list) else []
+            ),
+        }
 
     def health_check(self) -> Dict[str, Any]:
         key = self.credentials or getattr(settings, 'GEMINI_API_KEY', '')

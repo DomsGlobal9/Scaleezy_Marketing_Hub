@@ -306,6 +306,70 @@ class YouTubeAdapter(SocialPlatformAdapter):
     def get_publish_status(self, access_token: str, post_id: str) -> Dict[str, Any]:
         return {"status": "PUBLISHED"}
 
+    def fetch_comments(self, access_token: str, channel_id: str, *, cursor: str = ''):
+        """Return a bounded normalized page of comments for this channel."""
+        params = {
+            'part': 'snippet',
+            'allThreadsRelatedToChannelId': channel_id,
+            'maxResults': 50,
+            'order': 'time',
+            'textFormat': 'plainText',
+        }
+        if cursor:
+            params['pageToken'] = cursor
+        response = requests.get(
+            f"{self.API_BASE}/commentThreads",
+            params=params,
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=15,
+        )
+        self._handle_api_errors(response)
+        payload = response.json()
+        items = []
+        for thread in payload.get('items', []):
+            if not isinstance(thread, dict):
+                continue
+            top = thread.get('snippet', {}).get('topLevelComment', {})
+            snippet = top.get('snippet', {}) if isinstance(top, dict) else {}
+            external_id = str(top.get('id') or '')
+            body = str(snippet.get('textDisplay') or snippet.get('textOriginal') or '')
+            if not external_id or not body:
+                continue
+            video_id = str(snippet.get('videoId') or '')
+            source_url = (
+                f"https://www.youtube.com/watch?v={video_id}&lc={external_id}"
+                if video_id else ''
+            )
+            items.append({
+                'external_id': external_id,
+                'thread_id': str(thread.get('id') or external_id),
+                'kind': 'COMMENT',
+                'author_name': str(snippet.get('authorDisplayName') or ''),
+                'author_handle': str(snippet.get('authorChannelUrl') or ''),
+                'body': body,
+                'source_url': source_url,
+                'occurred_at': snippet.get('publishedAt'),
+                'source_payload': {'video_id': video_id},
+            })
+        return {'items': items, 'cursor': str(payload.get('nextPageToken') or '')}
+
+    def reply_to_comment(self, access_token: str, external_id: str, text: str):
+        response = requests.post(
+            f"{self.API_BASE}/comments",
+            params={'part': 'snippet'},
+            headers={
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json',
+            },
+            json={'snippet': {'parentId': external_id, 'textOriginal': text}},
+            timeout=15,
+        )
+        self._handle_api_errors(response)
+        reply_id = str(response.json().get('id') or '')
+        if not reply_id:
+            raise YouTubePublishingError('YouTube did not confirm the reply.')
+        return {'id': reply_id, 'url': ''}
+
     def disconnect(self, access_token: str) -> bool:
         """
         Revokes the token at Google. Revoking a refresh token also invalidates
