@@ -339,6 +339,8 @@ export interface StandardInput {
   guidance: string;
   scope: UniversalScope;
   scope_value: string;
+  /** Id of the published standard this draft replaces; publishing the draft retires it. */
+  supersedes?: string;
 }
 
 export interface StandardPreview {
@@ -599,8 +601,6 @@ export const fetchLibraryGalleryPage = async (offset = 0): Promise<LibraryGaller
     nextOffset: typeof object["next_offset"] === "number" ? object["next_offset"] : null,
   };
 };
-
-export const fetchLibraryGallery = async () => (await fetchLibraryGalleryPage()).items;
 
 export interface AdoptResult {
   inspiration_id: string;

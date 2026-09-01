@@ -8,7 +8,7 @@
  * scope matching is exact, because industry is free text.
  */
 import { createFileRoute } from "@tanstack/react-router";
-import { Archive, Eye, Loader2, Pencil, Plus, RefreshCw, Send } from "lucide-react";
+import { Archive, CopyPlus, Eye, Loader2, Pencil, Plus, RefreshCw, Send } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -125,6 +125,10 @@ function EditorSheet({
   const [form, setForm] = useState<StandardInput>(EMPTY_FORM);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
 
+  // The server never edits a published standard in place: opening the sheet on
+  // one authors a new draft that supersedes it instead.
+  const replacing = standard !== null && standard.status !== "DRAFT";
+
   useEffect(() => {
     if (!open) return;
     setForm(
@@ -167,17 +171,24 @@ function EditorSheet({
       scope_value: form.scope === "GLOBAL" ? "" : form.scope_value.trim(),
     };
     setConfirm({
-      title: standard ? `Save changes to "${payload.title}"?` : `Create "${payload.title}"?`,
+      title: standard
+        ? replacing
+          ? `Draft a replacement for "${standard.title}"?`
+          : `Save changes to "${payload.title}"?`
+        : `Create "${payload.title}"?`,
       description: standard
-        ? standard.status === "PUBLISHED"
-          ? "This standard is live. The change reaches the next generation for every brand in scope."
+        ? replacing
+          ? `It starts as a draft; "${standard.title}" stays live until you publish the replacement, which retires it.`
           : "Saved as a draft until you publish it."
         : "It starts as a draft. Nothing reaches a client until you publish it.",
-      confirmLabel: standard ? "Save" : "Create draft",
+      confirmLabel: standard && !replacing ? "Save" : "Create draft",
       run: async () => {
-        if (standard) await updateStandard(standard.id, payload);
-        else await createStandard(payload);
-        toast.success(standard ? "Standard updated." : "Draft created.");
+        if (!standard) await createStandard(payload);
+        else if (replacing) await createStandard({ ...payload, supersedes: standard.id });
+        else await updateStandard(standard.id, payload);
+        toast.success(
+          !standard ? "Draft created." : replacing ? "Replacement draft created." : "Standard updated.",
+        );
         onSaved();
         onClose();
       },
@@ -189,10 +200,13 @@ function EditorSheet({
       <Sheet open={open} onOpenChange={(next) => (!next ? onClose() : null)}>
         <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg">
           <SheetHeader>
-            <SheetTitle>{standard ? "Edit standard" : "New standard"}</SheetTitle>
+            <SheetTitle>
+              {standard ? (replacing ? "Draft a replacement" : "Edit standard") : "New standard"}
+            </SheetTitle>
             <SheetDescription>
-              A claim plus the sentence a generation receives. It sits below every brand-specific
-              rule, so it can never override what a client said.
+              {standard && replacing
+                ? `"${standard.title}" is live and is never edited in place. This starts a new draft that supersedes it — publishing the draft retires the original.`
+                : "A claim plus the sentence a generation receives. It sits below every brand-specific rule, so it can never override what a client said."}
             </SheetDescription>
           </SheetHeader>
           <div className="mt-6 space-y-4">
@@ -268,7 +282,7 @@ function EditorSheet({
                 Cancel
               </Button>
               <Button onClick={save} disabled={!valid}>
-                {standard ? "Save…" : "Create draft…"}
+                {standard && !replacing ? "Save…" : "Create draft…"}
               </Button>
             </div>
           </div>
@@ -523,7 +537,7 @@ function StandardsPage() {
                       <Button size="sm" variant="outline" onClick={() => setPreviewing(standard)}>
                         <Eye className="size-3.5" /> Preview
                       </Button>
-                      {standard.status !== "RETIRED" ? (
+                      {standard.status === "DRAFT" ? (
                         <Button
                           size="sm"
                           variant="outline"
@@ -533,6 +547,18 @@ function StandardsPage() {
                           }}
                         >
                           <Pencil className="size-3.5" /> Edit
+                        </Button>
+                      ) : null}
+                      {standard.status === "PUBLISHED" ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setEditing(standard);
+                            setEditorOpen(true);
+                          }}
+                        >
+                          <CopyPlus className="size-3.5" /> Draft a replacement
                         </Button>
                       ) : null}
                       {standard.status === "DRAFT" ? (
