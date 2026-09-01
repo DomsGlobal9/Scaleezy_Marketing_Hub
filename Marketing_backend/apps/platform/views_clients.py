@@ -20,27 +20,8 @@ across workspaces by being in its own namespace, not by loosening theirs.
 from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
-from types import SimpleNamespace
 
-from django.db.models import (
-    CharField,
-    Count,
-    DateTimeField,
-    DecimalField,
-    Exists,
-    F,
-    FloatField,
-    IntegerField,
-    JSONField,
-    Max,
-    OuterRef,
-    Q,
-    Subquery,
-    Sum,
-    TextField,
-    UUIDField,
-    Value,
-)
+from django.db.models import Count, F, Max, OuterRef, Q, Subquery, Sum
 from django.utils import timezone
 
 from apps.ai.models import AIUsageLog, WorkspaceAIRoute
@@ -65,7 +46,7 @@ from apps.learning.models import (
     LearningScope,
     SubjectType,
 )
-from apps.onboarding.models import CalibrationDirection
+from apps.onboarding.models import BrandOnboarding, CalibrationDirection
 from apps.onboarding.services import derive_onboarding_state
 from apps.publishing.models import PublishingJob
 from apps.universal.services import settings_for
@@ -116,7 +97,7 @@ def _int_param(raw, default, *, lo, hi):
 
 
 def _bulk_usage(workspace_ids):
-    """Exact quota summaries for many workspaces in two bounded queries."""
+    """Exact quota summaries for many workspaces in three bounded queries."""
     ids = list(workspace_ids)
     subscriptions = {
         sub.workspace_id: sub
@@ -129,57 +110,30 @@ def _bulk_usage(workspace_ids):
             workspace_id=workspace_id, created_at__gte=start, created_at__lt=end
         )
 
-    generation_counts = defaultdict(int)
+    generation_counts = {}
     spend_by_workspace = defaultdict(lambda: Decimal('0'))
     capability_counts = defaultdict(dict)
     if subscriptions:
-        content_rows = (
-            ContentItem.objects.filter(period_filter).order_by()
+        generation_counts = {
+            row['workspace_id']: row['n']
+            for row in (
+                ContentItem.objects.filter(period_filter)
+                .values('workspace_id')
+                .annotate(n=Count('id'))
+            )
+        }
+        for row in (
+            AIUsageLog.objects.filter(period_filter)
+            .values('workspace_id', 'capability')
             .annotate(
-                _usage_workspace_id=F('workspace_id'),
-                _usage_capability=Value('', output_field=CharField(max_length=32)),
+                spend=Sum('cost'),
+                used=Count('id', filter=Q(success=True, selected=True)),
             )
-            .values('_usage_workspace_id', '_usage_capability')
-            .annotate(
-                _usage_generations=Count('id'),
-                _usage_spend=Value(
-                    Decimal('0'),
-                    output_field=DecimalField(max_digits=12, decimal_places=4),
-                ),
-                _usage_used=Value(0, output_field=IntegerField()),
-            )
-            .values(
-                '_usage_workspace_id', '_usage_capability', '_usage_generations',
-                '_usage_spend', '_usage_used',
-            )
-        )
-        ai_rows = (
-            AIUsageLog.objects.filter(period_filter).order_by()
-            .annotate(
-                _usage_workspace_id=F('workspace_id'),
-                _usage_capability=F('capability'),
-            )
-            .values('_usage_workspace_id', '_usage_capability')
-            .annotate(
-                _usage_generations=Value(0, output_field=IntegerField()),
-                _usage_spend=Sum('cost'),
-                _usage_used=Count('id', filter=Q(success=True, selected=True)),
-            )
-            .values(
-                '_usage_workspace_id', '_usage_capability', '_usage_generations',
-                '_usage_spend', '_usage_used',
-            )
-        )
-        for row in content_rows.union(ai_rows, all=True).order_by(
-            '_usage_workspace_id', '_usage_capability'
         ):
-            workspace_id = row['_usage_workspace_id']
-            if not row['_usage_capability']:
-                generation_counts[workspace_id] = row['_usage_generations']
-                continue
-            spend_by_workspace[workspace_id] += row['_usage_spend'] or Decimal('0')
-            if row['_usage_used']:
-                capability_counts[workspace_id][row['_usage_capability']] = row['_usage_used']
+            workspace_id = row['workspace_id']
+            spend_by_workspace[workspace_id] += row['spend'] or Decimal('0')
+            if row['used']:
+                capability_counts[workspace_id][row['capability']] = row['used']
 
     summaries = {}
     for workspace_id in ids:
@@ -190,277 +144,6 @@ def _bulk_usage(workspace_ids):
             per_capability_used=capability_counts[workspace_id],
         )
     return subscriptions, summaries
-
-
-def _workspace_stat_row(queryset, metric, *, key_field=None, last_field=None):
-    """One normalized aggregate branch for the portfolio stats UNION."""
-    key = F(key_field) if key_field else Value('', output_field=CharField(max_length=32))
-    row = (
-        queryset.order_by()
-        .annotate(
-            _stats_workspace_id=F('workspace_id'),
-            _stats_metric=Value(metric, output_field=CharField(max_length=32)),
-            _stats_key=key,
-        )
-        .values('_stats_workspace_id', '_stats_metric', '_stats_key')
-        .annotate(
-            _stats_count=Count('pk'),
-            _stats_last=(
-                Max(last_field)
-                if last_field
-                else Value(None, output_field=DateTimeField())
-            ),
-        )
-        .values(
-            '_stats_workspace_id', '_stats_metric', '_stats_key',
-            '_stats_count', '_stats_last',
-        )
-    )
-    return row
-
-
-def _bulk_workspace_stats(workspace_ids, *, now, days):
-    """All workspace-level portfolio aggregates in one database round trip."""
-    ids = list(workspace_ids)
-    content = defaultdict(dict)
-    publishing = defaultdict(dict)
-    team = {}
-    grouped = {
-        key: defaultdict(int)
-        for key in ('knowledge_sources', 'confirmed_facts', 'inspirations', 'rules', 'preferences')
-    }
-    routed = set()
-    recently_active = set()
-    if not ids:
-        return content, publishing, team, grouped, routed, recently_active
-
-    rows = _workspace_stat_row(
-        ContentItem.objects.filter(workspace_id__in=ids), 'content', key_field='status'
-    ).union(
-        _workspace_stat_row(
-            PublishingJob.objects.filter(workspace_id__in=ids),
-            'publishing', key_field='status',
-        ),
-        _workspace_stat_row(
-            WorkspaceMember.objects.filter(workspace_id__in=ids),
-            'team', last_field='last_active_at',
-        ),
-        _workspace_stat_row(
-            BrandSource.objects.filter(workspace_id__in=ids).exclude(
-                status=BrandSource.SourceStatus.ARCHIVED
-            ),
-            'knowledge_sources',
-        ),
-        _workspace_stat_row(
-            BrandMemory.objects.filter(
-                workspace_id__in=ids, status=BrandMemory.MemoryStatus.CONFIRMED,
-            ).exclude(source__status=BrandSource.SourceStatus.ARCHIVED),
-            'confirmed_facts',
-        ),
-        _workspace_stat_row(
-            BrandInspiration.objects.filter(workspace_id__in=ids).eligible_for_retrieval(),
-            'inspirations',
-        ),
-        _workspace_stat_row(
-            BrandRule.objects.filter(workspace_id__in=ids, is_active=True), 'rules'
-        ),
-        _workspace_stat_row(
-            BrandPreference.objects.filter(workspace_id__in=ids).active(), 'preferences'
-        ),
-        _workspace_stat_row(
-            WorkspaceAIRoute.objects.filter(workspace_id__in=ids, enabled=True), 'routed'
-        ),
-        _workspace_stat_row(
-            WorkspaceMember.objects.filter(
-                workspace_id__in=ids,
-                status=WorkspaceMember.Status.ACTIVE,
-                last_active_at__gte=now - timedelta(days=days),
-            ),
-            'recently_active',
-        ),
-        all=True,
-    ).order_by('_stats_workspace_id', '_stats_metric', '_stats_key')
-
-    for row in rows:
-        workspace_id = row['_stats_workspace_id']
-        metric = row['_stats_metric']
-        if metric == 'content':
-            content[workspace_id][row['_stats_key']] = row['_stats_count']
-        elif metric == 'publishing':
-            publishing[workspace_id][row['_stats_key']] = row['_stats_count']
-        elif metric == 'team':
-            team[workspace_id] = {
-                'count': row['_stats_count'], 'last_active_at': row['_stats_last'],
-            }
-        elif metric == 'routed':
-            routed.add(workspace_id)
-        elif metric == 'recently_active':
-            recently_active.add(workspace_id)
-        else:
-            grouped[metric][workspace_id] = row['_stats_count']
-    return content, publishing, team, grouped, routed, recently_active
-
-
-_BRAIN_COLUMNS = (
-    '_brain_kind', '_brain_workspace_id', '_brain_brand_id', '_brain_pk',
-    '_brain_category', '_brain_attribute', '_brain_value', '_brain_sentiment',
-    '_brain_origin', '_brain_normalized_key', '_brain_memory_type',
-    '_brain_content', '_brain_text', '_brain_structured', '_brain_hardness',
-    '_brain_priority', '_brain_scope', '_brain_state', '_brain_confidence',
-    '_brain_weight',
-)
-
-
-def _brain_record_row(queryset, kind, **fields):
-    """Normalize one authoritative Brand Brain record type for a UNION."""
-    normalized = {
-        '_brain_workspace_id': Value(None, output_field=UUIDField()),
-        '_brain_brand_id': Value(None, output_field=UUIDField()),
-        '_brain_pk': F('pk'),
-        '_brain_category': Value('', output_field=CharField(max_length=64)),
-        '_brain_attribute': Value('', output_field=CharField(max_length=255)),
-        '_brain_value': Value('', output_field=TextField()),
-        '_brain_sentiment': Value('', output_field=CharField(max_length=16)),
-        '_brain_origin': Value('', output_field=CharField(max_length=32)),
-        '_brain_normalized_key': Value('', output_field=CharField(max_length=255)),
-        '_brain_memory_type': Value('', output_field=CharField(max_length=32)),
-        '_brain_content': Value('', output_field=TextField()),
-        '_brain_text': Value('', output_field=TextField()),
-        '_brain_structured': Value({}, output_field=JSONField()),
-        '_brain_hardness': Value('', output_field=CharField(max_length=16)),
-        '_brain_priority': Value(0, output_field=IntegerField()),
-        '_brain_scope': Value('', output_field=CharField(max_length=16)),
-        '_brain_state': Value('', output_field=CharField(max_length=16)),
-        '_brain_confidence': Value(0.0, output_field=FloatField()),
-        '_brain_weight': Value(0.0, output_field=FloatField()),
-    }
-    normalized.update(fields)
-    return (
-        queryset.order_by()
-        .annotate(
-            _brain_kind=Value(kind, output_field=CharField(max_length=16)),
-            **normalized,
-        )
-        .values(*_BRAIN_COLUMNS)
-    )
-
-
-def _bulk_missing_brain_records(brands):
-    """Load four authoritative compiler inputs in one database round trip."""
-    brands = list(brands)
-    records = {
-        brand.pk: {'memories': [], 'rules': [], 'preferences': [], 'signals': []}
-        for brand in brands
-    }
-    if not brands:
-        return records
-
-    ids = [brand.pk for brand in brands]
-    workspace_ids = {brand.workspace_id for brand in brands}
-    brand_scope = Q()
-    for brand in brands:
-        brand_scope |= Q(brand_id=brand.pk, workspace_id=brand.workspace_id)
-
-    rows = _brain_record_row(
-        BrandMemory.objects.filter(
-            brand_scope, status=BrandMemory.MemoryStatus.CONFIRMED,
-        ).exclude(source__status=BrandSource.SourceStatus.ARCHIVED),
-        'memory',
-        _brain_workspace_id=F('workspace_id'),
-        _brain_brand_id=F('brand_id'),
-        _brain_normalized_key=F('normalized_key'),
-        _brain_memory_type=F('memory_type'),
-        _brain_content=F('content'),
-        _brain_scope=F('scope'),
-        _brain_confidence=F('confidence'),
-    ).union(
-        _brain_record_row(
-            BrandRule.objects.filter(workspace_id__in=workspace_ids, is_active=True).filter(
-                brand_scope | Q(brand__isnull=True, scope=LearningScope.TENANT)
-            ),
-            'rule',
-            _brain_workspace_id=F('workspace_id'),
-            _brain_brand_id=F('brand_id'),
-            _brain_text=F('text'),
-            _brain_structured=F('structured'),
-            _brain_hardness=F('hardness'),
-            _brain_origin=F('origin'),
-            _brain_priority=F('priority'),
-            _brain_scope=F('scope'),
-            _brain_confidence=F('confidence'),
-        ),
-        _brain_record_row(
-            BrandPreference.objects.filter(workspace_id__in=workspace_ids).active().filter(
-                brand_scope | Q(brand__isnull=True, scope=LearningScope.TENANT)
-            ),
-            'preference',
-            _brain_workspace_id=F('workspace_id'),
-            _brain_brand_id=F('brand_id'),
-            _brain_category=F('category'),
-            _brain_attribute=F('attribute'),
-            _brain_value=F('value'),
-            _brain_state=F('state'),
-            _brain_scope=F('scope'),
-            _brain_confidence=F('confidence'),
-            _brain_weight=F('weight'),
-        ),
-        _brain_record_row(
-            InspirationSignal.objects.filter(inspiration__brand_id__in=ids)
-            .eligible_for_retrieval(),
-            'signal',
-            _brain_workspace_id=F('inspiration__workspace_id'),
-            _brain_brand_id=F('inspiration__brand_id'),
-            _brain_category=F('category'),
-            _brain_attribute=F('attribute'),
-            _brain_value=F('value'),
-            _brain_sentiment=F('sentiment'),
-            _brain_origin=F('origin'),
-            _brain_confidence=F('confidence'),
-            _brain_weight=F('weight'),
-        ),
-        all=True,
-    ).order_by('_brain_kind', '_brain_pk')
-
-    brands_by_workspace = defaultdict(list)
-    for brand in brands:
-        brands_by_workspace[brand.workspace_id].append(brand.pk)
-
-    for row in rows:
-        record = SimpleNamespace(
-            pk=row['_brain_pk'],
-            workspace_id=row['_brain_workspace_id'],
-            brand_id=row['_brain_brand_id'],
-            category=row['_brain_category'],
-            attribute=row['_brain_attribute'],
-            value=row['_brain_value'],
-            sentiment=row['_brain_sentiment'],
-            origin=row['_brain_origin'],
-            normalized_key=row['_brain_normalized_key'],
-            memory_type=row['_brain_memory_type'],
-            content=row['_brain_content'],
-            text=row['_brain_text'],
-            structured=row['_brain_structured'] or {},
-            hardness=row['_brain_hardness'],
-            priority=row['_brain_priority'],
-            scope=row['_brain_scope'],
-            state=row['_brain_state'],
-            confidence=row['_brain_confidence'],
-            weight=row['_brain_weight'],
-        )
-        kind = row['_brain_kind']
-        targets = (
-            [row['_brain_brand_id']]
-            if row['_brain_brand_id']
-            else brands_by_workspace[row['_brain_workspace_id']]
-        )
-        bucket = {
-            'memory': 'memories', 'rule': 'rules',
-            'preference': 'preferences', 'signal': 'signals',
-        }[kind]
-        for brand_id in targets:
-            if brand_id in records:
-                records[brand_id][bucket].append(record)
-    return records
 
 
 # ───────────────────────────────────────────────── grouped aggregates
@@ -485,19 +168,62 @@ class PortfolioStats:
         now = timezone.now()
         self.days = days
 
-        (
-            self.content,
-            self.publishing,
-            self.team,
-            workspace_counts,
-            self.routed,
-            self.recently_active,
-        ) = _bulk_workspace_stats(ids, now=now, days=days)
-        self.knowledge_sources = workspace_counts['knowledge_sources']
-        self.confirmed_facts = workspace_counts['confirmed_facts']
-        self.inspirations = workspace_counts['inspirations']
-        self.rules = workspace_counts['rules']
-        self.preferences = workspace_counts['preferences']
+        self.content = defaultdict(dict)
+        for row in (
+            ContentItem.objects.filter(workspace_id__in=ids)
+            .values('workspace_id', 'status').annotate(n=Count('id'))
+        ):
+            self.content[row['workspace_id']][row['status']] = row['n']
+
+        self.publishing = defaultdict(dict)
+        for row in (
+            PublishingJob.objects.filter(workspace_id__in=ids)
+            .values('workspace_id', 'status').annotate(n=Count('id'))
+        ):
+            self.publishing[row['workspace_id']][row['status']] = row['n']
+
+        self.team = {
+            row['workspace_id']: {'count': row['n'], 'last_active_at': row['last']}
+            for row in (
+                WorkspaceMember.objects.filter(workspace_id__in=ids)
+                .values('workspace_id')
+                .annotate(n=Count('id'), last=Max('last_active_at'))
+            )
+        }
+
+        self.knowledge_sources = self._grouped(
+            BrandSource.objects.filter(workspace_id__in=ids)
+            .exclude(status=BrandSource.SourceStatus.ARCHIVED)
+        )
+        self.confirmed_facts = self._grouped(
+            BrandMemory.objects.filter(
+                workspace_id__in=ids, status=BrandMemory.MemoryStatus.CONFIRMED
+            ).exclude(source__status=BrandSource.SourceStatus.ARCHIVED)
+        )
+        self.inspirations = self._grouped(
+            BrandInspiration.objects.filter(workspace_id__in=ids).eligible_for_retrieval()
+        )
+        self.rules = self._grouped(
+            BrandRule.objects.filter(workspace_id__in=ids, is_active=True)
+        )
+        self.preferences = self._grouped(
+            BrandPreference.objects.filter(workspace_id__in=ids).active()
+        )
+
+        # Same definitions as the health console's live signals, so the
+        # portfolio flags and the tiles count the same clients.
+        self.routed = set(
+            WorkspaceAIRoute.objects.filter(workspace_id__in=ids, enabled=True)
+            .order_by()
+            .values_list('workspace_id', flat=True)
+        )
+        self.recently_active = set(
+            WorkspaceMember.objects.filter(
+                workspace_id__in=ids,
+                status=WorkspaceMember.Status.ACTIVE,
+                last_active_at__gte=now - timedelta(days=days),
+            ).values_list('workspace_id', flat=True)
+        )
 
         self.subscriptions, self.usage = _bulk_usage(ids)
 
@@ -507,24 +233,9 @@ class PortfolioStats:
         self.has_brand = set()
         self.active_brand = set()
         self.pending_brand = set()
-        latest_direction = (
-            CalibrationDirection.objects.filter(brand_id=OuterRef('pk'))
-            .order_by('-created_at')
-        )
         for brand in (
             Brand.objects.filter(workspace_id__in=ids)
-            .select_related('workspace', 'onboarding')
-            .annotate(
-                _portfolio_has_generated=Exists(
-                    ContentItem.objects.filter(brand_id=OuterRef('pk'))
-                ),
-                _portfolio_latest_round=Subquery(
-                    latest_direction.values('round_id')[:1]
-                ),
-                _portfolio_latest_verdict=Subquery(
-                    latest_direction.values('verdict')[:1]
-                ),
-            )
+            .select_related('workspace')
         ):
             self.has_brand.add(brand.workspace_id)
             if brand.status == Brand.Status.ACTIVE:
@@ -545,30 +256,127 @@ class PortfolioStats:
             brand for brand in self.brands.values() if not brand.creative_brain
         ]
         if missing_brains:
-            brain_records = _bulk_missing_brain_records(missing_brains)
+            missing_ids = [brand.pk for brand in missing_brains]
+            missing_workspace_ids = {brand.workspace_id for brand in missing_brains}
+            brand_scope = Q()
             for brand in missing_brains:
-                records = brain_records[brand.pk]
+                brand_scope |= Q(brand_id=brand.pk, workspace_id=brand.workspace_id)
+            memories = defaultdict(list)
+            for row in (
+                BrandMemory.objects.filter(
+                    brand_scope,
+                    status=BrandMemory.MemoryStatus.CONFIRMED,
+                )
+                .exclude(source__status=BrandSource.SourceStatus.ARCHIVED)
+                .order_by('id')
+            ):
+                memories[row.brand_id].append(row)
+
+            signals = defaultdict(list)
+            for row in (
+                InspirationSignal.objects.filter(
+                    inspiration__brand_id__in=missing_ids
+                )
+                .eligible_for_retrieval()
+                .select_related('inspiration')
+                .order_by('id')
+            ):
+                signals[row.inspiration.brand_id].append(row)
+
+            rules = defaultdict(list)
+            rule_rows = (
+                BrandRule.objects.filter(
+                    workspace_id__in=missing_workspace_ids, is_active=True
+                )
+                .filter(
+                    brand_scope
+                    | Q(brand__isnull=True, scope=LearningScope.TENANT)
+                )
+                .order_by('id')
+            )
+            preferences = defaultdict(list)
+            preference_rows = (
+                BrandPreference.objects.filter(workspace_id__in=missing_workspace_ids)
+                .active()
+                .filter(
+                    brand_scope
+                    | Q(brand__isnull=True, scope=LearningScope.TENANT)
+                )
+                .order_by('id')
+            )
+            brands_by_workspace = defaultdict(list)
+            for brand in missing_brains:
+                brands_by_workspace[brand.workspace_id].append(brand.pk)
+            for row in rule_rows:
+                targets = (
+                    [row.brand_id] if row.brand_id else brands_by_workspace[row.workspace_id]
+                )
+                for brand_id in targets:
+                    rules[brand_id].append(row)
+            for row in preference_rows:
+                targets = (
+                    [row.brand_id] if row.brand_id else brands_by_workspace[row.workspace_id]
+                )
+                for brand_id in targets:
+                    preferences[brand_id].append(row)
+            for brand in missing_brains:
                 self.brains[brand.pk] = compile_brand_brain_from_records(
                     brand,
-                    memories=records['memories'],
-                    rules=records['rules'],
-                    preferences=records['preferences'],
-                    signals=records['signals'],
+                    memories=memories[brand.pk],
+                    rules=rules[brand.pk],
+                    preferences=preferences[brand.pk],
+                    signals=signals[brand.pk],
                 )
-        self.generated_brands = set()
-        self.onboarding = {}
-        self.latest_calibration_round = {}
+        self.generated_brands = set(
+            ContentItem.objects.filter(brand_id__in=brand_ids)
+            .order_by()
+            .values_list('brand_id', flat=True)
+            .distinct()
+        )
+        self.onboarding = {
+            row.brand_id: row
+            for row in BrandOnboarding.objects.filter(brand_id__in=brand_ids).only(
+                'brand_id', 'skipped_steps', 'started_at', 'completed_at'
+            )
+        }
+
+        latest_direction = (
+            CalibrationDirection.objects.filter(brand_id=OuterRef('pk'))
+            .order_by('-created_at')
+        )
+        self.latest_calibration_round = {
+            row['pk']: row['latest_round']
+            for row in (
+                Brand.objects.filter(pk__in=brand_ids)
+                .annotate(
+                    latest_round=Subquery(latest_direction.values('round_id')[:1])
+                )
+                .order_by()
+                .values('pk', 'latest_round')
+            )
+            if row['latest_round'] is not None
+        }
+        pending_filter = Q()
+        for brand_id, round_id in self.latest_calibration_round.items():
+            pending_filter |= Q(
+                brand_id=brand_id,
+                round_id=round_id,
+                verdict=CalibrationDirection.Verdict.PENDING,
+            )
         self.pending_calibration = set()
-        for brand in self.brands.values():
-            if brand._portfolio_has_generated:
-                self.generated_brands.add(brand.pk)
-            saved_onboarding = getattr(brand, 'onboarding', None)
-            if saved_onboarding is not None:
-                self.onboarding[brand.pk] = saved_onboarding
-            if brand._portfolio_latest_round is not None:
-                self.latest_calibration_round[brand.pk] = brand._portfolio_latest_round
-                if brand._portfolio_latest_verdict == CalibrationDirection.Verdict.PENDING:
-                    self.pending_calibration.add(brand.pk)
+        if self.latest_calibration_round:
+            self.pending_calibration = set(
+                CalibrationDirection.objects.filter(pending_filter)
+                .values_list('brand_id', flat=True)
+                .distinct()
+            )
+
+    @staticmethod
+    def _grouped(queryset):
+        return {
+            row['workspace_id']: row['n']
+            for row in queryset.values('workspace_id').annotate(n=Count('id'))
+        }
 
     def brand_for(self, workspace_id):
         return self.brands.get(workspace_id)

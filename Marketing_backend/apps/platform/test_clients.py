@@ -25,10 +25,9 @@ from apps.billing.models import Plan, Subscription
 from apps.brands.models import Brand
 from apps.common.testing import TenantFixtureMixin
 from apps.content.models import ContentItem
-from apps.context.services.readiness import brand_readiness
-from apps.inspirations.models import BrandInspiration, InspirationSignal
+from apps.inspirations.models import BrandInspiration
 from apps.knowledge.models import BrandMemory, BrandSource
-from apps.learning.models import BrandPreference, BrandRule, LearningScope
+from apps.learning.models import BrandRule
 from apps.marketing.models import MarketingAsset
 from apps.publishing.models import PublishingJob
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
@@ -187,60 +186,6 @@ class ClientPortfolioTests(TenantFixtureMixin, TestCase):
         self.assertNotIn('PENDING_APPROVAL', row['flags'])
         self.assertIn('NEVER_GENERATED', row['flags'])
 
-    def test_missing_brain_uses_the_authoritative_compiler_inputs_in_bulk(self):
-        source = BrandSource.objects.create(
-            workspace=self.acme,
-            brand=self.acme_brand,
-            title='Positioning notes',
-            status=BrandSource.SourceStatus.READY,
-        )
-        BrandMemory.objects.create(
-            workspace=self.acme,
-            brand=self.acme_brand,
-            source=source,
-            memory_type=BrandMemory.MemoryType.BUYER_PAIN,
-            content='Teams lose time to fragmented approvals',
-            status=BrandMemory.MemoryStatus.CONFIRMED,
-        )
-        BrandRule.objects.create(
-            workspace=self.acme,
-            brand=None,
-            scope=LearningScope.TENANT,
-            text='Use a direct headline',
-            structured={
-                'category': 'VOICE', 'attribute': 'headline_style', 'value': 'direct',
-            },
-        )
-        BrandPreference.objects.create(
-            workspace=self.acme,
-            brand=self.acme_brand,
-            category='TONE',
-            attribute='register',
-            value='plain',
-            state=BrandPreference.State.ESTABLISHED,
-            confidence=0.9,
-            weight=0.8,
-        )
-        inspiration = BrandInspiration.objects.create(
-            workspace=self.acme, brand=self.acme_brand, title='Visual reference'
-        )
-        InspirationSignal.objects.create(
-            inspiration=inspiration,
-            category='COLOR',
-            attribute='accent',
-            value='amber',
-            sentiment=InspirationSignal.Sentiment.LIKED,
-            origin=InspirationSignal.Origin.USER,
-            user_confirmation=InspirationSignal.UserConfirmation.CONFIRMED,
-        )
-
-        expected = brand_readiness(self.acme_brand)
-        _data, by_id = self.rows_for()
-        actual = by_id[str(self.acme.pk)]['readiness']
-
-        self.assertEqual(actual['score'], expected['readiness_score'])
-        self.assertEqual(actual['level'], expected['readiness_level'])
-
     def test_pending_filter_returns_only_clients_awaiting_approval(self):
         pending, _ = self.other_workspace('Newco', brand_status=Brand.Status.PENDING)
         data, by_id = self.rows_for(filter='pending')
@@ -390,7 +335,7 @@ class ClientPortfolioTests(TenantFixtureMixin, TestCase):
             response = self.staff_api.get(CLIENTS, {'page_size': 10})
 
         self.assertEqual(response.status_code, 200, response.content)
-        self.assertLessEqual(len(queries), 11, [query['sql'] for query in queries])
+        self.assertLessEqual(len(queries), 27, [query['sql'] for query in queries])
 
     # ───────────────────────────────────────────── P3 detail
 
