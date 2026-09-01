@@ -20,11 +20,9 @@ import {
   LayoutGrid,
   Lightbulb,
   Loader2,
-  Package,
   RefreshCw,
   Scale,
   Sparkles,
-  TrendingUp,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -36,7 +34,6 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { BrandBasicsPanel } from "@/components/marketing/brand-basics";
 import {
   Chip,
   Empty,
@@ -52,11 +49,12 @@ import { LearningUsagePanel } from "@/components/marketing/learning-usage-panel"
 import { LibraryGallery } from "@/components/marketing/library-gallery";
 import { EnrichFromWebsite, NlNoteBox } from "@/components/marketing/nl-note-box";
 import { PageHeader, SectionTitle } from "@/components/marketing/primitives";
-import { ProductsAudiencePanel } from "@/components/marketing/products-audience-panel";
+import { BrandProfilePanel } from "@/components/marketing/products-audience-panel";
 import { TeachScaleezy } from "@/components/marketing/teach-scaleezy";
 import { TemplatesPanel } from "@/components/marketing/templates-panel";
 import {
   BRAND_MASTER_TABS,
+  LEGACY_TAB_ALIASES,
   READINESS_COPY,
   createRule,
   deactivateRule,
@@ -86,8 +84,11 @@ import { useBrandSettings, type BrandDto } from "@/lib/brand-settings";
 
 export const Route = createFileRoute("/_hub/brand-master")({
   validateSearch: (search: Record<string, unknown>): { tab?: BrandMasterTab } => {
-    const tab = search["tab"];
-    return typeof tab === "string" && (BRAND_MASTER_TABS as string[]).includes(tab)
+    const raw = search["tab"];
+    if (typeof raw !== "string") return {};
+    // Old deep links to merged-away tabs land on the tab that absorbed them.
+    const tab = LEGACY_TAB_ALIASES[raw] ?? raw;
+    return (BRAND_MASTER_TABS as string[]).includes(tab)
       ? { tab: tab as BrandMasterTab }
       : {};
   },
@@ -253,7 +254,7 @@ function OverviewTab({
                 className="mt-1 h-auto px-0"
                 onClick={() => onGoToTab("basics")}
               >
-                Edit brand basics
+                Edit brand profile
               </Button>
             </div>
             {low ? (
@@ -294,7 +295,7 @@ function OverviewTab({
             <CountTile
               label="Learned preferences"
               value={readiness.counts.preferences}
-              onClick={() => onGoToTab("learning")}
+              onClick={() => onGoToTab("rules")}
             />
             <CountTile
               label="Active rules"
@@ -392,7 +393,7 @@ function Row({ label, value, mono }: { label: string; value: string; mono?: bool
   );
 }
 
-/* ---------------------------------------------------------------- learning */
+/* --------------------------------------------------------- rules & learning */
 
 const EVENT_COPY: Record<string, string> = {
   APPROVED: "Approved a generation",
@@ -408,10 +409,20 @@ const EVENT_COPY: Record<string, string> = {
   MEMORY_REJECTED: "Rejected a fact",
 };
 
-function LearningTab({ brandId, onChanged }: { brandId: string; onChanged: () => void }) {
+/**
+ * Stated rules and learned preferences are two halves of one governance
+ * ledger, so they live on one tab: what a person instructed, what Scaleezy
+ * inferred, whether any of it reaches generation, and the decisions it
+ * learned from.
+ */
+function RulesTab({ brandId, onChanged }: { brandId: string; onChanged: () => void }) {
+  const slice = useSlice<BrandRuleRow[]>(() => fetchRules(brandId), true);
   const prefs = useSlice<BrandPreferenceRow[]>(() => fetchPreferences(brandId), true);
   const events = useSlice<LearningEventRow[]>(() => fetchLearningEvents(brandId), true);
+  const [text, setText] = useState("");
+  const [hardness, setHardness] = useState<"HARD" | "SOFT">("HARD");
   const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const retire = async (preference: BrandPreferenceRow) => {
     setBusy(preference.id);
@@ -427,30 +438,179 @@ function LearningTab({ brandId, onChanged }: { brandId: string; onChanged: () =>
     }
   };
 
-  if (prefs.loading && !prefs.data) return <Loading />;
+  const add = async () => {
+    setBusy("add");
+    setError(null);
+    try {
+      await createRule(brandId, { text: text.trim(), hardness });
+      toast.success(
+        hardness === "HARD" ? "Rule saved. Scaleezy will never break it." : "Preference saved.",
+      );
+      setText("");
+      slice.reload();
+      onChanged();
+    } catch (e) {
+      setError(errorMessage(e, "Could not save the rule."));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deactivate = async (rule: BrandRuleRow) => {
+    setBusy(rule.id);
+    try {
+      await deactivateRule(rule.id);
+      toast("Rule deactivated.");
+      slice.reload();
+      onChanged();
+    } catch (e) {
+      toast.error(errorMessage(e, "Could not deactivate the rule."));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if ((slice.loading && !slice.data) || (prefs.loading && !prefs.data)) return <Loading />;
+  if (slice.error) return <Failed message={slice.error} onRetry={slice.reload} />;
   if (prefs.error) return <Failed message={prefs.error} onRetry={prefs.reload} />;
 
-  const active = (prefs.data ?? []).filter((p) => p.state !== "RETIRED");
+  const active = (slice.data ?? []).filter((rule) => rule.is_active);
+  const explicit = active.filter((rule) => rule.origin === "EXPLICIT");
+  const learned = active.filter((rule) => rule.origin === "LEARNED");
+  const activePrefs = (prefs.data ?? []).filter((p) => p.state !== "RETIRED");
   const groups: Array<[string, BrandPreferenceRow[]]> = [
-    ["Established", active.filter((p) => p.state === "ESTABLISHED")],
-    ["Emerging", active.filter((p) => p.state === "EMERGING")],
+    ["Established", activePrefs.filter((p) => p.state === "ESTABLISHED")],
+    ["Emerging", activePrefs.filter((p) => p.state === "EMERGING")],
   ];
   const recent = (events.data ?? []).slice(0, 8);
 
   return (
     <div className="space-y-8">
+      <Card>
+        <CardContent className="space-y-3 pt-6">
+          <Label className="text-xs tracking-wide uppercase">State a brand rule</Label>
+          <Input
+            placeholder='e.g. "Never mention discounts in the headline."'
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant={hardness === "HARD" ? "default" : "outline"}
+              onClick={() => setHardness("HARD")}
+            >
+              Must never break
+            </Button>
+            <Button
+              size="sm"
+              variant={hardness === "SOFT" ? "default" : "outline"}
+              onClick={() => setHardness("SOFT")}
+            >
+              Strong preference
+            </Button>
+            <span className="text-xs text-muted-foreground">
+              Stated rules outrank everything Scaleezy learns on its own.
+            </span>
+          </div>
+          <InlineError message={error} />
+          <Button disabled={busy === "add" || !text.trim()} onClick={add}>
+            {busy === "add" ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Scale className="size-4" />
+            )}
+            Save rule
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* The audit trail founders cite: every rule and preference, with
+          whether it actually reaches generation. It stays this high on the
+          tab deliberately. */}
       <LearningUsagePanel brandId={brandId} />
-      {active.length === 0 ? (
+
+      <div>
+        <SectionTitle
+          title="Your brand rules"
+          description="Stated by a person. Scaleezy treats these as instructions."
+        />
+        {explicit.length === 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">None stated yet.</p>
+        ) : (
+          <ul className="mt-3 space-y-2">
+            {explicit.map((rule) => (
+              <li
+                key={rule.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border-2 border-foreground/15 bg-foreground/[0.03] p-4"
+              >
+                <span className="min-w-0 font-medium">{rule.text}</span>
+                <span className="flex items-center gap-2">
+                  <Chip tone={rule.hardness === "HARD" ? "hard" : "soft"}>
+                    {rule.hardness === "HARD" ? "Must never break" : "Preference"}
+                  </Chip>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy === rule.id}
+                    onClick={() => deactivate(rule)}
+                  >
+                    Deactivate
+                  </Button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div>
+        <SectionTitle
+          title="Learned guidance"
+          description="Inferred from your decisions. Guidance, not instruction — Scaleezy will not treat these as absolute, and they can never become hard rules on their own."
+        />
+        {learned.length === 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">Nothing inferred yet.</p>
+        ) : (
+          <ul className="mt-3 space-y-2">
+            {learned.map((rule) => (
+              <li
+                key={rule.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed p-4"
+              >
+                <span className="min-w-0 text-muted-foreground">{rule.text}</span>
+                <span className="flex items-center gap-2">
+                  <Chip tone="soft">Learned</Chip>
+                  <span className="text-xs text-muted-foreground">
+                    {rule.evidence_event_ids.length} supporting decision
+                    {rule.evidence_event_ids.length === 1 ? "" : "s"}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy === rule.id}
+                    onClick={() => deactivate(rule)}
+                  >
+                    Deactivate
+                  </Button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {activePrefs.length === 0 ? (
         <Empty
           title="No learned preferences yet"
-          hint="Calibration builds preferences over time. Corrective review guidance appears under Rules immediately after the first tagged issue."
+          hint="Calibration builds preferences over time. Corrective review guidance appears under Learned guidance immediately after the first tagged issue."
         />
       ) : (
         groups.map(([label, rows]) =>
           rows.length === 0 ? null : (
             <div key={label}>
               <SectionTitle
-                title={label}
+                title={`${label} preferences`}
                 description={
                   label === "Established"
                     ? "Seen enough times that Scaleezy will act on it."
@@ -523,168 +683,6 @@ function LearningTab({ brandId, onChanged }: { brandId: string; onChanged: () =>
                     {humanize(event.outcome)}
                   </Chip>
                   {new Date(event.created_at).toLocaleString()}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------- rules */
-
-function RulesTab({ brandId, onChanged }: { brandId: string; onChanged: () => void }) {
-  const slice = useSlice<BrandRuleRow[]>(() => fetchRules(brandId), true);
-  const [text, setText] = useState("");
-  const [hardness, setHardness] = useState<"HARD" | "SOFT">("HARD");
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const add = async () => {
-    setBusy("add");
-    setError(null);
-    try {
-      await createRule(brandId, { text: text.trim(), hardness });
-      toast.success(
-        hardness === "HARD" ? "Rule saved. Scaleezy will never break it." : "Preference saved.",
-      );
-      setText("");
-      slice.reload();
-      onChanged();
-    } catch (e) {
-      setError(errorMessage(e, "Could not save the rule."));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const deactivate = async (rule: BrandRuleRow) => {
-    setBusy(rule.id);
-    try {
-      await deactivateRule(rule.id);
-      toast("Rule deactivated.");
-      slice.reload();
-      onChanged();
-    } catch (e) {
-      toast.error(errorMessage(e, "Could not deactivate the rule."));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  if (slice.loading && !slice.data) return <Loading />;
-  if (slice.error) return <Failed message={slice.error} onRetry={slice.reload} />;
-
-  const active = (slice.data ?? []).filter((rule) => rule.is_active);
-  const explicit = active.filter((rule) => rule.origin === "EXPLICIT");
-  const learned = active.filter((rule) => rule.origin === "LEARNED");
-
-  return (
-    <div className="space-y-8">
-      <Card>
-        <CardContent className="space-y-3 pt-6">
-          <Label className="text-xs tracking-wide uppercase">State a brand rule</Label>
-          <Input
-            placeholder='e.g. "Never mention discounts in the headline."'
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              variant={hardness === "HARD" ? "default" : "outline"}
-              onClick={() => setHardness("HARD")}
-            >
-              Must never break
-            </Button>
-            <Button
-              size="sm"
-              variant={hardness === "SOFT" ? "default" : "outline"}
-              onClick={() => setHardness("SOFT")}
-            >
-              Strong preference
-            </Button>
-            <span className="text-xs text-muted-foreground">
-              Stated rules outrank everything Scaleezy learns on its own.
-            </span>
-          </div>
-          <InlineError message={error} />
-          <Button disabled={busy === "add" || !text.trim()} onClick={add}>
-            {busy === "add" ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Scale className="size-4" />
-            )}
-            Save rule
-          </Button>
-        </CardContent>
-      </Card>
-
-      <div>
-        <SectionTitle
-          title="Your brand rules"
-          description="Stated by a person. Scaleezy treats these as instructions."
-        />
-        {explicit.length === 0 ? (
-          <p className="mt-3 text-sm text-muted-foreground">None stated yet.</p>
-        ) : (
-          <ul className="mt-3 space-y-2">
-            {explicit.map((rule) => (
-              <li
-                key={rule.id}
-                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border-2 border-foreground/15 bg-foreground/[0.03] p-4"
-              >
-                <span className="min-w-0 font-medium">{rule.text}</span>
-                <span className="flex items-center gap-2">
-                  <Chip tone={rule.hardness === "HARD" ? "hard" : "soft"}>
-                    {rule.hardness === "HARD" ? "Must never break" : "Preference"}
-                  </Chip>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy === rule.id}
-                    onClick={() => deactivate(rule)}
-                  >
-                    Deactivate
-                  </Button>
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      <div>
-        <SectionTitle
-          title="Learned guidance"
-          description="Inferred from your decisions. Guidance, not instruction — Scaleezy will not treat these as absolute, and they can never become hard rules on their own."
-        />
-        {learned.length === 0 ? (
-          <p className="mt-3 text-sm text-muted-foreground">Nothing inferred yet.</p>
-        ) : (
-          <ul className="mt-3 space-y-2">
-            {learned.map((rule) => (
-              <li
-                key={rule.id}
-                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed p-4"
-              >
-                <span className="min-w-0 text-muted-foreground">{rule.text}</span>
-                <span className="flex items-center gap-2">
-                  <Chip tone="soft">Learned</Chip>
-                  <span className="text-xs text-muted-foreground">
-                    {rule.evidence_event_ids.length} supporting decision
-                    {rule.evidence_event_ids.length === 1 ? "" : "s"}
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy === rule.id}
-                    onClick={() => deactivate(rule)}
-                  >
-                    Deactivate
-                  </Button>
                 </span>
               </li>
             ))}
@@ -1204,10 +1202,7 @@ function BrandMasterPage() {
                 <Sparkles className="size-3.5" /> Overview
               </TabsTrigger>
               <TabsTrigger value="basics" className="shrink-0 gap-1.5">
-                <IdCard className="size-3.5" /> Brand basics
-              </TabsTrigger>
-              <TabsTrigger value="products" className="shrink-0 gap-1.5">
-                <Package className="size-3.5" /> Products &amp; Audience
+                <IdCard className="size-3.5" /> Brand profile
               </TabsTrigger>
               <TabsTrigger value="knowledge" className="shrink-0 gap-1.5">
                 <BookOpen className="size-3.5" /> Knowledge
@@ -1218,11 +1213,8 @@ function BrandMasterPage() {
               <TabsTrigger value="templates" className="shrink-0 gap-1.5">
                 <LayoutGrid className="size-3.5" /> Templates
               </TabsTrigger>
-              <TabsTrigger value="learning" className="shrink-0 gap-1.5">
-                <TrendingUp className="size-3.5" /> Learning
-              </TabsTrigger>
               <TabsTrigger value="rules" className="shrink-0 gap-1.5">
-                <Scale className="size-3.5" /> Rules
+                <Scale className="size-3.5" /> Rules &amp; Learning
               </TabsTrigger>
               <TabsTrigger value="brain" className="shrink-0 gap-1.5">
                 <Brain className="size-3.5" /> Brand Brain
@@ -1254,10 +1246,7 @@ function BrandMasterPage() {
             />
           </TabsContent>
           <TabsContent value="basics" forceMount className="data-[state=inactive]:hidden">
-            <BrandBasicsPanel editor={brandEditor} />
-          </TabsContent>
-          <TabsContent value="products" forceMount className="data-[state=inactive]:hidden">
-            <ProductsAudiencePanel editor={brandEditor} />
+            <BrandProfilePanel editor={brandEditor} />
           </TabsContent>
           <TabsContent value="knowledge" className="space-y-6">
             <EnrichFromWebsite brandId={brandId} onChanged={refresh} />
@@ -1277,9 +1266,6 @@ function BrandMasterPage() {
           </TabsContent>
           <TabsContent value="templates">
             <TemplatesPanel />
-          </TabsContent>
-          <TabsContent value="learning">
-            <LearningTab brandId={brandId} onChanged={refresh} />
           </TabsContent>
           <TabsContent value="rules">
             <RulesTab brandId={brandId} onChanged={refresh} />

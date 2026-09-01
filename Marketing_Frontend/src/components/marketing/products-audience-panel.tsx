@@ -1,17 +1,30 @@
 /**
- * Products & Audience — what this brand sells and who it sells to.
+ * Brand profile — the whole first-party brand record on one form: identity,
+ * voice, logo, visual identity, market context, poster defaults, then what
+ * the brand sells and who it sells to.
  *
- * Its own surface rather than more of Brand basics: these are first-party
- * business claims, and the backend treats them that way. `description` becomes
- * brain.identity.description and `audience` becomes brain.audiences.stated,
- * sitting beside the pains and objections that were derived from evidence
- * rather than replacing them. Everything on this page moves brain_version the
- * moment it saves.
+ * Products & Audience used to be its own tab, but it never had an endpoint of
+ * its own — every field here is the same Brand PATCH through the same
+ * `useBrandSettings` instance, so it is one form with one save queue and one
+ * commit point. `description` becomes brain.identity.description and
+ * `audience` becomes brain.audiences.stated, sitting beside the pains and
+ * objections that were derived from evidence rather than replacing them.
+ * Everything on this page moves brain_version the moment it saves.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Textarea } from "@/components/ui/textarea";
-import { BrandError, BrandSaveControl, SavingHint } from "@/components/marketing/brand-basics";
+import {
+  BrandError,
+  BrandSaveControl,
+  ClientBasicsSection,
+  LogoSection,
+  MarketSection,
+  PosterDefaultsSection,
+  SavingHint,
+  VisualIdentitySection,
+  VoiceSection,
+} from "@/components/marketing/brand-basics";
 import { Field, ProductsEditor } from "@/components/marketing/brand-field-editors";
 import { SectionTitle } from "@/components/marketing/primitives";
 import type { BrandEditor, ProductService } from "@/lib/brand-settings";
@@ -131,7 +144,7 @@ export function ProductsAudienceSection({
   );
 }
 
-export function ProductsAudiencePanel({ editor }: { editor: BrandEditor }) {
+export function BrandProfilePanel({ editor }: { editor: BrandEditor }) {
   const [draftState, setDraftState] = useState({
     dirty: false,
     blockedReason: null as string | null,
@@ -152,6 +165,12 @@ export function ProductsAudiencePanel({ editor }: { editor: BrandEditor }) {
         blockedReason={draftState.blockedReason}
       />
       <BrandError error={editor.error} />
+      <ClientBasicsSection editor={editor} />
+      <VoiceSection editor={editor} />
+      <LogoSection editor={editor} />
+      <VisualIdentitySection editor={editor} />
+      <MarketSection editor={editor} />
+      <PosterDefaultsSection editor={editor} />
       <ProductsAudienceSection editor={editor} onDraftStateChange={onDraftStateChange} />
     </div>
   );

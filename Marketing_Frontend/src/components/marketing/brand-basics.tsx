@@ -7,10 +7,10 @@
  * and pickers save immediately, and `onSaved` lets Brand Master refresh
  * readiness once the backend has actually accepted a change.
  *
- * The sections are exported individually because the onboarding wizard splits
- * the same fields across its steps. It passes its own `useBrandSettings`
- * instance so the wizard and this panel never hold two competing debounces
- * over one brand.
+ * Sections only, no panel: `BrandProfilePanel` (products-audience-panel.tsx)
+ * composes them with the products and audience sections into the single Brand
+ * profile form, over one shared `useBrandSettings` instance so nothing ever
+ * holds two competing debounces over one brand.
  */
 import { AlertCircle, CheckCircle2, ImagePlus, Loader2, Phone, Save, Trash2 } from "lucide-react";
 import { useRef, useState } from "react";
@@ -440,22 +440,5 @@ export function PosterDefaultsSection({ editor }: { editor: BrandEditor }) {
         />
       </div>
     </section>
-  );
-}
-
-/* ------------------------------------------------------------------- panel */
-
-export function BrandBasicsPanel({ editor }: { editor: BrandEditor }) {
-  return (
-    <div className="space-y-8">
-      <BrandSaveControl editor={editor} />
-      <BrandError error={editor.error} />
-      <ClientBasicsSection editor={editor} />
-      <VoiceSection editor={editor} />
-      <LogoSection editor={editor} />
-      <VisualIdentitySection editor={editor} />
-      <MarketSection editor={editor} />
-      <PosterDefaultsSection editor={editor} />
-    </div>
   );
 }

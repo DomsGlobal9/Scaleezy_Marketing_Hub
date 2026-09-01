@@ -544,8 +544,11 @@ export const retirePreference = (preferenceId: string) =>
 export const fetchLearningEvents = async (brandId: string) =>
   asList<LearningEventRow>(await api(`/api/marketing/learning-events/?brand_id=${brandId}`));
 
+// The backend's in_force filter is active rules only, ranked hard-first —
+// exactly what the Rules & Learning tab shows, so the filtering happens where
+// the ranking already does.
 export const fetchRules = async (brandId: string) =>
-  asList<BrandRuleRow>(await api(`/api/marketing/brand-rules/?brand_id=${brandId}`));
+  asList<BrandRuleRow>(await api(`/api/marketing/brand-rules/?brand_id=${brandId}&in_force=true`));
 
 /** One learned instruction with whether it is actually reaching generation. */
 export interface LearningUsageRow {
@@ -644,11 +647,9 @@ export const READINESS_COPY: Record<ReadinessLevel, { label: string; blurb: stri
 export type BrandMasterTab =
   | "overview"
   | "basics"
-  | "products"
   | "knowledge"
   | "inspirations"
   | "templates"
-  | "learning"
   | "rules"
   | "brain"
   | "attention"
@@ -657,16 +658,25 @@ export type BrandMasterTab =
 export const BRAND_MASTER_TABS: BrandMasterTab[] = [
   "overview",
   "basics",
-  "products",
   "knowledge",
   "inspirations",
   "templates",
-  "learning",
   "rules",
   "brain",
   "attention",
   "teach",
 ];
+
+/**
+ * Tab keys that no longer exist. Products & Audience folded into Brand
+ * profile ("basics") and Learning into Rules & Learning ("rules"); old deep
+ * links land on the tab that absorbed them instead of falling back to the
+ * overview.
+ */
+export const LEGACY_TAB_ALIASES: Record<string, BrandMasterTab> = {
+  products: "basics",
+  learning: "rules",
+};
 
 /** Where the readiness engine's "do this next" actually lives. */
 export function tabForReadinessKey(key: string): BrandMasterTab | "create" {
@@ -674,11 +684,12 @@ export function tabForReadinessKey(key: string): BrandMasterTab | "create" {
     case "identity":
     case "voice":
       return "basics";
-    // What the brand sells and who for is now its own surface, so the
-    // readiness engine's audience gap points at the fields that close it.
+    // What the brand sells and who for lives on the Brand profile tab with
+    // the rest of the first-party record, so the readiness engine's audience
+    // gap points at the fields that close it.
     case "audience":
     case "products":
-      return "products";
+      return "basics";
     case "knowledge":
     case "positioning":
       return "knowledge";

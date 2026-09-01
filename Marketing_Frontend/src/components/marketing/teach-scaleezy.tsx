@@ -289,8 +289,9 @@ export function TeachScaleezy({
   );
 }
 
-/** Exported for the onboarding wizard, which shows the same prompts in its
- *  own order rather than a second copy of them. */
+/** The shared stage card: used by the stage blocks above and by
+ *  CalibrationPanel below. The onboarding wizard it was originally exported
+ *  for is retired — /onboarding now redirects into this tab. */
 export function StagePanel({
   icon,
   title,
