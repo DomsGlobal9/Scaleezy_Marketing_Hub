@@ -57,10 +57,10 @@ services:
       - key: CORS_ALLOWED_ORIGINS
         sync: false
 
-  # The database task backend is durable, but queued publishing and generation
-  # work only moves while this process is polling it. Keep exactly one worker:
-  # row-level claiming already protects against duplicates, and one Starter
-  # instance is sufficient for the core launch loop.
+  # The database task backend is durable. Two worker instances ensure scheduled
+  # and immediate social publishing jobs execute without head-of-line blocking
+  # when long-running AI poster or video generations occupy a worker pass. Row-level
+  # claiming (SKIP LOCKED) protects against duplicate execution across workers.
   - type: worker
     name: scaleezy-worker
     runtime: python
@@ -69,7 +69,7 @@ services:
     # Same region as the web service, for the same database-latency reason —
     # the worker is the process that actually runs every generation now.
     region: singapore
-    numInstances: 1
+    numInstances: 2
     buildCommand: pip install -r requirements.txt
     startCommand: python manage.py run_tasks --interval 5
     # run_tasks finishes its current pass after SIGTERM. Give uploads and

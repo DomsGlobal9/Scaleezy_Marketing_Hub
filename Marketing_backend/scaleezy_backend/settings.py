@@ -333,3 +333,17 @@ if _DATABASE_URL and not _RUNNING_TESTS:
 # multipart file limit is separate and already generous.
 DATA_UPLOAD_MAX_MEMORY_SIZE = 25 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+
+# Security / HTTPS redirect and HSTS configuration
+# Render terminates SSL at its reverse proxy edge and forwards X-Forwarded-Proto.
+# SECURE_PROXY_SSL_HEADER is required so Django correctly detects HTTPS requests
+# behind Render and avoids infinite redirect loops when SECURE_SSL_REDIRECT is enabled.
+if not DEBUG and not _RUNNING_TESTS:
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+else:
+    SECURE_SSL_REDIRECT = False
+    SECURE_HSTS_SECONDS = 0
+
+
