@@ -387,6 +387,8 @@ export function CalibrationPanel({
                 <img
                   src={direction.preview_url}
                   alt=""
+                  loading="lazy"
+                  decoding="async"
                   className="aspect-square w-full rounded-lg border object-cover"
                 />
               ) : (

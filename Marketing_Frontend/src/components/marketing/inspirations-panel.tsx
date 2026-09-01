@@ -507,6 +507,8 @@ function InspirationCard({
               <img
                 src={inspiration.file_url}
                 alt=""
+                loading="lazy"
+                decoding="async"
                 className="size-24 rounded-lg border object-cover"
               />
             </a>
