@@ -523,18 +523,27 @@ function AccountsPage() {
 
 function AuditTable() {
   const [rows, setRows] = useState<AuditRow[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [platform, setPlatform] = useState("all");
   const [user, setUser] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     apiFetch("/api/marketing/settings/")
-      .then((res) => res.json())
+      .then((res) => {
+        // apiFetch resolves on HTTP errors too; a failed request must show as
+        // a failure, not as "no events recorded".
+        if (!res.ok) throw new Error(`Request failed (${res.status})`);
+        return res.json();
+      })
       .then((data) => {
-        if (!cancelled) setRows(Array.isArray(data?.audit_logs) ? data.audit_logs : []);
+        if (!cancelled) {
+          setRows(Array.isArray(data?.audit_logs) ? data.audit_logs : []);
+          setLoadError(null);
+        }
       })
       .catch(() => {
-        if (!cancelled) setRows([]);
+        if (!cancelled) setLoadError("Could not load the audit log. Try reloading the page.");
       });
     return () => {
       cancelled = true;
@@ -576,7 +585,9 @@ function AuditTable() {
         />
       </div>
 
-      {rows === null ? (
+      {loadError ? (
+        <p className="px-4 py-10 text-center text-sm text-destructive">{loadError}</p>
+      ) : rows === null ? (
         <p className="px-4 py-10 text-center text-sm text-muted-foreground">Loading…</p>
       ) : visible.length === 0 ? (
         <p className="px-4 py-10 text-center text-sm text-muted-foreground">
