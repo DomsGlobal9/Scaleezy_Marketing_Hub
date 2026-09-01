@@ -5,22 +5,19 @@
  * every readiness statement comes from Brand Master. The redesign changes
  * hierarchy only; it does not invent activity or bypass any owner screen.
  */
-import { useEffect, useState } from "react";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   AlertTriangle,
   ArrowRight,
-  BarChart3,
   CalendarClock,
   Check,
   CheckCircle2,
   GraduationCap,
   Megaphone,
-  PencilLine,
   Send,
   Share2,
   Sparkles,
-  Users,
   type LucideIcon,
 } from "lucide-react";
 
@@ -28,13 +25,38 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import {
   READINESS_COPY,
-  fetchCurrentBrand,
-  fetchOverview,
+  fetchBrandMasterBootstrap,
   tabForReadinessKey,
   type BrandMasterTab,
-  type BrandMasterOverview,
   type ReadinessLevel,
 } from "@/lib/brand-master";
+import { readSelectedWorkspaceId } from "@/lib/workspace";
+
+/**
+ * Both queries are keyed by workspace so a sign-out/sign-in on the same
+ * browser can never surface another tenant's cached counts, and cached for a
+ * short while so returning to the Overview paints instantly from cache while
+ * a background refetch keeps the numbers honest — instead of replaying the
+ * skeleton screens on every visit.
+ */
+const OVERVIEW_STALE_MS = 30_000;
+
+const kpisQuery = () =>
+  queryOptions({
+    queryKey: ["overview", "kpis", readSelectedWorkspaceId()],
+    queryFn: async () =>
+      (await api<{ kpis: Kpi[] }>("/api/marketing/analytics/kpis/")).kpis ?? [],
+    staleTime: OVERVIEW_STALE_MS,
+  });
+
+const brandOverviewQuery = () =>
+  queryOptions({
+    // One bootstrap request replaces the previous brands/current →
+    // brand-master/{id}/ chain, which cost a full round trip twice, in series.
+    queryKey: ["overview", "brand-master", readSelectedWorkspaceId()],
+    queryFn: async () => (await fetchBrandMasterBootstrap()).overview,
+    staleTime: OVERVIEW_STALE_MS,
+  });
 
 export const Route = createFileRoute("/_hub/")({
   head: () => ({
@@ -46,6 +68,15 @@ export const Route = createFileRoute("/_hub/")({
       },
     ],
   }),
+  // Fire-and-forget: starts both fetches the moment the workspace list has
+  // resolved, roughly a second before the component tree mounts and its
+  // useQuery hooks would otherwise send them. prefetchQuery never rejects and
+  // useQuery below picks up the same in-flight promise.
+  loader: ({ context }) => {
+    if (typeof window === "undefined") return;
+    void context.queryClient.prefetchQuery(kpisQuery());
+    void context.queryClient.prefetchQuery(brandOverviewQuery());
+  },
   component: OverviewPage,
 });
 
@@ -83,77 +114,31 @@ const READINESS_HEADLINE: Record<ReadinessLevel, string> = {
   READY: "Your brand is scale-ready.",
 };
 
-const LIFECYCLE = [
-  {
-    label: "Plan",
-    detail: "Teach the brief and define the goal.",
-    to: "/brand-master" as const,
-    icon: PencilLine,
-  },
-  {
-    label: "Create",
-    detail: "Generate from the active Brand Brain.",
-    to: "/publishing" as const,
-    icon: Sparkles,
-  },
-  {
-    label: "Review",
-    detail: "Collaborate, correct and approve.",
-    to: "/review" as const,
-    icon: Users,
-  },
-  {
-    label: "Publish",
-    detail: "Schedule across connected channels.",
-    to: "/publishing" as const,
-    icon: Send,
-  },
-  {
-    label: "Analyze",
-    detail: "Read performance and improve.",
-    to: "/analytics" as const,
-    icon: BarChart3,
-  },
-] as const;
-
 function kpiValue(kpis: Kpi[] | null, key: string): number | null {
   if (!kpis) return null;
   return kpis.find((item) => item.key === key)?.value ?? 0;
 }
 
 function OverviewPage() {
-  const [kpis, setKpis] = useState<Kpi[] | null>(null);
-  const [kpiError, setKpiError] = useState<string | null>(null);
-  const [overview, setOverview] = useState<BrandMasterOverview | null>(null);
-  const [brandError, setBrandError] = useState<string | null>(null);
+  const kpisResult = useQuery(kpisQuery());
+  const overviewResult = useQuery(brandOverviewQuery());
 
-  useEffect(() => {
-    let cancelled = false;
-    api<{ kpis: Kpi[] }>("/api/marketing/analytics/kpis/")
-      .then((data) => {
-        if (!cancelled) setKpis(data.kpis ?? []);
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setKpiError(error instanceof Error ? error.message : "Could not load the pipeline.");
-        }
-      });
-
-    fetchCurrentBrand()
-      .then((brand) => fetchOverview(brand.id))
-      .then((data) => {
-        if (!cancelled) setOverview(data);
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setBrandError(error instanceof Error ? error.message : "Could not load the brand.");
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Cached data outranks a failed refresh: stale counts with the numbers
+  // still on screen beat an error banner over a page that was just readable.
+  const kpis = kpisResult.data ?? null;
+  const kpiError =
+    kpis === null && kpisResult.error
+      ? kpisResult.error instanceof Error
+        ? kpisResult.error.message
+        : "Could not load the pipeline."
+      : null;
+  const overview = overviewResult.data ?? null;
+  const brandError =
+    overview === null && overviewResult.error
+      ? overviewResult.error instanceof Error
+        ? overviewResult.error.message
+        : "Could not load the brand."
+      : null;
 
   const readinessTarget = overview
     ? tabForReadinessKey(overview.readiness.recommended_next_action.key)
@@ -274,43 +259,6 @@ function OverviewPage() {
       </section>
 
       <section className="app-section mt-12">
-        <p className="mb-6 text-xs font-bold tracking-[0.18em] text-foreground uppercase">
-          Content lifecycle
-        </p>
-        <div className="scrollbar-hide -mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-          <ol className="grid min-w-[800px] grid-cols-5 gap-8">
-            {LIFECYCLE.map((step, index) => (
-              <li key={step.label} className="relative">
-                {index < LIFECYCLE.length - 1 ? (
-                  <span
-                    className="absolute top-6 left-14 h-px w-[calc(100%-3rem)] bg-border"
-                    aria-hidden
-                  />
-                ) : null}
-                <Link to={step.to} className="group relative block pr-4">
-                  <span
-                    className={
-                      index === 0
-                        ? "grid size-12 place-items-center rounded-full border border-primary bg-primary text-primary-foreground"
-                        : "grid size-12 place-items-center rounded-full border border-border bg-background text-foreground transition-colors group-hover:border-primary group-hover:text-primary"
-                    }
-                  >
-                    <step.icon className="size-5" strokeWidth={1.8} />
-                  </span>
-                  <span className="mt-4 block text-sm font-semibold text-foreground">
-                    {step.label}
-                  </span>
-                  <span className="mt-1 block max-w-[10rem] text-xs leading-5 text-muted-foreground">
-                    {step.detail}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ol>
-        </div>
-      </section>
-
-      <section className="app-section mt-10">
         <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
           <div>
             <p className="text-xs font-bold tracking-[0.18em] text-foreground uppercase">
