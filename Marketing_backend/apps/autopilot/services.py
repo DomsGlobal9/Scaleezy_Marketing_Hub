@@ -1,5 +1,6 @@
 """Governed manual generation over the existing Context Gateway and AIRouter."""
 import json
+import logging
 from datetime import timedelta
 from decimal import Decimal
 
@@ -16,11 +17,19 @@ from apps.workspaces.models import MarketingWorkspace
 
 from .models import AutopilotPolicy, AutopilotRun, AutopilotStep
 
+logger = logging.getLogger(__name__)
+
 
 class AutopilotBlocked(Exception):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
+
+
+class AutopilotQueueUnavailable(Exception):
+    def __init__(self, run):
+        super().__init__(run.error)
+        self.run = run
 
 
 def policy_snapshot(policy):
@@ -54,6 +63,34 @@ def create_run(policy, *, initiated_by=None, scheduled_for=None, dedupe_key=None
     )
 
 
+def queue_run(policy, *, initiated_by=None):
+    """Create and enqueue a manual run while keeping queue failures truthful."""
+    run = create_run(policy, initiated_by=initiated_by)
+    try:
+        from .tasks import execute_autopilot_run
+
+        result = execute_autopilot_run.enqueue(str(run.pk))
+    except Exception as exc:
+        logger.exception(
+            'Autopilot run could not enter the durable task queue.',
+            extra={'autopilot_run_id': str(run.pk), 'workspace_id': str(run.workspace_id)},
+        )
+        run.status = AutopilotRun.Status.FAILED
+        run.error_code = 'QUEUE_ENQUEUE_FAILED'
+        run.error = 'The run could not enter the task queue. Retry it from the control centre.'
+        run.completed_at = timezone.now()
+        run.next_check_at = None
+        run.save(update_fields=[
+            'status', 'error_code', 'error', 'completed_at', 'next_check_at', 'updated_at'
+        ])
+        _step(run, 'finish', 'FAILED', code=run.error_code, message=run.error)
+        raise AutopilotQueueUnavailable(run) from exc
+
+    run.task_id = str(result.id)
+    run.save(update_fields=['task_id', 'updated_at'])
+    return run
+
+
 def _step(run, key, status, **detail):
     AutopilotStep.objects.update_or_create(
         run=run, key=key, defaults={'status': status, 'detail': detail}
@@ -85,7 +122,11 @@ def _enforce_policy(policy, run):
     day_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
     used_today = AutopilotRun.objects.filter(
         policy=policy, created_at__gte=day_start
-    ).exclude(status=AutopilotRun.Status.STOPPED).exclude(pk=run.pk).count()
+    ).exclude(
+        status=AutopilotRun.Status.STOPPED
+    ).exclude(
+        error_code='QUEUE_ENQUEUE_FAILED'
+    ).exclude(pk=run.pk).count()
     if policy.daily_generation_limit and used_today >= policy.daily_generation_limit:
         raise AutopilotBlocked(
             'DAILY_AUTOPILOT_LIMIT',
@@ -107,7 +148,9 @@ def _enforce_policy(policy, run):
 
 def _queue_generation(run, policy):
     formats = policy.allowed_formats or ['POSTER']
-    previous = AutopilotRun.objects.filter(policy=policy, created_at__lt=run.created_at).count()
+    previous = AutopilotRun.objects.filter(
+        policy=policy, created_at__lt=run.created_at
+    ).exclude(error_code='QUEUE_ENQUEUE_FAILED').count()
     chosen = str(formats[previous % len(formats)]).upper()
     content_type = {'POSTER': 'poster', 'CAROUSEL': 'carousel', 'VIDEO': 'video'}[chosen]
     brief = {

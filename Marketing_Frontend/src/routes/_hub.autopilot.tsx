@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Bot, Loader2, Octagon, Play, RotateCcw, ShieldCheck } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Loader2, Octagon, Play, RotateCcw, ShieldCheck, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { PageHeader, SectionTitle, StatusBadge } from "@/components/marketing/primitives";
@@ -17,6 +17,8 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { apiGet, apiPost } from "@/lib/api";
 import { fetchCurrentBrand } from "@/lib/brand-master";
+import type { BrandDto } from "@/lib/brand-settings";
+import { buildGuidedPolicyText, nextGuidedPolicyName } from "@/lib/guided-workflows";
 
 export const Route = createFileRoute("/_hub/autopilot")({
   head: () => ({ meta: [{ title: "Governed Autopilot — Scaleezy" }] }),
@@ -66,6 +68,8 @@ const list = <T,>(value: T[] | ListEnvelope<T>) =>
   Array.isArray(value) ? value : (value.results ?? []);
 
 function AutopilotPage() {
+  const loadedBrandId = useRef("");
+  const [brand, setBrand] = useState<BrandDto | null>(null);
   const [brandId, setBrandId] = useState("");
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -85,6 +89,8 @@ function AutopilotPage() {
 
   const load = useCallback(async () => {
     const brand = await fetchCurrentBrand();
+    const suggested = buildGuidedPolicyText(brand);
+    setBrand(brand);
     setBrandId(brand.id);
     const [policyPayload, runPayload, connectionPayload] = await Promise.all([
       apiGet<Policy[] | ListEnvelope<Policy>>(
@@ -93,11 +99,32 @@ function AutopilotPage() {
       apiGet<Run[] | ListEnvelope<Run>>("/api/marketing/autopilot/runs/"),
       apiGet<Connection[] | ListEnvelope<Connection>>("/api/marketing/social-accounts/"),
     ]);
-    setPolicies(list(policyPayload));
+    const policyRows = list(policyPayload);
+    setPolicies(policyRows);
     setRuns(list(runPayload));
     const active = list(connectionPayload).filter((row) => row.status === "CONNECTED");
     setConnections(active);
-    setDraft((current) => ({ ...current, connection: current.connection || active[0]?.id || "" }));
+    setDraft((current) => {
+      const changedClient = Boolean(loadedBrandId.current && loadedBrandId.current !== brand.id);
+      loadedBrandId.current = brand.id;
+      return {
+        ...current,
+        name:
+          changedClient || !current.name.trim()
+            ? nextGuidedPolicyName(
+                suggested.name,
+                policyRows.map((policy) => policy.name),
+              )
+            : current.name,
+        objective:
+          changedClient || !current.objective.trim() ? suggested.objective : current.objective,
+        campaign_brief:
+          changedClient || !current.campaign_brief.trim()
+            ? suggested.campaign_brief
+            : current.campaign_brief,
+        connection: changedClient ? active[0]?.id || "" : current.connection || active[0]?.id || "",
+      };
+    });
   }, []);
 
   useEffect(() => {
@@ -106,26 +133,74 @@ function AutopilotPage() {
     );
   }, [load]);
 
-  const create = async () => {
-    setWorking("create");
+  const refillFromBrandMaster = () => {
+    if (!brand) return;
+    const suggested = buildGuidedPolicyText(brand);
+    setDraft((current) => ({
+      ...current,
+      ...suggested,
+      name: nextGuidedPolicyName(
+        suggested.name,
+        policies.map((policy) => policy.name),
+      ),
+    }));
+    toast.success("Mission refreshed from Brand Master");
+  };
+
+  const createAndRun = async () => {
+    setWorking("create-run");
     try {
-      await apiPost("/api/marketing/autopilot/policies/", {
-        brand: brandId,
-        name: draft.name,
-        objective: draft.objective,
-        campaign_brief: draft.campaign_brief,
-        mode: draft.mode,
-        allowed_formats: [draft.format],
-        social_connections: draft.connection ? [draft.connection] : [],
-        daily_generation_limit: Number(draft.daily_generation_limit || 1),
-        monthly_spend_cap: draft.monthly_spend_cap || "0",
-        enabled: true,
-      });
-      setDraft((current) => ({ ...current, name: "", objective: "", campaign_brief: "" }));
-      toast.success("Governed policy created");
-      await load();
-    } catch (reason) {
-      toast.error(reason instanceof Error ? reason.message : "Policy could not be created");
+      let created: Policy;
+      try {
+        const policyName = nextGuidedPolicyName(
+          draft.name,
+          policies.map((policy) => policy.name),
+        );
+        created = await apiPost<Policy>("/api/marketing/autopilot/policies/", {
+          brand: brandId,
+          name: policyName,
+          objective: draft.objective,
+          campaign_brief: draft.campaign_brief,
+          mode: draft.mode,
+          allowed_formats: [draft.format],
+          social_connections: draft.connection ? [draft.connection] : [],
+          daily_generation_limit: Number(draft.daily_generation_limit || 1),
+          monthly_spend_cap: draft.monthly_spend_cap || "0",
+          enabled: true,
+        });
+      } catch (reason) {
+        toast.error(reason instanceof Error ? reason.message : "Policy could not be created");
+        return;
+      }
+
+      try {
+        await apiPost<Run>(`/api/marketing/autopilot/policies/${created.id}/trigger/`, {});
+      } catch (reason) {
+        const detail =
+          reason instanceof Error ? reason.message : "The run could not enter the queue.";
+        toast.error(
+          `Policy saved, but the first run could not start. ${detail} Use Run in the control centre to retry.`,
+        );
+        await load().catch(() => undefined);
+        return;
+      }
+
+      toast.success(
+        draft.mode === "APPROVAL_REQUIRED"
+          ? "Policy created. First generation queued for Review."
+          : "Policy created. First draft generation queued.",
+      );
+      const suggestedBase = brand ? buildGuidedPolicyText(brand).name : draft.name;
+      setDraft((current) => ({
+        ...current,
+        name: nextGuidedPolicyName(suggestedBase, [
+          ...policies.map((policy) => policy.name),
+          created.name,
+        ]),
+      }));
+      await load().catch(() =>
+        toast.error("The run started, but this page could not refresh. Reload to see its status."),
+      );
     } finally {
       setWorking("");
     }
@@ -167,18 +242,32 @@ function AutopilotPage() {
         <section className="surface-card p-5">
           <SectionTitle
             label="New policy"
-            title="Define the mission"
-            description="This version starts only when an admin clicks Run. It creates a draft or review item; it never posts externally without the publishing gate."
+            title="Start with one click"
+            description="Scaleezy filled this mission from Brand Master. Edit only what you want, then create the policy and queue its first governed draft. Nothing publishes automatically."
           />
           <div className="mt-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/5 p-3">
+              <p className="text-sm text-muted-foreground">
+                Brand-aware starting point ready for {brand?.name || "this client"}.
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={refillFromBrandMaster}
+                disabled={!brand || Boolean(working)}
+              >
+                <Sparkles className="size-4" /> Refill from Brand Master
+              </Button>
+            </div>
             <Field
               id="policy-name"
-              label="Policy name"
+              label="Mission name"
               value={draft.name}
               onChange={(name) => setDraft({ ...draft, name })}
             />
             <div>
-              <Label htmlFor="policy-objective">Objective</Label>
+              <Label htmlFor="policy-objective">Outcome</Label>
               <Textarea
                 id="policy-objective"
                 className="mt-2"
@@ -197,68 +286,78 @@ function AutopilotPage() {
                 placeholder="Audience insight, offer, message and constraints"
               />
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Choice
-                label="Mode"
-                value={draft.mode}
-                onChange={(mode) => setDraft({ ...draft, mode })}
-                items={[
-                  { value: "APPROVAL_REQUIRED", label: "Review required" },
-                  { value: "ASSISTED", label: "Draft only" },
-                ]}
-              />
-              <Choice
-                label="Format"
-                value={draft.format}
-                onChange={(format) => setDraft({ ...draft, format })}
-                items={[
-                  { value: "POSTER", label: "Poster" },
-                  { value: "CAROUSEL", label: "Carousel" },
-                  { value: "VIDEO", label: "Video" },
-                ]}
-              />
-            </div>
-            <Choice
-              label="Target account context"
-              value={draft.connection}
-              onChange={(connection) => setDraft({ ...draft, connection })}
-              items={connections.map((row) => ({
-                value: row.id,
-                label: `${row.platform} · ${row.account_name}`,
-              }))}
-              placeholder="No account context"
-            />
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field
-                id="daily-limit"
-                label="Daily run limit"
-                type="number"
-                value={draft.daily_generation_limit}
-                onChange={(daily_generation_limit) =>
-                  setDraft({ ...draft, daily_generation_limit })
-                }
-              />
-              <Field
-                id="spend-cap"
-                label="Monthly policy cap"
-                type="number"
-                value={draft.monthly_spend_cap}
-                onChange={(monthly_spend_cap) => setDraft({ ...draft, monthly_spend_cap })}
-              />
-            </div>
+            <details className="rounded-xl border p-4">
+              <summary className="cursor-pointer text-sm font-semibold">
+                Optional controls · review mode, format, account and limits
+              </summary>
+              <div className="mt-4 space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Choice
+                    label="Mode"
+                    value={draft.mode}
+                    onChange={(mode) => setDraft({ ...draft, mode })}
+                    items={[
+                      { value: "APPROVAL_REQUIRED", label: "Review required" },
+                      { value: "ASSISTED", label: "Draft only" },
+                    ]}
+                  />
+                  <Choice
+                    label="Format"
+                    value={draft.format}
+                    onChange={(format) => setDraft({ ...draft, format })}
+                    items={[
+                      { value: "POSTER", label: "Poster" },
+                      { value: "CAROUSEL", label: "Carousel" },
+                      { value: "VIDEO", label: "Video" },
+                    ]}
+                  />
+                </div>
+                <Choice
+                  label="Target account context"
+                  value={draft.connection}
+                  onChange={(connection) => setDraft({ ...draft, connection })}
+                  items={connections.map((row) => ({
+                    value: row.id,
+                    label: `${row.platform} · ${row.account_name}`,
+                  }))}
+                  placeholder="No account context"
+                />
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field
+                    id="daily-limit"
+                    label="Daily run limit"
+                    type="number"
+                    value={draft.daily_generation_limit}
+                    onChange={(daily_generation_limit) =>
+                      setDraft({ ...draft, daily_generation_limit })
+                    }
+                  />
+                  <Field
+                    id="spend-cap"
+                    label="Monthly policy cap"
+                    type="number"
+                    value={draft.monthly_spend_cap}
+                    onChange={(monthly_spend_cap) => setDraft({ ...draft, monthly_spend_cap })}
+                  />
+                </div>
+              </div>
+            </details>
             <Button
               className="w-full"
-              onClick={create}
+              onClick={createAndRun}
               disabled={
-                !brandId || !draft.name.trim() || !draft.objective.trim() || working === "create"
+                !brandId ||
+                !draft.name.trim() ||
+                !draft.objective.trim() ||
+                working === "create-run"
               }
             >
-              {working === "create" ? (
+              {working === "create-run" ? (
                 <Loader2 className="size-4 animate-spin" />
               ) : (
                 <ShieldCheck className="size-4" />
               )}{" "}
-              Create policy
+              Create policy & run now
             </Button>
           </div>
         </section>

@@ -10,7 +10,7 @@ from apps.workspaces.models import WorkspaceMember
 
 from .models import AutopilotPolicy, AutopilotRun
 from .serializers import AutopilotPolicySerializer, AutopilotRunSerializer
-from .services import create_run, emergency_stop
+from .services import AutopilotQueueUnavailable, emergency_stop, queue_run
 
 
 class AutopilotPolicyViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
@@ -42,12 +42,16 @@ class AutopilotPolicyViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 success=False, message='Enable and resume this policy before running it.',
                 status=status.HTTP_409_CONFLICT,
             )
-        run = create_run(policy, initiated_by=request.user)
-        from .tasks import execute_autopilot_run
-
-        result = execute_autopilot_run.enqueue(str(run.pk))
-        run.task_id = str(result.id)
-        run.save(update_fields=['task_id', 'updated_at'])
+        try:
+            run = queue_run(policy, initiated_by=request.user)
+        except AutopilotQueueUnavailable as exc:
+            run = exc.run
+            return APIResponse(
+                success=False,
+                data=AutopilotRunSerializer(run).data,
+                error={'code': run.error_code, 'message': run.error},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return APIResponse(
             success=True, data=AutopilotRunSerializer(run).data,
             status=status.HTTP_202_ACCEPTED,

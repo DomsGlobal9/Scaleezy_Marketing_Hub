@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.contrib import admin
 from django.core.exceptions import ValidationError
@@ -60,6 +62,62 @@ class AutopilotTests(TestCase):
         self.assertEqual(run.workspace, self.workspace)
         self.assertTrue(run.task_id)
         self.assertEqual(run.policy_snapshot['objective'], self.policy.objective)
+
+    def test_admin_can_create_then_trigger_a_guided_policy(self):
+        created = self.client.post(
+            '/api/marketing/autopilot/policies/',
+            {
+                'brand': str(self.brand.pk),
+                'name': 'Brand guided growth',
+                'objective': 'Create useful content for founders',
+                'campaign_brief': 'Use Brand Master facts and keep the work original.',
+                'mode': AutopilotPolicy.Mode.APPROVAL_REQUIRED,
+                'allowed_formats': ['POSTER'],
+                'daily_generation_limit': 1,
+                'monthly_spend_cap': '0',
+                'enabled': True,
+            },
+            format='json', **self.headers,
+        )
+        self.assertEqual(created.status_code, 201, created.json())
+
+        triggered = self.client.post(
+            f"/api/marketing/autopilot/policies/{created.json()['id']}/trigger/",
+            {}, format='json', **self.headers,
+        )
+        self.assertEqual(triggered.status_code, 202, triggered.json())
+        run = AutopilotRun.objects.get(policy_id=created.json()['id'])
+        self.assertEqual(run.workspace, self.workspace)
+        self.assertEqual(run.policy.brand, self.brand)
+        self.assertTrue(run.task_id)
+
+    @patch('apps.autopilot.tasks.execute_autopilot_run')
+    def test_trigger_records_queue_enqueue_failure_honestly(self, task):
+        self.policy.daily_generation_limit = 1
+        self.policy.save(update_fields=['daily_generation_limit', 'updated_at'])
+        task.enqueue.side_effect = RuntimeError('queue unavailable')
+        response = self.client.post(
+            f'/api/marketing/autopilot/policies/{self.policy.pk}/trigger/',
+            {}, format='json', **self.headers,
+        )
+        self.assertEqual(response.status_code, 503, response.json())
+        self.assertEqual(response.json()['error']['code'], 'QUEUE_ENQUEUE_FAILED')
+        run = AutopilotRun.objects.get()
+        self.assertEqual(run.status, AutopilotRun.Status.FAILED)
+        self.assertEqual(run.error_code, 'QUEUE_ENQUEUE_FAILED')
+        self.assertTrue(run.completed_at)
+        self.assertEqual(run.task_id, '')
+        self.assertEqual(run.steps.get(key='finish').status, 'FAILED')
+
+        task.enqueue.side_effect = None
+        task.enqueue.return_value.id = 'retry-task-id'
+        retried = self.client.post(
+            f'/api/marketing/autopilot/policies/{self.policy.pk}/trigger/',
+            {}, format='json', **self.headers,
+        )
+        self.assertEqual(retried.status_code, 202, retried.json())
+        retry_run = AutopilotRun.objects.exclude(pk=run.pk).get()
+        self.assertEqual(retry_run.task_id, 'retry-task-id')
 
     def test_viewer_cannot_create_or_trigger_policy(self):
         membership = WorkspaceMember.objects.get(workspace=self.workspace, user=self.user)
