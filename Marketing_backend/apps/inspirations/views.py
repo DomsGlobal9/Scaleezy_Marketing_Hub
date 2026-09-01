@@ -5,8 +5,6 @@ Follows the shape established by `apps.knowledge`: workspace-scoped queryset,
 role-gated writes, lifecycle changes through named actions rather than PATCH,
 and no hard delete on anything that carries provenance.
 """
-import mimetypes
-
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -175,7 +173,7 @@ class BrandInspirationViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
 
         data = serializer.validated_data
         file_obj = data['file']
-        mime_type = mimetypes.guess_type(file_obj.name)[0] or 'application/octet-stream'
+        mime_type = file_obj.content_type
 
         try:
             stored = SupabaseStorageService.upload_and_describe(

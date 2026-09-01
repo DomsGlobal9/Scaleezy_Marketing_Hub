@@ -45,10 +45,20 @@ import {
   StatusBadge,
 } from "@/components/marketing/primitives";
 import { CreativeCommand, type CreativeSelection } from "@/components/marketing/creative-command";
+import {
+  CreateFromInspiration,
+  type CreateFromInspirationInput,
+} from "@/components/marketing/create-from-inspiration";
 import { PosterStudio, useLayoutCatalogue } from "@/components/marketing/poster-studio";
 import { cn } from "@/lib/utils";
 import { useBrandSettings } from "@/lib/brand-settings";
-import { asList, fetchCurrentBrand } from "@/lib/brand-master";
+import {
+  asList,
+  createInspiration,
+  fetchCurrentBrand,
+  type InspirationInput,
+  uploadInspiration,
+} from "@/lib/brand-master";
 import { api, apiFetch, apiPost } from "@/lib/api";
 import { readSelectedWorkspaceId } from "@/lib/workspace";
 
@@ -72,7 +82,13 @@ export const Route = createFileRoute("/_hub/publishing")({
 });
 
 type WorkflowStep =
-  "create_or_upload" | "ai_form" | "ai_generating" | "manual_upload" | "preview" | "publish_setup";
+  | "create_or_upload"
+  | "inspiration_form"
+  | "ai_form"
+  | "ai_generating"
+  | "manual_upload"
+  | "preview"
+  | "publish_setup";
 
 /** What the AI is asked to produce. Drives the extra fields on the brief. */
 type ContentType = "poster" | "video" | "carousel";
@@ -217,6 +233,31 @@ const newSlide = (): CarouselSlide => ({
 /** Which flow the shared "AI is working" step is showing, so its copy can be true. */
 type WorkingKind = "generate" | "captions" | "video";
 
+interface InspirationGenerationOptions {
+  inspirationId: string;
+  inspirationTitle: string;
+  instruction: string;
+}
+
+class InspirationGenerationFlowError extends Error {
+  queued: boolean;
+  retryAllowed: boolean;
+
+  constructor(message: string, queued: boolean, retryAllowed: boolean) {
+    super(message);
+    this.name = "InspirationGenerationFlowError";
+    this.queued = queued;
+    this.retryAllowed = retryAllowed;
+  }
+}
+
+class GenerationRequestFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GenerationRequestFailedError";
+  }
+}
+
 /**
  * Whether the backend would actually publish to this account.
  *
@@ -265,6 +306,10 @@ function PublishingPage() {
   const [brandTone, setBrandTone] = useState("");
   const [creativeSelections, setCreativeSelections] = useState<CreativeSelection[]>([]);
   const [creativeLayout, setCreativeLayout] = useState("");
+  const [inspirationFlowError, setInspirationFlowError] = useState<string | null>(null);
+  const [activeInspirationGeneration, setActiveInspirationGeneration] =
+    useState<InspirationGenerationOptions | null>(null);
+  const [inspirationRetryAllowed, setInspirationRetryAllowed] = useState(false);
 
   // What to generate, plus the per-type extras
   const [contentType, setContentType] = useState<ContentType>("poster");
@@ -283,10 +328,20 @@ function PublishingPage() {
   const [phoneOverride, setPhoneOverride] = useState("");
 
   useEffect(() => {
-    if (brandId && creativeBrand.current && creativeBrand.current !== brandId) {
+    if (creativeBrand.current && creativeBrand.current !== brandId) {
+      // A queued result belongs to the client that started it. Stop polling
+      // and clear every browser-only reference when the active client changes
+      // so the old client's result can never appear in the new client's UI.
+      generationAbort.current?.abort();
       setCreativeSelections([]);
+      setReferenceImageBase64("");
+      setAsset(null);
+      setInspirationFlowError(null);
+      setActiveInspirationGeneration(null);
+      setInspirationRetryAllowed(false);
+      setStep("create_or_upload");
     }
-    if (brandId) creativeBrand.current = brandId;
+    creativeBrand.current = brandId;
   }, [brandId]);
 
   // Adopt the brand-kit defaults once they load from storage
@@ -347,7 +402,15 @@ function PublishingPage() {
       // Bare array today; tolerate a paginated envelope so history cannot
       // flip into a permanent error state on a server-side change.
       const jobs = asList<PublishingJobDto>(data);
-      if (!jobs.length && !Array.isArray(data) && !(data && typeof data === "object" && Array.isArray((data as { results?: unknown }).results))) {
+      if (
+        !jobs.length &&
+        !Array.isArray(data) &&
+        !(
+          data &&
+          typeof data === "object" &&
+          Array.isArray((data as { results?: unknown }).results)
+        )
+      ) {
         setHistoryError(true);
         return;
       }
@@ -466,8 +529,7 @@ function PublishingPage() {
             ? (data as { data?: unknown }).data
             : data,
         );
-        if (rows.length || Array.isArray(data) || data)
-          setAccounts(rows);
+        if (rows.length || Array.isArray(data) || data) setAccounts(rows);
       })
       .catch(console.error)
       .finally(() => setAccountsLoading(false));
@@ -766,7 +828,7 @@ function PublishingPage() {
       }
 
       if (request?.status === "FAILED") {
-        throw new Error(request.error_message || "Generation failed.");
+        throw new GenerationRequestFailedError(request.error_message || "Generation failed.");
       }
       if (request?.status !== "COMPLETED") continue;
 
@@ -794,7 +856,7 @@ function PublishingPage() {
     // rescue re-run, then an honest FAILED. So past the ceiling the truth is
     // "it may still land in your drafts" — not "keep watching this spinner".
     throw new Error(
-      "Generation is taking longer than expected. If it finishes, it will appear in your drafts — or try again now.",
+      "Generation is taking longer than expected. If it finishes, it will appear in Review → Drafts.",
     );
   };
 
@@ -803,8 +865,12 @@ function PublishingPage() {
     generationAbort.current?.abort();
   };
 
-  const handleGenerate = async () => {
+  const handleGenerate = async (inspiration?: InspirationGenerationOptions) => {
+    const startedBrandId = brandId;
     const controller = new AbortController();
+    let queued = false;
+    setActiveInspirationGeneration(inspiration ?? null);
+    if (inspiration) setInspirationRetryAllowed(false);
     generationAbort.current = controller;
     setProductionProgress("");
     setWorkingKind("generate");
@@ -821,49 +887,82 @@ function PublishingPage() {
         ? "/api/marketing/ai-generation/generate-async/"
         : "/api/marketing/ai-generation/generate/";
 
+      const requestedContentType: ContentType = inspiration ? "poster" : contentType;
+      const requestedCampaignName = inspiration?.inspirationTitle || campaignName;
+      const generationPayload = inspiration
+        ? {
+            campaignName: requestedCampaignName,
+            product: "",
+            audience: "",
+            location: "",
+            occasion: "",
+            offer: "",
+            brandTone: "",
+            inspirationSelections: [
+              {
+                sourceType: "BRAND",
+                id: inspiration.inspirationId,
+                role: "PRIMARY",
+                direction: "USE",
+                focusAreas: [],
+              } satisfies CreativeSelection,
+            ],
+            layout: "",
+            contentType: requestedContentType,
+            instruction: inspiration.instruction,
+            analyzeBeforeGenerationIds: [inspiration.inspirationId],
+          }
+        : {
+            campaignName,
+            product,
+            audience,
+            location,
+            occasion,
+            offer,
+            brandTone,
+            referenceImageBase64,
+            inspirationSelections: creativeSelections,
+            layout: creativeLayout,
+            contentType: requestedContentType,
+            ...(requestedContentType === "video"
+              ? {
+                  videoDuration,
+                  videoAspect,
+                  videoStyle,
+                  videoScript,
+                }
+              : {}),
+            ...(requestedContentType === "carousel"
+              ? {
+                  slides: slides.map((s, i) => ({
+                    position: i + 1,
+                    description: s.description.trim() || slidePlaceholder(i),
+                  })),
+                }
+              : {}),
+          };
+
       const res = await apiFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
-        body: JSON.stringify({
-          campaignName,
-          product,
-          audience,
-          location,
-          occasion,
-          offer,
-          brandTone,
-          referenceImageBase64,
-          inspirationSelections: creativeSelections,
-          layout: creativeLayout,
-          // contentType and slides are read and persisted on both the sync and
-          // the async path. The video settings, the derived slideCount and the
-          // logo/phone overlay keys that used to ride along here were read by
-          // nothing — the views build their brief from an explicit allowlist —
-          // so they are no longer sent and their controls are disabled above.
-          contentType,
-          ...(contentType === "video"
-            ? {
-                videoDuration,
-                videoAspect,
-                videoStyle,
-                videoScript,
-              }
-            : {}),
-          ...(contentType === "carousel"
-            ? {
-                slides: slides.map((s, i) => ({
-                  position: i + 1,
-                  description: s.description.trim() || slidePlaceholder(i),
-                })),
-              }
-            : {}),
-        }),
+        // The inspiration-led branch intentionally contains IDs only. The
+        // worker re-resolves and analyzes the saved reference; browser base64
+        // never enters durable generation state.
+        body: JSON.stringify(generationPayload),
       });
       const json = await res.json();
       if (!json.success) {
-        throw new Error(json.message || "Generation failed");
+        const code = String(json.error?.code || "");
+        const definitelyNotRunning =
+          code === "QUEUE_FAILED" || (res.status >= 400 && res.status < 500);
+        throw new InspirationGenerationFlowError(
+          json.message || "Generation failed",
+          false,
+          definitelyNotRunning,
+        );
       }
+      queued = background;
       const d = background
         ? await pollGeneration(json.data.generationId, controller.signal)
         : json.data;
@@ -871,17 +970,21 @@ function PublishingPage() {
       const returnedSlides: string[] = Array.isArray(d.slideImageUrls) ? d.slideImageUrls : [];
 
       const label =
-        contentType === "video" ? "Video" : contentType === "carousel" ? "Carousel" : "Poster";
-      const fileType = contentType === "video" ? "VIDEO" : "JPG";
+        requestedContentType === "video"
+          ? "Video"
+          : requestedContentType === "carousel"
+            ? "Carousel"
+            : "Poster";
+      const fileType = requestedContentType === "video" ? "VIDEO" : "JPG";
 
       setAsset({
         id: d.assetId || undefined,
-        name: `${campaignName || "Untitled"} ${label}.${contentType === "video" ? "mp4" : "jpg"}`,
+        name: `${requestedCampaignName || "Untitled"} ${label}.${requestedContentType === "video" ? "mp4" : "jpg"}`,
         type: fileType,
         dimensions:
-          contentType === "video"
+          requestedContentType === "video"
             ? videoAspect
-            : contentType === "carousel"
+            : requestedContentType === "carousel"
               ? `1080×1080 · ${slides.length} slides`
               : "1080×1350",
         created: new Date().toLocaleDateString("en-GB", {
@@ -890,17 +993,17 @@ function PublishingPage() {
           year: "numeric",
         }),
         source: "ai",
-        contentType,
-        campaign: campaignName,
+        contentType: requestedContentType,
+        campaign: requestedCampaignName,
         tone: "",
-        postTitle: d.postTitle || `${campaignName} Announcement`,
+        postTitle: d.postTitle || `${requestedCampaignName || "Untitled"} Announcement`,
         postDescription: d.postDescription || "",
         postHashtags: d.postHashtags || "",
         previewUrl: d.posterImageUrl || d.videoUrl || undefined,
         // Row the backend persisted for this generation; sent on publish
         // so the approval gate can be enforced.
         contentItemId: d.contentItemId || undefined,
-        ...(contentType === "carousel"
+        ...(requestedContentType === "carousel"
           ? {
               slides: slides.map((s, i) => ({
                 ...s,
@@ -912,6 +1015,28 @@ function PublishingPage() {
       });
       setStep("preview");
     } catch (err: unknown) {
+      // A client switch owns the reset. Do not let the cancelled old-client
+      // promise reopen any creation screen under the newly selected client.
+      if (startedBrandId && creativeBrand.current && startedBrandId !== creativeBrand.current)
+        return;
+
+      if (inspiration) {
+        if (err instanceof InspirationGenerationFlowError) throw err;
+        const message =
+          err instanceof Error && err.name === "AbortError"
+            ? "Stopped waiting for the poster."
+            : err instanceof Error
+              ? err.message
+              : "The poster could not be generated.";
+        throw new InspirationGenerationFlowError(
+          message,
+          queued,
+          // A queued request may still be retried by the durable task runner
+          // after its application row briefly reports FAILED. Never offer a
+          // second user-triggered request while that ownership is ambiguous.
+          false,
+        );
+      }
       if (err instanceof Error && err.name === "AbortError") {
         toast("Stopped waiting. Anything already queued keeps running.");
         setStep("ai_form");
@@ -923,7 +1048,129 @@ function PublishingPage() {
       );
       setStep("ai_form");
     } finally {
-      generationAbort.current = null;
+      if (generationAbort.current === controller) generationAbort.current = null;
+    }
+  };
+
+  const handleCreateFromInspiration = async (input: CreateFromInspirationInput) => {
+    const startedBrandId = brandId;
+    if (!startedBrandId) {
+      setInspirationFlowError("Select a client before creating content.");
+      return;
+    }
+
+    setInspirationFlowError(null);
+    let savedTitle = "Inspiration-led poster";
+    let savedId: string | null = null;
+
+    try {
+      const title =
+        input.source === "upload"
+          ? input.file.name
+          : new URL(input.url).hostname.replace(/^www\./, "");
+      const inspirationInput: InspirationInput = {
+        title,
+        inspiration_type: input.source === "upload" ? "IMAGE" : "REFERENCE",
+        annotation: "Campaign reference saved from Content. Use as creative direction, not a copy.",
+        external_platform: "",
+        usage_scope: "FULL_REFERENCE",
+        focus_areas: [],
+      };
+
+      const saved =
+        input.source === "upload"
+          ? await uploadInspiration(startedBrandId, input.file, inspirationInput)
+          : await createInspiration(startedBrandId, {
+              ...inspirationInput,
+              reference_url: input.url,
+            });
+
+      savedId = saved.id;
+      savedTitle = saved.title || title;
+      if (!savedId) throw new Error("The inspiration was saved without an id.");
+
+      await handleGenerate({
+        inspirationId: savedId,
+        inspirationTitle: savedTitle,
+        instruction: input.instruction,
+      });
+    } catch (error) {
+      // Switching client cancels this flow; its old-client promise must not
+      // render an error or reopen a form in the new client.
+      if (creativeBrand.current !== startedBrandId) return;
+
+      const message = error instanceof Error ? error.message : "The poster could not be created.";
+      const queued = error instanceof InspirationGenerationFlowError && error.queued;
+      const retryAllowed = error instanceof InspirationGenerationFlowError && error.retryAllowed;
+      setInspirationRetryAllowed(retryAllowed);
+      const honestMessage = savedId
+        ? retryAllowed
+          ? `Your inspiration was saved in Brand Master, but the poster is not running. You can retry without uploading it again. ${message}`
+          : queued
+            ? `Your inspiration was saved and the poster was queued. It may still appear in Review → Drafts, so retry is disabled to prevent duplicate AI spend. ${message}`
+            : `Your inspiration was saved, but Scaleezy could not confirm whether the poster was queued. Check Review → Drafts before starting another. ${message}`
+        : message;
+      setInspirationFlowError(honestMessage);
+      toast.error(honestMessage);
+      setStep("inspiration_form");
+    }
+  };
+
+  const handleRetrySavedInspiration = async (instruction: string) => {
+    if (!activeInspirationGeneration) {
+      setInspirationFlowError("Choose an inspiration before creating the poster.");
+      return;
+    }
+    if (!inspirationRetryAllowed) {
+      setInspirationFlowError(
+        "This request may still be running. Check Review → Drafts before starting another.",
+      );
+      return;
+    }
+
+    const startedBrandId = brandId;
+    const retry = { ...activeInspirationGeneration, instruction };
+    setActiveInspirationGeneration(retry);
+    setInspirationFlowError(null);
+    try {
+      await handleGenerate(retry);
+    } catch (error) {
+      if (startedBrandId && creativeBrand.current !== startedBrandId) return;
+      const message = error instanceof Error ? error.message : "The poster could not be created.";
+      const queued = error instanceof InspirationGenerationFlowError && error.queued;
+      const retryAllowed = error instanceof InspirationGenerationFlowError && error.retryAllowed;
+      setInspirationRetryAllowed(retryAllowed);
+      const honestMessage = retryAllowed
+        ? `Your inspiration remains saved in Brand Master and the poster is not running. You can retry. ${message}`
+        : queued
+          ? `The poster was queued and may still appear in Review → Drafts, so retry is disabled to prevent duplicate AI spend. ${message}`
+          : `Scaleezy could not confirm whether the poster was queued. Check Review → Drafts before starting another. ${message}`;
+      setInspirationFlowError(honestMessage);
+      toast.error(honestMessage);
+      setStep("inspiration_form");
+    }
+  };
+
+  const handleRegenerateAll = async () => {
+    if (!activeInspirationGeneration) {
+      await handleGenerate();
+      return;
+    }
+
+    const startedBrandId = brandId;
+    try {
+      await handleGenerate(activeInspirationGeneration);
+    } catch (error) {
+      if (startedBrandId && creativeBrand.current !== startedBrandId) return;
+      const message =
+        error instanceof Error ? error.message : "The poster could not be regenerated.";
+      const queued = error instanceof InspirationGenerationFlowError && error.queued;
+      toast.error(
+        queued
+          ? `The regeneration was queued and may still appear in Review → Drafts. ${message}`
+          : message,
+      );
+      setStep("preview");
     }
   };
 
@@ -1093,9 +1340,11 @@ function PublishingPage() {
       ? "Reading your poster to write the caption and hashtags."
       : workingKind === "video"
         ? "Uploading your video and watching it to write the caption."
-        : referenceImageBase64
-          ? "Analysing your reference image to craft the marketing asset."
-          : `Drafting your ${contentType} from the campaign brief.`;
+        : activeInspirationGeneration
+          ? "Reading the inspiration and creating an original poster with this client's Brand Brain."
+          : referenceImageBase64
+            ? "Analysing your reference image to craft the marketing asset."
+            : `Drafting your ${contentType} from the campaign brief.`;
 
   return (
     <div>
@@ -1114,7 +1363,34 @@ function PublishingPage() {
               CREATE YOUR CONTENT
             </h2>
 
-            <div className="grid gap-6 sm:grid-cols-2">
+            <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
+              <button
+                onClick={() => {
+                  setInspirationFlowError(null);
+                  setActiveInspirationGeneration(null);
+                  setInspirationRetryAllowed(false);
+                  setStep("inspiration_form");
+                }}
+                className="group relative flex flex-col items-center justify-center gap-4 rounded-lg border border-primary bg-black p-8 text-center text-white transition-colors hover:bg-black/90 sm:col-span-2 xl:col-span-1"
+              >
+                <div className="flex size-14 items-center justify-center rounded-full bg-primary text-black">
+                  <Wand2 className="size-6" />
+                </div>
+                <div>
+                  <p className="text-xs font-semibold tracking-[0.18em] text-primary uppercase">
+                    Fastest path
+                  </p>
+                  <h3 className="mt-1 text-lg font-semibold">Create from inspiration</h3>
+                  <p className="mt-2 text-sm text-white/70">
+                    Upload an image for visual direction or paste a public page for copy and tone.
+                    Scaleezy creates an original poster using this client&apos;s Brand Brain.
+                  </p>
+                </div>
+                <div className="mt-4 rounded-lg bg-primary px-6 py-2 text-sm font-semibold text-black transition-transform group-hover:scale-[1.02]">
+                  Create similar poster
+                </div>
+              </button>
+
               <button
                 onClick={() => {
                   setReferenceImageBase64("");
@@ -1157,6 +1433,36 @@ function PublishingPage() {
               </button>
             </div>
           </section>
+        )}
+
+        {step === "inspiration_form" && (
+          <CreateFromInspiration
+            key={brandId ?? "no-brand"}
+            brandId={brandId}
+            awaitingApproval={awaitingApproval}
+            error={inspirationFlowError}
+            savedReference={
+              activeInspirationGeneration
+                ? {
+                    title: activeInspirationGeneration.inspirationTitle,
+                    instruction: activeInspirationGeneration.instruction,
+                    retryAllowed: inspirationRetryAllowed,
+                  }
+                : null
+            }
+            onClearError={() => setInspirationFlowError(null)}
+            onSubmit={handleCreateFromInspiration}
+            onRetrySaved={handleRetrySavedInspiration}
+            onReplaceSaved={() => {
+              setActiveInspirationGeneration(null);
+              setInspirationRetryAllowed(false);
+              setInspirationFlowError(null);
+            }}
+            onCancel={() => {
+              setInspirationFlowError(null);
+              setStep("create_or_upload");
+            }}
+          />
         )}
 
         {/* STEP 1A: GEMINI FORM */}
@@ -1548,7 +1854,7 @@ function PublishingPage() {
 
               <div className="mt-8 flex items-center gap-4">
                 <Button
-                  onClick={handleGenerate}
+                  onClick={() => void handleGenerate()}
                   disabled={awaitingApproval}
                   title={
                     awaitingApproval
@@ -1713,7 +2019,15 @@ function PublishingPage() {
                   <div className="p-6">
                     {asset.source === "ai" ? (
                       <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/8 px-3 py-1.5 text-xs font-semibold text-foreground">
-                        <Sparkles className="size-3.5" /> Generated with AI
+                        {activeInspirationGeneration ? (
+                          <>
+                            <Wand2 className="size-3.5" /> Created from inspiration
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="size-3.5" /> Generated with AI
+                          </>
+                        )}
                       </div>
                     ) : (
                       <div className="inline-flex items-center gap-2 rounded-full bg-secondary px-3 py-1.5 text-xs font-medium text-muted-foreground mb-5">
@@ -1854,13 +2168,23 @@ function PublishingPage() {
                           variant="outline"
                           size="sm"
                           onClick={() =>
-                            setStep(asset.source === "ai" ? "ai_form" : "manual_upload")
+                            setStep(
+                              asset.source === "ai"
+                                ? activeInspirationGeneration
+                                  ? "inspiration_form"
+                                  : "ai_form"
+                                : "manual_upload",
+                            )
                           }
                         >
                           <Edit3 className="mr-2 size-4" /> Edit / Replace Media
                         </Button>
                         {asset.source === "ai" && (
-                          <Button variant="outline" size="sm" onClick={handleGenerate}>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void handleRegenerateAll()}
+                          >
                             <RefreshCw className="mr-2 size-4" /> Regenerate All
                           </Button>
                         )}
