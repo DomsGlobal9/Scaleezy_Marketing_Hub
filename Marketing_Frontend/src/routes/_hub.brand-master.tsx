@@ -43,6 +43,7 @@ import {
   errorMessage,
   useSlice,
 } from "@/components/marketing/brand-master-primitives";
+import { CreativeResearchPanel } from "@/components/marketing/creative-research-panel";
 import { InspirationsPanel } from "@/components/marketing/inspirations-panel";
 import { KnowledgePanel } from "@/components/marketing/knowledge-panel";
 import { LearningUsagePanel } from "@/components/marketing/learning-usage-panel";
@@ -1253,9 +1254,18 @@ function BrandMasterPage() {
             <KnowledgePanel brandId={brandId} onChanged={refresh} />
           </TabsContent>
           <TabsContent value="inspirations" className="space-y-10">
-            {/* Adopting from the library writes into this brand's own
-                inspirations, so the panel remounts (and re-reads) on adopt. */}
+            {/* Adopting from research or the library writes into this brand's
+                own inspirations, so the panel remounts (and re-reads) on adopt. */}
             <InspirationsPanel key={adoptedNonce} brandId={brandId} onChanged={refresh} />
+            {initialBrand ? (
+              <CreativeResearchPanel
+                brand={initialBrand}
+                onAdopted={() => {
+                  setAdoptedNonce((n) => n + 1);
+                  refresh();
+                }}
+              />
+            ) : null}
             <LibraryGallery
               brandId={brandId}
               onChanged={() => {

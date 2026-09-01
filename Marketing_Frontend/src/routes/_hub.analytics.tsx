@@ -252,7 +252,7 @@ function AnalyticsPage() {
   return (
     <div>
       <PageHeader
-        eyebrow="Growth engine"
+        eyebrow="Performance"
         title="Performance & revenue"
         subtitle="Every number has a source. Follow content from generation through engagement, lead and revenue."
         backTo="/"
