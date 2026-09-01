@@ -262,11 +262,28 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             }
             content_item.save(update_fields=['layout_config'])
 
+            # Reviewers kept asking where the words on the poster went: the
+            # generation produced a photo and copy as two separate things.
+            # Bake the copy onto the photo with the same engine the studio's
+            # "Use this poster" uses. Best-effort — a compose failure leaves
+            # the raw generated image in place.
+            from apps.layouts.services import compose_generated_poster
+
+            compose_generated_poster(
+                content_item,
+                user=request.user if request.user.is_authenticated else None,
+            )
+
         response_payload = {
             'postTitle': result_data.get('postTitle', ''),
             'postDescription': result_data.get('postDescription', ''),
             'postHashtags': result_data.get('postHashtags', ''),
-            'posterImageUrl': result_data.get('posterImageUrl', ''),
+            # The composed poster when there is one, the raw image otherwise —
+            # the preview must show what will actually be reviewed.
+            'posterImageUrl': (
+                (content_item.preview_url if content_item else '')
+                or result_data.get('posterImageUrl', '')
+            ),
             'metadata': {
                 **(result_data.get('metadata') or {}),
                 'provider': routed['provider'],
