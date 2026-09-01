@@ -112,6 +112,87 @@ class AsyncGenerationTaskTests(TenantFixtureMixin, TestCase):
             GeminiGenerationResult.objects.filter(generation_request=request).count(), 1
         )
 
+    def test_a_redelivered_task_never_resurrects_a_failed_request(self):
+        # A zombie TaskRun reclaimed half an hour after its worker died, or a
+        # queue-level retry, must not flip a failure the user was already
+        # shown back to GENERATING and spend provider money on it.
+        request = self.a_request()
+        request.status = GeminiGenerationRequest.Status.FAILED
+        request.error_message = 'provider down'
+        request.save(update_fields=['status', 'error_message'])
+
+        dispatched = self.run_task(request)
+
+        self.assertEqual(dispatched.call_count, 0)
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.FAILED)
+        self.assertEqual(request.error_message, 'provider down')
+        self.assertEqual(ContentItem.objects.filter(workspace=self.workspace).count(), 0)
+
+    def test_a_generating_request_is_not_claimed_by_a_second_delivery(self):
+        # Two deliveries for one request (a rescue racing a reclaimed
+        # original): only the run that flips PENDING->GENERATING may spend.
+        request = self.a_request()
+        request.status = GeminiGenerationRequest.Status.GENERATING
+        request.save(update_fields=['status'])
+
+        dispatched = self.run_task(request)
+
+        self.assertEqual(dispatched.call_count, 0)
+        self.assertEqual(ContentItem.objects.filter(workspace=self.workspace).count(), 0)
+
+    def test_every_status_transition_restarts_the_stuck_clock(self):
+        # The sweep measures "stuck" from updated_at, and auto_now does not
+        # fire on queryset updates or unlisted update_fields — so the clock
+        # only works if every transition stamps it explicitly. A stale clock
+        # here is what let the sweep re-buy generations that were merely
+        # waiting in a backlogged queue. The mid-run probe is the load-
+        # bearing assertion: the clock must already be fresh at CLAIM time,
+        # while the provider call is still in flight, or a completion stamp
+        # would mask a broken claim stamp and the sweep could rescue a run
+        # that had only just begun.
+        request = self.a_request()
+        GeminiGenerationRequest.objects.filter(pk=request.pk).update(
+            updated_at=timezone.now() - timedelta(hours=1)
+        )
+        before = timezone.now()
+
+        seen = {}
+
+        def probe(workspace, brief, **kwargs):
+            row = GeminiGenerationRequest.objects.get(pk=request.pk)
+            seen['at_claim'] = row.updated_at
+            return dict(ROUTED)
+
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload',
+            side_effect=probe,
+        ):
+            generate_content.func(str(request.pk))
+
+        self.assertGreaterEqual(seen['at_claim'], before)
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.COMPLETED)
+        self.assertGreaterEqual(request.updated_at, before)
+
+    def test_a_failed_run_stamps_the_clock_and_records_the_error(self):
+        request = self.a_request()
+        GeminiGenerationRequest.objects.filter(pk=request.pk).update(
+            updated_at=timezone.now() - timedelta(hours=1)
+        )
+        before = timezone.now()
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload',
+            side_effect=RuntimeError('boom'),
+        ):
+            with self.assertRaises(RuntimeError):
+                generate_content.func(str(request.pk))
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.FAILED)
+        self.assertEqual(request.error_message, 'boom')
+        self.assertGreaterEqual(request.updated_at, before)
+
     def test_the_queued_draft_is_attributable_like_a_synchronous_one(self):
         from apps.brands.services.brand_brain import rebuild_brand_brain
         from apps.learning.models import LearningScope
@@ -207,7 +288,10 @@ class StuckGenerationSweepTests(TenantFixtureMixin, TestCase):
         self.assertEqual(request.status, GeminiGenerationRequest.Status.GENERATING)
         self.assertEqual(TaskRun.objects.count(), 0)
 
-    def test_a_row_from_before_the_updated_at_field_is_swept_by_created_at(self):
+    def test_a_legacy_row_with_null_updated_at_is_still_swept(self):
+        # Rows inserted by old-code instances during a deploy overlap know
+        # nothing of updated_at; stranded, they must not be invisible to
+        # every future sweep.
         request = self.stuck_request()
         GeminiGenerationRequest.objects.filter(pk=request.pk).update(
             updated_at=None, created_at=timezone.now() - timedelta(minutes=20)
@@ -217,11 +301,88 @@ class StuckGenerationSweepTests(TenantFixtureMixin, TestCase):
 
         request.refresh_from_db()
         self.assertEqual(request.status, GeminiGenerationRequest.Status.PENDING)
+        self.assertEqual(TaskRun.objects.count(), 1)
+
+    def test_an_orphaned_pending_row_is_requeued(self):
+        # A crash between the view's create and its enqueue (or a task that
+        # burned its attempts during a deploy's schema window) leaves a
+        # PENDING row no TaskRun will ever serve; the sweep must give it the
+        # same one rescue a stranded GENERATING row gets.
+        request = GeminiGenerationRequest.objects.create(
+            workspace=self.workspace, user=self.user,
+            prompt_data=json.dumps({'campaign_name': 'Launch'}),
+            status=GeminiGenerationRequest.Status.PENDING,
+        )
+        GeminiGenerationRequest.objects.filter(pk=request.pk).update(
+            updated_at=timezone.now() - timedelta(minutes=11)
+        )
+
+        self.assertEqual(sweep_stuck_generations(), 1)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.PENDING)
+        self.assertEqual(request.retry_count, 1)
+        run = TaskRun.objects.get()
+        self.assertEqual(run.args, [str(request.pk)])
+
+    def test_a_backlogged_pending_row_is_left_alone(self):
+        # An aged PENDING row whose TaskRun is still queued is a backlog,
+        # not an orphan: re-queuing it would spam the queue and burn its
+        # rescue budget on a false alarm.
+        request = GeminiGenerationRequest.objects.create(
+            workspace=self.workspace, user=self.user,
+            prompt_data=json.dumps({'campaign_name': 'Launch'}),
+            status=GeminiGenerationRequest.Status.PENDING,
+        )
+        generate_content.enqueue(str(request.pk))
+        GeminiGenerationRequest.objects.filter(pk=request.pk).update(
+            updated_at=timezone.now() - timedelta(minutes=11)
+        )
+
+        self.assertEqual(sweep_stuck_generations(), 0)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.PENDING)
+        self.assertEqual(request.retry_count, 0)
+        self.assertEqual(TaskRun.objects.count(), 1)
+
+    def test_a_row_stuck_beyond_the_rescue_horizon_fails_without_spend(self):
+        # Matters most on the first pass after deploy, which meets every row
+        # the pre-sweep era ever stranded: those get an honest FAILED, not a
+        # burst of paid re-runs nobody is polling for.
+        request = self.stuck_request(minutes_ago=25 * 60)
+
+        self.assertEqual(sweep_stuck_generations(), 1)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.FAILED)
+        self.assertEqual(request.error_message, INTERRUPTED_MESSAGE)
+        self.assertEqual(TaskRun.objects.count(), 0)
+
+    def test_a_suspended_workspaces_stuck_row_fails_without_spend(self):
+        # Suspension pauses spend and writes platform-wide; the rescue must
+        # not be the one scheduled mechanism that ignores it. The row still
+        # reaches an honest terminal state instead of spinning.
+        from apps.workspaces.models import MarketingWorkspace
+
+        self.workspace.status = MarketingWorkspace.Status.SUSPENDED
+        self.workspace.save(update_fields=['status'])
+        request = self.stuck_request()
+
+        self.assertEqual(sweep_stuck_generations(), 1)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.FAILED)
+        self.assertEqual(TaskRun.objects.count(), 0)
 
     def test_a_finished_generation_whose_final_save_was_lost_is_completed(self):
         request = self.stuck_request()
+        GeminiGenerationRequest.objects.filter(pk=request.pk).update(
+            error_message='half-written error from the killed run'
+        )
         GeminiGenerationResult.objects.create(
-            generation_request=request, generated_text='Already made.'
+            generation_request=request, generated_text='Already made.',
+            metadata={'provider': 'gemini'},
         )
 
         self.assertEqual(sweep_stuck_generations(), 1)
@@ -229,6 +390,10 @@ class StuckGenerationSweepTests(TenantFixtureMixin, TestCase):
         request.refresh_from_db()
         self.assertEqual(request.status, GeminiGenerationRequest.Status.COMPLETED)
         self.assertIsNotNone(request.completed_at)
+        # Completion carries the same bookkeeping the normal path writes:
+        # the provider from the result's metadata, and no leftover error.
+        self.assertEqual(request.provider, 'gemini')
+        self.assertIsNone(request.error_message)
         # The work already exists; re-buying it is exactly what must not
         # happen here.
         self.assertEqual(TaskRun.objects.count(), 0)
@@ -239,10 +404,14 @@ class StuckGenerationSweepTests(TenantFixtureMixin, TestCase):
 
         request = self.stuck_request()
 
+        # run_once drains everything claimable and only the generation call
+        # is patched, so pin the enrichment sweep shut too — otherwise a
+        # future fixture edit (a brand website, say) would silently run real
+        # enrichment code inside this drain loop.
         with patch(
             'apps.context.services.generation.generate_marketing_payload',
             return_value=dict(ROUTED),
-        ):
+        ), patch('apps.universal.tasks.enqueue_due_enrichment', return_value=0):
             runner.run_once()
 
         request.refresh_from_db()

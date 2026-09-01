@@ -137,6 +137,25 @@ class QueueTests(TestCase):
         self.assertEqual(runner.run_once(), 1)
         self.assertEqual(_calls, ['orphan'])
 
+    def test_a_crashed_workers_exhausted_task_is_failed_not_reclaimed(self):
+        # A worker that dies silently never passes mark_failed's can_retry
+        # gate; without the attempts check in reclaim_stale such a task
+        # would be reclaimed and re-run every STALE_AFTER, forever.
+        record_call.enqueue('zombie')
+        # max_attempts pinned too: the enqueued default follows the
+        # TASK_MAX_ATTEMPTS env var, and this test must not depend on it.
+        TaskRun.objects.update(
+            status=TaskResultStatus.RUNNING,
+            claimed_at=timezone.now() - runner.STALE_AFTER - timedelta(minutes=1),
+            attempts=3,
+            max_attempts=3,
+        )
+        self.assertEqual(runner.run_once(), 0)
+        self.assertEqual(_calls, [])
+        run = TaskRun.objects.get()
+        self.assertEqual(run.status, TaskResultStatus.FAILED)
+        self.assertIsNotNone(run.finished_at)
+
     def test_a_recently_claimed_task_is_left_alone(self):
         record_call.enqueue('in flight')
         TaskRun.objects.update(status=TaskResultStatus.RUNNING, claimed_at=timezone.now())

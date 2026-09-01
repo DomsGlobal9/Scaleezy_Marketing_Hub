@@ -46,13 +46,26 @@ class GeminiGenerationRequest(models.Model):
     retry_count = models.PositiveSmallIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
-    #: Null on rows from before the field existed; the sweep falls back to
-    #: created_at for those.
+    #: When a worker last moved this row through its lifecycle. Every status
+    #: transition stamps it explicitly (auto_now does not fire on queryset
+    #: updates, and update_fields must name it); the stuck-generation sweep
+    #: reads it as "how long since anything touched this". Nullable only for
+    #: schema history — migration 0003 backfills it from created_at.
     updated_at = models.DateTimeField(auto_now=True, null=True)
     completed_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         db_table = 'gemini_generation_requests'
+        indexes = [
+            # The stuck-generation sweep's probe, which runs on every worker
+            # pass. Partial, so it holds only the handful of in-flight rows
+            # however large the table grows.
+            models.Index(
+                fields=['updated_at'],
+                name='gemini_req_generating_idx',
+                condition=models.Q(status='GENERATING'),
+            ),
+        ]
 
     def __str__(self):
         return f"Request {self.id} for {self.workspace.workspace_name}"

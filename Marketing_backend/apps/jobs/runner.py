@@ -27,11 +27,25 @@ STALE_AFTER = timedelta(minutes=30)
 
 
 def reclaim_stale(now=None):
-    """Returns rows abandoned by a dead worker to the ready queue."""
+    """Returns rows abandoned by a dead worker to the ready queue.
+
+    A row whose attempts are already spent is finished as FAILED instead: a
+    worker that dies silently never passes through mark_failed's can_retry
+    gate, and without this check such a task would be reclaimed and re-run
+    every STALE_AFTER, forever, past any attempt budget.
+    """
+    from django.db.models import F
+
     now = now or timezone.now()
-    return TaskRun.objects.filter(
+    stale = TaskRun.objects.filter(
         status=TaskResultStatus.RUNNING, claimed_at__lt=now - STALE_AFTER
-    ).update(status=TaskResultStatus.READY, claimed_at=None)
+    )
+    stale.filter(attempts__gte=F('max_attempts')).update(
+        status=TaskResultStatus.FAILED, claimed_at=None, finished_at=now
+    )
+    return stale.filter(attempts__lt=F('max_attempts')).update(
+        status=TaskResultStatus.READY, claimed_at=None
+    )
 
 
 def claim(queue_name=None, now=None):
