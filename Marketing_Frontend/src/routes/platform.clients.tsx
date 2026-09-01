@@ -171,7 +171,11 @@ function ClientsPage() {
         }
       />
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
+      <div
+        className="scrollbar-hide -mx-4 mb-4 flex flex-nowrap items-center gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:px-0"
+        role="group"
+        aria-label="Filter clients"
+      >
         {FILTERS.map((f) => (
           <button
             key={f.key}
@@ -182,7 +186,7 @@ function ClientsPage() {
               setPage(1);
             }}
             className={cn(
-              "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+              "shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2",
               filter === f.key
                 ? "border-slate-900 bg-slate-900 text-white"
                 : "border-border bg-background text-muted-foreground hover:text-foreground",
@@ -247,9 +251,12 @@ function ClientsPage() {
         </div>
       ) : (
         <>
-          <div className="overflow-x-auto rounded-xl border border-border bg-card">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-muted/50 text-[0.625rem] tracking-wide text-muted-foreground uppercase">
+          <div className="overflow-x-auto rounded-xl border border-border bg-card shadow-sm">
+            <table className="w-full min-w-[1080px] text-left text-sm">
+              <caption className="sr-only">
+                Platform clients with status, plan, onboarding, readiness, usage, activity and flags
+              </caption>
+              <thead className="bg-muted/70 text-[0.6875rem] tracking-wide text-muted-foreground uppercase">
                 <tr>
                   <th className="px-3 py-2 font-semibold">Code</th>
                   <th className="px-3 py-2 font-semibold">Name</th>
@@ -266,9 +273,9 @@ function ClientsPage() {
                 {rows.map((row) => (
                   <tr
                     key={row.workspace_id}
-                    className="border-t border-border align-top hover:bg-muted/30"
+                    className="border-t border-border align-top transition-colors hover:bg-muted/40"
                   >
-                    <td className="px-3 py-2.5 font-mono text-[0.6875rem] whitespace-nowrap">
+                    <td className="px-3 py-3 font-mono text-xs whitespace-nowrap">
                       <Link
                         to="/platform/clients/$workspaceId"
                         params={{ workspaceId: row.workspace_id }}

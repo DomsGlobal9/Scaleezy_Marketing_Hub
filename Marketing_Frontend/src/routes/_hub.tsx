@@ -30,8 +30,10 @@ import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/s
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AddClientDialog } from "@/components/marketing/add-client-dialog";
+import { ScaleezyLogo } from "@/components/marketing/brand-logo";
 import { SiteFooter } from "@/components/marketing/site-footer";
 import { apiPost } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { clearWorkspaces, loadWorkspaces, selectWorkspace, useWorkspaces } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub")({
@@ -82,19 +84,9 @@ const NAV = [
 
 function Brand() {
   return (
-    <div className="flex min-w-0 items-center gap-3">
-      <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand-dark text-gold">
-        <Sparkles className="size-4.5" strokeWidth={1.75} />
-      </span>
-      <span className="min-w-0">
-        <span className="block truncate font-display text-lg leading-none font-semibold tracking-tight text-foreground">
-          Scaleezy
-        </span>
-        <span className="mt-1 block text-[0.625rem] tracking-[0.18em] text-muted-foreground uppercase">
-          Apparel Commerce
-        </span>
-      </span>
-    </div>
+    <span className="flex min-w-0 items-center">
+      <ScaleezyLogo className="w-[10.75rem]" priority />
+    </span>
   );
 }
 
@@ -135,9 +127,11 @@ function workspaceLabel(state: ReturnType<typeof useWorkspaces>): string {
 function WorkspaceSwitcher({
   onNavigate,
   onAddClient,
+  dark = false,
 }: {
   onNavigate?: () => void;
   onAddClient: () => void;
+  dark?: boolean;
 }) {
   const state = useWorkspaces();
 
@@ -147,15 +141,32 @@ function WorkspaceSwitcher({
         <button
           type="button"
           disabled={state.switching}
-          className="flex w-full items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-left transition-colors hover:bg-secondary disabled:opacity-60"
+          className={cn(
+            "flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-60",
+            dark
+              ? "border-white/15 bg-white/5 text-white hover:border-primary/60 hover:bg-white/10"
+              : "border-border bg-background text-foreground hover:border-foreground",
+          )}
         >
           <span className="min-w-0 flex-1">
-            <span className="label-eyebrow block">Client</span>
-            <span className="mt-0.5 block truncate text-sm font-medium text-foreground">
+            <span
+              className={cn(
+                "block text-[0.625rem] font-semibold tracking-[0.14em] uppercase",
+                dark ? "text-white/45" : "text-muted-foreground",
+              )}
+            >
+              Client
+            </span>
+            <span
+              className={cn("mt-0.5 block truncate text-sm font-semibold", dark && "text-white")}
+            >
               {workspaceLabel(state)}
             </span>
           </span>
-          <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" strokeWidth={1.75} />
+          <ChevronsUpDown
+            className={cn("size-4 shrink-0", dark ? "text-primary" : "text-muted-foreground")}
+            strokeWidth={1.75}
+          />
         </button>
       </DropdownMenuTrigger>
 
@@ -175,9 +186,7 @@ function WorkspaceSwitcher({
               }}
             >
               <Check
-                className={
-                  workspace.id === state.selectedId ? "text-gold" : "invisible"
-                }
+                className={workspace.id === state.selectedId ? "text-gold" : "invisible"}
                 aria-hidden
               />
               <span className="truncate">{workspace.name}</span>
@@ -257,19 +266,24 @@ function NavList({
   onNavigate?: () => void;
 }) {
   return (
-    <nav className="space-y-1">
-      <p className="label-eyebrow mb-3 px-3">Marketing Hub</p>
+    <nav className="space-y-1" aria-label="Marketing Hub">
+      <p className="mb-3 px-3 text-[0.625rem] font-semibold tracking-[0.16em] text-white/35 uppercase">
+        Marketing Hub
+      </p>
       {NAV.filter((item) => !item.adminOnly || isAdmin).map((item) => (
         <Link
           key={item.to}
           to={item.to}
           activeOptions={{ exact: item.to === "/" }}
           onClick={onNavigate}
-          className="group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground data-[status=active]:bg-brand-dark data-[status=active]:text-brand-dark-foreground"
+          className={cn(
+            "group relative flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-white/65 transition-colors hover:bg-white/8 hover:text-white data-[status=active]:bg-white/6 data-[status=active]:text-primary",
+            item.to === "/settings" && "mt-6 border-t border-white/12 pt-5",
+          )}
         >
-          <span className="absolute top-1/2 left-0 hidden h-6 w-1 -translate-y-1/2 rounded-r-full bg-gold group-data-[status=active]:block" />
+          <span className="absolute top-1/2 -left-3 hidden h-8 w-1 -translate-y-1/2 rounded-r-full bg-primary group-data-[status=active]:block" />
           <item.icon
-            className="size-4.5 shrink-0 group-data-[status=active]:text-gold"
+            className="size-5 shrink-0 group-data-[status=active]:text-primary"
             strokeWidth={1.75}
           />
           <span className="truncate">{item.label}</span>
@@ -281,9 +295,9 @@ function NavList({
           <Link
             to="/platform"
             onClick={onNavigate}
-            className="flex items-center gap-3 rounded-xl border border-slate-300 bg-slate-900 px-3 py-2.5 text-sm font-medium text-slate-100 transition-colors hover:bg-slate-800"
+            className="flex min-h-11 items-center gap-3 rounded-lg border border-white/15 px-3 py-2.5 text-sm font-medium text-white/75 transition-colors hover:border-primary/60 hover:text-primary"
           >
-            <Landmark className="size-4.5 shrink-0 text-amber-300" strokeWidth={1.75} />
+            <Landmark className="size-5 shrink-0 text-primary" strokeWidth={1.75} />
             <span className="truncate">Platform console</span>
           </Link>
         </>
@@ -296,8 +310,8 @@ function NavList({
 function HubSkeleton() {
   return (
     <div className="min-h-screen bg-background">
-      <aside className="fixed inset-y-0 left-0 hidden w-[270px] flex-col border-r border-border bg-card px-4 py-6 lg:flex">
-        <div className="px-2">
+      <aside className="fixed inset-y-0 left-0 hidden w-[236px] flex-col bg-brand-dark px-4 py-5 lg:flex">
+        <div className="flex h-12 items-center px-2">
           <Brand />
         </div>
         <div className="mt-8 flex-1 space-y-2">
@@ -306,8 +320,9 @@ function HubSkeleton() {
           ))}
         </div>
       </aside>
-      <main className="flex min-h-screen flex-col lg:pl-[270px]">
-        <div className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-8 sm:px-6 lg:px-10 lg:py-12">
+      <main className="flex min-h-screen flex-col lg:pl-[236px]">
+        <div className="hidden h-[82px] bg-brand-dark lg:block" />
+        <div className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-8 sm:px-6 lg:px-12 lg:py-12">
           <Skeleton className="h-8 w-64" />
           <Skeleton className="mt-4 h-4 w-96 max-w-full" />
           <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -321,7 +336,7 @@ function HubSkeleton() {
   );
 }
 
-function SignOutButton({ onDone }: { onDone?: () => void }) {
+function SignOutButton({ onDone, dark = false }: { onDone?: () => void; dark?: boolean }) {
   const navigate = useNavigate();
   const { auth } = Route.useRouteContext();
   const [busy, setBusy] = useState(false);
@@ -351,12 +366,35 @@ function SignOutButton({ onDone }: { onDone?: () => void }) {
     <Button
       variant="ghost"
       size="sm"
-      className="w-full justify-start text-muted-foreground hover:text-foreground"
+      className={cn(
+        "w-full justify-start",
+        dark ? "text-white/55 hover:bg-white/8 hover:text-white" : "text-muted-foreground",
+      )}
       onClick={signOut}
       disabled={busy}
     >
       <LogOut className="size-4" /> Sign out
     </Button>
+  );
+}
+
+function DesktopTopBar({ onAddClient }: { onAddClient: () => void }) {
+  return (
+    <header className="sticky top-0 z-30 hidden h-[82px] items-center gap-6 border-b border-white/10 bg-brand-dark px-8 text-white lg:flex xl:px-12">
+      <div className="w-full max-w-[18rem]">
+        <WorkspaceSwitcher onAddClient={onAddClient} dark />
+      </div>
+      <span className="flex items-center gap-2 text-xs font-medium text-white/55">
+        <span className="size-2 rounded-full bg-primary" aria-hidden /> Active workspace
+      </span>
+      <div className="ml-auto">
+        <Button asChild size="lg" className="h-11">
+          <Link to="/publishing">
+            <Plus className="size-4" /> Create content
+          </Link>
+        </Button>
+      </div>
+    </header>
   );
 }
 
@@ -373,35 +411,44 @@ function HubLayout() {
 
   return (
     <div className="min-h-screen bg-background">
-      <aside className="fixed inset-y-0 left-0 hidden w-[270px] flex-col border-r border-border bg-card px-4 py-6 lg:flex">
-        <div className="px-2">
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-[236px] flex-col bg-brand-dark px-4 py-5 text-white lg:flex">
+        <div className="flex h-12 items-center px-2">
           <Brand />
         </div>
-        <div className="mt-6">
-          <WorkspaceSwitcher onAddClient={() => setCreating(true)} />
-        </div>
-        <div className="mt-6 flex-1">
+        <div className="mt-7 flex-1 overflow-y-auto">
           <NavList isAdmin={isAdmin} isPlatformAdmin={isPlatformAdmin} />
         </div>
-        <div>
-          <SignOutButton />
+        <div className="border-t border-white/12 pt-4">
+          <p className="mb-3 px-3 text-[0.625rem] tracking-[0.14em] text-white/35 uppercase">
+            Scaleezy Marketing Hub
+          </p>
+          <SignOutButton dark />
         </div>
       </aside>
 
-      <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-border bg-card/95 px-4 py-3 backdrop-blur lg:hidden">
+      <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-white/10 bg-brand-dark px-4 text-white lg:hidden">
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetTrigger asChild>
-            <Button variant="outline" size="icon" aria-label="Open navigation">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-white hover:bg-white/10 hover:text-primary"
+              aria-label="Open navigation"
+            >
               <Menu className="size-5" />
             </Button>
           </SheetTrigger>
-          <SheetContent side="left" className="w-[85vw] max-w-[300px] bg-card px-4 py-6">
+          <SheetContent
+            side="left"
+            className="w-[88vw] max-w-[320px] border-white/10 bg-brand-dark px-4 py-5 text-white [&>button]:text-white"
+          >
             <SheetTitle className="sr-only">Marketing Hub navigation</SheetTitle>
             <Brand />
             <div className="mt-6">
               <WorkspaceSwitcher
                 onNavigate={() => setOpen(false)}
                 onAddClient={() => setCreating(true)}
+                dark
               />
             </div>
             <div className="mt-6">
@@ -411,26 +458,29 @@ function HubLayout() {
                 onNavigate={() => setOpen(false)}
               />
             </div>
-            <div className="mt-6 border-t border-border pt-4">
-              <SignOutButton onDone={() => setOpen(false)} />
+            <div className="mt-6 border-t border-white/12 pt-4">
+              <SignOutButton dark onDone={() => setOpen(false)} />
             </div>
           </SheetContent>
         </Sheet>
         <Brand />
+        <Button asChild size="sm" className="ml-auto">
+          <Link to="/publishing">
+            <Plus className="size-4" />
+            <span className="hidden sm:inline">Create</span>
+          </Link>
+        </Button>
       </header>
 
-      <main className="flex min-h-screen flex-col lg:pl-[270px]">
-        <div className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-8 sm:px-6 lg:px-10 lg:py-12">
+      <main className="flex min-h-screen flex-col lg:pl-[236px]">
+        <DesktopTopBar onAddClient={() => setCreating(true)} />
+        <div className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-8 sm:px-6 lg:px-12 lg:py-12">
           {noClients ? <NoClientsYet onAddClient={() => setCreating(true)} /> : <Outlet />}
         </div>
         <SiteFooter />
       </main>
 
-      <AddClientDialog
-        open={creating}
-        onOpenChange={setCreating}
-        onCreated={selectWorkspace}
-      />
+      <AddClientDialog open={creating} onOpenChange={setCreating} onCreated={selectWorkspace} />
       <WorkspaceSwitchOverlay />
     </div>
   );

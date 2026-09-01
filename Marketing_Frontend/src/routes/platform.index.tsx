@@ -109,7 +109,7 @@ function OverviewPage() {
             (health?.needs_attention ?? 0) > 0 && "border-amber-400/60 bg-amber-50/60",
           )}
         >
-          <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-slate-900 text-amber-300">
+          <span className="grid size-11 shrink-0 place-items-center rounded-lg bg-foreground text-primary">
             <AlertTriangle className="size-5" strokeWidth={1.75} />
           </span>
           <div className="min-w-0">
@@ -136,11 +136,13 @@ function OverviewPage() {
           to="/platform/signups"
           className="surface-card group flex items-center gap-4 p-5 transition-transform hover:-translate-y-0.5"
         >
-          <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-slate-900 text-amber-300">
+          <span className="grid size-11 shrink-0 place-items-center rounded-lg bg-foreground text-primary">
             <Inbox className="size-5" strokeWidth={1.75} />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-xs tracking-wide text-muted-foreground uppercase">Awaiting approval</p>
+            <p className="text-xs tracking-wide text-muted-foreground uppercase">
+              Awaiting approval
+            </p>
             {loading && pending === null && !pendingError ? (
               <Skeleton className="mt-1 h-7 w-16" />
             ) : pendingError ? (
@@ -179,7 +181,9 @@ function OverviewPage() {
 
       {unmonitored.length ? (
         <section className="mt-8">
-          <h2 className="mb-1 text-sm font-semibold tracking-tight text-foreground">Not monitored</h2>
+          <h2 className="mb-1 text-sm font-semibold tracking-tight text-foreground">
+            Not monitored
+          </h2>
           <p className="mb-3 text-xs text-muted-foreground">
             Nothing in the codebase measures these yet. They are listed so nobody mistakes silence
             for health.

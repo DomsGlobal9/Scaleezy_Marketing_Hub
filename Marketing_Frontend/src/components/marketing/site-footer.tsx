@@ -11,7 +11,7 @@ const LEGAL_LINKS = [
  */
 export function SiteFooter() {
   return (
-    <footer className="mt-12 border-t border-border bg-card/40">
+    <footer className="mt-12 border-t border-border bg-background">
       <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 px-4 py-6 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-10">
         <p className="text-xs text-muted-foreground">
           © {new Date().getFullYear()} Scaleezy. All rights reserved.

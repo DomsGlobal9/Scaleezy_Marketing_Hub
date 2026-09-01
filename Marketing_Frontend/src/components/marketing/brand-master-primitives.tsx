@@ -98,7 +98,7 @@ export function Chip({
     hard: "border-foreground/25 bg-foreground/5 text-foreground",
     soft: "border-border bg-muted/60 text-muted-foreground",
     user: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700",
-    ai: "border-sky-500/30 bg-sky-500/10 text-sky-700",
+    ai: "border-primary/30 bg-primary/10 text-foreground",
     warn: "border-amber-500/30 bg-amber-500/10 text-amber-700",
   } as const;
   return (

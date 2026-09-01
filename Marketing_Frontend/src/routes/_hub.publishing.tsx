@@ -70,12 +70,7 @@ export const Route = createFileRoute("/_hub/publishing")({
 });
 
 type WorkflowStep =
-  | "create_or_upload"
-  | "ai_form"
-  | "ai_generating"
-  | "manual_upload"
-  | "preview"
-  | "publish_setup";
+  "create_or_upload" | "ai_form" | "ai_generating" | "manual_upload" | "preview" | "publish_setup";
 
 /** What the AI is asked to produce. Drives the extra fields on the brief. */
 type ContentType = "poster" | "video" | "carousel";
@@ -422,7 +417,9 @@ function PublishingPage() {
       .then((item) => {
         if (cancelled) return;
         if (item.status !== "APPROVED") {
-          throw new Error(`Content is ${item.status.replaceAll("_", " ").toLowerCase()}, not approved.`);
+          throw new Error(
+            `Content is ${item.status.replaceAll("_", " ").toLowerCase()}, not approved.`,
+          );
         }
         const mappedType: ContentType =
           item.content_format === "VIDEO"
@@ -494,9 +491,7 @@ function PublishingPage() {
    * too long, so saving an uploaded poster failed every time. The asset
    * upload below has always produced a real URL; nothing was passing it on.
    */
-  const ensureDraftAsset = async (
-    draft: DraftAsset,
-  ): Promise<{ id: string; fileUrl: string }> => {
+  const ensureDraftAsset = async (draft: DraftAsset): Promise<{ id: string; fileUrl: string }> => {
     if (draft.id) return { id: draft.id, fileUrl: draft.previewUrl ?? "" };
     const workspaceId = readSelectedWorkspaceId();
     if (!workspaceId) throw new Error("Select a client before saving content.");
@@ -795,7 +790,7 @@ function PublishingPage() {
         source: "ai",
         contentType,
         campaign: campaignName,
-        tone: "from-[#F7F3EE] to-[#7C3AED]/20",
+        tone: "",
         postTitle: d.postTitle || `${campaignName} Announcement`,
         postDescription: d.postDescription || "",
         postHashtags: d.postHashtags || "",
@@ -893,7 +888,7 @@ function PublishingPage() {
           source: "upload",
           contentType: "video",
           campaign: d.campaignName || "Uploaded Video",
-          tone: "from-blue-500/20 to-purple-500/20",
+          tone: "",
           postTitle: d.postTitle || "",
           postDescription: d.postDescription || "",
           postHashtags: d.postHashtags || "",
@@ -971,7 +966,7 @@ function PublishingPage() {
             source: "upload",
             contentType: "poster",
             campaign: d.postTitle || "Final Poster",
-            tone: "from-blue-500/20 to-purple-500/20",
+            tone: "",
             postTitle: d.postTitle || "",
             postDescription: d.postDescription || "",
             postHashtags: d.postHashtags || "",
@@ -1023,18 +1018,18 @@ function PublishingPage() {
                   setReferenceImageBase64("");
                   setStep("ai_form");
                 }}
-                className="group relative flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-[#7C3AED]/20 bg-[#F7F3EE] p-8 text-center transition-all hover:border-[#7C3AED] hover:shadow-md"
+                className="group relative flex flex-col items-center justify-center gap-4 rounded-lg border border-primary/35 bg-primary/8 p-8 text-center transition-colors hover:border-primary"
               >
-                <div className="flex size-14 items-center justify-center rounded-full bg-[#7C3AED] text-white shadow-lg">
+                <div className="flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground">
                   <Sparkles className="size-6" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-semibold text-[#7C3AED]">✨ Generate with AI</h3>
+                  <h3 className="text-lg font-semibold text-foreground">Generate with AI</h3>
                   <p className="mt-2 text-sm text-muted-foreground">
                     Create marketing content using AI.
                   </p>
                 </div>
-                <div className="mt-4 rounded-full bg-[#7C3AED] px-6 py-2 text-sm font-medium text-white transition-transform group-hover:scale-105 shadow-sm">
+                <div className="mt-4 rounded-lg bg-primary px-6 py-2 text-sm font-semibold text-primary-foreground transition-colors group-hover:bg-foreground group-hover:text-background">
                   Generate Content
                 </div>
               </button>
@@ -1065,23 +1060,23 @@ function PublishingPage() {
         {/* STEP 1A: GEMINI FORM */}
         {step === "ai_form" && (
           <section className="surface-card overflow-hidden">
-            <div className="border-b border-[#7C3AED]/10 bg-[#F7F3EE] p-5 sm:px-8 sm:py-6">
+            <div className="border-b border-border bg-secondary/70 p-5 sm:px-8 sm:py-6">
               <div className="flex items-center gap-4">
                 <button
                   onClick={() => setStep("create_or_upload")}
-                  className="text-[#7C3AED]/70 hover:text-[#7C3AED] transition-colors p-2 -ml-2 rounded-full hover:bg-white/50"
+                  className="-ml-2 rounded-full p-2 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
                   aria-label="Go back"
                 >
                   <ArrowLeft className="size-5" />
                 </button>
-                <div className="flex size-12 items-center justify-center rounded-xl bg-[#7C3AED] text-white shadow-sm">
+                <div className="flex size-12 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                   <Sparkles className="size-6" />
                 </div>
                 <div>
-                  <h2 className="text-2xl font-semibold tracking-tight text-[#7C3AED]">
+                  <h2 className="text-2xl font-semibold tracking-tight text-foreground">
                     GENERATE WITH AI
                   </h2>
-                  <p className="text-xs font-semibold tracking-widest text-[#7C3AED]/70 uppercase mt-1">
+                  <p className="mt-1 text-xs font-semibold tracking-widest text-muted-foreground uppercase">
                     POWERED BY AI
                   </p>
                 </div>
@@ -1090,7 +1085,7 @@ function PublishingPage() {
 
             <div className="p-5 sm:p-8">
               {referenceImageBase64 && (
-                <div className="mb-6 flex items-start gap-4 p-4 rounded-xl border border-[#7C3AED]/20 bg-[#7C3AED]/5">
+                <div className="mb-6 flex items-start gap-4 rounded-lg border border-primary/30 bg-primary/6 p-4">
                   <div className="relative w-24 h-24 rounded-lg overflow-hidden shrink-0 border border-border">
                     <img
                       src={referenceImageBase64}
@@ -1139,17 +1134,16 @@ function PublishingPage() {
                         className={cn(
                           "flex items-center gap-3 rounded-xl border p-4 text-left transition-colors",
                           active
-                            ? "border-[#7C3AED] bg-[#7C3AED]/5"
+                            ? "border-primary bg-primary/6"
                             : "border-border hover:bg-secondary/60",
-                          !ct.available &&
-                            "cursor-not-allowed opacity-60 hover:bg-transparent",
+                          !ct.available && "cursor-not-allowed opacity-60 hover:bg-transparent",
                         )}
                       >
                         <span
                           className={cn(
                             "grid size-10 shrink-0 place-items-center rounded-lg",
                             active
-                              ? "bg-[#7C3AED] text-white"
+                              ? "bg-primary text-primary-foreground"
                               : "bg-secondary text-muted-foreground",
                           )}
                         >
@@ -1203,7 +1197,7 @@ function PublishingPage() {
                 <div className="mt-8 rounded-xl border border-border p-5">
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
                     <div className="flex min-w-0 items-center gap-2">
-                      <Video className="size-4 text-[#7C3AED]" />
+                      <Video className="size-4 text-primary" />
                       <h3 className="text-sm font-semibold text-foreground">Video settings</h3>
                     </div>
                     {/* The generator reads none of these, so they are shown as
@@ -1281,7 +1275,7 @@ function PublishingPage() {
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <Images className="size-4 text-[#7C3AED]" />
+                        <Images className="size-4 text-primary" />
                         <h3 className="text-sm font-semibold text-foreground">Carousel slides</h3>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">
@@ -1304,7 +1298,7 @@ function PublishingPage() {
                             below, and a grip icon only invited a gesture the
                             list has never supported. */}
                         <div className="flex flex-col items-center gap-1 pt-1">
-                          <span className="grid size-7 place-items-center rounded-full bg-[#7C3AED] text-xs font-semibold text-white">
+                          <span className="grid size-7 place-items-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
                             {i + 1}
                           </span>
                         </div>
@@ -1455,7 +1449,7 @@ function PublishingPage() {
                       ? "Generation unlocks once Scaleezy approves this client."
                       : undefined
                   }
-                  className="bg-[#7C3AED] hover:bg-[#6D28D9] text-white gap-2"
+                  className="gap-2"
                 >
                   <Sparkles className="size-4" /> Generate with AI
                 </Button>
@@ -1469,9 +1463,9 @@ function PublishingPage() {
 
         {/* STEP 1A: GEMINI GENERATING */}
         {step === "ai_generating" && (
-          <section className="surface-card p-12 text-center flex flex-col items-center justify-center border border-[#7C3AED]/30 bg-[#F7F3EE] min-h-[400px]">
-            <Loader2 className="size-12 animate-spin text-[#7C3AED] mb-6" />
-            <h3 className="text-2xl font-semibold text-[#7C3AED]">AI is working...</h3>
+          <section className="surface-card flex min-h-[400px] flex-col items-center justify-center border-primary/30 bg-primary/6 p-12 text-center">
+            <Loader2 className="mb-6 size-12 animate-spin text-primary" />
+            <h3 className="text-2xl font-semibold text-foreground">AI is working...</h3>
             <p className="mt-3 text-muted-foreground max-w-md text-base">{workingMessage}</p>
             {workingKind === "generate" ? (
               <Button variant="ghost" className="mt-6" onClick={cancelGeneration}>
@@ -1570,9 +1564,8 @@ function PublishingPage() {
                 <div className="mt-4 rounded-xl border border-border overflow-hidden bg-background">
                   <div
                     className={cn(
-                      "flex items-end bg-gradient-to-br p-6 relative overflow-hidden group",
+                      "group relative flex items-end overflow-hidden bg-secondary p-6",
                       asset.previewUrl ? "h-auto min-h-[280px] cursor-pointer" : "h-64",
-                      asset.tone || "from-secondary to-muted",
                     )}
                     onClick={() =>
                       asset.previewUrl && asset.contentType !== "video" && setShowFullImage(true)
@@ -1609,7 +1602,7 @@ function PublishingPage() {
 
                   <div className="p-6">
                     {asset.source === "ai" ? (
-                      <div className="inline-flex items-center gap-2 rounded-full bg-[#7C3AED]/10 px-3 py-1.5 text-xs font-medium text-[#7C3AED] mb-5">
+                      <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/8 px-3 py-1.5 text-xs font-semibold text-foreground">
                         <Sparkles className="size-3.5" /> Generated with AI
                       </div>
                     ) : (
@@ -1665,7 +1658,7 @@ function PublishingPage() {
                     {asset.contentType === "carousel" && asset.slides?.length ? (
                       <div className="mt-6 border-t border-border pt-6">
                         <div className="flex items-center gap-2">
-                          <Images className="size-4 text-[#7C3AED]" />
+                          <Images className="size-4 text-primary" />
                           <h4 className="text-sm font-semibold text-foreground">
                             Slide order ({asset.slides.length})
                           </h4>
@@ -1683,7 +1676,7 @@ function PublishingPage() {
                                   className="size-12 shrink-0 rounded-lg border border-border object-cover"
                                 />
                               ) : (
-                                <span className="grid size-12 shrink-0 place-items-center rounded-lg bg-[#7C3AED]/10 text-sm font-semibold text-[#7C3AED]">
+                                <span className="grid size-12 shrink-0 place-items-center rounded-lg bg-primary/10 text-sm font-semibold text-foreground">
                                   {i + 1}
                                 </span>
                               )}
@@ -1715,7 +1708,8 @@ function PublishingPage() {
                       </div>
                     ) : (
                       <p className="mt-6 rounded-xl border border-emerald-500/25 bg-emerald-500/8 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
-                        This is the approved version. Its copy and media are locked while publishing.
+                        This is the approved version. Its copy and media are locked while
+                        publishing.
                       </p>
                     )}
                   </div>
@@ -1764,8 +1758,7 @@ function PublishingPage() {
                   <div className="mt-4 space-y-2">
                     {accountsLoading ? (
                       <p className="flex items-center gap-2 rounded-xl border border-dashed border-border px-3 py-6 text-sm text-muted-foreground">
-                        <Loader2 className="size-4 animate-spin" /> Loading your connected
-                        accounts…
+                        <Loader2 className="size-4 animate-spin" /> Loading your connected accounts…
                       </p>
                     ) : accounts.length === 0 ? (
                       <p className="rounded-xl border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">

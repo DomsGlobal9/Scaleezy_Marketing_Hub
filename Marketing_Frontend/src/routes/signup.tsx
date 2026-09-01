@@ -1,10 +1,11 @@
 import { createFileRoute, Link, redirect, useNavigate, useRouter } from "@tanstack/react-router";
-import { AlertCircle, Loader2, Sparkles, UserPlus } from "lucide-react";
+import { AlertCircle, Loader2, UserPlus } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ScaleezyLogo } from "@/components/marketing/brand-logo";
 import { ApiError, apiPost } from "@/lib/api";
 import type { Session } from "@/lib/auth";
 
@@ -78,7 +79,10 @@ function SignupPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const canSubmit =
-    brandName.trim().length > 0 && email.trim().length > 0 && password.length >= 8 && confirm.length > 0;
+    brandName.trim().length > 0 &&
+    email.trim().length > 0 &&
+    password.length >= 8 &&
+    confirm.length > 0;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -126,22 +130,19 @@ function SignupPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-10">
-      <div className="w-full max-w-sm">
+    <div className="flex min-h-screen items-center justify-center bg-brand-dark px-4 py-10">
+      <div className="w-full max-w-md">
         <div className="mb-8 flex flex-col items-center text-center">
-          <span className="grid size-12 place-items-center rounded-xl bg-brand-dark text-gold">
-            <Sparkles className="size-6" strokeWidth={1.75} />
-          </span>
-          <h1 className="mt-4 font-display text-2xl font-semibold tracking-tight text-foreground">
-            Scaleezy
-          </h1>
-          <p className="mt-1 text-[0.625rem] tracking-[0.18em] text-muted-foreground uppercase">
+          <ScaleezyLogo className="w-[12rem]" priority />
+          <p className="mt-3 text-[0.625rem] tracking-[0.18em] text-white/45 uppercase">
             Marketing Hub
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="surface-card p-6" noValidate>
-          <h2 className="text-lg font-semibold tracking-tight text-foreground">Create your account</h2>
+        <form onSubmit={handleSubmit} className="surface-card p-6 sm:p-8" noValidate>
+          <h2 className="text-lg font-semibold tracking-tight text-foreground">
+            Create your account
+          </h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Tell us about your brand. Scaleezy reviews every new brand before calibration is
             unlocked; you can add knowledge and inspirations straight away.
@@ -268,12 +269,12 @@ function SignupPage() {
           </Button>
         </form>
 
-        <p className="mt-6 text-center text-xs text-muted-foreground">
+        <p className="mt-6 text-center text-xs text-white/50">
           Already have an account?{" "}
           <Link
             to="/login"
             search={{ redirect: undefined }}
-            className="font-medium text-foreground underline-offset-4 hover:underline"
+            className="font-semibold text-primary underline-offset-4 hover:underline"
           >
             Sign in
           </Link>

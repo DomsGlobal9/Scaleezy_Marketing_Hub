@@ -1,10 +1,11 @@
 import { createFileRoute, Link, redirect, useNavigate, useRouter } from "@tanstack/react-router";
-import { AlertCircle, Loader2, LogIn, Sparkles } from "lucide-react";
+import { AlertCircle, Loader2, LogIn } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ScaleezyLogo } from "@/components/marketing/brand-logo";
 import { apiPost } from "@/lib/api";
 import { safeInternalPath, type Session } from "@/lib/auth";
 
@@ -66,21 +67,16 @@ function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-10">
-      <div className="w-full max-w-sm">
+    <div className="flex min-h-screen items-center justify-center bg-brand-dark px-4 py-10">
+      <div className="w-full max-w-md">
         <div className="mb-8 flex flex-col items-center text-center">
-          <span className="grid size-12 place-items-center rounded-xl bg-brand-dark text-gold">
-            <Sparkles className="size-6" strokeWidth={1.75} />
-          </span>
-          <h1 className="mt-4 font-display text-2xl font-semibold tracking-tight text-foreground">
-            Scaleezy
-          </h1>
-          <p className="mt-1 text-[0.625rem] tracking-[0.18em] text-muted-foreground uppercase">
+          <ScaleezyLogo className="w-[12rem]" priority />
+          <p className="mt-3 text-[0.625rem] tracking-[0.18em] text-white/45 uppercase">
             Marketing Hub
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="surface-card p-6" noValidate>
+        <form onSubmit={handleSubmit} className="surface-card p-6 sm:p-8" noValidate>
           <h2 className="text-lg font-semibold tracking-tight text-foreground">Sign in</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Use your workspace credentials to continue.
@@ -148,13 +144,16 @@ function LoginPage() {
           </Button>
         </form>
 
-        <p className="mt-6 text-center text-xs text-muted-foreground">
+        <p className="mt-6 text-center text-xs text-white/50">
           New to Scaleezy?{" "}
-          <Link to="/signup" className="font-medium text-foreground underline-offset-4 hover:underline">
+          <Link
+            to="/signup"
+            className="font-semibold text-primary underline-offset-4 hover:underline"
+          >
             Create an account
           </Link>
         </p>
-        <p className="mt-2 text-center text-xs text-muted-foreground">
+        <p className="mt-2 text-center text-xs text-white/40">
           Trouble signing in? Contact your workspace administrator.
         </p>
       </div>

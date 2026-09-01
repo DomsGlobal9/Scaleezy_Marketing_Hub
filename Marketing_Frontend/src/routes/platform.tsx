@@ -26,6 +26,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ScaleezyLogo } from "@/components/marketing/brand-logo";
 import { apiPost } from "@/lib/api";
 import { clearMeCache, fetchMe, type Me } from "@/lib/platform";
 import { clearWorkspaces } from "@/lib/workspace";
@@ -66,8 +67,8 @@ const NAV = [
 
 function ConsoleNav({ onNavigate }: { onNavigate?: () => void }) {
   return (
-    <nav className="space-y-1">
-      <p className="mb-3 px-3 text-[0.6875rem] font-semibold tracking-[0.14em] text-slate-500 uppercase">
+    <nav className="space-y-1" aria-label="Platform console">
+      <p className="mb-3 px-3 text-[0.625rem] font-semibold tracking-[0.16em] text-white/35 uppercase">
         Console
       </p>
       {NAV.map((item) => (
@@ -76,9 +77,10 @@ function ConsoleNav({ onNavigate }: { onNavigate?: () => void }) {
           to={item.to}
           activeOptions={{ exact: item.exact }}
           onClick={onNavigate}
-          className="group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-200/70 hover:text-slate-900 data-[status=active]:bg-slate-900 data-[status=active]:text-white"
+          className="group relative flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-white/65 transition-colors hover:bg-white/8 hover:text-white data-[status=active]:bg-white/6 data-[status=active]:text-primary"
         >
-          <item.icon className="size-4 shrink-0" strokeWidth={1.75} />
+          <span className="absolute top-1/2 -left-3 hidden h-8 w-1 -translate-y-1/2 rounded-r-full bg-primary group-data-[status=active]:block" />
+          <item.icon className="size-5 shrink-0" strokeWidth={1.75} />
           <span className="truncate">{item.label}</span>
         </Link>
       ))}
@@ -88,7 +90,7 @@ function ConsoleNav({ onNavigate }: { onNavigate?: () => void }) {
 
 function ModeBadge() {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/50 bg-amber-400/15 px-2.5 py-0.5 text-[0.625rem] font-bold tracking-[0.16em] text-amber-200 uppercase">
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/45 bg-primary/10 px-2.5 py-1 text-[0.625rem] font-bold tracking-[0.16em] text-primary uppercase">
       <ShieldCheck className="size-3" /> Platform mode
     </span>
   );
@@ -108,32 +110,31 @@ function TopBar({ onOpenMenu }: { onOpenMenu?: () => void }) {
     };
   }, []);
   return (
-    <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-900 text-slate-100">
-      <div className="flex items-center gap-3 px-4 py-2.5 sm:px-6">
+    <header className="sticky top-0 z-30 h-[72px] border-b border-white/10 bg-brand-dark text-white">
+      <div className="flex h-full items-center gap-4 px-4 sm:px-6 lg:px-8">
         {onOpenMenu ? (
           <Button
             variant="ghost"
             size="icon"
-            className="text-slate-100 hover:bg-slate-800 hover:text-white lg:hidden"
+            className="text-white hover:bg-white/10 hover:text-primary lg:hidden"
             aria-label="Open console navigation"
             onClick={onOpenMenu}
           >
             <Menu className="size-5" />
           </Button>
         ) : null}
-        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-slate-700 text-amber-300">
-          <ShieldCheck className="size-4" strokeWidth={2} />
-        </span>
+        <ScaleezyLogo className="hidden w-[9.5rem] sm:block" priority />
+        <span className="hidden h-7 w-px bg-white/15 sm:block" />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold tracking-tight">Scaleezy Platform Console</p>
-          <p className="hidden truncate text-[0.6875rem] text-slate-400 sm:block">
+          <p className="truncate text-sm font-semibold tracking-tight">Platform Console</p>
+          <p className="hidden truncate text-[0.6875rem] text-white/45 md:block">
             Signed in as {me?.username ?? "—"} · every action here is audited
           </p>
         </div>
         <ModeBadge />
         <Link
           to="/"
-          className="hidden items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-800 sm:inline-flex"
+          className="hidden items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-xs font-semibold text-white/70 transition-colors hover:border-primary/60 hover:text-primary sm:inline-flex"
         >
           <ArrowLeft className="size-3.5" /> Back to hub
         </Link>
@@ -165,7 +166,7 @@ function SignOut({ onDone }: { onDone?: () => void }) {
     <Button
       variant="ghost"
       size="sm"
-      className="w-full justify-start text-slate-600 hover:text-slate-900"
+      className="w-full justify-start text-white/55 hover:bg-white/8 hover:text-white"
       onClick={() => void signOut()}
       disabled={busy}
     >
@@ -176,15 +177,17 @@ function SignOut({ onDone }: { onDone?: () => void }) {
 
 function ConsoleSkeleton() {
   return (
-    <div className="min-h-screen bg-slate-50">
-      <div className="h-[53px] border-b border-slate-800 bg-slate-900" />
-      <div className="mx-auto grid max-w-[1500px] gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[220px_minmax(0,1fr)]">
-        <div className="hidden space-y-2 lg:block">
+    <div className="min-h-screen bg-background">
+      <div className="h-[72px] border-b border-white/10 bg-brand-dark" />
+      <aside className="fixed inset-y-[72px] left-0 hidden w-[236px] bg-brand-dark px-4 py-6 lg:block">
+        <div className="space-y-2">
           {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-9 w-full rounded-lg" />
+            <Skeleton key={i} className="h-11 w-full bg-white/10" />
           ))}
         </div>
-        <div>
+      </aside>
+      <div className="px-4 py-8 sm:px-6 lg:ml-[236px] lg:px-12 lg:py-12">
+        <div className="mx-auto max-w-[1500px]">
           <Skeleton className="h-8 w-64" />
           <Skeleton className="mt-3 h-4 w-96 max-w-full" />
           <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -201,20 +204,29 @@ function ConsoleSkeleton() {
 function ConsoleLayout() {
   const [open, setOpen] = useState(false);
   return (
-    <div className="min-h-screen bg-slate-50 text-foreground">
+    <div className="min-h-screen bg-background text-foreground">
       <TopBar onOpenMenu={() => setOpen(true)} />
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger asChild>
           <span className="hidden" />
         </SheetTrigger>
-        <SheetContent side="left" className="w-[85vw] max-w-[280px] bg-slate-50 px-4 py-6">
+        <SheetContent
+          side="left"
+          className="w-[88vw] max-w-[320px] border-white/10 bg-brand-dark px-4 py-6 text-white [&>button]:text-white"
+        >
           <SheetTitle className="sr-only">Console navigation</SheetTitle>
-          <div className="mb-4">
+          <ScaleezyLogo className="mb-5 w-[10rem]" />
+          <div className="mb-6">
             <ModeBadge />
           </div>
           <ConsoleNav onNavigate={() => setOpen(false)} />
-          <div className="mt-6 space-y-2 border-t border-slate-200 pt-4">
-            <Button variant="ghost" size="sm" className="w-full justify-start" asChild>
+          <div className="mt-6 space-y-2 border-t border-white/12 pt-4">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full justify-start text-white/60 hover:bg-white/8 hover:text-white"
+              asChild
+            >
               <Link to="/" onClick={() => setOpen(false)}>
                 <ArrowLeft className="size-4" /> Back to hub
               </Link>
@@ -224,19 +236,19 @@ function ConsoleLayout() {
         </SheetContent>
       </Sheet>
 
-      <div className="mx-auto grid max-w-[1500px] gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[220px_minmax(0,1fr)]">
-        <aside className="hidden lg:block">
-          <div className="sticky top-[69px] flex flex-col gap-6">
-            <ConsoleNav />
-            <div className="border-t border-slate-200 pt-4">
-              <SignOut />
-            </div>
+      <aside className="fixed inset-y-[72px] left-0 hidden w-[236px] flex-col bg-brand-dark px-4 py-6 lg:flex">
+        <div className="flex flex-1 flex-col gap-6 overflow-y-auto">
+          <ConsoleNav />
+          <div className="mt-auto border-t border-white/12 pt-4">
+            <SignOut />
           </div>
-        </aside>
-        <main className="min-w-0">
+        </div>
+      </aside>
+      <main className="min-w-0 px-4 py-8 sm:px-6 lg:ml-[236px] lg:px-12 lg:py-12">
+        <div className="mx-auto max-w-[1500px]">
           <Outlet />
-        </main>
-      </div>
+        </div>
+      </main>
     </div>
   );
 }

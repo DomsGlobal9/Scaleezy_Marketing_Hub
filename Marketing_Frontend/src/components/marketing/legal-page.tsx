@@ -1,8 +1,9 @@
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, Sparkles } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { SiteFooter } from "@/components/marketing/site-footer";
+import { ScaleezyLogo } from "@/components/marketing/brand-logo";
 
 /**
  * Shell for the public legal pages. These sit outside the `_hub` layout so they
@@ -22,24 +23,12 @@ export function LegalPage({
 }) {
   return (
     <div className="flex min-h-screen flex-col bg-background">
-      <header className="border-b border-border bg-card">
+      <header className="border-b border-white/10 bg-brand-dark text-white">
         <div className="mx-auto flex w-full max-w-[900px] items-center justify-between gap-4 px-4 py-4 sm:px-6">
-          <span className="flex min-w-0 items-center gap-3">
-            <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand-dark text-gold">
-              <Sparkles className="size-4.5" strokeWidth={1.75} />
-            </span>
-            <span className="min-w-0">
-              <span className="block truncate font-display text-lg leading-none font-semibold tracking-tight text-foreground">
-                Scaleezy
-              </span>
-              <span className="mt-1 block text-[0.625rem] tracking-[0.18em] text-muted-foreground uppercase">
-                Marketing Hub
-              </span>
-            </span>
-          </span>
+          <ScaleezyLogo className="w-[10rem]" priority />
           <Link
             to="/"
-            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-white/15 px-3 py-2 text-sm font-semibold text-white/65 transition-colors hover:border-primary/60 hover:text-primary"
           >
             <ArrowLeft className="size-4" />
             <span className="hidden sm:inline">Back to hub</span>

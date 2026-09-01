@@ -130,10 +130,15 @@ function EditorSheet({
     () => (file && file.type.startsWith("image/") ? URL.createObjectURL(file) : null),
     [file],
   );
-  useEffect(() => () => (filePreview ? URL.revokeObjectURL(filePreview) : undefined), [filePreview]);
+  useEffect(
+    () => () => (filePreview ? URL.revokeObjectURL(filePreview) : undefined),
+    [filePreview],
+  );
 
-  const set = <K extends keyof PlatformInspirationInput>(key: K, value: PlatformInspirationInput[K]) =>
-    setForm((f) => ({ ...f, [key]: value }));
+  const set = <K extends keyof PlatformInspirationInput>(
+    key: K,
+    value: PlatformInspirationInput[K],
+  ) => setForm((f) => ({ ...f, [key]: value }));
 
   const fileTooBig = !!file && file.size > LIBRARY_UPLOAD_MAX_MB * 1024 * 1024;
   const contentOk =
@@ -161,7 +166,9 @@ function EditorSheet({
       channel: form.channel.trim(),
       tags,
     };
-    const kindWord = item ? KIND_LABEL[asKind(item.kind)].toLowerCase() : MODE_LABEL[mode].toLowerCase();
+    const kindWord = item
+      ? KIND_LABEL[asKind(item.kind)].toLowerCase()
+      : MODE_LABEL[mode].toLowerCase();
     setConfirm({
       title: item ? `Save changes to "${common.title}"?` : `Add "${common.title}" to the library?`,
       description: item
@@ -177,7 +184,11 @@ function EditorSheet({
           if (!file) return;
           await uploadPlatformInspiration(file, common);
         } else if (mode === "TEXT") {
-          await createPlatformInspiration({ ...common, kind: "TEXT", body: (form.body ?? "").trim() });
+          await createPlatformInspiration({
+            ...common,
+            kind: "TEXT",
+            body: (form.body ?? "").trim(),
+          });
         } else {
           await createPlatformInspiration({ ...common, kind: "LINK" });
         }
@@ -195,12 +206,18 @@ function EditorSheet({
           <SheetHeader>
             <SheetTitle>{item ? "Edit library entry" : "New library entry"}</SheetTitle>
             <SheetDescription>
-              A link, an image, a video, a file or a piece of text — and why the team kept it. Clients
-              get both: the reference itself and the annotation saying why it is good.
+              A link, an image, a video, a file or a piece of text — and why the team kept it.
+              Clients get both: the reference itself and the annotation saying why it is good.
             </SheetDescription>
           </SheetHeader>
           <div className="mt-6 space-y-4">
-            <Field label="Kind" id="lib-kind" hint={item ? "Fixed once created. Retire and add a new entry to change it." : undefined}>
+            <Field
+              label="Kind"
+              id="lib-kind"
+              hint={
+                item ? "Fixed once created. Retire and add a new entry to change it." : undefined
+              }
+            >
               {item ? (
                 <KindBadge kind={item.kind} className="text-xs" />
               ) : (
@@ -230,7 +247,11 @@ function EditorSheet({
             </Field>
 
             <Field label="Title" id="lib-title">
-              <Input id="lib-title" value={form.title} onChange={(e) => set("title", e.target.value)} />
+              <Input
+                id="lib-title"
+                value={form.title}
+                onChange={(e) => set("title", e.target.value)}
+              />
             </Field>
 
             {mode === "LINK" ? (
@@ -315,7 +336,11 @@ function EditorSheet({
               </Field>
             ) : null}
 
-            <Field label="Annotation" id="lib-annotation" hint="What is good about it, in the team's words.">
+            <Field
+              label="Annotation"
+              id="lib-annotation"
+              hint="What is good about it, in the team's words."
+            >
               <Textarea
                 id="lib-annotation"
                 rows={4}
@@ -335,7 +360,11 @@ function EditorSheet({
                 />
               </Field>
               <Field label="Channel" id="lib-channel" hint="Blank = every channel">
-                <Input id="lib-channel" value={form.channel} onChange={(e) => set("channel", e.target.value)} />
+                <Input
+                  id="lib-channel"
+                  value={form.channel}
+                  onChange={(e) => set("channel", e.target.value)}
+                />
               </Field>
             </div>
             <div className="flex justify-end gap-2 pt-2">
@@ -494,7 +523,8 @@ function LibraryPage() {
       <div className="mb-2 flex flex-wrap gap-2">
         {(["ALL", "DRAFT", "PUBLISHED", "RETIRED"] as StatusFilter[]).map((value) => (
           <FilterChip key={value} active={filter === value} onClick={() => setFilter(value)}>
-            {value === "ALL" ? "All" : value.charAt(0) + value.slice(1).toLowerCase()} · {counts[value]}
+            {value === "ALL" ? "All" : value.charAt(0) + value.slice(1).toLowerCase()} ·{" "}
+            {counts[value]}
           </FilterChip>
         ))}
       </div>
@@ -555,12 +585,12 @@ function LibraryPage() {
                   </span>
                 ))}
                 {item.industry ? (
-                  <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[0.625rem] text-sky-700">
+                  <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[0.625rem] text-foreground">
                     {item.industry}
                   </span>
                 ) : null}
                 {item.channel ? (
-                  <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[0.625rem] text-sky-700">
+                  <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[0.625rem] text-foreground">
                     {item.channel}
                   </span>
                 ) : null}

@@ -145,14 +145,20 @@ const STATUS_TONE: Record<string, string> = {
   COMPLETED: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700",
   PENDING: "border-amber-500/30 bg-amber-500/10 text-amber-700",
   DRAFT: "border-border bg-muted/60 text-muted-foreground",
-  IN_PROGRESS: "border-sky-500/30 bg-sky-500/10 text-sky-700",
+  IN_PROGRESS: "border-primary/30 bg-primary/10 text-foreground",
   SUSPENDED: "border-amber-500/30 bg-amber-500/10 text-amber-700",
   ARCHIVED: "border-border bg-muted/60 text-muted-foreground",
   RETIRED: "border-border bg-muted/60 text-muted-foreground",
   REVOKED: "border-border bg-muted/60 text-muted-foreground",
 };
 
-export function StatusPill({ value, className }: { value: string | null | undefined; className?: string }) {
+export function StatusPill({
+  value,
+  className,
+}: {
+  value: string | null | undefined;
+  className?: string;
+}) {
   const text = value || "—";
   return (
     <span
@@ -173,7 +179,7 @@ const FLAG_TONE: Record<string, string> = {
   OVER_QUOTA: "border-destructive/30 bg-destructive/10 text-destructive",
   SPEND_CAP_REACHED: "border-destructive/30 bg-destructive/10 text-destructive",
   FAILING_PUBLISHES: "border-destructive/30 bg-destructive/10 text-destructive",
-  NEVER_GENERATED: "border-sky-500/30 bg-sky-500/10 text-sky-700",
+  NEVER_GENERATED: "border-primary/30 bg-primary/10 text-foreground",
   INACTIVE: "border-border bg-muted/60 text-muted-foreground",
   SUSPENDED: "border-amber-500/30 bg-amber-500/10 text-amber-700",
   ARCHIVED: "border-border bg-muted/60 text-muted-foreground",
@@ -218,7 +224,9 @@ export function renderCell(key: string, value: unknown): ReactNode {
   if (typeof value === "number") return String(value);
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
-    return value.length ? value.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).join(", ") : "—";
+    return value.length
+      ? value.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).join(", ")
+      : "—";
   }
   return <code className="text-[0.6875rem] break-all">{JSON.stringify(value)}</code>;
 }
@@ -300,7 +308,9 @@ export function Panel({
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-semibold tracking-tight text-foreground">{title}</h2>
-          {description ? <p className="mt-0.5 text-xs text-muted-foreground">{description}</p> : null}
+          {description ? (
+            <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+          ) : null}
         </div>
         {action}
       </div>
@@ -330,15 +340,17 @@ export function PlatformPageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
+    <header className="mb-8 flex flex-wrap items-end justify-between gap-5">
       <div className="min-w-0">
-        <p className="text-[0.6875rem] font-semibold tracking-[0.14em] text-slate-500 uppercase">
+        <p className="text-xs font-semibold tracking-[0.13em] text-slate-600 uppercase">
           {eyebrow}
         </p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+        <h1 className="mt-1 text-4xl leading-[1.02] font-bold tracking-[-0.045em] text-foreground sm:text-5xl">
           {title}
         </h1>
-        <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{subtitle}</p>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground sm:text-base">
+          {subtitle}
+        </p>
       </div>
       {actions ? <div className="flex flex-wrap gap-2">{actions}</div> : null}
     </header>

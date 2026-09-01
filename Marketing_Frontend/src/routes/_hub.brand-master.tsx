@@ -1192,48 +1192,53 @@ function BrandMasterPage() {
           onValueChange={(value) => setTab(value as BrandMasterTab)}
           className="space-y-6"
         >
-          <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
-            <TabsTrigger value="overview" className="gap-1.5">
-              <Sparkles className="size-3.5" /> Overview
-            </TabsTrigger>
-            <TabsTrigger value="basics" className="gap-1.5">
-              <IdCard className="size-3.5" /> Brand basics
-            </TabsTrigger>
-            <TabsTrigger value="products" className="gap-1.5">
-              <Package className="size-3.5" /> Products &amp; Audience
-            </TabsTrigger>
-            <TabsTrigger value="knowledge" className="gap-1.5">
-              <BookOpen className="size-3.5" /> Knowledge
-            </TabsTrigger>
-            <TabsTrigger value="inspirations" className="gap-1.5">
-              <Lightbulb className="size-3.5" /> Inspirations
-            </TabsTrigger>
-            <TabsTrigger value="learning" className="gap-1.5">
-              <TrendingUp className="size-3.5" /> Learning
-            </TabsTrigger>
-            <TabsTrigger value="rules" className="gap-1.5">
-              <Scale className="size-3.5" /> Rules
-            </TabsTrigger>
-            <TabsTrigger value="brain" className="gap-1.5">
-              <Brain className="size-3.5" /> Brand Brain
-            </TabsTrigger>
-            <TabsTrigger value="attention" className="gap-1.5">
-              {conflictCount > 0 ? (
-                <AlertTriangle className="size-3.5 text-amber-600" />
-              ) : (
-                <Check className="size-3.5" />
-              )}
-              Attention
-              {conflictCount > 0 ? (
-                <Badge variant="secondary" className="ml-1">
-                  {conflictCount}
-                </Badge>
-              ) : null}
-            </TabsTrigger>
-            <TabsTrigger value="teach" className="gap-1.5">
-              <GraduationCap className="size-3.5" /> Teach Scaleezy
-            </TabsTrigger>
-          </TabsList>
+          <div className="scrollbar-hide -mx-4 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
+            <TabsList
+              aria-label="Brand Master sections"
+              className="flex h-auto min-w-max flex-nowrap justify-start gap-1"
+            >
+              <TabsTrigger value="overview" className="shrink-0 gap-1.5">
+                <Sparkles className="size-3.5" /> Overview
+              </TabsTrigger>
+              <TabsTrigger value="basics" className="shrink-0 gap-1.5">
+                <IdCard className="size-3.5" /> Brand basics
+              </TabsTrigger>
+              <TabsTrigger value="products" className="shrink-0 gap-1.5">
+                <Package className="size-3.5" /> Products &amp; Audience
+              </TabsTrigger>
+              <TabsTrigger value="knowledge" className="shrink-0 gap-1.5">
+                <BookOpen className="size-3.5" /> Knowledge
+              </TabsTrigger>
+              <TabsTrigger value="inspirations" className="shrink-0 gap-1.5">
+                <Lightbulb className="size-3.5" /> Inspirations
+              </TabsTrigger>
+              <TabsTrigger value="learning" className="shrink-0 gap-1.5">
+                <TrendingUp className="size-3.5" /> Learning
+              </TabsTrigger>
+              <TabsTrigger value="rules" className="shrink-0 gap-1.5">
+                <Scale className="size-3.5" /> Rules
+              </TabsTrigger>
+              <TabsTrigger value="brain" className="shrink-0 gap-1.5">
+                <Brain className="size-3.5" /> Brand Brain
+              </TabsTrigger>
+              <TabsTrigger value="attention" className="shrink-0 gap-1.5">
+                {conflictCount > 0 ? (
+                  <AlertTriangle className="size-3.5 text-amber-600" />
+                ) : (
+                  <Check className="size-3.5" />
+                )}
+                Attention
+                {conflictCount > 0 ? (
+                  <Badge variant="secondary" className="ml-1">
+                    {conflictCount}
+                  </Badge>
+                ) : null}
+              </TabsTrigger>
+              <TabsTrigger value="teach" className="shrink-0 gap-1.5">
+                <GraduationCap className="size-3.5" /> Teach Scaleezy
+              </TabsTrigger>
+            </TabsList>
+          </div>
 
           <TabsContent value="overview">
             <OverviewTab

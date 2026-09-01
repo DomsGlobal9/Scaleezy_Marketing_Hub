@@ -17,8 +17,15 @@ const PLATFORM_ICONS: Record<Platform, LucideIcon> = {
   "google-business": MapPin,
 };
 
-export function PlatformIcon({ platform, className }: { platform: Platform | string; className?: string }) {
-  const Icon = PLATFORM_ICONS[platform as Platform] ?? PLATFORM_ICONS[platform.toLowerCase() as Platform];
+export function PlatformIcon({
+  platform,
+  className,
+}: {
+  platform: Platform | string;
+  className?: string;
+}) {
+  const Icon =
+    PLATFORM_ICONS[platform as Platform] ?? PLATFORM_ICONS[platform.toLowerCase() as Platform];
   if (!Icon) return null;
   return (
     <span
@@ -80,7 +87,7 @@ export function PageHeader({
   backTo?: string;
 }) {
   return (
-    <header className="mb-8 grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+    <header className="mb-8 grid gap-5 sm:mb-10 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
       <div className="min-w-0">
         {backTo && (
           <Link
@@ -92,12 +99,14 @@ export function PageHeader({
           </Link>
         )}
         <p className="label-eyebrow">{eyebrow}</p>
-        <h1 className="mt-2 text-3xl leading-tight font-semibold tracking-tight text-foreground sm:text-4xl">
+        <h1 className="mt-2 text-4xl leading-[1.02] font-bold tracking-[-0.045em] text-foreground sm:text-5xl">
           {title}
         </h1>
-        <p className="mt-3 max-w-2xl text-sm text-muted-foreground sm:text-base">{subtitle}</p>
+        <p className="mt-3 max-w-3xl text-base leading-7 text-muted-foreground">{subtitle}</p>
       </div>
-      {actions ? <div className="flex flex-wrap gap-2">{actions}</div> : null}
+      {actions ? (
+        <div className="flex flex-wrap gap-2 sm:justify-start lg:justify-end">{actions}</div>
+      ) : null}
     </header>
   );
 }
@@ -117,8 +126,10 @@ export function SectionTitle({
     <div className="mb-4 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
       <div className="min-w-0">
         {label ? <p className="label-eyebrow">{label}</p> : null}
-        <h2 className="mt-1 text-xl font-semibold tracking-tight text-foreground">{title}</h2>
-        {description ? <p className="mt-1 text-sm text-muted-foreground">{description}</p> : null}
+        <h2 className="mt-1 text-2xl font-bold tracking-[-0.025em] text-foreground">{title}</h2>
+        {description ? (
+          <p className="mt-1 text-sm leading-6 text-muted-foreground">{description}</p>
+        ) : null}
       </div>
       {action}
     </div>
@@ -150,7 +161,7 @@ export function StatCard({
     );
   }
   return (
-    <div className="surface-card p-5 transition-shadow duration-200 hover:shadow-lg">
+    <div className="surface-card p-5 transition-colors duration-200 hover:border-foreground/30">
       <div className="flex items-start justify-between gap-3">
         <span
           className={cn(
