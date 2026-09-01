@@ -312,13 +312,13 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
             layout_config={'regenerating': True},
         )
 
-    def regenerate(self, *, side_effect=None):
+    def regenerate(self, *, side_effect=None, routed=None):
         from apps.gemini.tasks import regenerate_revision
 
         kwargs = (
             {'side_effect': side_effect}
             if side_effect is not None
-            else {'return_value': dict(REVISED)}
+            else {'return_value': dict(routed or REVISED)}
         )
         with patch(
             'apps.context.services.generation.generate_marketing_payload', **kwargs
@@ -353,6 +353,35 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         self.assertEqual(
             source.file_url, 'https://storage.test/generated/take-two.png'
         )
+
+    def test_the_regenerated_revision_is_attributable_like_a_fresh_one(self):
+        from apps.brands.services.brand_brain import rebuild_brand_brain
+        from apps.learning.models import LearningScope
+        from apps.learning.services import create_explicit_rule
+
+        create_explicit_rule(
+            workspace=self.workspace, brand=self.brand,
+            text='Never crop the border work.', scope=LearningScope.BRAND,
+            created_by=self.manager,
+        )
+        rebuild_brand_brain(self.brand)
+        self.brand.refresh_from_db()
+
+        self.regenerate(
+            routed={**REVISED, 'brain_version': self.brand.brain_version}
+        )
+
+        self.revision.refresh_from_db()
+        trace = (self.revision.layout_config or {}).get('generation_trace') or {}
+        self.assertEqual(trace.get('brain_version'), self.brand.brain_version)
+        self.assertTrue(
+            trace.get('rule_ids'),
+            'a regenerated revision must name the rules it read, or the '
+            'learning-usage report undercounts every request-edits pass',
+        )
+        # Stamping the trace did not clobber the rest of the config: the
+        # composer's source record is still alongside it.
+        self.assertIn('source_asset', self.revision.layout_config)
 
     def test_a_failed_regeneration_leaves_the_editable_copy(self):
         self.regenerate(side_effect=RuntimeError('provider down'))

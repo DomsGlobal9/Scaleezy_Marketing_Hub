@@ -265,6 +265,7 @@ def regenerate_revision(revision_id: str):
     from apps.context.services.generation import (
         create_generated_asset,
         generate_marketing_payload,
+        intelligence_in_force,
     )
     from apps.feedback.models import Feedback
     from apps.feedback.training import element_labels
@@ -345,6 +346,16 @@ def regenerate_revision(revision_id: str):
 
     config = dict(revision.layout_config or {})
     config.pop('regenerating', None)
+    # The regeneration is a generation: it must carry the same trace _persist
+    # writes, or the learning-usage report undercounts every request-edits
+    # pass. Inherited keys (copy, reviewer_note, revision_of) stay untouched.
+    config['generation_trace'] = {
+        'brain_version': routed.get('brain_version', ''),
+        **(routed.get('trace') or {}),
+        **intelligence_in_force(
+            revision.brand, str(routed.get('brain_version') or '')
+        ),
+    }
     if asset is not None:
         revision.asset = asset
         revision.preview_url = (payload.get('posterImageUrl') or '')[:1000] or revision.preview_url
