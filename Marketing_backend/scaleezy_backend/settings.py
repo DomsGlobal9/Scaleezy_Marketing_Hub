@@ -206,9 +206,10 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ],
     # Only views that set throttle_classes are throttled; today that is public
-    # signup. Rates live in env so an abuse wave is a config change.
+    # signup. Unset means unthrottled (DRF disables on a None rate); an abuse
+    # wave is handled by setting SIGNUP_THROTTLE_RATE (e.g. "5/hour") in env.
     'DEFAULT_THROTTLE_RATES': {
-        'signup': env('SIGNUP_THROTTLE_RATE', default='5/hour'),
+        'signup': env('SIGNUP_THROTTLE_RATE', default=None),
     },
     # Render (and any reverse proxy) puts the client in X-Forwarded-For and
     # the proxy in REMOTE_ADDR. With this unset every throttled caller shares
