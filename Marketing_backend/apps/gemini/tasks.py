@@ -248,6 +248,50 @@ def sweep_stuck_generations(now=None):
     return swept
 
 
+#: Which feedback groups touch which half of a poster. COPY, LINE_BY_LINE and
+#: STRATEGY are about the words; VISUAL is about the photograph; TYPOGRAPHY,
+#: LOGO and LAYOUT are about the dress the compose engine puts on — no
+#: provider spend fixes those. Colour complaints straddle the photograph and
+#: the dress. Anything unmapped (AUDIO, FORMAT, an unknown key) regenerates
+#: everything, which is exactly what every request-edits did before scoping.
+_COPY_GROUPS = frozenset({'COPY', 'LINE_BY_LINE', 'STRATEGY'})
+_IMAGE_GROUPS = frozenset({'VISUAL'})
+_RESTYLE_GROUPS = frozenset({'TYPOGRAPHY', 'LOGO', 'LAYOUT'})
+_COLOUR_KEYS = frozenset({'brand_colours', 'colour_palette'})
+
+
+def _regeneration_scope(feedback):
+    """What a reviewer's flagged elements actually ask to be changed.
+
+    The founder's question, verbatim: "what if i like some elements in the
+    design and want edits — will it change all or only the ones we request?"
+    Only the ones requested: elements the reviewer did not flag keep their
+    photograph, their words and their look."""
+    keys = list(getattr(feedback, 'element_keys', None) or [])
+    if not keys:
+        return {'copy': True, 'image': True, 'restyle': False}
+
+    from apps.feedback.models import FeedbackElement
+
+    groups = dict(
+        FeedbackElement.objects.filter(key__in=keys).values_list('key', 'group')
+    )
+    scope = {'copy': False, 'image': False, 'restyle': False}
+    for key in keys:
+        group = groups.get(key)
+        if key in _COLOUR_KEYS:
+            scope['image'] = scope['restyle'] = True
+        elif group in _COPY_GROUPS:
+            scope['copy'] = True
+        elif group in _IMAGE_GROUPS:
+            scope['image'] = True
+        elif group in _RESTYLE_GROUPS:
+            scope['restyle'] = True
+        else:
+            scope['copy'] = scope['image'] = True
+    return scope
+
+
 @task
 def regenerate_revision(revision_id: str):
     """
@@ -256,16 +300,20 @@ def regenerate_revision(revision_id: str):
     "Request edits" used to open an identical copy of the rejected version and
     then wait for a human to rewrite it by hand — the note, tags and fix
     request drove nothing. Here they become the instruction for a fresh
-    generation, and the result lands on the revision as new copy and a newly
-    composed poster. Best-effort throughout: any refusal or failure leaves the
+    generation, scoped to what was actually flagged: copy complaints keep the
+    photograph, visual complaints keep the words, and typography/logo/layout
+    complaints re-dress the same photograph without spending a provider call
+    at all. Best-effort throughout: any refusal or failure leaves the
     revision exactly as the editable copy it already was.
     """
     from apps.billing.quota import QuotaExceeded, enforce
     from apps.content.models import ContentItem
     from apps.context.services.generation import (
         create_generated_asset,
+        generate_copy_only,
         generate_marketing_payload,
         intelligence_in_force,
+        retry_image,
     )
     from apps.feedback.models import Feedback
     from apps.feedback.training import element_labels
@@ -329,43 +377,108 @@ def regenerate_revision(revision_id: str):
         'revision_feedback': corrections,
     }
 
-    try:
-        routed = generate_marketing_payload(
-            revision.workspace, brief, instruction=instruction
-        )
-        payload = routed['payload']
-    except Exception:
-        logger.exception("Regeneration failed for revision %s; copy left as-is", revision_id)
-        return finish('FAILED')
-
-    asset = create_generated_asset(revision.workspace, payload, user=revision.created_by)
-    revision.headline = (payload.get('postTitle') or revision.headline or '')[:500]
-    revision.caption = payload.get('postDescription') or revision.caption or ''
-    revision.hashtags = payload.get('postHashtags') or revision.hashtags or ''
-    revision.ai_provider = (routed.get('provider') or revision.ai_provider or '')[:100]
-
+    scope = _regeneration_scope(feedback)
     config = dict(revision.layout_config or {})
     config.pop('regenerating', None)
-    # The regeneration is a generation: it must carry the same trace _persist
-    # writes, or the learning-usage report undercounts every request-edits
-    # pass. Inherited keys (copy, reviewer_note, revision_of) stay untouched.
-    config['generation_trace'] = {
-        'brain_version': routed.get('brain_version', ''),
-        **(routed.get('trace') or {}),
-        **intelligence_in_force(
-            revision.brand, str(routed.get('brain_version') or '')
-        ),
-    }
-    if asset is not None:
-        revision.asset = asset
-        revision.preview_url = (payload.get('posterImageUrl') or '')[:1000] or revision.preview_url
-        # A new photograph replaces the parent's; the old source no longer
-        # describes what any future composition should build from.
-        config.pop('source_asset', None)
+    brain_version = str(getattr(revision.brand, 'brain_version', '') or '')
+
+    if (scope['copy'] and scope['image']) or revision.brand is None:
+        # Everything was flagged (or nothing classifiable): the full
+        # regeneration this task always did.
+        try:
+            routed = generate_marketing_payload(
+                revision.workspace, brief, instruction=instruction
+            )
+            payload = routed['payload']
+        except Exception:
+            logger.exception(
+                "Regeneration failed for revision %s; copy left as-is", revision_id
+            )
+            return finish('FAILED')
+
+        asset = create_generated_asset(
+            revision.workspace, payload, user=revision.created_by
+        )
+        revision.headline = (payload.get('postTitle') or revision.headline or '')[:500]
+        revision.caption = payload.get('postDescription') or revision.caption or ''
+        revision.hashtags = payload.get('postHashtags') or revision.hashtags or ''
+        revision.ai_provider = (routed.get('provider') or revision.ai_provider or '')[:100]
+        # The regeneration is a generation: it must carry the same trace
+        # _persist writes, or the learning-usage report undercounts every
+        # request-edits pass. Inherited keys stay untouched.
+        config['generation_trace'] = {
+            'brain_version': routed.get('brain_version', ''),
+            **(routed.get('trace') or {}),
+            **intelligence_in_force(
+                revision.brand, str(routed.get('brain_version') or '')
+            ),
+        }
+        if asset is not None:
+            revision.asset = asset
+            revision.preview_url = (
+                (payload.get('posterImageUrl') or '')[:1000] or revision.preview_url
+            )
+            # A new photograph replaces the parent's; the old source no longer
+            # describes what any future composition should build from.
+            config.pop('source_asset', None)
+    else:
+        # Surgical: only what the reviewer flagged changes. Elements they
+        # liked keep their photograph, their words and their look.
+        if scope['copy']:
+            try:
+                payload = generate_copy_only(
+                    revision.workspace, revision.brand, brief,
+                    instruction=instruction,
+                )
+            except Exception:
+                logger.exception(
+                    "Copy regeneration failed for revision %s; left as-is",
+                    revision_id,
+                )
+                return finish('FAILED')
+            revision.headline = (
+                payload.get('postTitle') or revision.headline or ''
+            )[:500]
+            revision.caption = payload.get('postDescription') or revision.caption or ''
+            revision.hashtags = payload.get('postHashtags') or revision.hashtags or ''
+        if scope['image']:
+            try:
+                image = retry_image(
+                    revision.workspace, revision.brand, brief,
+                    instruction=instruction,
+                )
+            except Exception:
+                logger.exception(
+                    "Image regeneration failed for revision %s; left as-is",
+                    revision_id,
+                )
+                return finish('FAILED')
+            asset = create_generated_asset(
+                revision.workspace,
+                {'metadata': {'generated_image': image or {}}},
+                user=revision.created_by,
+            )
+            if asset is not None:
+                revision.asset = asset
+                # A new photograph replaces the parent's; the compose below
+                # decides the preview.
+                config.pop('source_asset', None)
+        if scope['copy'] or scope['image']:
+            config['generation_trace'] = {
+                'brain_version': brain_version,
+                **intelligence_in_force(revision.brand, brain_version),
+            }
+        if scope['restyle']:
+            # The complaint is about the dress, not the photograph or the
+            # words: drop the inherited look and let the compose engine pick
+            # this revision's own layout and style variant. No provider spend.
+            config.pop('style_variant', None)
+            revision.layout_plugin = ''
+
     revision.layout_config = config
     revision.save(
         update_fields=[
-            'headline', 'caption', 'hashtags', 'ai_provider',
+            'headline', 'caption', 'hashtags', 'ai_provider', 'layout_plugin',
             'asset', 'preview_url', 'layout_config', 'updated_at',
         ]
     )

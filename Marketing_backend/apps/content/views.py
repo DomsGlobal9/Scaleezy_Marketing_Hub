@@ -272,12 +272,14 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             preview_url=item.preview_url,
             slides=item.slides,
             layout_plugin=item.layout_plugin,
-            # source_asset and the studio's saved copy travel to the revision;
-            # the generation trace does not — it describes the parent's
-            # generation, and carrying it would double-count rule usage.
+            # source_asset, the studio's saved copy and the style variant
+            # travel to the revision — a reviewer who liked the look must get
+            # the same look back unless they flagged it. The generation trace
+            # does not travel: it describes the parent's generation, and
+            # carrying it would double-count rule usage.
             layout_config={
                 key: parent_config[key]
-                for key in ('source_asset', 'copy')
+                for key in ('source_asset', 'copy', 'style_variant')
                 if parent_config.get(key)
             },
             created_by=request.user,

@@ -959,3 +959,27 @@ def retry_image(workspace, brand, brief_extra, *, instruction=''):
         return persist_generated_image(workspace, result)
     except NoProviderAvailable as exc:
         raise NoProviderConfigured(str(exc)) from exc
+
+
+def generate_copy_only(workspace, brand, brief_extra, *, instruction=''):
+    """Regenerate ONLY the words. The photograph the reviewer liked stays won.
+
+    The surgical half of request-edits: when every flagged element is about
+    copy, spending an image generation — and changing a picture the reviewer
+    did not complain about — would be worse than doing nothing."""
+    _require_spend_approved(workspace)
+    context = build_generation_context(
+        workspace, brand, TaskType.COPY, instruction=instruction,
+    )
+    brief = {**brief_extra, **context_as_brief(context)}
+    try:
+        result = AIRouter(workspace).dispatch(Capability.TEXT, brief)
+        validate_output(Capability.TEXT, result, context)
+    except NoProviderAvailable as exc:
+        raise NoProviderConfigured(str(exc)) from exc
+    raw = result.get('raw') or {}
+    return {
+        'postTitle': result.get('headline') or raw.get('postTitle', ''),
+        'postDescription': result.get('caption') or raw.get('postDescription', ''),
+        'postHashtags': result.get('hashtags') or raw.get('postHashtags', ''),
+    }
