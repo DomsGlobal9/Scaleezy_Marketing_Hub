@@ -303,9 +303,16 @@ Return ONLY a valid JSON object with these exact keys:
         brand_tone = request_data.get('brand_tone', '')
         b64_img = request_data.get('reference_image_base64', '')
         # Rules the training engine has learned from repeated reviewer
-        # rejections. Placed near the end of the prompt, where the model
-        # weights instructions most heavily.
-        brand_rules = request_data.get('brand_rules') or []
+        # rejections, merged with the Context Gateway's brand-context lines —
+        # the queued and revision paths send `brand_context` and not
+        # `brand_rules`, and a constraint that only reaches one path is not a
+        # constraint. Deduplicated because the synchronous path sends the same
+        # lines under both keys. Placed near the end of the prompt, where the
+        # model weights instructions most heavily.
+        brand_rules = list(dict.fromkeys([
+            *(request_data.get('brand_rules') or []),
+            *(request_data.get('brand_context') or []),
+        ]))
 
         prompt_text = f"""You are an elite, award-winning creative director and social media marketing expert.
 
@@ -328,9 +335,10 @@ For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just 
 - **The Setting/Background**: Place the product in a dynamic, immersive environment (e.g., a glowing enchanted forest, a high-end minimalist marble studio, a neon-lit futuristic street). 
 - **Lighting & Atmosphere**: (e.g., dramatic chiaroscuro, soft golden hour sunlight, moody rim lighting).
 - **Color Palette**: Highly curated colors that perfectly match the "{brand_tone}" tone.
-- **Typography & Text Integration**: Describe exactly how the text ("{campaign}" and "{offer}") should elegantly integrate into the composition (e.g., bold gold foil serif font, glowing neon letters floating in the background).
 - **Mood & Emotion**: (e.g., luxurious and mysterious, vibrant and energetic).
 - Make it suitable for Instagram (1080x1350 portrait).
+
+CRITICAL — NO TEXT IN THE IMAGE: the `imagePrompt` must describe a photograph/visual with absolutely no text, lettering, numbers, captions, watermarks or logos rendered anywhere in it. All headlines, offers and typography are composed onto the image later by a separate layout engine; text baked into the image gets cropped and fights the real typography. The `imagePrompt` itself must end with the sentence: "No text, no lettering, no words, no logos, no watermarks anywhere in the image."
 
 {cls._rules_block(brand_rules)}
 Respond ONLY with a valid JSON object (no markdown, no code fences, no extra text):
@@ -373,7 +381,12 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                 "postTitle": f"{campaign} — {occasion}",
                 "postDescription": raw_text[:300],
                 "postHashtags": f"#{occasion.replace(' ', '')} #{product.replace(' ', '')}",
-                "imagePrompt": f"Professional marketing poster for {campaign}, {product}, {occasion}, {offer}, {brand_tone} tone, Instagram portrait format 1080x1350"
+                "imagePrompt": (
+                    f"Professional marketing visual for {campaign}, {product}, "
+                    f"{occasion}, {brand_tone} tone, Instagram portrait format "
+                    "1080x1350. No text, no lettering, no words, no logos, no "
+                    "watermarks anywhere in the image."
+                )
             }
 
         return parsed
@@ -387,10 +400,19 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         """
         client = cls._get_client(api_key)
         
-        # We ONLY pass the text prompt to the image model. 
+        # We ONLY pass the text prompt to the image model.
         # The reference image was already analyzed in Step 1 to create this highly detailed prompt.
         # Passing it here again restricts the AI to just editing the original image instead of generating a brand new creative one.
-        contents = [image_prompt]
+        #
+        # The no-text suffix is appended here as well as demanded of Step 1:
+        # the composition engine owns every word on the poster, and an image
+        # model that renders its own headline produces the half-cropped double
+        # text reviewers called "unfinished".
+        contents = [
+            image_prompt.rstrip()
+            + "\n\nStrict requirement: no text, no lettering, no words, no "
+            "numbers, no logos, no watermarks anywhere in the image."
+        ]
 
         response = client.models.generate_content(
             model=cls.IMAGE_MODEL,

@@ -218,7 +218,9 @@ class OpenAICompatibleTextAdapter(AIProviderAdapter):
             'model': self.model,
             'prompt': (
                 'Create one polished, brand-aligned marketing visual. '
-                'Do not invent business claims.\nBRIEF_JSON:\n'
+                'Do not invent business claims. The image must contain no '
+                'text, lettering, numbers, logos or watermarks - typography '
+                'is composed onto it separately.\nBRIEF_JSON:\n'
                 + self._brief_json(brief)
             ),
             'n': 1,

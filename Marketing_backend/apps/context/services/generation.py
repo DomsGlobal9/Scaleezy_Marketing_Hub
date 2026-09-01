@@ -291,8 +291,13 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
     image_context = build_generation_context(
         workspace, brand, TaskType.IMAGE, instruction=instruction,
     )
-    text_brief = {**context_as_brief(text_context), **brief_extra}
-    image_brief = {**context_as_brief(image_context), **brief_extra}
+    # The gateway's cut wins for the keys it owns: the synchronous endpoint's
+    # brief_extra carries a COPY-task brand_context, and merging it last used
+    # to clobber the IMAGE brief's own lines — including the no-text
+    # constraint, which then never reached the image provider on the main
+    # path. Campaign fields only exist in brief_extra, so they survive.
+    text_brief = {**brief_extra, **context_as_brief(text_context)}
+    image_brief = {**brief_extra, **context_as_brief(image_context)}
 
     trace = {
         'brain_version': text_context['brain_version'],

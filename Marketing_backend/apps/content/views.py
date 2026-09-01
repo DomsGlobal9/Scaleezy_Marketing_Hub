@@ -264,11 +264,14 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             preview_url=item.preview_url,
             slides=item.slides,
             layout_plugin=item.layout_plugin,
-            layout_config=(
-                {'source_asset': parent_config['source_asset']}
-                if parent_config.get('source_asset')
-                else {}
-            ),
+            # source_asset and the studio's saved copy travel to the revision;
+            # the generation trace does not — it describes the parent's
+            # generation, and carrying it would double-count rule usage.
+            layout_config={
+                key: parent_config[key]
+                for key in ('source_asset', 'copy')
+                if parent_config.get(key)
+            },
             created_by=request.user,
         )
 

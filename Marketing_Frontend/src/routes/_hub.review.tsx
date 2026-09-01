@@ -48,6 +48,7 @@ interface ContentItem {
   layout_config: Record<string, unknown> | null;
   layout_plugin: string;
   headline: string;
+  cta: string;
   caption: string;
   hashtags: string;
   preview_url: string;
@@ -67,6 +68,14 @@ const TABS = [
   { key: "DONE", label: "Done", statuses: ["APPROVED", "PUBLISHED"] },
   { key: "REJECTED", label: "Rejected", statuses: ["REJECTED"] },
 ] as const;
+
+/** A string the studio saved in layout_config.copy, or undefined. */
+function savedCopyField(item: ContentItem, field: string): string | undefined {
+  const copy = item.layout_config?.["copy"];
+  if (typeof copy !== "object" || copy === null || Array.isArray(copy)) return undefined;
+  const value = (copy as Record<string, unknown>)[field];
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
 
 const EMPTY_COPY: Record<string, { title: string; description: string }> = {
   REVIEW: {
@@ -506,10 +515,19 @@ function ReviewPage() {
                     </Button>
                     {studio === item.id ? (
                       <PosterStudio
+                        // Remounts when the item's copy changes underneath it
+                        // (draft edits, a finished regeneration), so the
+                        // studio never renders a stale headline back over
+                        // newer words.
+                        key={`${item.id}:${item.headline}:${item.cta}`}
                         contentItemId={item.id}
                         layouts={layouts}
                         sizes={sizes}
                         defaultLayout={item.layout_plugin || undefined}
+                        initialHeadline={item.headline || undefined}
+                        initialOffer={item.cta || undefined}
+                        initialSubheadline={savedCopyField(item, "subheadline")}
+                        initialCta={savedCopyField(item, "cta")}
                         onRendered={() => void load()}
                       />
                     ) : null}

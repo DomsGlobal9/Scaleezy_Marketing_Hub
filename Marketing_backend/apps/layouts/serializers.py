@@ -57,6 +57,12 @@ class ExportSerializer(serializers.Serializer):
         child=serializers.CharField(max_length=32), required=False, allow_empty=False
     )
     asset = serializers.UUIDField(required=False, allow_null=True)
+    # The same copy overrides preview and render take, so an export can never
+    # quietly ship different words than the preview sitting next to its button.
+    headline = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    subheadline = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    offer = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    cta = serializers.CharField(max_length=255, required=False, allow_blank=True)
     include_logo = serializers.BooleanField(required=False, allow_null=True, default=None)
     include_phone = serializers.BooleanField(required=False, allow_null=True, default=None)
     phone = serializers.CharField(max_length=50, required=False, allow_blank=True)
