@@ -122,6 +122,10 @@ export interface SignupQueue {
 export const fetchSignups = (status: BrandStatus = "PENDING") =>
   apiGet<SignupQueue>(`/api/platform/signups/?status=${encodeURIComponent(status)}`);
 
+/** Just the queue's headline number — the Overview needs one figure, not 200 rows. */
+export const fetchPendingSignupTotal = () =>
+  apiGet<{ pending_total: number }>("/api/platform/signups/?count_only=1");
+
 export const approveSignup = (
   brandId: string,
   body: { name?: string; website?: string; plan?: string },
