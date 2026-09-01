@@ -149,6 +149,36 @@ class QueueTests(TestCase):
         self.assertEqual(runner.run_once(limit=2), 2)
         self.assertEqual(len(_calls), 2)
 
+    def test_multi_worker_concurrency_and_head_of_line_unblocking(self):
+        """
+        Verifies that when Worker 1 is executing a long-running generation task,
+        Worker 2 can claim and execute a newly enqueued publishing task concurrently
+        without waiting for Worker 1 to finish.
+        """
+        res1 = record_call.enqueue('long_generation')
+        res2 = record_call.enqueue('publishing')
+
+        # Worker 1 claims Task 1 (long generation)
+        run1 = runner.claim()
+        self.assertIsNotNone(run1)
+        self.assertEqual(run1.pk, res1.id)
+        self.assertEqual(run1.status, TaskResultStatus.RUNNING)
+
+        # Worker 2 claims next task (publishing) concurrently while Worker 1 is running Task 1
+        run2 = runner.claim()
+        self.assertIsNotNone(run2)
+        self.assertEqual(run2.pk, res2.id)
+        self.assertEqual(run2.status, TaskResultStatus.RUNNING)
+
+        # Worker 2 completes publishing first
+        runner.execute(run2)
+        self.assertEqual(_calls, ['publishing'])
+
+        # Worker 1 completes generation afterwards
+        runner.execute(run1)
+        self.assertEqual(_calls, ['publishing', 'long_generation'])
+
+
 
 class ScheduledPublishingTests(TestCase):
     def setUp(self):

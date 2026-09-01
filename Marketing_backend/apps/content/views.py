@@ -251,6 +251,12 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if error:
             return error
 
+        # The revision inherits the layout and the original photograph's id —
+        # without them, re-composing the revision would build from the already
+        # composed poster and bake the words on twice. The generation trace is
+        # deliberately NOT copied: it describes the parent's generation, and
+        # carrying it would double-count rule usage.
+        parent_config = item.layout_config if isinstance(item.layout_config, dict) else {}
         revision = ContentItem.objects.create(
             workspace=item.workspace,
             brand=item.brand,
@@ -265,13 +271,30 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             hashtags=item.hashtags,
             preview_url=item.preview_url,
             slides=item.slides,
+            layout_plugin=item.layout_plugin,
+            # source_asset and the studio's saved copy travel to the revision;
+            # the generation trace does not — it describes the parent's
+            # generation, and carrying it would double-count rule usage.
+            layout_config={
+                key: parent_config[key]
+                for key in ('source_asset', 'copy')
+                if parent_config.get(key)
+            },
             created_by=request.user,
         )
+
+        # The feedback now drives work instead of waiting for a human: the
+        # revision is queued for regeneration with the reviewer's note, tags
+        # and fix request as the instruction. Best-effort — if the queue or
+        # the spend gate refuses, the revision stays an editable copy.
+        queued = self._queue_regeneration(revision)
+
         return APIResponse(
             success=True,
             data={
                 "reviewed": ContentItemSerializer(item).data,
                 "revision": ContentItemSerializer(revision).data,
+                "regeneration_queued": queued,
             },
         )
 
@@ -375,3 +398,30 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         item.layout_config = config
         item.save(update_fields=['slides', 'asset', 'preview_url', 'layout_config', 'updated_at'])
         return APIResponse(success=True, data=ContentItemSerializer(item).data)
+
+    @staticmethod
+    def _queue_regeneration(revision):
+        try:
+            from apps.brands.services.approval import enforce_spend_approved
+            from apps.gemini.tasks import regenerate_revision
+
+            # Refused before anything is queued: a pending client must not
+            # leave a task behind that spends the moment they are approved.
+            enforce_spend_approved(revision.workspace)
+
+            revision.layout_config = {
+                **(revision.layout_config or {}), 'regenerating': True,
+            }
+            revision.save(update_fields=['layout_config', 'updated_at'])
+            regenerate_revision.enqueue(str(revision.pk))
+            return True
+        except Exception:
+            logger.info(
+                "Revision %s left for manual edits (regeneration not queued)",
+                revision.pk,
+            )
+            config = dict(revision.layout_config or {})
+            if config.pop('regenerating', None) is not None:
+                revision.layout_config = config
+                revision.save(update_fields=['layout_config', 'updated_at'])
+            return False

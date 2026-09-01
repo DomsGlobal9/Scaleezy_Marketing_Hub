@@ -14,7 +14,7 @@ from apps.common.permissions import (
 from apps.common.responses import APIResponse
 from apps.content.models import ContentItem
 from apps.marketing.models import MarketingAsset
-from apps.marketing.services.storage import StorageError, SupabaseStorageService
+from apps.marketing.services.storage import StorageError
 from apps.workspaces.models import WorkspaceMember
 
 # Aliased: two actions below are named `render` and `export`, and a bare
@@ -23,6 +23,7 @@ from . import images, registry
 from . import export as export_engine
 from . import render as render_engine
 from .serializers import ExportSerializer, PreviewSerializer, RenderSerializer
+from .services import persist_composed, saved_copy, source_photo_asset
 
 logger = logging.getLogger(__name__)
 
@@ -70,30 +71,53 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
 
     def _spec_for(self, workspace, data, *, item=None, brand=None):
         brand = brand or self._brand(workspace, data.get('brand'))
+        # `source_photo_asset` prefers the original photograph over a poster
+        # this item already composed, so re-composing never bakes the words
+        # onto an image that already carries them.
         photo = render_engine.photo_for(
             photo_base64=data.get('photo_base64', ''),
-            asset=self._asset(workspace, data.get('asset'))
-            or (item.asset if item is not None else None),
+            asset=self._asset(workspace, data.get('asset')) or source_photo_asset(item),
         )
 
         size_key = data.get('size') or 'instagram_portrait'
         _label, width, height, _platform = export_engine.SIZES[size_key]
 
+        # Copy the studio saved with its last render, so an export or later
+        # compose reproduces the poster that was actually on screen. Guarded
+        # to a dict of strings: layout_config is client-writable JSON, and a
+        # poisoned 'copy' must degrade to defaults, never 500 every preview.
+        saved = saved_copy(item)
+
+        # Key-presence semantics for the optional lines: an explicitly blank
+        # subheadline/cta/phone means "remove that line", while an absent key
+        # falls back to what was saved. Headline and offer keep their `or`
+        # fallback — a poster with no headline is never what blank meant.
+        def line(key):
+            return str(data[key]) if key in data else saved.get(key, '')
+
         return render_engine.spec_from(
             brand,
             headline=data.get('headline') or (item.headline if item else ''),
-            subheadline=data.get('subheadline') or '',
+            subheadline=line('subheadline'),
             # ContentItem.cta is where the generator stores the offer line
             # (see apps/gemini/views.py), so it feeds the offer slot; the
             # call to action falls back to the brand's own keyword.
             offer=data.get('offer') or (item.cta if item else ''),
-            cta=data.get('cta') or '',
+            cta=line('cta'),
             width=width,
             height=height,
             photo=photo,
-            include_logo=data.get('include_logo'),
-            include_phone=data.get('include_phone'),
-            phone=data.get('phone', ''),
+            include_logo=(
+                data.get('include_logo')
+                if data.get('include_logo') is not None
+                else saved.get('include_logo')
+            ),
+            include_phone=(
+                data.get('include_phone')
+                if data.get('include_phone') is not None
+                else saved.get('include_phone')
+            ),
+            phone=line('phone'),
             config=data.get('config') or (item.layout_config if item else {}),
         ), brand
 
@@ -191,6 +215,15 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
                 success=False, message=str(exc), status=status.HTTP_422_UNPROCESSABLE_ENTITY
             )
 
+        # Before anything persists: the rewrite record needs the before-values,
+        # and the uploaded filename should carry the edited headline. Nothing
+        # is saved yet, so a storage failure below still leaves the item alone.
+        self._record_studio_rewrite(item, data, request.user)
+        if data.get('headline'):
+            item.headline = data['headline']
+        if data.get('offer'):
+            item.cta = data['offer']
+
         try:
             asset = self._persist(workspace, request.user, item, image, 'JPEG', layout)
         except StorageError as exc:
@@ -201,13 +234,47 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
+        config = dict(data['config']) if data.get('config') else dict(item.layout_config or {})
+        # Remember which photograph this composition was built from — but only
+        # the first time, and never a composed poster itself.
+        if (
+            item.asset_id
+            and getattr(item.asset, 'source', '') != MarketingAsset.Source.COMPOSED
+        ):
+            config.setdefault('source_asset', str(item.asset_id))
+
+        # The copy this poster was composed with. Edited headline/offer land on
+        # the item itself (they are its own columns); the slots without columns
+        # are kept in config so exports and future composes reproduce what was
+        # on screen. Explicit blanks CLEAR their line — deleting a subheadline
+        # in the studio must actually remove it, not resurrect the saved one.
+        # Starts from the stored copy even when a client config replaces the
+        # rest of layout_config, so the saved words survive that replacement.
+        supplied = config.get('copy')
+        copy_state = dict(supplied) if isinstance(supplied, dict) else dict(saved_copy(item))
+        for key in ('subheadline', 'cta', 'phone'):
+            if key in data:
+                if data[key]:
+                    copy_state[key] = data[key]
+                else:
+                    copy_state.pop(key, None)
+        for key in ('include_logo', 'include_phone'):
+            if data.get(key) is not None:
+                copy_state[key] = data[key]
+        if copy_state:
+            config['copy'] = copy_state
+        else:
+            config.pop('copy', None)
+
         item.layout_plugin = layout
-        if data.get('config'):
-            item.layout_config = data['config']
+        item.layout_config = config
         item.asset = asset
         item.preview_url = asset.file_url or ''
         item.save(
-            update_fields=['layout_plugin', 'layout_config', 'asset', 'preview_url', 'updated_at']
+            update_fields=[
+                'headline', 'cta', 'layout_plugin', 'layout_config',
+                'asset', 'preview_url', 'updated_at',
+            ]
         )
 
         # Picking a layout is a taste decision, and it was going nowhere but
@@ -225,6 +292,54 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
                 'height': image.height,
             },
             status=status.HTTP_201_CREATED,
+        )
+
+    @staticmethod
+    def _record_studio_rewrite(item, data, user):
+        """
+        A studio rewrite is the same statement of intent as a draft PATCH:
+        (what the machine wrote, what the human wanted). Recorded the same way
+        the content endpoint's `_record_rewrite` does, so corrections made
+        here reach the training loop instead of silently overwriting.
+        """
+        changed = {}
+        if data.get('headline') and data['headline'] != item.headline:
+            changed['headline'] = {'from': item.headline, 'to': data['headline']}
+        if data.get('offer') and data['offer'] != item.cta:
+            changed['cta'] = {'from': item.cta, 'to': data['offer']}
+        if not changed or item.brand_id is None:
+            return
+
+        from apps.learning.models import LearningEvent, SubjectType
+        from apps.learning.services import record_event_safely
+
+        # Keep the first generated wording, so the pair survives the edit.
+        config = dict(item.layout_config or {})
+        if config.get('original_generated') is None:
+            config['original_generated'] = {
+                field: change['from'] for field, change in changed.items()
+            }
+            item.layout_config = config
+
+        record_event_safely(
+            workspace=item.workspace,
+            brand=item.brand,
+            event_type=LearningEvent.EventType.EDITED,
+            outcome=LearningEvent.Outcome.NEGATIVE,
+            subject_type=SubjectType.CONTENT_ITEM,
+            subject_id=item.pk,
+            context={
+                'action': 'DRAFT_REWRITTEN',
+                'fields': sorted(changed),
+                'changes': {
+                    field: {
+                        'from': str(change['from'])[:300],
+                        'to': str(change['to'])[:300],
+                    }
+                    for field, change in changed.items()
+                },
+            },
+            created_by=user,
         )
 
     def _record_layout_choice(self, item, layout, user):
@@ -292,16 +407,10 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        spec, brand = self._spec_for(
-            workspace,
-            {
-                'asset': data.get('asset'),
-                'include_logo': data.get('include_logo'),
-                'include_phone': data.get('include_phone'),
-                'phone': data.get('phone', ''),
-            },
-            item=item,
-        )
+        # The full payload, exactly like preview and render: the serializer
+        # accepts the same copy overrides, so an export composes the words on
+        # screen rather than silently reverting to older ones.
+        spec, brand = self._spec_for(workspace, data, item=item)
         layout = self._layout_key(data, brand, item)
         sizes = export_engine.valid(data.get('sizes') or export_engine.DEFAULT_SIZES)
 
@@ -346,27 +455,6 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
         )
 
     # -- persistence -----------------------------------------------------
-    @staticmethod
-    def _persist(workspace, user, item, image, fmt, layout, suffix=''):
-        """Uploads one composed image and records it as a MarketingAsset."""
-        extension = 'pdf' if fmt == 'PDF' else 'jpg'
-        stem = (item.headline or 'poster').lower()
-        stem = ''.join(c if c.isalnum() else '-' for c in stem).strip('-')[:40] or 'poster'
-        filename = f"{stem}-{layout}{('-' + suffix) if suffix else ''}.{extension}"
-
-        described = SupabaseStorageService.upload_and_describe(
-            str(workspace.id), export_engine.to_file(image, fmt), filename, prefix='composed'
-        )
-
-        return MarketingAsset.objects.create(
-            workspace=workspace,
-            asset_type=MarketingAsset.AssetType.POSTER,
-            file_name=filename,
-            file_url=described['url'],
-            storage_path=described['path'],
-            mime_type='application/pdf' if fmt == 'PDF' else 'image/jpeg',
-            width=image.width,
-            height=image.height,
-            source=MarketingAsset.Source.COMPOSED,
-            created_by=user if user and user.is_authenticated else None,
-        )
+    # Shared with the auto-compose path that runs after generation, so a
+    # poster composed on the queue is stored exactly like one composed here.
+    _persist = staticmethod(persist_composed)

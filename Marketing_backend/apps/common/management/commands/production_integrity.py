@@ -173,6 +173,24 @@ class Command(BaseCommand):
             "; ".join(gaps[:10]) if gaps else "%d models verified" % len(CRITICAL_MODELS),
         )
 
+        # 5. The cache actually works. The cache backend is configuration and
+        # its table is schema, and the two once shipped separately: the code
+        # arrived pointing at a DatabaseCache whose table was never created,
+        # and every cache read raised — signup, OAuth and generation all
+        # 500'd while every test stayed green (tests use LocMemCache). One
+        # round-trip here makes that class of deploy fail its build instead
+        # of failing its users.
+        try:
+            from django.core.cache import cache as default_cache
+
+            probe_key = 'production_integrity_probe'
+            default_cache.set(probe_key, 'ok', timeout=30)
+            ok = default_cache.get(probe_key) == 'ok'
+            default_cache.delete(probe_key)
+            report('cache round-trip', ok, settings.CACHES['default']['BACKEND'])
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            report('cache round-trip', False, str(exc)[:200])
+
         # 5. System checks (security checks are registered in apps.common.checks).
         try:
             call_command('check', verbosity=0)

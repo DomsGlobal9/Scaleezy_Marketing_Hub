@@ -78,6 +78,8 @@ export interface BrandDto {
   id: string;
   status: string;
   name: string;
+  /** PENDING until Scaleezy approves the client; generation is refused before then. */
+  status?: string;
   industry: string;
   website: string;
   location: string;

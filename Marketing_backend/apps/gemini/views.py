@@ -21,26 +21,10 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
-def _intelligence_in_force(brand, brain_version):
-    """Which rules and preferences this generation actually read.
-
-    The trace already names the brain by its fingerprint, but a brain is
-    recompiled in place, so a fingerprint alone cannot be resolved back to
-    the rows behind it a week later. Recording the ids at generation time is
-    what makes "how often has this rule been used" answerable at all.
-
-    Only recorded when the brand's brain is still the one that was used —
-    if a recompile landed in between, the ids on disk are no longer the ids
-    that produced this item, and a plausible wrong answer is worse than none.
-    """
-    brain = getattr(brand, 'creative_brain', None) or {}
-    if not brain_version or brain.get('brain_version') != brain_version:
-        return {}
-    sources = brain.get('sources') or {}
-    return {
-        'rule_ids': list(sources.get('rule_ids') or []),
-        'preference_ids': list(sources.get('preference_ids') or []),
-    }
+# Moved to apps.context.services.generation so the background task records
+# the same attribution the synchronous path does; kept under its old name
+# because the call sites below read naturally with it.
+from apps.context.services.generation import intelligence_in_force as _intelligence_in_force  # noqa: E402
 
 
 class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
@@ -330,11 +314,28 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             }
             content_item.save(update_fields=['layout_config'])
 
+            # Reviewers kept asking where the words on the poster went: the
+            # generation produced a photo and copy as two separate things.
+            # Bake the copy onto the photo with the same engine the studio's
+            # "Use this poster" uses. Best-effort — a compose failure leaves
+            # the raw generated image in place.
+            from apps.layouts.services import compose_generated_poster
+
+            compose_generated_poster(
+                content_item,
+                user=request.user if request.user.is_authenticated else None,
+            )
+
         response_payload = {
             'postTitle': result_data.get('postTitle', ''),
             'postDescription': result_data.get('postDescription', ''),
             'postHashtags': result_data.get('postHashtags', ''),
-            'posterImageUrl': result_data.get('posterImageUrl', ''),
+            # The composed poster when there is one, the raw image otherwise -
+            # the preview must show what will actually be reviewed.
+            'posterImageUrl': (
+                (content_item.preview_url if content_item else '')
+                or result_data.get('posterImageUrl', '')
+            ),
             'videoUrl': result_data.get('videoUrl', ''),
             'slideImageUrls': result_data.get('slideImageUrls') or [],
             'metadata': {

@@ -345,7 +345,13 @@ export const SIGNAL_CATEGORIES: Array<{ value: string; label: string }> = [
 /* ------------------------------------------------------------------ helpers */
 
 /** DRF list endpoints return a bare array; tolerate a paginated shape too. */
-function asList<T>(payload: unknown): T[] {
+/**
+ * A list, whether the server sent a bare array or a paginated
+ * {count, next, previous, results} envelope. Every list consumer should read
+ * through this so flipping an endpoint to paginated-by-default is a server
+ * decision, not a coordinated deploy.
+ */
+export function asList<T>(payload: unknown): T[] {
   if (Array.isArray(payload)) return payload as T[];
   if (payload && typeof payload === "object") {
     const inner = payload as { results?: T[] };

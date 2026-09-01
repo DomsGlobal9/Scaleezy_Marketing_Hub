@@ -12,11 +12,27 @@ beginning, and was never populated. The frontend polls it.
 """
 import json
 import logging
+from datetime import timedelta
 
 from django.tasks import task
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+
+#: A request still GENERATING after this long belongs to a worker that died
+#: mid-task — a deploy's SIGKILL after the grace period, principally. Long
+#: enough that a slow video or carousel generation is not bought twice while
+#: it is still honestly running.
+STUCK_AFTER = timedelta(minutes=10)
+
+#: One rescue re-run, then the honest answer. Unbounded retries would spend
+#: provider money forever on a brief that kills the worker every time.
+MAX_RESCUE_ATTEMPTS = 1
+
+INTERRUPTED_MESSAGE = (
+    "Generation was interrupted by a server restart and could not be "
+    "completed. Please try again."
+)
 
 
 @task
@@ -32,6 +48,14 @@ def generate_content(request_id: str):
     except GeminiGenerationRequest.DoesNotExist:
         logger.warning("Generation request %s vanished before it ran", request_id)
         return {'request': str(request_id), 'status': 'MISSING'}
+
+    if request.status == GeminiGenerationRequest.Status.COMPLETED:
+        # A re-delivered or retried task for work that already finished. Run
+        # again and it would spend provider money a second time and leave a
+        # second draft; the honest response is to do nothing. Checked BEFORE
+        # the status is marked GENERATING, or the check could never be true.
+        logger.info("Generation %s already completed; skipping re-run", request_id)
+        return {'request': str(request_id), 'status': 'ALREADY_COMPLETED'}
 
     request.status = GeminiGenerationRequest.Status.GENERATING
     request.error_message = ''
@@ -90,8 +114,12 @@ def generate_content(request_id: str):
             generation_request=request,
             defaults={
                 'generated_text': result_data.get('postDescription', ''),
+                # The composed poster when auto-compose succeeded, the raw
+                # media otherwise - the poller must see what will actually
+                # be reviewed. Video output has no composition step.
                 'generated_asset_url': (
                     result_data.get('videoUrl')
+                    or (content_item.preview_url if content_item else '')
                     or result_data.get('posterImageUrl', '')
                     or ''
                 ),
@@ -155,6 +183,186 @@ def _queue_autopilot_followups(request):
         )
 
 
+def sweep_stuck_generations(now=None):
+    """
+    Rescues generation requests abandoned by a killed worker.
+
+    A worker SIGKILLed mid-generation (a deploy whose grace period ran out)
+    leaves the request row GENERATING with nothing queued to finish it: the
+    frontend polls "AI is working…" forever and nothing is. Each worker pass
+    sweeps rows GENERATING for longer than STUCK_AFTER: a row whose result
+    actually landed is completed (only the final bookkeeping was lost),
+    anything else is re-queued once, and after that it fails with an honest
+    message the poller can show. Returns how many rows were swept.
+    """
+    from django.db.models import Q
+
+    from apps.gemini.models import GeminiGenerationRequest
+
+    now = now or timezone.now()
+    cutoff = now - STUCK_AFTER
+    stuck = GeminiGenerationRequest.objects.filter(
+        # updated_at is null on rows from before the field existed;
+        # created_at is the only clock those have.
+        Q(updated_at__lt=cutoff) | Q(updated_at__isnull=True, created_at__lt=cutoff),
+        status=GeminiGenerationRequest.Status.GENERATING,
+    ).select_related('result')
+
+    swept = 0
+    for request in stuck:
+        generating = GeminiGenerationRequest.objects.filter(
+            pk=request.pk, status=GeminiGenerationRequest.Status.GENERATING
+        )
+        if getattr(request, 'result', None) is not None:
+            # The generation finished; the worker died between writing the
+            # result and the final status save. Finish the bookkeeping rather
+            # than paying for the same work again.
+            swept += generating.update(
+                status=GeminiGenerationRequest.Status.COMPLETED,
+                completed_at=now,
+                updated_at=now,
+            )
+        elif request.retry_count < MAX_RESCUE_ATTEMPTS:
+            # Compare-and-swap on retry_count so two workers sweeping at once
+            # cannot queue the same rescue twice.
+            claimed = generating.filter(retry_count=request.retry_count).update(
+                status=GeminiGenerationRequest.Status.PENDING,
+                retry_count=request.retry_count + 1,
+                updated_at=now,
+            )
+            if claimed:
+                logger.warning(
+                    "Generation %s abandoned by a dead worker; re-queued", request.pk
+                )
+                generate_content.enqueue(str(request.pk))
+                swept += 1
+        else:
+            swept += generating.update(
+                status=GeminiGenerationRequest.Status.FAILED,
+                error_message=INTERRUPTED_MESSAGE,
+                updated_at=now,
+            )
+            logger.warning(
+                "Generation %s still stuck after a rescue; marked FAILED", request.pk
+            )
+    return swept
+
+
+@task
+def regenerate_revision(revision_id: str):
+    """
+    Applies a reviewer's feedback by regenerating a returned item's revision.
+
+    "Request edits" used to open an identical copy of the rejected version and
+    then wait for a human to rewrite it by hand — the note, tags and fix
+    request drove nothing. Here they become the instruction for a fresh
+    generation, and the result lands on the revision as new copy and a newly
+    composed poster. Best-effort throughout: any refusal or failure leaves the
+    revision exactly as the editable copy it already was.
+    """
+    from apps.billing.quota import QuotaExceeded, enforce
+    from apps.content.models import ContentItem
+    from apps.context.services.generation import (
+        create_generated_asset,
+        generate_marketing_payload,
+    )
+    from apps.feedback.models import Feedback
+    from apps.feedback.training import element_labels
+    from apps.layouts.services import compose_generated_poster
+
+    revision = (
+        ContentItem.objects.select_related('workspace', 'brand')
+        .filter(pk=revision_id, status=ContentItem.Status.DRAFT)
+        .first()
+    )
+    if revision is None or revision.parent_id is None:
+        logger.info("Revision %s gone or already moved on; nothing to regenerate", revision_id)
+        return {'revision': str(revision_id), 'status': 'MISSING'}
+
+    def finish(status, **updates):
+        """Clears the in-progress marker in every exit path, so a card can
+        never claim to be regenerating forever."""
+        config = dict(revision.layout_config or {})
+        config.pop('regenerating', None)
+        config.update(updates)
+        revision.layout_config = config
+        revision.save(update_fields=['layout_config', 'updated_at'])
+        return {'revision': str(revision_id), 'status': status}
+
+    try:
+        enforce(revision.workspace)
+    except QuotaExceeded:
+        logger.info("Revision %s left for manual edits: quota exhausted", revision_id)
+        return finish('QUOTA')
+
+    # The verdict that sent this back lives on the parent — it is the
+    # instruction for what to do differently this time.
+    feedback = (
+        Feedback.objects.filter(content_item_id=revision.parent_id)
+        .order_by('-created_at')
+        .first()
+    )
+    corrections = []
+    if feedback is not None:
+        if feedback.feedback_text:
+            corrections.append(f"Reviewer note: {feedback.feedback_text}")
+        if feedback.fix_request:
+            corrections.append(f"How it should be fixed: {feedback.fix_request}")
+        if feedback.element_keys:
+            labels = element_labels(feedback.element_keys)
+            named = ', '.join(
+                labels.get(key, {}).get('label', key) for key in feedback.element_keys
+            )
+            corrections.append(f"Elements flagged as wrong: {named}")
+
+    instruction = ' '.join([
+        "Revise the previous version of this content. Keep what worked, fix what was flagged.",
+        *corrections,
+    ])[:500]
+
+    brief = {
+        'campaign_name': (revision.headline or '')[:255],
+        'offer': revision.cta or '',
+        'previous_headline': revision.headline or '',
+        'previous_caption': (revision.caption or '')[:2000],
+        'revision_feedback': corrections,
+    }
+
+    try:
+        routed = generate_marketing_payload(
+            revision.workspace, brief, instruction=instruction
+        )
+        payload = routed['payload']
+    except Exception:
+        logger.exception("Regeneration failed for revision %s; copy left as-is", revision_id)
+        return finish('FAILED')
+
+    asset = create_generated_asset(revision.workspace, payload, user=revision.created_by)
+    revision.headline = (payload.get('postTitle') or revision.headline or '')[:500]
+    revision.caption = payload.get('postDescription') or revision.caption or ''
+    revision.hashtags = payload.get('postHashtags') or revision.hashtags or ''
+    revision.ai_provider = (routed.get('provider') or revision.ai_provider or '')[:100]
+
+    config = dict(revision.layout_config or {})
+    config.pop('regenerating', None)
+    if asset is not None:
+        revision.asset = asset
+        revision.preview_url = (payload.get('posterImageUrl') or '')[:1000] or revision.preview_url
+        # A new photograph replaces the parent's; the old source no longer
+        # describes what any future composition should build from.
+        config.pop('source_asset', None)
+    revision.layout_config = config
+    revision.save(
+        update_fields=[
+            'headline', 'caption', 'hashtags', 'ai_provider',
+            'asset', 'preview_url', 'layout_config', 'updated_at',
+        ]
+    )
+
+    compose_generated_poster(revision, user=revision.created_by)
+    return {'revision': str(revision_id), 'status': 'OK'}
+
+
 def _persist(request, brief, result_data, routed):
     """
     Mirrors the synchronous path's persistence so a background generation
@@ -164,7 +372,10 @@ def _persist(request, brief, result_data, routed):
 
     from apps.brands.models import Brand
     from apps.content.models import ContentItem
-    from apps.context.services.generation import create_generated_asset
+    from apps.context.services.generation import (
+        create_generated_asset,
+        intelligence_in_force,
+    )
 
     content_format = {
         'video': ContentItem.Format.VIDEO,
@@ -177,37 +388,59 @@ def _persist(request, brief, result_data, routed):
         else brief.get('slides')
     ) or []
 
-    with transaction.atomic():
-        asset = create_generated_asset(
-            request.workspace, result_data, user=request.user
-        )
-        return ContentItem.objects.create(
-            workspace=request.workspace,
-            brand=Brand.objects.filter(workspace=request.workspace)
-            .order_by('-is_default')
-            .first(),
-            asset=asset,
-            content_format=content_format,
-            status=ContentItem.Status.DRAFT,
-            headline=(result_data.get('postTitle') or '')[:500],
-            caption=result_data.get('postDescription') or '',
-            hashtags=result_data.get('postHashtags') or '',
-            cta=(brief.get('offer') or '')[:255],
-            preview_url=(
-                result_data.get('videoUrl')
-                or result_data.get('posterImageUrl')
-                or ''
-            )[:1000],
-            slides=slides if isinstance(slides, list) else [],
-            ai_provider=(routed.get('provider') or 'UNKNOWN')[:100],
-            ai_prompt=str(brief)[:5000],
-            layout_plugin=str(brief.get('layout') or '')[:64],
-            layout_config={
-                'creative_direction': brief.get('creative_direction') or {},
-                'generation_trace': {
-                    'brain_version': routed.get('brain_version', ''),
-                    **(routed.get('trace') or {}),
+    try:
+        with transaction.atomic():
+            asset = create_generated_asset(
+                request.workspace, result_data, user=request.user
+            )
+            brand = (
+                Brand.objects.filter(workspace=request.workspace)
+                .order_by('-is_default')
+                .first()
+            )
+            item = ContentItem.objects.create(
+                workspace=request.workspace,
+                brand=brand,
+                asset=asset,
+                content_format=content_format,
+                status=ContentItem.Status.DRAFT,
+                headline=(result_data.get('postTitle') or '')[:500],
+                caption=result_data.get('postDescription') or '',
+                hashtags=result_data.get('postHashtags') or '',
+                cta=(brief.get('offer') or '')[:255],
+                preview_url=(
+                    result_data.get('videoUrl')
+                    or result_data.get('posterImageUrl')
+                    or ''
+                )[:1000],
+                slides=slides if isinstance(slides, list) else [],
+                ai_provider=(routed.get('provider') or 'UNKNOWN')[:100],
+                ai_prompt=str(brief)[:5000],
+                layout_plugin=str(brief.get('layout') or '')[:64],
+                # Creative direction and the generation trace, including which
+                # rules were in force - the learning-usage report reads
+                # exactly this key, and a poster made on the queue must be as
+                # attributable as one made in the request.
+                layout_config={
+                    'creative_direction': brief.get('creative_direction') or {},
+                    'generation_trace': {
+                        'brain_version': routed.get('brain_version', ''),
+                        **(routed.get('trace') or {}),
+                        **intelligence_in_force(
+                            brand, str(routed.get('brain_version') or '')
+                        ),
+                    },
                 },
-            },
-            created_by=request.user,
-        )
+                created_by=request.user,
+            )
+
+        # After the transaction commits, so a compose hiccup can never roll
+        # back the persisted generation. Only posters compose; the service
+        # skips video and carousel output on its own.
+        from apps.layouts.services import compose_generated_poster
+
+        compose_generated_poster(item, user=request.user)
+        return item
+    except Exception:
+        logger.exception("Could not persist background generation %s", request.pk)
+        return None

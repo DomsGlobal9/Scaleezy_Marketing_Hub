@@ -208,15 +208,21 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ],
     # Only views that set throttle_classes are throttled; today that is public
-    # signup. Rates live in env so an abuse wave is a config change.
+    # signup. Unset means unthrottled (DRF disables on a None rate); an abuse
+    # wave is handled by setting SIGNUP_THROTTLE_RATE (e.g. "5/hour") in env.
     'DEFAULT_THROTTLE_RATES': {
-        'signup': env('SIGNUP_THROTTLE_RATE', default='5/hour'),
+        'signup': env('SIGNUP_THROTTLE_RATE', default=None),
     },
     # Render (and any reverse proxy) puts the client in X-Forwarded-For and
     # the proxy in REMOTE_ADDR. With this unset every throttled caller shares
     # the proxy's IP and one bucket. One trusted hop; DRF takes the address
     # that hop appended, so a client-supplied header cannot spoof it.
     'NUM_PROXIES': env.int('NUM_PROXIES', default=1),
+    # Opt-in: a list endpoint answers as a bare array exactly as before
+    # unless the request names a ?page_size=, in which case it gets the
+    # standard {count, next, previous, results} envelope. See
+    # apps/common/pagination.py for why this is not a global default.
+    'DEFAULT_PAGINATION_CLASS': 'apps.common.pagination.OptInPageNumberPagination',
 }
 
 SIMPLE_JWT = {
@@ -337,3 +343,17 @@ if _DATABASE_URL and not _RUNNING_TESTS:
 # multipart file limit is separate and already generous.
 DATA_UPLOAD_MAX_MEMORY_SIZE = 25 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+
+# Security / HTTPS redirect and HSTS configuration
+# Render terminates SSL at its reverse proxy edge and forwards X-Forwarded-Proto.
+# SECURE_PROXY_SSL_HEADER is required so Django correctly detects HTTPS requests
+# behind Render and avoids infinite redirect loops when SECURE_SSL_REDIRECT is enabled.
+if not DEBUG and not _RUNNING_TESTS:
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+else:
+    SECURE_SSL_REDIRECT = False
+    SECURE_HSTS_SECONDS = 0
+
+

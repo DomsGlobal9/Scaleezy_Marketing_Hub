@@ -48,7 +48,7 @@ import { CreativeCommand, type CreativeSelection } from "@/components/marketing/
 import { PosterStudio, useLayoutCatalogue } from "@/components/marketing/poster-studio";
 import { cn } from "@/lib/utils";
 import { useBrandSettings } from "@/lib/brand-settings";
-import { fetchCurrentBrand } from "@/lib/brand-master";
+import { asList, fetchCurrentBrand } from "@/lib/brand-master";
 import { api, apiFetch, apiPost } from "@/lib/api";
 import { readSelectedWorkspaceId } from "@/lib/workspace";
 
@@ -344,12 +344,15 @@ function PublishingPage() {
     try {
       const res = await apiFetch("/api/marketing/publishing/jobs/");
       const data = await res.json();
-      if (!Array.isArray(data)) {
+      // Bare array today; tolerate a paginated envelope so history cannot
+      // flip into a permanent error state on a server-side change.
+      const jobs = asList<PublishingJobDto>(data);
+      if (!jobs.length && !Array.isArray(data) && !(data && typeof data === "object" && Array.isArray((data as { results?: unknown }).results))) {
         setHistoryError(true);
         return;
       }
       const historyRows: PublishingHistoryRow[] = [];
-      (data as PublishingJobDto[]).forEach((job) => {
+      jobs.forEach((job) => {
         (job.items ?? []).forEach((item) => {
           historyRows.push({
             id: item.id,
@@ -458,9 +461,13 @@ function PublishingPage() {
     apiFetch("/api/marketing/social-accounts/")
       .then((res) => res.json())
       .then((data) => {
-        if (Array.isArray(data)) {
-          setAccounts(data);
-        }
+        const rows = asList<PublishingAccount>(
+          data && typeof data === "object" && "success" in (data as object)
+            ? (data as { data?: unknown }).data
+            : data,
+        );
+        if (rows.length || Array.isArray(data) || data)
+          setAccounts(rows);
       })
       .catch(console.error)
       .finally(() => setAccountsLoading(false));
@@ -783,7 +790,12 @@ function PublishingPage() {
       };
     }
 
-    throw new Error("Generation is taking longer than expected. Check back shortly.");
+    // The backend sweeps stuck generations at the same ten-minute mark: one
+    // rescue re-run, then an honest FAILED. So past the ceiling the truth is
+    // "it may still land in your drafts" — not "keep watching this spinner".
+    throw new Error(
+      "Generation is taking longer than expected. If it finishes, it will appear in your drafts — or try again now.",
+    );
   };
 
   /** Stops the wait. Anything already queued keeps running on the server. */
@@ -798,11 +810,13 @@ function PublishingPage() {
     setWorkingKind("generate");
     setStep("ai_generating");
     try {
-      // Video and multi-slide carousels run long enough to hit a gateway
-      // timeout on the synchronous endpoint, and when they do the work is
-      // lost even if the server finished it. Those go on the queue and are
-      // polled; a poster still comes back in one request.
-      const background = contentType === "video" || contentType === "carousel";
+      // Everything generates on the queue now. Video and carousels always
+      // did (gateway timeouts); posters were the last synchronous path, and
+      // one of them held a whole web worker for the length of a provider
+      // call — the entire deployment could serve about six posters a minute
+      // and nothing else while it did. The queue costs a few seconds of
+      // polling latency and returns the identical payload.
+      const background = true;
       const endpoint = background
         ? "/api/marketing/ai-generation/generate-async/"
         : "/api/marketing/ai-generation/generate/";

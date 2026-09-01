@@ -1,15 +1,32 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Brain, CheckCircle2, Edit3, FileImage, Loader2, Palette, XCircle } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import {
+  Brain,
+  CheckCircle2,
+  Edit3,
+  FileImage,
+  Loader2,
+  Maximize2,
+  Palette,
+  XCircle,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { FeedbackTagPicker, useFeedbackElements } from "@/components/marketing/feedback-tags";
 import { PosterStudio, useLayoutCatalogue } from "@/components/marketing/poster-studio";
 import { EmptyState, PageHeader, StatusBadge } from "@/components/marketing/primitives";
 import { api, apiPost } from "@/lib/api";
+import { asList } from "@/lib/brand-master";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_hub/review")({
@@ -27,8 +44,11 @@ export const Route = createFileRoute("/_hub/review")({
 
 interface ContentItem {
   id: string;
+  parent: string | null;
+  layout_config: Record<string, unknown> | null;
   layout_plugin: string;
   headline: string;
+  cta: string;
   caption: string;
   hashtags: string;
   preview_url: string;
@@ -39,19 +59,42 @@ interface ContentItem {
   created_at: string;
 }
 
-// Every state a piece of work can be in, so this screen answers "show me my
-// stuff" rather than only "what needs me". Published items were already being
-// fetched and counted here and then thrown away — there was simply no tab
-// able to show them, which is why the product had nowhere to see finished
-// work with its picture attached.
+// Four ways work can relate to you, not six machine states. A reviewer should
+// not need to understand the status field to find their work — the precise
+// status still shows on every card's badge.
 const TABS = [
-  { key: "PENDING_REVIEW", label: "Pending" },
-  { key: "APPROVED", label: "Approved" },
-  { key: "PUBLISHED", label: "Published" },
-  { key: "NEEDS_EDITS", label: "Needs edits" },
-  { key: "REJECTED", label: "Rejected" },
-  { key: "DRAFT", label: "Drafts" },
+  { key: "REVIEW", label: "Needs review", statuses: ["PENDING_REVIEW"] },
+  { key: "WORKING", label: "In progress", statuses: ["DRAFT", "NEEDS_EDITS"] },
+  { key: "DONE", label: "Done", statuses: ["APPROVED", "PUBLISHED"] },
+  { key: "REJECTED", label: "Rejected", statuses: ["REJECTED"] },
 ] as const;
+
+/** A string the studio saved in layout_config.copy, or undefined. */
+function savedCopyField(item: ContentItem, field: string): string | undefined {
+  const copy = item.layout_config?.["copy"];
+  if (typeof copy !== "object" || copy === null || Array.isArray(copy)) return undefined;
+  const value = (copy as Record<string, unknown>)[field];
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+const EMPTY_COPY: Record<string, { title: string; description: string }> = {
+  REVIEW: {
+    title: "Nothing waiting on you",
+    description: "Content submitted for review lands here.",
+  },
+  WORKING: {
+    title: "No work in progress",
+    description: "Create or upload content, save it, and it will remain here when you return.",
+  },
+  DONE: {
+    title: "Nothing approved yet",
+    description: "Approve content in the review queue and it moves here, ready to publish.",
+  },
+  REJECTED: {
+    title: "Nothing rejected",
+    description: "Content you reject is kept here as a record.",
+  },
+};
 
 interface LearnedRule {
   element: string;
@@ -80,9 +123,8 @@ const TONE: Record<string, "success" | "warning" | "danger" | "neutral"> = {
 };
 
 function ReviewPage() {
-  const [tab, setTab] = useState<string>("PENDING_REVIEW");
-  const [items, setItems] = useState<ContentItem[]>([]);
-  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [tab, setTab] = useState<string>("REVIEW");
+  const [all, setAll] = useState<ContentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
@@ -90,27 +132,78 @@ function ReviewPage() {
   const [tags, setTags] = useState<Record<string, string[]>>({});
   const [report, setReport] = useState<TrainingReport | null>(null);
   const [studio, setStudio] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<ContentItem | null>(null);
   const { groups, provisional } = useFeedbackElements();
   const { layouts, sizes } = useLayoutCatalogue();
+
+  // The issues this brand raises most, offered as one-tap tags on every
+  // pending card — the reviewer should recognise, not re-describe.
+  const suggestions = useMemo(
+    () =>
+      (report?.top_elements ?? [])
+        .slice(0, 6)
+        .map((e) => ({ key: e.key, label: e.label, count: e.count })),
+    [report],
+  );
+
+  // Element key -> the rule already learned for it, so tagging a known
+  // problem needs no typed explanation at all.
+  const ruleFor = useMemo(
+    () => new Map((report?.rules ?? []).map((rule) => [rule.element, rule.text])),
+    [report],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const all = await api<ContentItem[]>("/api/marketing/content/");
-      const list = Array.isArray(all) ? all : [];
-      setItems(list.filter((i) => i.status === tab));
-      setCounts(
-        list.reduce<Record<string, number>>((acc, i) => {
-          acc[i.status] = (acc[i.status] ?? 0) + 1;
-          return acc;
-        }, {}),
-      );
+      const data = await api<unknown>("/api/marketing/content/");
+      // Tolerates both the bare array and a paginated envelope, so this page
+      // cannot silently go empty if the endpoint is ever paginated by default.
+      setAll(asList<ContentItem>(data));
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not load content.");
     } finally {
       setLoading(false);
     }
-  }, [tab]);
+  }, []);
+
+  // A returned item spawns a revision carrying the same image, so both used
+  // to show — the "same poster in two tabs" confusion. The superseded version
+  // is hidden and its reviewer note travels with the revision instead.
+  const superseded = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of all) if (item.parent) ids.add(item.parent);
+    return ids;
+  }, [all]);
+
+  const shown = useMemo(
+    () => all.filter((i) => !(i.status === "NEEDS_EDITS" && superseded.has(i.id))),
+    [all, superseded],
+  );
+
+  const counts = useMemo(() => {
+    const acc: Record<string, number> = {};
+    for (const t of TABS) {
+      acc[t.key] = shown.filter((i) =>
+        (t.statuses as readonly string[]).includes(i.status),
+      ).length;
+    }
+    return acc;
+  }, [shown]);
+
+  const items = useMemo(() => {
+    const active = TABS.find((t) => t.key === tab) ?? TABS[0];
+    return shown.filter((i) => (active.statuses as readonly string[]).includes(i.status));
+  }, [shown, tab]);
+
+  // The note a creator must read: their own, or the one left on the version
+  // this revision replaces.
+  const noteFor = useCallback(
+    (item: ContentItem) =>
+      item.review_note ||
+      (item.parent ? (all.find((p) => p.id === item.parent)?.review_note ?? "") : ""),
+    [all],
+  );
 
   const loadReport = useCallback(async () => {
     try {
@@ -158,13 +251,22 @@ function ReviewPage() {
       const previousOccurrences = new Map(
         (report?.rules ?? []).map((rule) => [rule.element, rule.occurrences]),
       );
-      await apiPost(`/api/marketing/content/${id}/${verb}/`, {
-        note: notes[id] ?? "",
-        elements: selected,
-        fix_request: fixes[id] ?? "",
-      });
+      const result = await apiPost<{ regeneration_queued?: boolean }>(
+        `/api/marketing/content/${id}/${verb}/`,
+        {
+          note: notes[id] ?? "",
+          elements: selected,
+          fix_request: fixes[id] ?? "",
+        },
+      );
       const [, nextReport] = await Promise.all([load(), loadReport()]);
 
+      const regenNote =
+        verb === "request-edits"
+          ? result?.regeneration_queued
+            ? " Scaleezy is regenerating it from your feedback."
+            : " A new version was opened."
+          : "";
       if (verb === "approve") {
         toast.success("Approved — ready to publish.");
       } else {
@@ -172,6 +274,7 @@ function ReviewPage() {
           reportWasLoaded &&
           nextReport !== null &&
           nextReport.brain_current &&
+          selected.length > 0 &&
           selected.every((element) => {
             const next = nextReport.rules.find((rule) => rule.element === element);
             return (next?.occurrences ?? 0) > (previousOccurrences.get(element) ?? 0);
@@ -180,12 +283,14 @@ function ReviewPage() {
           toast.success(
             verb === "reject"
               ? "Rejected — the next generation has learned this correction."
-              : "Sent back for edits — the correction is active for the next generation.",
+              : `Sent back for edits — the correction is active for the next generation.${regenNote}`,
+          );
+        } else if (selected.length > 0) {
+          toast.warning(
+            `Review saved, but immediate learning could not be verified. Check Brand Master → Attention.${regenNote}`,
           );
         } else {
-          toast.warning(
-            "Review saved, but immediate learning could not be verified. Check Brand Master → Attention.",
-          );
+          toast.success(verb === "reject" ? "Rejected." : `Sent back for edits.${regenNote}`);
         }
       }
     } catch (e) {
@@ -195,11 +300,8 @@ function ReviewPage() {
     }
   };
 
-  const updateDraft = (
-    id: string,
-    patch: Partial<Pick<ContentItem, "headline" | "caption" | "hashtags">>,
-  ) => {
-    setItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  const updateDraft = (id: string, patch: Partial<Pick<ContentItem, "headline" | "caption" | "hashtags">>) => {
+    setAll((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   };
 
   const saveDraft = async (item: ContentItem, submit = false) => {
@@ -279,11 +381,13 @@ function ReviewPage() {
         </div>
       ) : null}
 
-      <div className="mb-6 flex flex-wrap gap-2">
+      {/* One scrolling row on a phone instead of a three-deep wrap. */}
+      <div className="mb-6 flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-x-visible sm:pb-0">
         {TABS.map((t) => (
           <Button
             key={t.key}
             size="sm"
+            className="shrink-0"
             variant={tab === t.key ? "default" : "outline"}
             onClick={() => setTab(t.key)}
           >
@@ -309,14 +413,10 @@ function ReviewPage() {
       ) : items.length === 0 ? (
         <EmptyState
           icon={FileImage}
-          title={tab === "DRAFT" ? "No saved drafts" : "Nothing here"}
-          description={
-            tab === "DRAFT"
-              ? "Create or upload content, save it, and it will remain here when you return."
-              : "Content appears here after it has been submitted for this review stage."
-          }
+          title={EMPTY_COPY[tab]?.title ?? "Nothing here"}
+          description={EMPTY_COPY[tab]?.description ?? ""}
           action={
-            tab === "DRAFT" ? (
+            tab === "WORKING" ? (
               <Button onClick={() => window.location.assign("/publishing")}>Create content</Button>
             ) : undefined
           }
@@ -326,11 +426,23 @@ function ReviewPage() {
           {items.map((item) => (
             <article key={item.id} className="surface-card overflow-hidden">
               {item.preview_url ? (
-                <img
-                  src={item.preview_url}
-                  alt=""
-                  className="h-48 w-full border-b border-border object-cover"
-                />
+                <button
+                  type="button"
+                  onClick={() => setLightbox(item)}
+                  aria-label="Preview full image"
+                  className="group relative block w-full cursor-zoom-in"
+                >
+                  {/* object-contain in a 4:5 frame: the whole poster is
+                      visible on the card — nothing is cropped away. */}
+                  <img
+                    src={item.preview_url}
+                    alt=""
+                    className="aspect-[4/5] max-h-80 w-full border-b border-border bg-secondary/30 object-contain"
+                  />
+                  <span className="absolute right-2 top-2 rounded-md bg-black/50 p-1.5 text-white opacity-70 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
+                    <Maximize2 className="size-3.5" />
+                  </span>
+                </button>
               ) : null}
               <div className="p-5">
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
@@ -343,7 +455,8 @@ function ReviewPage() {
                   />
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {item.content_format} · v{item.version} ·{" "}
+                  {item.content_format} · v{item.version}
+                  {item.parent ? " · revision" : ""} ·{" "}
                   {new Date(item.created_at).toLocaleDateString()}
                 </p>
 
@@ -351,10 +464,17 @@ function ReviewPage() {
                   <p className="mt-3 line-clamp-3 text-sm text-muted-foreground">{item.caption}</p>
                 ) : null}
 
-                {item.review_note ? (
+                {item.layout_config?.["regenerating"] === true ? (
+                  <p className="mt-3 flex items-center gap-2 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
+                    <Loader2 className="size-3.5 shrink-0 animate-spin" />
+                    Regenerating from your feedback — check back in a moment.
+                  </p>
+                ) : null}
+
+                {noteFor(item) ? (
                   <p className="mt-3 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
                     <span className="font-medium text-foreground">Reviewer note:</span>{" "}
-                    {item.review_note}
+                    {noteFor(item)}
                   </p>
                 ) : null}
 
@@ -442,10 +562,19 @@ function ReviewPage() {
                     </Button>
                     {studio === item.id ? (
                       <PosterStudio
+                        // Remounts when the item's copy changes underneath it
+                        // (draft edits, a finished regeneration), so the
+                        // studio never renders a stale headline back over
+                        // newer words.
+                        key={`${item.id}:${item.headline}:${item.cta}`}
                         contentItemId={item.id}
                         layouts={layouts}
                         sizes={sizes}
                         defaultLayout={item.layout_plugin || undefined}
+                        initialHeadline={item.headline || undefined}
+                        initialOffer={item.cta || undefined}
+                        initialSubheadline={savedCopyField(item, "subheadline")}
+                        initialCta={savedCopyField(item, "cta")}
                         onRendered={() => void load()}
                       />
                     ) : null}
@@ -467,18 +596,36 @@ function ReviewPage() {
                       selected={tags[item.id] ?? []}
                       onToggle={(key) => toggleTag(item.id, key)}
                       disabled={busy === item.id}
+                      suggestions={suggestions}
                     />
 
                     {(tags[item.id] ?? []).length > 0 ? (
-                      <Textarea
-                        rows={2}
-                        className="mt-2"
-                        placeholder="How should it be fixed next time? This becomes the rule."
-                        value={fixes[item.id] ?? ""}
-                        onChange={(e) =>
-                          setFixes((prev) => ({ ...prev, [item.id]: e.target.value }))
-                        }
-                      />
+                      <>
+                        {(tags[item.id] ?? [])
+                          .filter((key) => ruleFor.has(key))
+                          .slice(0, 2)
+                          .map((key) => (
+                            <p
+                              key={key}
+                              className="mt-2 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-[0.6875rem] text-muted-foreground"
+                            >
+                              <span className="font-medium text-foreground">
+                                Already learned:
+                              </span>{" "}
+                              {ruleFor.get(key)} — tagging it again strengthens the rule,
+                              no note needed.
+                            </p>
+                          ))}
+                        <Textarea
+                          rows={2}
+                          className="mt-2"
+                          placeholder="How should it be fixed next time? This becomes the rule."
+                          value={fixes[item.id] ?? ""}
+                          onChange={(e) =>
+                            setFixes((prev) => ({ ...prev, [item.id]: e.target.value }))
+                          }
+                        />
+                      </>
                     ) : null}
 
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -514,6 +661,41 @@ function ReviewPage() {
           ))}
         </div>
       )}
+
+      <Dialog open={lightbox !== null} onOpenChange={(open) => !open && setLightbox(null)}>
+        {lightbox ? (
+          <DialogContent className="max-h-[92vh] w-[calc(100vw-1.5rem)] max-w-3xl gap-3 overflow-y-auto rounded-lg p-4">
+            <DialogHeader>
+              <DialogTitle className="pr-8 text-base">
+                {lightbox.headline || "Untitled"}
+              </DialogTitle>
+              <DialogDescription>
+                {lightbox.content_format} · v{lightbox.version} ·{" "}
+                {new Date(lightbox.created_at).toLocaleDateString()}
+              </DialogDescription>
+            </DialogHeader>
+            <img
+              src={lightbox.preview_url}
+              alt={lightbox.headline || "Content preview"}
+              className="max-h-[60vh] w-full rounded-lg border border-border bg-secondary/20 object-contain"
+            />
+            {lightbox.caption ? (
+              <p className="text-sm text-muted-foreground">{lightbox.caption}</p>
+            ) : null}
+            {lightbox.hashtags ? (
+              <p className="text-xs text-muted-foreground">{lightbox.hashtags}</p>
+            ) : null}
+            <a
+              href={lightbox.preview_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-foreground underline underline-offset-2"
+            >
+              Open full size in a new tab
+            </a>
+          </DialogContent>
+        ) : null}
+      </Dialog>
     </div>
   );
 }

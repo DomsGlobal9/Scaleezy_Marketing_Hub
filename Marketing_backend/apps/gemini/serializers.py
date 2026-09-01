@@ -20,7 +20,8 @@ class GeminiGenerationRequestSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             'id', 'workspace', 'user', 'status', 'provider', 'model',
-            'error_message', 'created_at', 'completed_at', 'progress',
+            'error_message', 'retry_count', 'created_at', 'updated_at',
+            'completed_at', 'progress',
         ]
 
     @staticmethod
