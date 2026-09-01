@@ -56,6 +56,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api, apiFetch, apiPost } from "@/lib/api";
+import { asList } from "@/lib/brand-master";
 import { readSelectedWorkspaceId } from "@/lib/workspace";
 import {
   EmptyState,
@@ -165,8 +166,8 @@ function AccountsPage() {
 
   const load = useCallback(async () => {
     try {
-      const rows = await api<Connection[]>("/api/marketing/social-accounts/");
-      setAccounts(Array.isArray(rows) ? rows : []);
+      const rows = await api<unknown>("/api/marketing/social-accounts/");
+      setAccounts(asList<Connection>(rows));
       setLoadError(null);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "Could not load accounts.");

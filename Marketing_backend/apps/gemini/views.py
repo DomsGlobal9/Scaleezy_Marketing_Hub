@@ -21,26 +21,10 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
-def _intelligence_in_force(brand, brain_version):
-    """Which rules and preferences this generation actually read.
-
-    The trace already names the brain by its fingerprint, but a brain is
-    recompiled in place, so a fingerprint alone cannot be resolved back to
-    the rows behind it a week later. Recording the ids at generation time is
-    what makes "how often has this rule been used" answerable at all.
-
-    Only recorded when the brand's brain is still the one that was used —
-    if a recompile landed in between, the ids on disk are no longer the ids
-    that produced this item, and a plausible wrong answer is worse than none.
-    """
-    brain = getattr(brand, 'creative_brain', None) or {}
-    if not brain_version or brain.get('brain_version') != brain_version:
-        return {}
-    sources = brain.get('sources') or {}
-    return {
-        'rule_ids': list(sources.get('rule_ids') or []),
-        'preference_ids': list(sources.get('preference_ids') or []),
-    }
+# Moved to apps.context.services.generation so the background task records
+# the same attribution the synchronous path does; kept under its old name
+# because the call sites below read naturally with it.
+from apps.context.services.generation import intelligence_in_force as _intelligence_in_force  # noqa: E402
 
 
 class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):

@@ -139,6 +139,31 @@ def persist_generated_image(workspace, result):
     }
 
 
+def intelligence_in_force(brand, brain_version):
+    """Which rules and preferences a generation actually read.
+
+    A trace names the brain by its fingerprint, but a brain is recompiled in
+    place, so a fingerprint alone cannot be resolved back to the rows behind
+    it a week later. Recording the ids at generation time is what makes "how
+    often has this rule been used" answerable at all.
+
+    Only recorded while the brand's brain is still the one that was used —
+    if a recompile landed in between, the ids on disk are no longer the ids
+    that produced this item, and a plausible wrong answer is worse than none.
+
+    Shared by the synchronous view and the background task, so a poster made
+    on the queue is exactly as attributable as one made in the request.
+    """
+    brain = getattr(brand, 'creative_brain', None) or {}
+    if not brain_version or brain.get('brain_version') != brain_version:
+        return {}
+    sources = brain.get('sources') or {}
+    return {
+        'rule_ids': list(sources.get('rule_ids') or []),
+        'preference_ids': list(sources.get('preference_ids') or []),
+    }
+
+
 def create_generated_asset(workspace, result_data, *, user=None):
     """Create the durable MarketingAsset described by a normalized payload."""
     metadata = result_data.get('metadata') or {}

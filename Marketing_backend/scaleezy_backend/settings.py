@@ -215,6 +215,11 @@ REST_FRAMEWORK = {
     # the proxy's IP and one bucket. One trusted hop; DRF takes the address
     # that hop appended, so a client-supplied header cannot spoof it.
     'NUM_PROXIES': env.int('NUM_PROXIES', default=1),
+    # Opt-in: a list endpoint answers as a bare array exactly as before
+    # unless the request names a ?page_size=, in which case it gets the
+    # standard {count, next, previous, results} envelope. See
+    # apps/common/pagination.py for why this is not a global default.
+    'DEFAULT_PAGINATION_CLASS': 'apps.common.pagination.OptInPageNumberPagination',
 }
 
 SIMPLE_JWT = {
