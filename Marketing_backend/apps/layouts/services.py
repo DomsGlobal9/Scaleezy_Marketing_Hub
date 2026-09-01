@@ -13,6 +13,7 @@ place, because losing a paid generation to a font hiccup is worse than
 showing the photo bare.
 """
 import logging
+import uuid
 
 from django.core.exceptions import ValidationError
 
@@ -22,6 +23,7 @@ from apps.marketing.services.storage import SupabaseStorageService
 from . import export as export_engine
 from . import registry
 from . import render as render_engine
+from . import variants
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +104,30 @@ def source_photo_asset(item):
         return item.asset
 
 
+def generated_layout(item):
+    """
+    The pattern an automatic compose uses when nobody named one.
+
+    Falling through to the registry default meant every generated poster in a
+    brand shared a single skeleton — reviewers saw "the same poster" over and
+    over. The pick rotates across the photo-using patterns instead, keyed on
+    the item's id: stable for the item (a recompose or revision never reshuffles
+    a poster someone is already reviewing), different across items.
+
+    Type-only patterns (`uses_photo=False`) are excluded — they would throw
+    away the photograph the generation just paid for.
+    """
+    options = [
+        key for key in registry.keys()
+        if getattr(registry.get(key), 'uses_photo', True)
+    ] or [registry.DEFAULT_KEY]
+    try:
+        seed = uuid.UUID(str(item.pk)).int
+    except (ValueError, AttributeError, TypeError):
+        seed = 0
+    return options[seed % len(options)]
+
+
 def compose_generated_poster(item, *, user=None):
     """
     Bake the generated copy onto the generated photo, automatically.
@@ -127,7 +153,7 @@ def compose_generated_poster(item, *, user=None):
         layout = (
             item.layout_plugin
             or (item.brand.layout_preference or '')
-            or registry.DEFAULT_KEY
+            or generated_layout(item)
         )
         _label, width, height, _platform = export_engine.SIZES['instagram_portrait']
         # The copy a studio render saved on this item travels into automatic
@@ -147,6 +173,17 @@ def compose_generated_poster(item, *, user=None):
             include_phone=saved.get('include_phone'),
             phone=saved.get('phone', ''),
         )
+        # The style variant this item wears — same skeleton, different dress.
+        # A stored one is reused so a recompose never restyles a poster
+        # someone is already reviewing; otherwise the item's id decides.
+        stored = (item.layout_config or {}).get('style_variant')
+        if isinstance(stored, dict):
+            variant = variants.coerce(stored)
+        else:
+            variant = variants.variant_for(
+                item, uses_photo=getattr(registry.get(layout), 'uses_photo', True)
+            )
+        spec = variants.apply(spec, variant)
         image = render_engine.compose(spec, layout)
         source = item.asset
         asset = persist_composed(item.workspace, user, item, image, 'JPEG', layout)
@@ -156,6 +193,7 @@ def compose_generated_poster(item, *, user=None):
 
     config = dict(item.layout_config or {})
     config.setdefault('source_asset', str(source.pk))
+    config['style_variant'] = variant
     item.layout_plugin = layout
     item.layout_config = config
     item.asset = asset

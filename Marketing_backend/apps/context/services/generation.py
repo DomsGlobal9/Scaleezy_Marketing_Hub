@@ -803,6 +803,24 @@ def generate_carousel_and_copy(
     }
 
 
+def recent_headlines(workspace, limit=6):
+    """
+    The newest distinct headlines this workspace has generated.
+
+    Fed into the brief so the copy model knows what it must NOT say again;
+    trimmed hard because these ride inside a prompt.
+    """
+    from apps.content.models import ContentItem
+
+    rows = (
+        ContentItem.objects.filter(workspace=workspace)
+        .exclude(headline='')
+        .order_by('-created_at')
+        .values_list('headline', flat=True)[: limit * 2]
+    )
+    return list(dict.fromkeys(str(h)[:120] for h in rows if str(h).strip()))[:limit]
+
+
 def generate_marketing_payload(workspace, brief, *, instruction='', progress=None):
     """Return the legacy marketing payload without choosing a vendor.
 
@@ -836,6 +854,14 @@ def generate_marketing_payload(workspace, brief, *, instruction='', progress=Non
         }
 
     effective_instruction = instruction or str(brief.get('campaign_name', ''))[:500]
+
+    # What this workspace's last posters already said. Without it, two similar
+    # briefs produce the same headline and concept back to back — reviewers see
+    # "the same poster" — because the model has no idea what it said last time.
+    recent = recent_headlines(workspace)
+    if recent and 'recent_headlines' not in brief:
+        brief = {**brief, 'recent_headlines': recent}
+
     if content_type == 'video':
         outcome = generate_video_and_copy(
             workspace, brand, brief,

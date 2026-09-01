@@ -286,6 +286,27 @@ Return ONLY a valid JSON object with these exact keys:
             f"{body}\n"
         )
 
+    @staticmethod
+    def _variety_block(recent) -> str:
+        """
+        Renders the workspace's recent headlines as a do-not-repeat constraint.
+
+        Two similar briefs used to come back with the same title and concept —
+        nothing told the model what it already said. Empty when the workspace
+        has no history, so a first generation's prompt is unchanged.
+        """
+        lines = [str(h).strip() for h in (recent or []) if str(h).strip()][:6]
+        if not lines:
+            return ""
+        listed = "\n".join(f'- "{line}"' for line in lines)
+        return (
+            "\n\nALREADY PUBLISHED — this brand's recent posts used these "
+            "headlines. Your postTitle must NOT reuse, rephrase or echo any of "
+            "them, and your imagePrompt must choose a visibly different setting "
+            "and concept from what they suggest:\n"
+            f"{listed}\n"
+        )
+
     @classmethod
     def generate_text_and_image_prompt(cls, request_data: dict, api_key: str = '') -> dict:
         """
@@ -313,6 +334,7 @@ Return ONLY a valid JSON object with these exact keys:
             *(request_data.get('brand_rules') or []),
             *(request_data.get('brand_context') or []),
         ]))
+        variety_block = cls._variety_block(request_data.get('recent_headlines'))
         creative_direction = request_data.get('creative_direction') or {}
         creative_lines = creative_direction.get('instructions') or []
         creative_block = ''
@@ -353,6 +375,7 @@ For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just 
 CRITICAL — NO TEXT IN THE IMAGE: the `imagePrompt` must describe a photograph/visual with absolutely no text, lettering, numbers, captions, watermarks or logos rendered anywhere in it. All headlines, offers and typography are composed onto the image later by a separate layout engine; text baked into the image gets cropped and fights the real typography. The `imagePrompt` itself must end with the sentence: "No text, no lettering, no words, no logos, no watermarks anywhere in the image."
 
 {cls._rules_block(brand_rules)}
+{variety_block}
 {creative_block}
 Respond ONLY with a valid JSON object (no markdown, no code fences, no extra text):
 {{
