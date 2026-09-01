@@ -18,6 +18,7 @@ import { FeedbackTagPicker, useFeedbackElements } from "@/components/marketing/f
 import { PosterStudio, useLayoutCatalogue } from "@/components/marketing/poster-studio";
 import { EmptyState, PageHeader, StatusBadge } from "@/components/marketing/primitives";
 import { api, apiPost } from "@/lib/api";
+import { asList } from "@/lib/brand-master";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_hub/review")({
@@ -103,8 +104,10 @@ function ReviewPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const all = await api<ContentItem[]>("/api/marketing/content/");
-      const list = Array.isArray(all) ? all : [];
+      const all = await api<unknown>("/api/marketing/content/");
+      // Tolerates both the bare array and a paginated envelope, so this page
+      // cannot silently go empty if the endpoint is ever paginated by default.
+      const list = asList<ContentItem>(all);
       setItems(list.filter((i) => i.status === tab));
       setCounts(
         list.reduce<Record<string, number>>((acc, i) => {

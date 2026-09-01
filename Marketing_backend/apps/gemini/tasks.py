@@ -33,6 +33,14 @@ def generate_content(request_id: str):
         logger.warning("Generation request %s vanished before it ran", request_id)
         return {'request': str(request_id), 'status': 'MISSING'}
 
+    if request.status == GeminiGenerationRequest.Status.COMPLETED:
+        # A re-delivered or retried task for work that already finished. Run
+        # again and it would spend provider money a second time and leave a
+        # second draft; the honest response is to do nothing. Checked BEFORE
+        # the status is marked GENERATING, or the check could never be true.
+        logger.info("Generation %s already completed; skipping re-run", request_id)
+        return {'request': str(request_id), 'status': 'ALREADY_COMPLETED'}
+
     request.status = GeminiGenerationRequest.Status.GENERATING
     request.save(update_fields=['status'])
 
@@ -56,10 +64,19 @@ def generate_content(request_id: str):
         # Re-raised so the worker records the traceback and can retry.
         raise
 
-    content_item = _persist(request, brief, result_data, routed['provider'])
+    content_item = _persist(
+        request, brief, result_data, routed['provider'],
+        brain_version=str(routed.get('brain_version') or ''),
+    )
 
+    # `generation_request`, not `request` — the field's actual name. With
+    # the wrong keyword this line raised FieldError on every run, AFTER the
+    # provider had been paid and the draft persisted: the task then retried
+    # up to three times, spending and persisting again each round, and the
+    # request row ended FAILED. Queued carousel and video generation has
+    # never completed successfully because of this line.
     GeminiGenerationResult.objects.update_or_create(
-        request=request,
+        generation_request=request,
         defaults={
             'generated_text': result_data.get('postDescription', ''),
             'generated_asset_url': result_data.get('posterImageUrl', '') or '',
@@ -87,7 +104,7 @@ def generate_content(request_id: str):
     }
 
 
-def _persist(request, brief, result_data, provider_key):
+def _persist(request, brief, result_data, provider_key, *, brain_version=''):
     """
     Mirrors the synchronous path's persistence so a background generation
     produces exactly the same ContentItem a foreground one would.
@@ -96,7 +113,10 @@ def _persist(request, brief, result_data, provider_key):
 
     from apps.brands.models import Brand
     from apps.content.models import ContentItem
-    from apps.context.services.generation import create_generated_asset
+    from apps.context.services.generation import (
+        create_generated_asset,
+        intelligence_in_force,
+    )
 
     try:
         content_format = {
@@ -110,12 +130,23 @@ def _persist(request, brief, result_data, provider_key):
             asset = create_generated_asset(
                 request.workspace, result_data, user=request.user
             )
+            brand = (
+                Brand.objects.filter(workspace=request.workspace)
+                .order_by('-is_default')
+                .first()
+            )
             return ContentItem.objects.create(
                 workspace=request.workspace,
-                brand=Brand.objects.filter(workspace=request.workspace)
-                .order_by('-is_default')
-                .first(),
+                brand=brand,
                 asset=asset,
+                # The same attribution the synchronous path records. Without
+                # it a poster made on the queue vanished from "is this rule
+                # reaching the work?" — the learning-usage report reads
+                # exactly this key.
+                layout_config={'generation_trace': {
+                    'brain_version': brain_version,
+                    **intelligence_in_force(brand, brain_version),
+                }},
                 content_format=content_format,
                 status=ContentItem.Status.DRAFT,
                 headline=(result_data.get('postTitle') or '')[:500],
