@@ -23,6 +23,7 @@ from .services import (
     WAITING_GENERATION_DEADLINE,
     create_run,
     emergency_stop,
+    enqueue_due_autopilot_runs,
     execute_run,
     sweep_stalled_autopilot_runs,
 )
@@ -455,3 +456,187 @@ class AutopilotSweepTests(TestCase):
         GeminiGenerationRequest.objects.filter(pk=generation.pk).update(updated_at=stale)
         self.assertEqual(sweep_stuck_generations(), 1)
         task.enqueue.assert_called_once_with(str(run.pk))
+
+
+class AutopilotScheduleTests(TestCase):
+    """The due-policy sweep: cadence, slot math, CAS claims and honesty."""
+
+    def setUp(self):
+        self.workspace = MarketingWorkspace.objects.create(
+            customer_id='sched-1', workspace_name='Sched'
+        )
+        self.user = User.objects.create_user(username='sched-admin', password='p')
+        WorkspaceMember.objects.create(
+            workspace=self.workspace, user=self.user, role=WorkspaceMember.Role.ADMIN
+        )
+        self.brand = Brand.objects.create(
+            workspace=self.workspace, name='Brand', is_default=True,
+            audience='Founders', brand_tone='Clear',
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.headers = {'HTTP_X_WORKSPACE_ID': str(self.workspace.pk)}
+
+    def _policy(self, *, name, cadence=AutopilotPolicy.Cadence.DAILY, due=None,
+                enabled=True, **overrides):
+        policy = AutopilotPolicy.objects.create(
+            workspace=self.workspace, brand=self.brand, name=name,
+            objective='Objective', enabled=enabled, created_by=self.user,
+            allowed_formats=['POSTER'], cadence=cadence, **overrides,
+        )
+        if due is not None:
+            # Backdate through the queryset: save() would re-arm a past slot.
+            AutopilotPolicy.objects.filter(pk=policy.pk).update(next_run_at=due)
+            policy.refresh_from_db()
+        return policy
+
+    def test_saving_a_scheduled_policy_arms_next_run_one_interval_out(self):
+        before = timezone.now()
+        policy = self._policy(name='Armed daily')
+        after = timezone.now()
+        self.assertIsNotNone(policy.next_run_at)
+        self.assertGreaterEqual(policy.next_run_at, before + timedelta(days=1))
+        self.assertLessEqual(policy.next_run_at, after + timedelta(days=1))
+        # Creating a schedule never creates a run by itself.
+        self.assertEqual(AutopilotRun.objects.count(), 0)
+
+    def test_switching_back_to_manual_disarms_the_schedule(self):
+        policy = self._policy(name='Back to manual')
+        policy.cadence = AutopilotPolicy.Cadence.MANUAL
+        # update_fields without next_run_at is the repo's save idiom; save()
+        # must widen it or the disarm would silently not persist.
+        policy.save(update_fields=['cadence', 'updated_at'])
+        policy.refresh_from_db()
+        self.assertIsNone(policy.next_run_at)
+
+    def test_due_daily_policy_creates_exactly_one_scheduled_run(self):
+        due = timezone.now() - timedelta(hours=1)
+        policy = self._policy(name='Due daily', due=due)
+        self.assertEqual(enqueue_due_autopilot_runs(), 1)
+        run = AutopilotRun.objects.get(policy=policy)
+        self.assertEqual(run.dedupe_key, f'sched:{policy.pk}:{due.isoformat()}')
+        self.assertEqual(run.scheduled_for, due)
+        self.assertEqual(run.status, AutopilotRun.Status.QUEUED)
+        self.assertTrue(run.task_id)
+        self.assertIsNone(run.initiated_by)
+        policy.refresh_from_db()
+        self.assertEqual(policy.next_run_at, due + timedelta(days=1))
+        self.assertGreater(policy.next_run_at, timezone.now())
+
+    def test_overdue_policy_catches_up_without_a_backfill_burst(self):
+        due = timezone.now() - timedelta(days=3, hours=1)
+        policy = self._policy(name='Overdue daily', due=due)
+        self.assertEqual(enqueue_due_autopilot_runs(), 1)
+        self.assertEqual(AutopilotRun.objects.filter(policy=policy).count(), 1)
+        policy.refresh_from_db()
+        # Missed slots are skipped, never replayed: the schedule lands on the
+        # first slot in the future.
+        self.assertEqual(policy.next_run_at, due + 4 * timedelta(days=1))
+        self.assertGreater(policy.next_run_at, timezone.now())
+
+    def test_weekly_interval_math(self):
+        due = timezone.now() - timedelta(hours=2)
+        policy = self._policy(
+            name='Due weekly', cadence=AutopilotPolicy.Cadence.WEEKLY, due=due
+        )
+        self.assertEqual(enqueue_due_autopilot_runs(), 1)
+        policy.refresh_from_db()
+        self.assertEqual(policy.next_run_at, due + timedelta(days=7))
+        run = AutopilotRun.objects.get(policy=policy)
+        self.assertEqual(run.dedupe_key, f'sched:{policy.pk}:{due.isoformat()}')
+
+    def test_manual_disabled_paused_and_stopped_policies_are_untouched(self):
+        due = timezone.now() - timedelta(hours=1)
+        untouched = [
+            self._policy(name='Manual', cadence=AutopilotPolicy.Cadence.MANUAL, due=due),
+            self._policy(name='Disabled', enabled=False, due=due),
+            self._policy(name='Paused', paused=True, due=due),
+            self._policy(name='Stopped', emergency_stop=True, due=due),
+        ]
+        self.assertEqual(enqueue_due_autopilot_runs(), 0)
+        self.assertEqual(AutopilotRun.objects.count(), 0)
+        for policy in untouched:
+            policy.refresh_from_db()
+            self.assertEqual(policy.next_run_at, due, policy.name)
+
+    def test_double_sweep_same_instant_creates_one_run(self):
+        due = timezone.now() - timedelta(minutes=30)
+        policy = self._policy(name='Raced daily', due=due)
+        now = timezone.now()
+        self.assertEqual(enqueue_due_autopilot_runs(now=now), 1)
+        self.assertEqual(enqueue_due_autopilot_runs(now=now), 0)
+        self.assertEqual(AutopilotRun.objects.filter(policy=policy).count(), 1)
+
+    def test_cas_claim_blocks_a_stale_worker(self):
+        """Two workers read the same due slot; the loser's conditional update
+        matches nothing, so it never reaches run creation."""
+        due = timezone.now() - timedelta(minutes=30)
+        policy = self._policy(name='CAS daily', due=due)
+        self.assertEqual(enqueue_due_autopilot_runs(), 1)
+        stale_claim = AutopilotPolicy.objects.filter(
+            pk=policy.pk, next_run_at=due,
+        ).update(next_run_at=due + timedelta(days=1))
+        self.assertEqual(stale_claim, 0)
+
+    def test_duplicate_dedupe_key_is_treated_as_already_created(self):
+        due = timezone.now() - timedelta(minutes=30)
+        policy = self._policy(name='Deduped daily', due=due)
+        AutopilotRun.objects.create(
+            workspace=self.workspace, policy=policy, scheduled_for=due,
+            dedupe_key=f'sched:{policy.pk}:{due.isoformat()}',
+        )
+        # No exception, nothing new created, and the schedule still advances
+        # so the slot is not retried forever.
+        self.assertEqual(enqueue_due_autopilot_runs(), 0)
+        self.assertEqual(AutopilotRun.objects.filter(policy=policy).count(), 1)
+        policy.refresh_from_db()
+        self.assertEqual(policy.next_run_at, due + timedelta(days=1))
+
+    @patch('apps.autopilot.tasks.execute_autopilot_run')
+    def test_enqueue_failure_marks_scheduled_run_failed_honestly(self, task):
+        task.enqueue.side_effect = RuntimeError('queue unavailable')
+        due = timezone.now() - timedelta(minutes=30)
+        policy = self._policy(name='Queueless daily', due=due)
+        self.assertEqual(enqueue_due_autopilot_runs(), 1)
+        run = AutopilotRun.objects.get(policy=policy)
+        self.assertEqual(run.status, AutopilotRun.Status.FAILED)
+        self.assertEqual(run.error_code, 'QUEUE_ENQUEUE_FAILED')
+        self.assertTrue(run.completed_at)
+        self.assertEqual(run.task_id, '')
+        self.assertEqual(run.steps.get(key='finish').status, 'FAILED')
+        # The schedule advanced regardless: no unbounded retry storm against
+        # a queue that is down.
+        self.assertEqual(enqueue_due_autopilot_runs(), 0)
+
+    def test_api_sets_cadence_but_never_next_run_at(self):
+        before = timezone.now()
+        created = self.client.post(
+            '/api/marketing/autopilot/policies/',
+            {
+                'brand': str(self.brand.pk),
+                'name': 'API daily', 'objective': 'Ship one useful draft',
+                'allowed_formats': ['POSTER'], 'enabled': True,
+                'cadence': 'DAILY',
+                # A client must not be able to schedule immediate spend.
+                'next_run_at': before.isoformat(),
+            },
+            format='json', **self.headers,
+        )
+        self.assertEqual(created.status_code, 201, created.json())
+        payload = created.json()
+        self.assertEqual(payload['cadence'], 'DAILY')
+        policy = AutopilotPolicy.objects.get(pk=payload['id'])
+        self.assertGreaterEqual(policy.next_run_at, before + timedelta(days=1))
+
+        patched = self.client.patch(
+            f'/api/marketing/autopilot/policies/{policy.pk}/',
+            {'cadence': 'MANUAL'}, format='json', **self.headers,
+        )
+        self.assertEqual(patched.status_code, 200, patched.json())
+        self.assertIsNone(patched.json()['next_run_at'])
+
+        rejected = self.client.patch(
+            f'/api/marketing/autopilot/policies/{policy.pk}/',
+            {'cadence': 'HOURLY'}, format='json', **self.headers,
+        )
+        self.assertEqual(rejected.status_code, 400)

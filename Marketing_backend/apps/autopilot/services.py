@@ -4,7 +4,7 @@ import logging
 from datetime import timedelta
 from decimal import Decimal
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -66,6 +66,16 @@ def create_run(policy, *, initiated_by=None, scheduled_for=None, dedupe_key=None
 def queue_run(policy, *, initiated_by=None):
     """Create and enqueue a manual run while keeping queue failures truthful."""
     run = create_run(policy, initiated_by=initiated_by)
+    return _enqueue_execute(run)
+
+
+def _enqueue_execute(run):
+    """Enqueues the durable execute task for an already-created run.
+
+    A queue failure is recorded on the run itself (FAILED /
+    QUEUE_ENQUEUE_FAILED) before AutopilotQueueUnavailable is raised, so the
+    ledger never shows a run that silently went nowhere.
+    """
     try:
         from .tasks import execute_autopilot_run
 
@@ -310,6 +320,63 @@ SWEEP_RECHECK_INTERVAL = timedelta(seconds=60)
 #: committed, so nothing was spent and re-enqueueing is free of double-spend:
 #: at most one execution proceeds past the select_for_update claim.
 QUEUED_STALE_AFTER = timedelta(minutes=10)
+
+
+def enqueue_due_autopilot_runs(now=None):
+    """Turns DAILY/WEEKLY policies whose time has come into queued runs.
+
+    Claiming is a compare-and-swap on next_run_at (the stalled-run sweep's
+    idiom): the conditional .update() is filtered on the value this sweep
+    read, so of two workers sweeping the same tick exactly one creates the
+    run. next_run_at advances from the due slot by whole intervals until it
+    is in the future — an overdue policy catches up by skipping missed slots,
+    ONE run per sweep pass, never a backfill burst. The unique
+    (workspace, dedupe_key) constraint is the second line of defence: a
+    duplicate slot key means the run already exists, which is the outcome we
+    wanted, not an error. Every run created here still passes
+    _enforce_policy (spend approval, daily limit, monthly cap) inside
+    execute_run before any generation is bought.
+    """
+    now = now or timezone.now()
+    created = 0
+    due = AutopilotPolicy.objects.filter(
+        enabled=True, paused=False, emergency_stop=False,
+        cadence__in=(AutopilotPolicy.Cadence.DAILY, AutopilotPolicy.Cadence.WEEKLY),
+        next_run_at__isnull=False, next_run_at__lte=now,
+    ).values_list('id', 'cadence', 'next_run_at')
+    for policy_id, cadence, due_slot in list(due):
+        try:
+            interval = AutopilotPolicy.CADENCE_INTERVALS[cadence]
+            next_slot = due_slot + interval
+            while next_slot <= now:
+                next_slot += interval
+            claimed = AutopilotPolicy.objects.filter(
+                pk=policy_id, next_run_at=due_slot,
+            ).update(next_run_at=next_slot, updated_at=now)
+            if not claimed:
+                continue  # another sweep (or a concurrent edit) owns this slot
+            policy = AutopilotPolicy.objects.select_related('workspace').get(pk=policy_id)
+            try:
+                with transaction.atomic():
+                    run = create_run(
+                        policy,
+                        scheduled_for=due_slot,
+                        dedupe_key=f'sched:{policy_id}:{due_slot.isoformat()}',
+                    )
+            except IntegrityError:
+                continue  # this slot's run already exists — already created
+            created += 1
+            try:
+                _enqueue_execute(run)
+            except AutopilotQueueUnavailable:
+                # The run is already marked FAILED / QUEUE_ENQUEUE_FAILED and
+                # can be retried from the control centre; the schedule keeps
+                # moving regardless.
+                pass
+        except Exception:
+            # One bad policy must not stop the rest of the schedule.
+            logger.exception('Scheduled autopilot policy %s could not be swept', policy_id)
+    return created
 
 
 def sweep_stalled_autopilot_runs(now=None):
