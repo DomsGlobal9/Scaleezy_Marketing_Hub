@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   Brain,
   CheckCircle2,
@@ -28,6 +28,7 @@ import { EmptyState, PageHeader, StatusBadge } from "@/components/marketing/prim
 import { api, apiPost } from "@/lib/api";
 import { asList } from "@/lib/brand-master";
 import { cn } from "@/lib/utils";
+import { useWorkspaces } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub/review")({
   head: () => ({
@@ -104,9 +105,10 @@ interface LearnedRule {
   occurrences: number;
 }
 
+// The endpoint also returns a by_verdict tally; nothing here renders it, so it
+// is deliberately not declared rather than fetched into an unused field.
 interface TrainingReport {
   total_feedback: number;
-  by_verdict: Record<string, number>;
   top_elements: { key: string; label: string; group: string; count: number }[];
   brand_name: string;
   brain_current: boolean;
@@ -135,6 +137,15 @@ function ReviewPage() {
   const [lightbox, setLightbox] = useState<ContentItem | null>(null);
   const { groups, provisional } = useFeedbackElements();
   const { layouts, sizes } = useLayoutCatalogue();
+
+  // Mirrors the backend gate exactly (apps/content/views.py `_review`:
+  // MANAGER or above may approve/reject/request edits; publishing writes in
+  // apps/publishing/views.py are MANAGER+ too). An unknown role — the
+  // fallback membership path reports none — stays enabled rather than locking
+  // a real manager out: the server re-checks every request either way.
+  const { workspaces, selectedId } = useWorkspaces();
+  const role = workspaces.find((w) => w.id === selectedId)?.role ?? null;
+  const canReview = role === null || ["MANAGER", "ADMIN", "OWNER"].includes(role);
 
   // The issues this brand raises most, offered as one-tap tags on every
   // pending card — the reviewer should recognise, not re-describe.
@@ -417,7 +428,9 @@ function ReviewPage() {
           description={EMPTY_COPY[tab]?.description ?? ""}
           action={
             tab === "WORKING" ? (
-              <Button onClick={() => window.location.assign("/publishing")}>Create content</Button>
+              <Button asChild>
+                <Link to="/publishing">Create content</Link>
+              </Button>
             ) : undefined
           }
         />
@@ -542,16 +555,24 @@ function ReviewPage() {
                 ) : null}
 
                 {item.status === "APPROVED" ? (
-                  <Button
-                    className="mt-4 w-full"
-                    onClick={() =>
-                      window.location.assign(
-                        `/publishing?content_item_id=${encodeURIComponent(item.id)}`,
-                      )
-                    }
-                  >
-                    Publish approved version
-                  </Button>
+                  canReview ? (
+                    // A disabled Button cannot be an anchor, so the manager
+                    // path is a real Link and the locked path a plain button.
+                    <Button asChild className="mt-4 w-full">
+                      <Link to="/publishing" search={{ content_item_id: item.id }}>
+                        Publish approved version
+                      </Link>
+                    </Button>
+                  ) : (
+                    <>
+                      <Button className="mt-4 w-full" disabled>
+                        Publish approved version
+                      </Button>
+                      <p className="mt-1.5 text-center text-[0.6875rem] text-muted-foreground">
+                        Publishing needs a marketing manager.
+                      </p>
+                    </>
+                  )
                 ) : null}
 
                 {item.status === "DRAFT" && layouts.length > 0 ? (
@@ -588,11 +609,20 @@ function ReviewPage() {
 
                 {item.status === "PENDING_REVIEW" ? (
                   <>
+                    {!canReview ? (
+                      // Same explanation the backend's 403 gives, shown before
+                      // anyone types a note they cannot submit. The controls
+                      // stay visible so the queue reads the same for everyone.
+                      <p className="mt-4 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
+                        Only a marketing manager can approve or reject content.
+                      </p>
+                    ) : null}
                     <Textarea
                       rows={2}
                       className="mt-4"
                       placeholder="Optional note for the creator…"
                       value={notes[item.id] ?? ""}
+                      disabled={!canReview}
                       onChange={(e) => setNotes((prev) => ({ ...prev, [item.id]: e.target.value }))}
                     />
 
@@ -600,7 +630,7 @@ function ReviewPage() {
                       groups={groups}
                       selected={tags[item.id] ?? []}
                       onToggle={(key) => toggleTag(item.id, key)}
-                      disabled={busy === item.id}
+                      disabled={busy === item.id || !canReview}
                       suggestions={suggestions}
                     />
 
@@ -636,7 +666,7 @@ function ReviewPage() {
                     <div className="mt-3 flex flex-wrap gap-2">
                       <Button
                         size="sm"
-                        disabled={busy === item.id}
+                        disabled={busy === item.id || !canReview}
                         onClick={() => act(item.id, "approve")}
                       >
                         <CheckCircle2 className="size-4" /> Approve
@@ -644,7 +674,7 @@ function ReviewPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={busy === item.id}
+                        disabled={busy === item.id || !canReview}
                         onClick={() => act(item.id, "request-edits")}
                       >
                         <Edit3 className="size-4" /> Request edits
@@ -653,7 +683,7 @@ function ReviewPage() {
                         size="sm"
                         variant="ghost"
                         className="text-destructive hover:text-destructive"
-                        disabled={busy === item.id}
+                        disabled={busy === item.id || !canReview}
                         onClick={() => act(item.id, "reject")}
                       >
                         <XCircle className="size-4" /> Reject
