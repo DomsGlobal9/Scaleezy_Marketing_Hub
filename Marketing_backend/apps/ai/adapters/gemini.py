@@ -36,6 +36,34 @@ class GeminiAdapter(AIProviderAdapter):
     default_model = 'gemini-2.5-flash'
     unit_cost = 0.02
 
+    @staticmethod
+    def _structured_config(brief):
+        schema = brief.get('response_schema')
+        if not isinstance(schema, dict):
+            return None
+        from google.genai import types
+
+        return types.GenerateContentConfig(
+            response_mime_type='application/json',
+            response_json_schema=schema,
+        )
+
+    @staticmethod
+    def _validate_structured_output(value, brief):
+        schema = brief.get('response_schema')
+        if not isinstance(schema, dict):
+            return
+        properties = schema.get('properties') or {}
+        for field in schema.get('required') or []:
+            if field not in value:
+                raise AIProviderError('Gemini returned incomplete structured output.')
+            definition = properties.get(field) or {}
+            if definition.get('type') == 'array':
+                rows = value.get(field)
+                minimum = int(definition.get('minItems') or 0)
+                if not isinstance(rows, list) or len(rows) < minimum:
+                    raise AIProviderError('Gemini returned incomplete structured output.')
+
     def _service(self):
         from apps.gemini.services.generator import GeminiGeneratorService
 
@@ -57,10 +85,14 @@ class GeminiAdapter(AIProviderAdapter):
                 # client can destroy it after `.models` is resolved but before
                 # generate_content sends the request.
                 client = self._service()._get_client(self.credentials)
-                response = client.models.generate_content(
-                    model=self.model or self._service().TEXT_MODEL,
-                    contents=[prompt],
-                )
+                kwargs = {
+                    'model': self.model or self._service().TEXT_MODEL,
+                    'contents': [prompt],
+                }
+                config = self._structured_config(brief)
+                if config is not None:
+                    kwargs['config'] = config
+                response = client.models.generate_content(**kwargs)
                 value = (response.text or '').strip()
                 if value.startswith('```') and value.endswith('```'):
                     value = value[3:-3].strip()
@@ -71,6 +103,7 @@ class GeminiAdapter(AIProviderAdapter):
                 raise AIProviderError(f'Gemini structured extraction failed: {exc}') from exc
             if not isinstance(parsed, dict):
                 raise AIProviderError('Gemini returned invalid structured extraction output.')
+            self._validate_structured_output(parsed, brief)
             return {'raw': parsed}
 
         # self.credentials is this workspace's own key when it saved one, and
@@ -105,13 +138,17 @@ class GeminiAdapter(AIProviderAdapter):
                 from google.genai import types
 
                 client = self._service()._get_client(self.credentials)
-                response = client.models.generate_content(
-                    model=self.model or self._service().TEXT_MODEL,
-                    contents=[
+                kwargs = {
+                    'model': self.model or self._service().TEXT_MODEL,
+                    'contents': [
                         str(brief.get('instruction') or 'Analyze this creative reference as JSON.'),
                         types.Part.from_bytes(data=img_bytes, mime_type=mime_type),
                     ],
-                )
+                }
+                config = self._structured_config(brief)
+                if config is not None:
+                    kwargs['config'] = config
+                response = client.models.generate_content(**kwargs)
                 value = (response.text or '').strip()
                 if value.startswith('```') and value.endswith('```'):
                     value = value[3:-3].strip()
@@ -122,6 +159,7 @@ class GeminiAdapter(AIProviderAdapter):
                 raise AIProviderError(f'Gemini inspiration analysis failed: {exc}') from exc
             if not isinstance(parsed, dict):
                 raise AIProviderError('Gemini returned invalid inspiration analysis output.')
+            self._validate_structured_output(parsed, brief)
             return {'analysis': parsed, 'raw': parsed}
         return {'analysis': self._service().analyze_reference_image(
             b64, api_key=self.credentials)}

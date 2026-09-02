@@ -248,6 +248,41 @@ class CreateFromInspirationTests(TenantFixtureMixin, TestCase):
         generation.refresh_from_db()
         self.assertEqual(generation.status, GeminiGenerationRequest.Status.FAILED)
 
+    def test_legacy_ready_reference_without_observations_is_reanalysed(self):
+        reference = self.reference(
+            analysis_status=BrandInspiration.AnalysisStatus.READY
+        )
+        response = self.queue(reference)
+        generation = GeminiGenerationRequest.objects.get(
+            pk=response.json()['data']['generationId']
+        )
+
+        def analyze(reference_id):
+            InspirationSignal.objects.create(
+                inspiration=reference,
+                category='LAYOUT',
+                attribute='hierarchy',
+                value='One dominant headline above a compact body',
+                sentiment=InspirationSignal.Sentiment.LIKED,
+                origin=InspirationSignal.Origin.AI,
+                user_confirmation=InspirationSignal.UserConfirmation.PENDING,
+            )
+            return {'inspiration': reference_id, 'signals': 1}
+
+        from apps.gemini.tasks import generate_content
+
+        with patch(
+            'apps.inspirations.analysis.analyze_inspiration', side_effect=analyze
+        ) as analyzed, patch(
+            'apps.context.services.generation.generate_marketing_payload',
+            return_value=self.routed_payload(),
+        ):
+            generate_content.call(str(generation.pk))
+
+        analyzed.assert_called_once_with(str(reference.pk))
+        generation.refresh_from_db()
+        self.assertEqual(generation.status, GeminiGenerationRequest.Status.COMPLETED)
+
     def test_stale_processing_inspiration_is_recovered_on_worker_rescue(self):
         reference = self.reference(
             analysis_status=BrandInspiration.AnalysisStatus.PROCESSING,

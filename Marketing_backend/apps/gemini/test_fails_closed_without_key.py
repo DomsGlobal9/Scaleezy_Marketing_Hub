@@ -135,12 +135,20 @@ class AdapterCredentialTests(TestCase):
         """Regression: a temporary google.genai Client closes its own transport."""
         from apps.ai.adapters.gemini import GeminiAdapter
 
+        schema = {
+            'type': 'object',
+            'properties': {'signals': {'type': 'array', 'items': {'type': 'string'}}},
+            'required': ['signals'],
+        }
+        captured = {}
+
         class LifetimeModels:
             closed = False
 
-            def generate_content(self, **_kwargs):
+            def generate_content(self, **kwargs):
                 if self.closed:
                     raise RuntimeError('Cannot send a request, as the client has been closed.')
+                captured.update(kwargs)
                 return SimpleNamespace(text='{"signals": []}')
 
         class LifetimeClient:
@@ -156,10 +164,83 @@ class AdapterCredentialTests(TestCase):
             GeminiGeneratorService, '_get_client', side_effect=LifetimeClient
         ):
             result = adapter.generate_text(
-                {'task': 'EXTRACT', 'structured': {'reference': 'saved-id'}}
+                {
+                    'task': 'EXTRACT',
+                    'structured': {'reference': 'saved-id'},
+                    'response_schema': schema,
+                }
             )
 
         self.assertEqual(result, {'raw': {'signals': []}})
+        self.assertEqual(captured['config'].response_mime_type, 'application/json')
+        self.assertEqual(captured['config'].response_json_schema, schema)
+
+    def test_inspiration_image_analysis_enforces_the_supplied_schema(self):
+        from apps.ai.adapters.gemini import GeminiAdapter
+
+        schema = {
+            'type': 'object',
+            'properties': {'signals': {'type': 'array', 'items': {'type': 'string'}}},
+            'required': ['signals'],
+        }
+        captured = {}
+
+        class Models:
+            def generate_content(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(text='{"signals": ["visible grid"]}')
+
+        adapter = GeminiAdapter(credentials='tenant-key', model='m', config={})
+        with patch.object(
+            GeminiGeneratorService,
+            '_get_client',
+            return_value=SimpleNamespace(models=Models()),
+        ), patch.object(
+            GeminiGeneratorService,
+            '_parse_base64_image',
+            return_value=('image/png', b'image-bytes'),
+        ):
+            result = adapter.analyze_image({
+                'task': 'INSPIRATION_ANALYSIS',
+                'reference_image_base64': 'data:image/png;base64,eA==',
+                'response_schema': schema,
+            })
+
+        self.assertEqual(result['analysis']['signals'], ['visible grid'])
+        self.assertEqual(captured['config'].response_mime_type, 'application/json')
+        self.assertEqual(captured['config'].response_json_schema, schema)
+
+    def test_empty_required_observations_fail_over_instead_of_looking_successful(self):
+        from apps.ai.adapters.base import AIProviderError
+        from apps.ai.adapters.gemini import GeminiAdapter
+
+        schema = {
+            'type': 'object',
+            'properties': {
+                'signals': {
+                    'type': 'array',
+                    'minItems': 1,
+                    'items': {'type': 'string'},
+                },
+            },
+            'required': ['signals'],
+        }
+
+        class Models:
+            def generate_content(self, **_kwargs):
+                return SimpleNamespace(text='{"signals": []}')
+
+        adapter = GeminiAdapter(credentials='tenant-key', model='m', config={})
+        with patch.object(
+            GeminiGeneratorService,
+            '_get_client',
+            return_value=SimpleNamespace(models=Models()),
+        ), self.assertRaisesRegex(AIProviderError, 'incomplete structured output'):
+            adapter.generate_text({
+                'task': 'EXTRACT',
+                'structured': {'reference': 'saved-id'},
+                'response_schema': schema,
+            })
 
     @override_settings(
         GEMINI_API_KEY='',

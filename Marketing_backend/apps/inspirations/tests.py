@@ -941,6 +941,52 @@ class InspirationLifecycleTests(InspirationTestBase):
         )
         self.assertEqual(signal.extracted_by_provider, 'test-provider')
 
+    @patch('apps.inspirations.analysis._dispatch', return_value={'provider': 'gemini', 'raw': {'signals': []}})
+    def test_empty_analysis_is_failed_not_marked_ready(self, _dispatch):
+        inspiration = self.make_inspiration()
+
+        from .analysis import analyze_inspiration
+        result = analyze_inspiration(str(inspiration.pk))
+
+        inspiration.refresh_from_db()
+        self.assertEqual(result['signals'], 0)
+        self.assertEqual(
+            inspiration.analysis_status, BrandInspiration.AnalysisStatus.FAILED
+        )
+        self.assertIn(
+            'no usable creative observations',
+            inspiration.metadata['analysis']['error'],
+        )
+
+    @patch('apps.inspirations.analysis._dispatch')
+    def test_legacy_ready_row_without_signals_can_be_reanalysed(self, dispatch):
+        dispatch.return_value = {
+            'provider': 'gemini',
+            'raw': {
+                'signals': [{
+                    'category': 'LAYOUT',
+                    'attribute': 'hierarchy',
+                    'value': 'One dominant headline above a compact body',
+                    'sentiment': 'LIKED',
+                    'weight': 0.8,
+                    'confidence': 0.9,
+                }],
+            },
+        }
+        inspiration = self.make_inspiration(
+            analysis_status=BrandInspiration.AnalysisStatus.READY
+        )
+
+        from .analysis import analyze_inspiration
+        result = analyze_inspiration(str(inspiration.pk))
+
+        inspiration.refresh_from_db()
+        self.assertEqual(result['signals'], 1)
+        self.assertEqual(
+            inspiration.analysis_status,
+            BrandInspiration.AnalysisStatus.NEEDS_REVIEW,
+        )
+
     @patch('apps.inspirations.analysis._dispatch')
     def test_fresh_processing_analysis_is_not_dispatched_twice(self, dispatch):
         inspiration = self.make_inspiration(

@@ -164,10 +164,16 @@ def generate_content(request_id: str):
                         raise ValueError(
                             'A selected inspiration is already being analysed.'
                         )
+                has_any_observation = InspirationSignal.objects.filter(
+                    inspiration_id=inspiration.pk,
+                ).exists()
                 if inspiration.analysis_status in (
                     BrandInspiration.AnalysisStatus.NOT_ANALYSED,
                     BrandInspiration.AnalysisStatus.FAILED,
-                ) or stale_processing:
+                ) or stale_processing or (
+                    inspiration.analysis_status == BrandInspiration.AnalysisStatus.READY
+                    and not has_any_observation
+                ):
                     analyze_inspiration(str(inspiration.pk))
                 has_grounded_observation = InspirationSignal.objects.filter(
                     inspiration_id=inspiration.pk,
