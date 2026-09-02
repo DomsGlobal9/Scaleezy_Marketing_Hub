@@ -1,3 +1,4 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -16,7 +17,14 @@ from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
 from .models import AutopilotPolicy, AutopilotRun
 from .admin import AutopilotPolicyAdmin
-from .services import create_run, emergency_stop, execute_run
+from .services import (
+    RUNNING_STALE_AFTER,
+    WAITING_GENERATION_DEADLINE,
+    create_run,
+    emergency_stop,
+    execute_run,
+    sweep_stalled_autopilot_runs,
+)
 
 User = get_user_model()
 
@@ -214,3 +222,212 @@ class AutopilotTests(TestCase):
         self.assertTrue(policy.paused)
         self.assertEqual(run.status, AutopilotRun.Status.STOPPED)
         self.assertEqual(run.error_code, 'EMERGENCY_STOP')
+
+    def test_run_is_linked_and_waiting_before_generation_enqueues(self):
+        """The follow-up race: a generation finishing before the run row
+        carries its FK and WAITING_GENERATION status loses the follow-up
+        forever. The link must therefore be durable before enqueue."""
+        run = create_run(self.policy, initiated_by=self.user)
+        seen = {}
+
+        def capture(generation_id):
+            row = AutopilotRun.objects.get(pk=run.pk)
+            seen['status'] = row.status
+            seen['generation_id'] = str(row.generation_request_id)
+
+            class _Result:
+                id = 'task-under-test'
+
+            return _Result()
+
+        with patch('apps.gemini.tasks.generate_content') as task:
+            task.enqueue.side_effect = capture
+            execute_run(run.pk)
+
+        self.assertEqual(seen['status'], AutopilotRun.Status.WAITING_GENERATION)
+        run.refresh_from_db()
+        self.assertEqual(seen['generation_id'], str(run.generation_request_id))
+        self.assertEqual(run.task_id, 'task-under-test')
+
+
+class AutopilotSweepTests(TestCase):
+    def setUp(self):
+        self.workspace = MarketingWorkspace.objects.create(
+            customer_id='sweep-1', workspace_name='Sweep'
+        )
+        self.user = User.objects.create_user(username='sweep-admin', password='p')
+        WorkspaceMember.objects.create(
+            workspace=self.workspace, user=self.user, role=WorkspaceMember.Role.ADMIN
+        )
+        self.brand = Brand.objects.create(
+            workspace=self.workspace, name='Brand', is_default=True,
+            audience='Founders', brand_tone='Clear',
+        )
+        self.policy = AutopilotPolicy.objects.create(
+            workspace=self.workspace, brand=self.brand, name='Sweep policy',
+            objective='Objective', enabled=True, created_by=self.user,
+            allowed_formats=['POSTER'],
+        )
+
+    def _waiting_run(self, *, checked_ago_seconds=120, started_ago_seconds=300):
+        now = timezone.now()
+        generation = GeminiGenerationRequest.objects.create(
+            workspace=self.workspace, user=self.user, prompt_data='{}',
+            status=GeminiGenerationRequest.Status.GENERATING,
+        )
+        run = create_run(self.policy, initiated_by=self.user)
+        AutopilotRun.objects.filter(pk=run.pk).update(
+            status=AutopilotRun.Status.WAITING_GENERATION,
+            generation_request=generation,
+            started_at=now - timedelta(seconds=started_ago_seconds),
+            next_check_at=now - timedelta(seconds=checked_ago_seconds),
+        )
+        run.refresh_from_db()
+        return run
+
+    @patch('apps.autopilot.tasks.execute_autopilot_run')
+    def test_sweep_redrives_a_due_waiting_run_exactly_once(self, task):
+        run = self._waiting_run()
+        self.assertEqual(sweep_stalled_autopilot_runs(), 1)
+        task.enqueue.assert_called_once_with(str(run.pk))
+        run.refresh_from_db()
+        # Still WAITING_GENERATION — the sweep re-drives, it never advances
+        # state itself — with next_check_at pushed into the future as the claim.
+        self.assertEqual(run.status, AutopilotRun.Status.WAITING_GENERATION)
+        self.assertGreater(run.next_check_at, timezone.now())
+        # The pushed next_check_at is the CAS: an immediate second sweep
+        # (a second worker on the same tick) claims nothing.
+        self.assertEqual(sweep_stalled_autopilot_runs(), 0)
+        task.enqueue.assert_called_once()
+
+    @patch('apps.autopilot.tasks.execute_autopilot_run')
+    def test_sweep_ignores_runs_not_yet_due(self, task):
+        run = self._waiting_run(checked_ago_seconds=-300)
+        self.assertEqual(sweep_stalled_autopilot_runs(), 0)
+        task.enqueue.assert_not_called()
+        run.refresh_from_db()
+        self.assertEqual(run.status, AutopilotRun.Status.WAITING_GENERATION)
+
+    @patch('apps.autopilot.tasks.execute_autopilot_run')
+    def test_deadline_never_discards_a_finished_generation(self, task):
+        """A >2h wait whose generation actually COMPLETED (worker outage ate
+        the follow-up) must be re-driven so the paid draft lands — failing it
+        would tell the user to buy the same work twice."""
+        run = self._waiting_run(
+            started_ago_seconds=int(WAITING_GENERATION_DEADLINE.total_seconds()) + 60
+        )
+        generation = run.generation_request
+        generation.status = GeminiGenerationRequest.Status.COMPLETED
+        generation.save(update_fields=['status'])
+        self.assertEqual(sweep_stalled_autopilot_runs(), 1)
+        task.enqueue.assert_called_once_with(str(run.pk))
+        run.refresh_from_db()
+        self.assertEqual(run.status, AutopilotRun.Status.WAITING_GENERATION)
+
+    @patch('apps.autopilot.tasks.execute_autopilot_run')
+    def test_redrive_advances_even_when_a_cap_was_crossed_mid_wait(self, task):
+        """Caps gate new spend. A re-driven run whose generation is already
+        paid for must link its draft even if the daily limit filled up while
+        it waited."""
+        run = self._waiting_run()
+        self.policy.daily_generation_limit = 1
+        self.policy.save(update_fields=['daily_generation_limit', 'updated_at'])
+        # A sibling run consumes the whole daily limit while run #1 waits.
+        create_run(self.policy, initiated_by=self.user)
+        generation = run.generation_request
+        content = ContentItem.objects.create(
+            workspace=self.workspace, brand=self.brand,
+            status=ContentItem.Status.DRAFT,
+        )
+        generation.status = GeminiGenerationRequest.Status.COMPLETED
+        generation.save(update_fields=['status'])
+        GeminiGenerationResult.objects.create(
+            generation_request=generation,
+            metadata={'contentItemId': str(content.pk)},
+        )
+        execute_run(run.pk)
+        run.refresh_from_db()
+        self.assertEqual(run.status, AutopilotRun.Status.WAITING_REVIEW)
+        self.assertEqual(run.content_item, content)
+
+    @patch('apps.autopilot.tasks.execute_autopilot_run')
+    def test_sweep_fails_a_wait_past_the_deadline_without_respend(self, task):
+        run = self._waiting_run(
+            started_ago_seconds=int(WAITING_GENERATION_DEADLINE.total_seconds()) + 60
+        )
+        self.assertEqual(sweep_stalled_autopilot_runs(), 1)
+        task.enqueue.assert_not_called()
+        run.refresh_from_db()
+        self.assertEqual(run.status, AutopilotRun.Status.FAILED)
+        self.assertEqual(run.error_code, 'GENERATION_STUCK')
+        self.assertTrue(run.completed_at)
+        self.assertEqual(run.steps.get(key='finish').status, 'FAILED')
+
+    @patch('apps.autopilot.tasks.execute_autopilot_run')
+    def test_lost_enqueue_leaves_the_retry_timer_armed(self, task):
+        run = self._waiting_run()
+        task.enqueue.side_effect = RuntimeError('queue unavailable')
+        self.assertEqual(sweep_stalled_autopilot_runs(), 0)
+        run.refresh_from_db()
+        self.assertEqual(run.status, AutopilotRun.Status.WAITING_GENERATION)
+        # next_check_at was pushed by the claim, so the next pass retries.
+        self.assertGreater(run.next_check_at, timezone.now())
+
+    def test_sweep_fails_a_run_abandoned_mid_execute(self):
+        run = create_run(self.policy, initiated_by=self.user)
+        stale = timezone.now() - RUNNING_STALE_AFTER - timedelta(minutes=1)
+        AutopilotRun.objects.filter(pk=run.pk).update(
+            status=AutopilotRun.Status.RUNNING, started_at=stale, updated_at=stale
+        )
+        self.assertEqual(sweep_stalled_autopilot_runs(), 1)
+        run.refresh_from_db()
+        self.assertEqual(run.status, AutopilotRun.Status.FAILED)
+        self.assertEqual(run.error_code, 'RUN_INTERRUPTED')
+        self.assertIsNone(run.next_check_at)
+
+    def test_sweep_leaves_a_live_running_run_alone(self):
+        run = create_run(self.policy, initiated_by=self.user)
+        AutopilotRun.objects.filter(pk=run.pk).update(
+            status=AutopilotRun.Status.RUNNING
+        )
+        self.assertEqual(sweep_stalled_autopilot_runs(), 0)
+        run.refresh_from_db()
+        self.assertEqual(run.status, AutopilotRun.Status.RUNNING)
+
+    @patch('apps.autopilot.tasks.execute_autopilot_run')
+    def test_swept_run_advances_when_its_generation_actually_finished(self, task):
+        """End to end: follow-up lost, sweep re-drives, execute advances."""
+        run = self._waiting_run()
+        generation = run.generation_request
+        content = ContentItem.objects.create(
+            workspace=self.workspace, brand=self.brand,
+            status=ContentItem.Status.DRAFT,
+        )
+        generation.status = GeminiGenerationRequest.Status.COMPLETED
+        generation.save(update_fields=['status'])
+        GeminiGenerationResult.objects.create(
+            generation_request=generation,
+            metadata={'contentItemId': str(content.pk)},
+        )
+        self.assertEqual(sweep_stalled_autopilot_runs(), 1)
+        # The sweep only enqueues; running the queued work is execute_run.
+        execute_run(run.pk)
+        run.refresh_from_db()
+        self.assertEqual(run.status, AutopilotRun.Status.WAITING_REVIEW)
+        self.assertEqual(run.content_item, content)
+
+    @patch('apps.autopilot.tasks.execute_autopilot_run')
+    def test_generation_sweep_terminal_branches_queue_the_followup(self, task):
+        """A generation completed or finally failed by gemini's own sweep must
+        still wake the run waiting on it."""
+        from apps.gemini.tasks import sweep_stuck_generations
+
+        run = self._waiting_run()
+        generation = run.generation_request
+        GeminiGenerationResult.objects.create(
+            generation_request=generation, metadata={}
+        )
+        stale = timezone.now() - timedelta(hours=1)
+        GeminiGenerationRequest.objects.filter(pk=generation.pk).update(updated_at=stale)
+        self.assertEqual(sweep_stuck_generations(), 1)
+        task.enqueue.assert_called_once_with(str(run.pk))
