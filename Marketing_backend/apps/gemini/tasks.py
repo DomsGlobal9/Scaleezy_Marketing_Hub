@@ -439,11 +439,17 @@ def sweep_stuck_generations(now=None):
             # The generation finished; the worker died between writing the
             # result and the final status save. Finish the bookkeeping rather
             # than paying for the same work again.
-            swept += generating.update(
+            finished = generating.update(
                 status=GeminiGenerationRequest.Status.COMPLETED,
                 completed_at=now,
                 updated_at=now,
             )
+            swept += finished
+            if finished:
+                # The dead worker never queued the follow-up either; an
+                # autopilot run waiting on this generation would otherwise
+                # stall.
+                _queue_autopilot_followups(request)
         elif request.retry_count < MAX_RESCUE_ATTEMPTS:
             # Compare-and-swap on retry_count so two workers sweeping at once
             # cannot queue the same rescue twice.
@@ -459,11 +465,16 @@ def sweep_stuck_generations(now=None):
                 generate_content.enqueue(str(request.pk))
                 swept += 1
         else:
-            swept += generating.update(
+            abandoned = generating.update(
                 status=GeminiGenerationRequest.Status.FAILED,
                 error_message=INTERRUPTED_MESSAGE,
                 updated_at=now,
             )
+            swept += abandoned
+            if abandoned:
+                # Terminal for the run too: the follow-up reads the FAILED
+                # status and fails the run with this same honest message.
+                _queue_autopilot_followups(request)
             logger.warning(
                 "Generation %s still stuck after a rescue; marked FAILED", request.pk
             )
