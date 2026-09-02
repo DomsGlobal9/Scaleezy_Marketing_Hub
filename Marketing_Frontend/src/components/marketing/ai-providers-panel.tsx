@@ -15,6 +15,7 @@ import {
   Route as RouteIcon,
   ServerCog,
   ShieldCheck,
+  Trash2,
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -46,6 +47,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MissionsPanel } from "@/components/marketing/missions-panel";
+import { ConfirmDialog, type ConfirmRequest } from "@/components/platform/shared";
 import { api, apiPost } from "@/lib/api";
 
 export const AI_ADMIN_TABS = ["overview", "providers", "routing", "activity", "missions"] as const;
@@ -103,9 +105,10 @@ interface UsageSummaryRow {
   capability: string;
   calls: number;
   spend: string | number | null;
-  successes?: number;
-  failures?: number;
-  average_latency_ms?: number | null;
+  successful_calls?: number;
+  failed_calls?: number;
+  success_rate_percent?: number;
+  average_latency_ms?: number;
 }
 
 interface UsageRow {
@@ -230,6 +233,7 @@ export function AIProvidersPanel({
   const [addIntegrationType, setAddIntegrationType] = useState("");
   const [addCapabilities, setAddCapabilities] = useState<string[]>([]);
   const [addEnabled, setAddEnabled] = useState(true);
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const loadVersion = useRef(0);
 
   const buildDrafts = useCallback((caps: Vocab[], rows: RouteRow[]) => {
@@ -497,6 +501,23 @@ export function AIProvidersPanel({
     } finally {
       setBusy(null);
     }
+  };
+
+  const removeProvider = (provider: CatalogueProvider, workspaceProvider: WorkspaceProvider) => {
+    // The backend deletes this client's routes for the provider in the same
+    // transaction and keeps usage history (shown as "Removed provider").
+    setConfirmRequest({
+      title: `Remove ${provider.display_name} from this client?`,
+      description:
+        "Its saved key and its routes for this client are deleted with it. Recorded activity is kept and shows as a removed provider.",
+      confirmLabel: "Remove provider",
+      destructive: true,
+      run: async () => {
+        await api(`/api/marketing/ai/providers/${workspaceProvider.id}/`, { method: "DELETE" });
+        toast.success(`${provider.display_name} removed from this client.`);
+        await load();
+      },
+    });
   };
 
   const testProvider = async (workspaceProvider: WorkspaceProvider) => {
@@ -1087,6 +1108,17 @@ export function AIProvidersPanel({
                           Test connection
                         </Button>
                       ) : null}
+                      {workspaceProvider ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-destructive hover:text-destructive"
+                          disabled={providerBusy}
+                          onClick={() => removeProvider(provider, workspaceProvider)}
+                        >
+                          <Trash2 className="size-4" /> Remove provider
+                        </Button>
+                      ) : null}
                     </div>
 
                     {workspaceProvider ? (
@@ -1189,6 +1221,8 @@ export function AIProvidersPanel({
             })}
           </div>
         )}
+
+        <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(null)} />
       </TabsContent>
 
       <TabsContent value="routing" className="space-y-5">
