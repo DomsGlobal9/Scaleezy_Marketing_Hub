@@ -18,6 +18,7 @@ from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 from .models import AutopilotPolicy, AutopilotRun
 from .admin import AutopilotPolicyAdmin
 from .services import (
+    QUEUED_STALE_AFTER,
     RUNNING_STALE_AFTER,
     WAITING_GENERATION_DEADLINE,
     create_run,
@@ -372,6 +373,29 @@ class AutopilotSweepTests(TestCase):
         self.assertEqual(run.status, AutopilotRun.Status.WAITING_GENERATION)
         # next_check_at was pushed by the claim, so the next pass retries.
         self.assertGreater(run.next_check_at, timezone.now())
+
+    @patch('apps.autopilot.tasks.execute_autopilot_run')
+    def test_sweep_redrives_a_queued_run_whose_task_died(self, task):
+        """The stranding found live in production: the durable task crashed
+        out of all its attempts (a Postgres-only locking bug) leaving the run
+        QUEUED forever. QUEUED proves nothing was spent, so re-driving is
+        free; the CAS on updated_at re-drives once per interval."""
+        run = create_run(self.policy, initiated_by=self.user)
+        stale = timezone.now() - QUEUED_STALE_AFTER - timedelta(minutes=1)
+        AutopilotRun.objects.filter(pk=run.pk).update(updated_at=stale)
+        self.assertEqual(sweep_stalled_autopilot_runs(), 1)
+        task.enqueue.assert_called_once_with(str(run.pk))
+        run.refresh_from_db()
+        self.assertEqual(run.status, AutopilotRun.Status.QUEUED)
+        # Claimed: updated_at moved, so an immediate second sweep is a no-op.
+        self.assertEqual(sweep_stalled_autopilot_runs(), 0)
+        task.enqueue.assert_called_once()
+
+    @patch('apps.autopilot.tasks.execute_autopilot_run')
+    def test_sweep_leaves_a_fresh_queued_run_alone(self, task):
+        create_run(self.policy, initiated_by=self.user)
+        self.assertEqual(sweep_stalled_autopilot_runs(), 0)
+        task.enqueue.assert_not_called()
 
     def test_sweep_fails_a_run_abandoned_mid_execute(self):
         run = create_run(self.policy, initiated_by=self.user)
