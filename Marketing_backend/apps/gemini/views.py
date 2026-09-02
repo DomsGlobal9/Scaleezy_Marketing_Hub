@@ -432,6 +432,9 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             )
         request_data['creative_direction'] = creative_direction
         request_data['layout'] = creative_direction['layout']
+        # The typed instruction must face the gate too — the async endpoint
+        # carries it in its brief and refuses the identical wording.
+        request_data['instruction'] = instruction
 
         blocked = self._guardrail_block(brand, request_data)
         if blocked:

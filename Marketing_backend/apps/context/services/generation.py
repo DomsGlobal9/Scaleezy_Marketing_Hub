@@ -877,10 +877,12 @@ def generate_marketing_payload(
                 "Guardrail copy retry failed for workspace %s; keeping first copy",
                 workspace.pk,
             )
-        unresolved = guardrail_law.copy_violations(resolved, payload)
-
     payload, fixed = guardrail_law.enforce(resolved, payload)
     routed['payload'] = payload
+    if caught:
+        # Recomputed AFTER enforce: a hashtag the strip removed or a CTA the
+        # append supplied is resolved, and must not be reported otherwise.
+        unresolved = guardrail_law.copy_violations(resolved, payload)
     if caught or fixed:
         # Caught-then-fixed still counts: the scorecard's whole job is to
         # show how often the gate had to step in.
@@ -1063,7 +1065,10 @@ def generate_copy_only(workspace, brand, brief_extra, *, instruction=''):
     context = build_generation_context(
         workspace, brand, TaskType.COPY, instruction=instruction,
     )
-    brief = {**brief_extra, **context_as_brief(context)}
+    # copy_only tells a combined provider (Gemini serves TEXT and IMAGE from
+    # one pipeline) to skip its image step: nobody here will use a poster,
+    # and paying for one to discard it is the waste this path exists to avoid.
+    brief = {**brief_extra, **context_as_brief(context), 'copy_only': True}
     try:
         result = AIRouter(workspace).dispatch(Capability.TEXT, brief)
         validate_output(Capability.TEXT, result, context)
@@ -1076,6 +1081,9 @@ def generate_copy_only(workspace, brand, brief_extra, *, instruction=''):
         'postHashtags': result.get('hashtags') or raw.get('postHashtags', ''),
     }
     # Deterministic law only (no retry here — callers own their retry
-    # budget): required lines, banned hashtags, the CTA keyword.
-    payload, _fixed = guardrail_law.enforce(brand, payload)
+    # budget), and only onto real copy: appending required lines to an EMPTY
+    # caption would fabricate a truthy boilerplate caption that callers'
+    # keep-the-old-copy guards would then wrongly adopt.
+    if str(payload.get('postDescription') or '').strip():
+        payload, _fixed = guardrail_law.enforce(brand, payload)
     return payload

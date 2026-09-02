@@ -6,7 +6,7 @@
  * generates exactly as before. Lists save on change; each chip is one rule.
  */
 import { Loader2, Plus, ShieldCheck, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -44,7 +44,7 @@ const LISTS: { key: ListKey; label: string; hint: string; placeholder: string }[
   {
     key: "forbidden_imagery",
     label: "Never show",
-    hint: "Visual motifs the imagery must never include — enforced in the image brief and refused in yours.",
+    hint: "Visual motifs that are refused in your briefs and written into the image instructions as banned.",
     placeholder: "e.g. butterflies",
   },
   {
@@ -108,36 +108,53 @@ export function HardRulesPanel({ brandId }: { brandId: string }) {
     };
   }, [brandId]);
 
-  const save = async (next: Guardrails) => {
-    const previous = rules;
-    setRules(next);
+  // Saves are chained: two quick chip-adds must not race each other's PATCH
+  // of the whole object, or the slower response silently deletes the faster
+  // chip. Each save also re-reads the freshest local state at send time.
+  const latest = useRef<Guardrails | null>(null);
+  latest.current = rules;
+  const chain = useRef<Promise<void>>(Promise.resolve());
+
+  const save = (mutate: (current: Guardrails) => Guardrails) => {
+    if (!latest.current) return;
+    setRules((current) => (current ? mutate(current) : current));
     setSaving(true);
-    try {
-      const updated = await api<{ guardrails?: unknown }>(
-        `/api/marketing/brands/${brandId}/`,
-        { method: "PATCH", body: { guardrails: next } },
-      );
-      setRules(cleanFrom(updated.guardrails));
-    } catch (e) {
-      setRules(previous);
-      toast.error(e instanceof Error ? e.message : "Could not save the rule.");
-    } finally {
-      setSaving(false);
-    }
+    chain.current = chain.current.then(async () => {
+      const next = latest.current;
+      if (!next) return;
+      try {
+        const updated = await api<{ guardrails?: unknown }>(
+          `/api/marketing/brands/${brandId}/`,
+          { method: "PATCH", body: { guardrails: next } },
+        );
+        setRules(cleanFrom(updated.guardrails));
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Could not save the rule.");
+        // Reload the stored truth rather than guessing which edit failed.
+        try {
+          const brand = await api<{ guardrails?: unknown }>(
+            `/api/marketing/brands/${brandId}/`,
+          );
+          setRules(cleanFrom(brand.guardrails));
+        } catch {
+          /* keep the optimistic state; the next save retries */
+        }
+      } finally {
+        setSaving(false);
+      }
+    });
   };
 
   const addTo = (key: ListKey) => {
-    if (!rules) return;
     const term = (drafts[key] ?? "").trim();
-    if (!term) return;
+    if (!term || !rules) return;
     setDrafts((d) => ({ ...d, [key]: "" }));
     if (rules[key].some((t) => t.toLowerCase() === term.toLowerCase())) return;
-    void save({ ...rules, [key]: [...rules[key], term] });
+    save((current) => ({ ...current, [key]: [...current[key], term] }));
   };
 
   const removeFrom = (key: ListKey, term: string) => {
-    if (!rules) return;
-    void save({ ...rules, [key]: rules[key].filter((t) => t !== term) });
+    save((current) => ({ ...current, [key]: current[key].filter((t) => t !== term) }));
   };
 
   if (error) {
@@ -157,9 +174,11 @@ export function HardRulesPanel({ brandId }: { brandId: string }) {
           {saving ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" /> : null}
         </CardTitle>
         <p className="text-sm text-muted-foreground">
-          Law you write, enforced before any AI is paid. Leave anything empty and
-          nothing changes — these only act when you add one. Learned rules below
-          come from your reviews; these outrank them.
+          Enforced mechanically: a brief that breaks one is refused before any
+          AI is paid, banned hashtags are stripped, required lines are added.
+          The stated and learned rules below guide the AI&rsquo;s wording; these
+          here are the ones the system enforces itself. Leave anything empty
+          and nothing changes.
         </p>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -201,6 +220,7 @@ export function HardRulesPanel({ brandId }: { brandId: string }) {
                       value={drafts[key] ?? ""}
                       onChange={(e) => setDrafts((d) => ({ ...d, [key]: e.target.value }))}
                       placeholder={placeholder}
+                      maxLength={120}
                       className="h-7 w-40 text-xs"
                     />
                     <Button type="submit" size="sm" variant="outline" className="h-7 px-2">
@@ -221,7 +241,7 @@ export function HardRulesPanel({ brandId }: { brandId: string }) {
                   <button
                     key={value}
                     type="button"
-                    onClick={() => rules && void save({ ...rules, language_rule: value })}
+                    onClick={() => save((current) => ({ ...current, language_rule: value }))}
                     className={
                       rules.language_rule === value
                         ? "rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground"

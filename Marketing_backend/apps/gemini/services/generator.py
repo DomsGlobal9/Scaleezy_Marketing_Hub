@@ -434,8 +434,7 @@ For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just 
 
 CRITICAL — NO TEXT IN THE IMAGE: the `imagePrompt` must describe a photograph/visual with absolutely no text, lettering, numbers, captions, watermarks or logos rendered anywhere in it. All headlines, offers and typography are composed onto the image later by a separate layout engine; text baked into the image gets cropped and fights the real typography. The `imagePrompt` itself must end with the sentence: "No text, no lettering, no words, no logos, no watermarks anywhere in the image."
 
-{cls._rules_block(brand_rules)}
-{guardrail_block}
+{cls._rules_block(brand_rules)}{guardrail_block}
 {variety_block}
 {creative_block}
 Respond ONLY with a valid JSON object (no markdown, no code fences, no extra text):
@@ -561,10 +560,14 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         text_result = cls.generate_text_and_image_prompt(request_data, api_key=api_key)
         image_prompt = text_result.get("imagePrompt", "")
 
-        # Step 2: Generate poster image from the AI-crafted prompt
+        # Step 2: Generate poster image from the AI-crafted prompt.
+        # Skipped for copy-only callers (surgical request-edits, the guardrail
+        # copy retry): they want words, and paying the image model for a
+        # poster that is immediately discarded is exactly the spend those
+        # callers exist to avoid.
         poster_url = ""
         try:
-            if image_prompt:
+            if image_prompt and not request_data.get('copy_only'):
                 poster_url = cls.generate_poster_image(
                     image_prompt=image_prompt,
                     reference_image_base64=request_data.get('reference_image_base64', ''),

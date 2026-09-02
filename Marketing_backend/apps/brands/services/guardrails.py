@@ -57,7 +57,16 @@ def clean(raw):
         items = {}
         if isinstance(values, list):
             for value in values:
-                term = str(value).strip() if isinstance(value, (str, int)) else ''
+                raw_term = str(value) if isinstance(value, (str, int)) else ''
+                # Collapse ALL internal whitespace and drop unprintables: a
+                # term is rendered into every prompt under the BRAND LAW
+                # header, so an embedded newline would let a stored term
+                # fabricate its own prompt lines with top authority.
+                chunks = (
+                    ''.join(ch for ch in chunk if ch.isprintable())
+                    for chunk in raw_term.split()
+                )
+                term = ' '.join(chunk for chunk in chunks if chunk)
                 if key == 'banned_hashtags':
                     term = term.lstrip('#')
                 # Case-insensitive dedupe, first casing wins: "Cheap" and
@@ -124,8 +133,22 @@ def preflight_violations(brand, fields):
     return messages
 
 
+#: One tag = "#" up to the next whitespace or "#". Detection and enforcement
+#: MUST tokenize identically, or a flagged tag survives the strip (burning
+#: the paid retry) — and "#summer-sale" must never trip a ban on "sale".
+_HASHTAG = re.compile(r'#([^\s#]+)')
+_TAG_TRAILING = '.,;:!?)("\'`'
+
+
+def _normal_tag(raw):
+    return str(raw).rstrip(_TAG_TRAILING).casefold()
+
+
 def _hashtag_tokens(hashtags):
-    return re.findall(r'#?([\wऀ-ॿ]+)', str(hashtags or ''))
+    return [
+        match.group(1).rstrip(_TAG_TRAILING)
+        for match in _HASHTAG.finditer(str(hashtags or ''))
+    ]
 
 
 def copy_violations(brand, payload):
@@ -142,10 +165,10 @@ def copy_violations(brand, payload):
         if _pattern(term).search(prose) or _pattern(term).search(hashtags):
             messages.append(f'The caption used the banned word "{term}".')
 
-    banned_tags = {t.lower() for t in g['banned_hashtags']}
+    banned_tags = {t.casefold() for t in g['banned_hashtags']}
     if banned_tags:
         for token in _hashtag_tokens(hashtags):
-            if token.lower() in banned_tags:
+            if token.casefold() in banned_tags:
                 messages.append(f'The banned hashtag "#{token}" was used.')
 
     if g['approved_ctas'] and not any(
@@ -171,16 +194,21 @@ def enforce(brand, payload):
     payload = dict(payload) if isinstance(payload, dict) else {}
     notes = []
 
-    banned_tags = {t.lower() for t in g['banned_hashtags']}
+    banned_tags = {t.casefold() for t in g['banned_hashtags']}
     hashtags = str(payload.get('postHashtags') or '')
     if banned_tags and hashtags:
-        kept = [
-            token for token in hashtags.split()
-            if token.lstrip('#').lower() not in banned_tags
-        ]
-        removed = len(hashtags.split()) - len(kept)
+        removed = 0
+
+        def drop(match):
+            nonlocal removed
+            if _normal_tag(match.group(1)) in banned_tags:
+                removed += 1
+                return ''
+            return match.group(0)
+
+        stripped = ' '.join(_HASHTAG.sub(drop, hashtags).split())
         if removed:
-            payload['postHashtags'] = ' '.join(kept)
+            payload['postHashtags'] = stripped
             notes.append(f'Removed {removed} banned hashtag(s).')
 
     description = str(payload.get('postDescription') or '')
