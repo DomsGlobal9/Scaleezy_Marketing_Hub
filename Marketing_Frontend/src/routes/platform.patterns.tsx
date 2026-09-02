@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import {
   ConfirmDialog,
   ErrorNote,
+  MutedNote,
   PlatformPageHeader,
   StatusPill,
   type ConfirmRequest,
@@ -98,18 +99,23 @@ function PatternsPage() {
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [contributors, setContributors] = useState<LearnedPattern | null>(null);
+  // The compile runs on a worker with no status endpoint to poll, so all this
+  // page can honestly say is "queued — refresh". Cleared on the next load.
+  const [compileNote, setCompileNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setCompileNote(null);
     try {
-      setPatterns(await fetchLearnedPatterns());
+      // The server filters by status (and sorts by contributor depth).
+      setPatterns(await fetchLearnedPatterns(filter === "ALL" ? {} : { status: filter }));
     } catch (e: unknown) {
       setError(errorText(e, "Could not load learned patterns."));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [filter]);
 
   useEffect(() => {
     void load();
@@ -123,7 +129,10 @@ function PatternsPage() {
       confirmLabel: "Queue compile",
       run: async () => {
         await compileLearnedPatterns();
-        toast.success("Compilation queued. Refresh after the worker finishes.");
+        toast.success("Compilation queued.");
+        setCompileNote(
+          "Compile queued. The worker reports no live status here — refresh in a minute to see the rebuilt drafts (a new compiled-at / version on the rows).",
+        );
       },
     });
 
@@ -153,13 +162,9 @@ function PatternsPage() {
       },
     });
 
-  const visible = (patterns ?? []).filter((row) => filter === "ALL" || row.status === filter);
-  const counts = Object.fromEntries(
-    (["ALL", "DRAFT", "PUBLISHED", "RETIRED"] as Filter[]).map((status) => [
-      status,
-      status === "ALL" ? patterns?.length ?? 0 : patterns?.filter((p) => p.status === status).length ?? 0,
-    ]),
-  ) as Record<Filter, number>;
+  // Rows arrive already narrowed by the server; only the active chip has an
+  // honest count, so the others name the state without pretending to one.
+  const visible = patterns ?? [];
 
   return (
     <div>
@@ -190,12 +195,14 @@ function PatternsPage() {
               filter === value ? "border-slate-900 bg-slate-900 text-white" : "bg-background text-muted-foreground",
             )}
           >
-            {value === "ALL" ? "All" : value.toLowerCase()} · {counts[value]}
+            {value === "ALL" ? "All" : value.toLowerCase()}
+            {filter === value && patterns ? ` · ${visible.length}` : ""}
           </button>
         ))}
       </div>
 
       <ErrorNote message={error} />
+      {compileNote ? <div className="mb-3"><MutedNote>{compileNote}</MutedNote></div> : null}
       {loading && !patterns ? (
         <div className="space-y-2">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-24" />)}</div>
       ) : visible.length === 0 ? (

@@ -2,9 +2,9 @@
  * Client portfolio — every workspace on the platform, one row each.
  *
  * Filter chips name the flags the server computes; the chip is sent as
- * `?filter=` AND applied to the returned flags, so the table is right whether
- * or not the server narrowed the list itself. Every cell is a real query on
- * the server; a missing value renders as a dash, never as zero.
+ * `?filter=` and the server narrows, flags and pages — rows arrive already
+ * filtered. Every cell is a real query on the server; a missing value renders
+ * as a dash, never as zero.
  */
 import { createFileRoute, Link, Outlet, useChildMatches } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, RefreshCw, Search } from "lucide-react";
@@ -37,27 +37,19 @@ function ClientsRoute() {
 
 /**
  * Keys are the server's `?filter=` vocabulary (apps/platform/views_clients.py
- * FILTERS); `flags` is the same set the server selects on for that key, so the
- * client-side pass below agrees with it even if the server returned a superset.
+ * FILTERS); it selects on the same flags it returns, so no client-side pass
+ * over `flags` is needed here.
  */
-const FILTERS: Array<{ key: string; label: string; flags: string[] | null }> = [
-  { key: "", label: "All", flags: null },
-  { key: "pending", label: "Awaiting approval", flags: ["PENDING_APPROVAL"] },
-  {
-    key: "at_risk",
-    label: "At risk",
-    flags: ["INACTIVE", "FAILING_PUBLISHES", "NO_AI_ROUTING", "BRAIN_STALE"],
-  },
-  {
-    key: "over_quota",
-    label: "Over quota / spend cap",
-    flags: ["OVER_QUOTA", "SPEND_CAP_REACHED"],
-  },
-  { key: "never_generated", label: "Never generated", flags: ["NEVER_GENERATED"] },
-  { key: "inactive", label: "Inactive", flags: ["INACTIVE"] },
-  { key: "failing_publishes", label: "Failing publishes", flags: ["FAILING_PUBLISHES"] },
-  { key: "suspended", label: "Suspended", flags: ["SUSPENDED"] },
-  { key: "archived", label: "Archived", flags: ["ARCHIVED"] },
+const FILTERS: Array<{ key: string; label: string }> = [
+  { key: "", label: "All" },
+  { key: "pending", label: "Awaiting approval" },
+  { key: "at_risk", label: "At risk" },
+  { key: "over_quota", label: "Over quota / spend cap" },
+  { key: "never_generated", label: "Never generated" },
+  { key: "inactive", label: "Inactive" },
+  { key: "failing_publishes", label: "Failing publishes" },
+  { key: "suspended", label: "Suspended" },
+  { key: "archived", label: "Archived" },
 ];
 
 function UsageCell({ row }: { row: ClientRow }) {
@@ -202,7 +194,7 @@ function ClientsPage() {
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             className="pl-8"
-            placeholder="Search code, name, website, industry"
+            placeholder="Search client code, name or brand"
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />

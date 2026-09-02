@@ -33,6 +33,7 @@ from apps.universal.models import (
 from apps.universal.serializers import inspiration_payload, standard_payload
 from apps.universal.services import (
     adoption_count,
+    adoption_counts,
     preview_affected,
     publish_inspiration,
     publish_standard,
@@ -429,10 +430,14 @@ class InspirationListView(PlatformView):
         self.audit('PLATFORM_INSPIRATIONS_VIEWED', detail={
             'status': wanted or 'ALL', 'count': len(rows),
         })
+        # One grouped query for the whole page, not one COUNT per entry.
+        adopted = adoption_counts(rows)
         return APIResponse(success=True, data={
             'status': wanted or 'ALL',
             'count': len(rows),
-            'inspirations': [inspiration_payload(i) for i in rows],
+            'inspirations': [
+                inspiration_payload(i, adoptions=adopted.get(str(i.pk), 0)) for i in rows
+            ],
         })
 
     def post(self, request):
