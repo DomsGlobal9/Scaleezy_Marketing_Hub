@@ -216,7 +216,12 @@ def _content_from_generation(run):
 
 def execute_run(run_id):
     with transaction.atomic():
-        run = AutopilotRun.objects.select_for_update().select_related(
+        # of=('self',): created_by and generation_request are nullable FKs, so
+        # select_related LEFT-JOINs them, and PostgreSQL refuses FOR UPDATE on
+        # the nullable side of an outer join (NotSupportedError). Only the run
+        # row needs the lock. SQLite ignores select_for_update entirely, which
+        # is why no test caught this — verified against production Postgres.
+        run = AutopilotRun.objects.select_for_update(of=('self',)).select_related(
             'workspace', 'policy__brand', 'policy__created_by', 'generation_request'
         ).get(pk=run_id)
         if run.status in (
@@ -300,6 +305,12 @@ RUNNING_STALE_AFTER = timedelta(minutes=30)
 #: the retry interval if the enqueue it then attempts is lost.
 SWEEP_RECHECK_INTERVAL = timedelta(seconds=60)
 
+#: A run QUEUED longer than this has lost its durable task (crashed out of
+#: all its attempts, or never enqueued). QUEUED means the RUNNING claim never
+#: committed, so nothing was spent and re-enqueueing is free of double-spend:
+#: at most one execution proceeds past the select_for_update claim.
+QUEUED_STALE_AFTER = timedelta(minutes=10)
+
 
 def sweep_stalled_autopilot_runs(now=None):
     """Re-drives runs whose generation follow-up never arrived.
@@ -370,6 +381,29 @@ def sweep_stalled_autopilot_runs(now=None):
             # The pushed next_check_at doubles as the retry timer: the next
             # pass tries again instead of this one dying mid-list.
             logger.exception('Stalled autopilot run %s could not be re-queued', run_id)
+
+    # QUEUED runs whose durable task died — crashed out of every attempt, or
+    # was never enqueued. The status proves execute_run's first save never
+    # committed, so no generation exists and re-driving spends nothing. The
+    # CAS is on updated_at: claiming touches it, so of two concurrent sweeps
+    # only one update matches the old timestamp.
+    queued_cutoff = now - QUEUED_STALE_AFTER
+    lost = AutopilotRun.objects.filter(
+        status=AutopilotRun.Status.QUEUED, updated_at__lt=queued_cutoff,
+    ).values_list('id', 'updated_at')
+    for run_id, seen_updated_at in list(lost):
+        claimed = AutopilotRun.objects.filter(
+            pk=run_id, status=AutopilotRun.Status.QUEUED,
+            updated_at=seen_updated_at,
+        ).update(updated_at=now)
+        if not claimed:
+            continue
+        try:
+            execute_autopilot_run.enqueue(str(run_id))
+            swept += 1
+            logger.warning('Autopilot run %s lost its task while QUEUED; re-queued', run_id)
+        except Exception:
+            logger.exception('Lost QUEUED autopilot run %s could not be re-queued', run_id)
 
     cutoff = now - RUNNING_STALE_AFTER
     stale = AutopilotRun.objects.filter(
