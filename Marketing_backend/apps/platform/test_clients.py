@@ -9,8 +9,10 @@ row.
 """
 import uuid
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
@@ -43,6 +45,9 @@ def detail_url(workspace):
 
 class ClientPortfolioTests(TenantFixtureMixin, TestCase):
     def setUp(self):
+        # LocMem cache outlives a test in one process; the cached over-quota
+        # verdict set must never leak from one test into the next.
+        cache.clear()
         self.plan, _ = Plan.objects.get_or_create(
             key='free', defaults={'name': 'Free', 'is_default': True}
         )
@@ -237,6 +242,30 @@ class ClientPortfolioTests(TenantFixtureMixin, TestCase):
         self.assertIn('OVER_QUOTA', row['flags'])
         image = next(c for c in row['usage']['capabilities'] if c['capability'] == 'IMAGE')
         self.assertEqual((image['used'], image['limit'], image['overridden']), (2, 2, True))
+
+    def test_over_quota_verdicts_are_cached_between_console_hits(self):
+        from apps.platform import views_clients
+
+        capped, _ = self.other_workspace('Capped')
+        Subscription.objects.create(
+            workspace=capped, plan=self.plan, capability_limit_overrides={'IMAGE': 1},
+        )
+        AIUsageLog.objects.create(
+            workspace=capped, capability=Capability.IMAGE, success=True, selected=True,
+        )
+
+        with patch.object(
+            views_clients, '_compute_over_quota_ids',
+            side_effect=views_clients._compute_over_quota_ids,
+        ) as compute:
+            _, by_id = self.rows_for(filter='over_quota')
+            self.assertEqual(set(by_id), {str(capped.pk)})
+            self.assertEqual(compute.call_count, 1)
+            # Within the 60s TTL the verdict set comes from the cache; the
+            # expensive all-workspaces walk does not run again.
+            _, by_id = self.rows_for(filter='over_quota')
+            self.assertEqual(set(by_id), {str(capped.pk)})
+            self.assertEqual(compute.call_count, 1)
 
     def test_never_generated_suspended_and_archived_filters(self):
         from apps.workspaces.services.lifecycle import archive_workspace, suspend_workspace

@@ -21,6 +21,7 @@ from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
+from django.core.cache import cache
 from django.db.models import Count, F, Max, OuterRef, Q, Subquery, Sum
 from django.utils import timezone
 
@@ -144,6 +145,41 @@ def _bulk_usage(workspace_ids):
             per_capability_used=capability_counts[workspace_id],
         )
     return subscriptions, summaries
+
+
+#: `?filter=over_quota` needs a service verdict per workspace — periods differ
+#: per subscription, so quota cannot be one SQL WHERE (prior review's verdict)
+#: — which meant every console hit recomputed it for ALL workspaces. The
+#: verdict set is cached briefly under ONE shared key, deliberately not per
+#: user: every operator triages the same set. Invalidation is TTL only —
+#: stale-by-≤60s is acceptable for a triage filter. The default cache backend
+#: is the cross-worker DatabaseCache in production; under test/dev it is
+#: per-process LocMem, which is also fine here: the worst case is one
+#: recompute per process per minute.
+OVER_QUOTA_CACHE_KEY = 'platform:portfolio:over_quota_ids'
+OVER_QUOTA_CACHE_SECONDS = 60
+
+
+def _compute_over_quota_ids():
+    """Every workspace over a quota ceiling, in `_bulk_usage`-sized batches."""
+    ids = list(MarketingWorkspace.objects.values_list('pk', flat=True))
+    over = set()
+    for start in range(0, len(ids), MAX_LIMIT):
+        batch = ids[start:start + MAX_LIMIT]
+        _subscriptions, usage = _bulk_usage(batch)
+        over.update(
+            workspace_id for workspace_id in batch
+            if _quota_flags(usage[workspace_id])
+        )
+    return over
+
+
+def _over_quota_ids():
+    cached = cache.get(OVER_QUOTA_CACHE_KEY)
+    if cached is None:
+        cached = _compute_over_quota_ids()
+        cache.set(OVER_QUOTA_CACHE_KEY, cached, OVER_QUOTA_CACHE_SECONDS)
+    return cached
 
 
 # ───────────────────────────────────────────────── grouped aggregates
@@ -629,17 +665,18 @@ class ClientPortfolioView(PlatformView):
 
         if filter_key == 'over_quota':
             # Periods differ per subscription, so this filter cannot be one
-            # honest static WHERE clause. Count all candidates in bulk, then
-            # page the matching ids before building the expensive row model.
-            candidate_ids = list(queryset.values_list('pk', flat=True))
-            filtered_ids = []
-            for start in range(0, len(candidate_ids), MAX_LIMIT):
-                batch = candidate_ids[start:start + MAX_LIMIT]
-                _subscriptions, candidate_usage = _bulk_usage(batch)
-                filtered_ids.extend(
-                    workspace_id for workspace_id in batch
-                    if _quota_flags(candidate_usage[workspace_id])
-                )
+            # honest static WHERE clause. The verdict set is computed for
+            # every workspace at most once per minute (see _over_quota_ids);
+            # this request only intersects it with its own candidates, then
+            # pages the matching ids before building the expensive row model.
+            # The flags pass below still rebuilds each page row from fresh
+            # numbers, so a stale positive drops out of the rows it shows.
+            over_quota = _over_quota_ids()
+            filtered_ids = [
+                workspace_id
+                for workspace_id in queryset.values_list('pk', flat=True)
+                if workspace_id in over_quota
+            ]
             total = len(filtered_ids)
             page_ids = filtered_ids[offset:offset + page_size]
             by_id = {
