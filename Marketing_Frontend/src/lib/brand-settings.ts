@@ -166,7 +166,7 @@ const toSettings = (b: BrandDto): BrandSettings => ({
   competitors: toStringList(b.competitors),
   productsServices: toProducts(b.products_services),
   socialLinks: toStringMap(b.social_links),
-  layoutPreference: b.layout_preference || "agency_column",
+  layoutPreference: b.layout_preference ?? "",
 });
 
 /** Only the fields the API accepts; logo fields are set via the upload route. */

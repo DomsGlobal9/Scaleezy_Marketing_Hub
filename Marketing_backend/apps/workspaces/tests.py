@@ -372,3 +372,86 @@ class ClientBootstrapTests(TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertFalse(MarketingWorkspace.objects.filter(workspace_name='Broken').exists())
         self.assertFalse(WorkspaceMember.objects.filter(user=self.user).exists())
+
+
+class WorkspaceSettingsAuditFeedTests(TestCase):
+    """The accounts-page audit feed: connection events must appear in it, and
+    it must never contain another tenant's rows."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        from apps.audit.models import AuditLog
+        from apps.social_accounts.models import SocialAccountAuditLog, SocialConnection
+
+        self.ws_a = MarketingWorkspace.objects.create(customer_id='a', workspace_name='A')
+        self.ws_b = MarketingWorkspace.objects.create(customer_id='b', workspace_name='B')
+        self.alice = User.objects.create_user(username='alice', password='p')
+        WorkspaceMember.objects.create(workspace=self.ws_a, user=self.alice)
+
+        self.publishing_a = AuditLog.objects.create(
+            workspace=self.ws_a, user='alice', platform='X',
+            account='@scaleezy', action='Published Post', result='Success',
+        )
+        self.conn_a = SocialConnection.objects.create(
+            workspace=self.ws_a, platform=SocialConnection.Platform.LINKEDIN,
+            external_account_id='ext-a', account_name='Scaleezy Page',
+        )
+        self.connect_a = SocialAccountAuditLog.objects.create(
+            workspace=self.ws_a, social_connection=self.conn_a, user=self.alice,
+            action=SocialAccountAuditLog.Action.ACCOUNT_CONNECTION,
+        )
+        self.failed_a = SocialAccountAuditLog.objects.create(
+            workspace=self.ws_a, social_connection=self.conn_a, user=self.alice,
+            action=SocialAccountAuditLog.Action.TOKEN_REFRESH,
+            error_message='token expired',
+        )
+
+        # Workspace B's rows, which must never surface in A's feed.
+        self.publishing_b = AuditLog.objects.create(
+            workspace=self.ws_b, user='mallory', platform='X',
+            account='@other', action='Published Post', result='Success',
+        )
+        self.connect_b = SocialAccountAuditLog.objects.create(
+            workspace=self.ws_b, social_connection=None, user=None,
+            action=SocialAccountAuditLog.Action.ACCOUNT_CONNECTION,
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(self.alice)
+
+    def _feed(self):
+        response = self.client.get(
+            '/api/marketing/settings/', HTTP_X_WORKSPACE_ID=str(self.ws_a.id)
+        )
+        self.assertEqual(response.status_code, 200)
+        return response.data['audit_logs']
+
+    def test_connection_events_are_interleaved_with_publishing_rows(self):
+        rows = self._feed()
+
+        by_id = {str(row['id']): row for row in rows}
+        self.assertIn(str(self.publishing_a.id), by_id)
+        self.assertIn(str(self.connect_a.id), by_id)
+
+        connect = by_id[str(self.connect_a.id)]
+        self.assertEqual(connect['action'], 'Account Connection')
+        self.assertEqual(connect['platform'], 'LINKEDIN')
+        self.assertEqual(connect['account'], 'Scaleezy Page')
+        self.assertEqual(connect['user'], 'alice')
+        self.assertEqual(connect['result'], 'Success')
+
+        # Newest first across both sources.
+        dates = [row['date'] for row in rows]
+        self.assertEqual(dates, sorted(dates, reverse=True))
+
+    def test_a_failed_connection_event_reports_failed_with_its_error(self):
+        rows = self._feed()
+        failed = {str(row['id']): row for row in rows}[str(self.failed_a.id)]
+        self.assertEqual(failed['result'], 'Failed')
+        self.assertEqual(failed['error'], 'token expired')
+
+    def test_workspace_a_cannot_read_workspace_b_events(self):
+        ids = {str(row['id']) for row in self._feed()}
+        self.assertNotIn(str(self.publishing_b.id), ids)
+        self.assertNotIn(str(self.connect_b.id), ids)

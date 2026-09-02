@@ -103,7 +103,7 @@ class AIRouter:
             (row for row in routes if row.capability == capability),
             None,
         )
-        return route.strategy if route else Strategy.FAILOVER
+        return route.strategy if route else Strategy.ROUND_ROBIN
 
     # ── execution ────────────────────────────────────────────────────────
     def _run_one(self, candidate, capability, brief, strategy, content_item_id, selected=True):
@@ -172,7 +172,8 @@ class AIRouter:
         if strategy == Strategy.ROUND_ROBIN and len(candidates) > 1:
             candidates = self._rotate(candidates, capability)
 
-        # FAILOVER: first one that works wins.
+        # Every non-BEST_OF strategy fails through the ordered candidates. For
+        # ROUND_ROBIN only the starting candidate changes between calls.
         errors = []
         for candidate in candidates:
             try:

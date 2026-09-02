@@ -126,7 +126,15 @@ export interface SignupQueue {
 export const fetchSignups = (status: BrandStatus = "PENDING") =>
   apiGet<SignupQueue>(`/api/platform/signups/?status=${encodeURIComponent(status)}`);
 
-/** Just the number, for the nav badge poll — unaudited server-side, unlike the queue. */
+/** Just the queue's headline number — the Overview needs one figure, not 200 rows. */
+export const fetchPendingSignupTotal = () =>
+  apiGet<{ pending_total: number }>("/api/platform/signups/?count_only=1");
+
+/**
+ * The same number for the nav badge's minute-by-minute poll. A dedicated
+ * unaudited endpoint, not `count_only` above: a background poll is not an
+ * operator action, and must not write an audit row per minute.
+ */
 export const fetchPendingSignupCount = () =>
   apiGet<{ pending_total: number }>("/api/platform/signups/pending-count/");
 
@@ -307,7 +315,9 @@ export const setClientUniversal = (
 export const setClientPlan = (workspaceId: string, plan: string) =>
   apiPost<unknown>(`/api/platform/clients/${workspaceId}/plan/`, { plan });
 
-export const setClientSpendCap = (workspaceId: string, spendCap: string) =>
+/** A decimal string sets the override ("0" = explicitly uncapped); null clears
+ *  it so the plan's own cap applies again. */
+export const setClientSpendCap = (workspaceId: string, spendCap: string | null) =>
   apiPost<unknown>(`/api/platform/clients/${workspaceId}/spend-cap/`, { spend_cap: spendCap });
 
 export const recompileClientBrain = (workspaceId: string) =>
@@ -347,6 +357,8 @@ export interface StandardInput {
   guidance: string;
   scope: UniversalScope;
   scope_value: string;
+  /** Id of the published standard this draft replaces; publishing the draft retires it. */
+  supersedes?: string;
 }
 
 export interface StandardPreview {
@@ -418,8 +430,11 @@ export interface PatternContributor {
   name: string;
 }
 
-export const fetchLearnedPatterns = async () =>
-  rows<LearnedPattern>(await apiGet<unknown>("/api/platform/patterns/"), "patterns");
+/** The server filters (`?status=`) and sorts; ALL/undefined means every row. */
+export const fetchLearnedPatterns = async (params: { status?: string } = {}) => {
+  const qs = params.status ? `?status=${encodeURIComponent(params.status)}` : "";
+  return rows<LearnedPattern>(await apiGet<unknown>(`/api/platform/patterns/${qs}`), "patterns");
+};
 
 export const compileLearnedPatterns = () =>
   apiPost<{ status: string; task_id: string; pattern_version: string | null }>(
@@ -607,8 +622,6 @@ export const fetchLibraryGalleryPage = async (offset = 0): Promise<LibraryGaller
     nextOffset: typeof object["next_offset"] === "number" ? object["next_offset"] : null,
   };
 };
-
-export const fetchLibraryGallery = async () => (await fetchLibraryGalleryPage()).items;
 
 export interface AdoptResult {
   inspiration_id: string;

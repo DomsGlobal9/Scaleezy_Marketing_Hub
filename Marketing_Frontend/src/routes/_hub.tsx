@@ -1,15 +1,14 @@
 import { createFileRoute, Link, Outlet, redirect, useNavigate } from "@tanstack/react-router";
 import {
   BarChart3,
-  Bot,
   Brain,
   Check,
   CheckCircle2,
   ChevronsUpDown,
   Landmark,
   LayoutDashboard,
-  Radar,
   LogOut,
+  MessagesSquare,
   Menu,
   Plus,
   Send,
@@ -79,11 +78,10 @@ const NAV = [
   // Named for the object, not for one stage of its lifecycle: this is where
   // every piece of work lives, whatever state it is in.
   { to: "/review", label: "Content", icon: CheckCircle2, adminOnly: false },
-  { to: "/growth", label: "Growth Engine", icon: Radar, adminOnly: false },
+  { to: "/growth", label: "Engagement", icon: MessagesSquare, adminOnly: false },
   { to: "/analytics", label: "Analytics", icon: BarChart3, adminOnly: false },
   { to: "/settings", label: "Settings", icon: Settings, adminOnly: false },
   { to: "/admin", label: "Admin", icon: ShieldCheck, adminOnly: true },
-  { to: "/autopilot", label: "Autopilot", icon: Bot, adminOnly: true },
 ] as const;
 
 function Brand() {

@@ -80,7 +80,7 @@ class RouterTests(APITestCase):
             )
 
     def enable(self, key, capability=Capability.TEXT, priority=10,
-               strategy=Strategy.FAILOVER, enabled=True):
+               strategy=Strategy.ROUND_ROBIN, enabled=True):
         WorkspaceAIProvider.objects.get_or_create(
             workspace=self.ws, provider=self.providers[key], defaults={'enabled': enabled}
         )
@@ -133,14 +133,38 @@ class RouterTests(APITestCase):
 
     # ── strategies ───────────────────────────────────────────────────────
     def test_failover_skips_a_broken_provider(self):
-        self.enable('broken', priority=1)
-        self.enable('fake', priority=2)
+        self.enable('broken', priority=1, strategy=Strategy.FAILOVER)
+        self.enable('fake', priority=2, strategy=Strategy.FAILOVER)
         self.assertEqual(self.route()['provider'], 'fake')
 
     def test_failover_raises_when_every_provider_fails(self):
-        self.enable('broken', priority=1)
+        self.enable('broken', priority=1, strategy=Strategy.FAILOVER)
         with self.assertRaises(NoProviderAvailable):
             self.route()
+
+    def test_round_robin_rotates_the_first_provider_between_calls(self):
+        self.enable('fake', priority=1)
+        self.enable('better', priority=2)
+
+        self.assertEqual(self.route()['provider'], 'fake')
+        self.assertEqual(self.route()['provider'], 'better')
+        self.assertEqual(self.route()['provider'], 'fake')
+
+    def test_round_robin_falls_through_when_the_selected_provider_fails(self):
+        self.enable('broken', priority=1)
+        self.enable('fake', priority=2)
+
+        result = self.route()
+
+        self.assertEqual(result['provider'], 'fake')
+        self.assertEqual(result['strategy'], Strategy.ROUND_ROBIN)
+        self.assertTrue(
+            AIUsageLog.objects.filter(
+                workspace=self.ws,
+                provider=self.providers['broken'],
+                success=False,
+            ).exists()
+        )
 
     def test_best_of_keeps_the_highest_scoring_result(self):
         self.enable('fake', priority=1, strategy=Strategy.BEST_OF)
@@ -172,8 +196,8 @@ class RouterTests(APITestCase):
 
         self.assertEqual([row['route'].provider.key for row in text], ['fake'])
         self.assertEqual([row['route'].provider.key for row in image], ['better'])
-        self.assertEqual(text_strategy, Strategy.FAILOVER)
-        self.assertEqual(missing_strategy, Strategy.FAILOVER)
+        self.assertEqual(text_strategy, Strategy.ROUND_ROBIN)
+        self.assertEqual(missing_strategy, Strategy.ROUND_ROBIN)
 
     # ── usage logging ────────────────────────────────────────────────────
     def test_a_successful_call_is_logged(self):
@@ -856,6 +880,33 @@ class AIConsoleAPITests(APITestCase):
                 (self.better_provider, 10, Strategy.FAILOVER),
                 (self.provider, 20, Strategy.FAILOVER),
             ],
+        )
+
+    def test_route_set_defaults_to_round_robin_when_strategy_is_omitted(self):
+        WorkspaceAIProvider.objects.create(
+            workspace=self.ws, provider=self.provider, enabled=True
+        )
+        self.as_(self.admin)
+
+        with patch('apps.ai.views.all_adapters', return_value={'fake': FakeAdapter}):
+            response = self.client.post(
+                '/api/marketing/ai/routes/replace-set/',
+                {
+                    'capability': Capability.TEXT,
+                    'routes': [
+                        {'provider': str(self.provider.id), 'priority': 10},
+                    ],
+                },
+                format='json',
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            WorkspaceAIRoute.objects.get(
+                workspace=self.ws,
+                capability=Capability.TEXT,
+            ).strategy,
+            Strategy.ROUND_ROBIN,
         )
 
     def test_route_set_rejects_duplicates_without_changing_existing_routes(self):

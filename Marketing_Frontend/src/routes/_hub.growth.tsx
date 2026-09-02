@@ -4,13 +4,11 @@ import {
   Check,
   CircleAlert,
   Inbox,
-  Lightbulb,
   Loader2,
   LockKeyhole,
+  LockKeyholeOpen,
   MessageSquareReply,
-  Radar,
   RefreshCw,
-  Search,
   Send,
   Sparkles,
 } from "lucide-react";
@@ -19,7 +17,6 @@ import { toast } from "sonner";
 
 import { PageHeader, StatusBadge } from "@/components/marketing/primitives";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -28,50 +25,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { apiGet, apiPost } from "@/lib/api";
 import { fetchCurrentBrand } from "@/lib/brand-master";
 import type { BrandDto } from "@/lib/brand-settings";
-import { buildGuidedResearchText } from "@/lib/guided-workflows";
 
 export const Route = createFileRoute("/_hub/growth")({
   head: () => ({
     meta: [
-      { title: "Growth Engine — Scaleezy Marketing Hub" },
+      { title: "Engagement — Scaleezy Marketing Hub" },
       {
         name: "description",
-        content: "Discover cited creative references and operate a governed social inbox.",
+        content:
+          "A governed engagement inbox: claim a conversation, draft with AI, approve, and send platform-confirmed replies.",
       },
     ],
   }),
-  component: GrowthEnginePage,
+  component: EngagementPage,
 });
-
-interface Finding {
-  id: string;
-  kind: string;
-  title: string;
-  source_url: string;
-  preview_url: string;
-  source_name: string;
-  platform: string;
-  excerpt: string;
-  rights_status: string;
-  verification_status: string;
-  verification_error: string;
-  adopted_inspiration: string | null;
-}
-
-interface ResearchRun {
-  id: string;
-  query: string;
-  status: string;
-  provider_name: string;
-  error: string;
-  created_at: string;
-  findings: Finding[];
-}
 
 interface Connection {
   id: string;
@@ -117,13 +88,10 @@ function rows<T>(value: T[] | ListEnvelope<T>): T[] {
   return Array.isArray(value) ? value : (value.results ?? []);
 }
 
-const LOOP = ["Research", "Direct", "Create", "Review", "Publish", "Engage", "Learn"];
-const ACTIVE_RESEARCH = new Set(["QUEUED", "PROCESSING"]);
 const ACTIVE_DRAFT = new Set(["QUEUED", "PROCESSING"]);
 
-function GrowthEnginePage() {
+function EngagementPage() {
   const [brand, setBrand] = useState<BrandDto | null>(null);
-  const [runs, setRuns] = useState<ResearchRun[]>([]);
   const [items, setItems] = useState<InboxItem[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [savedReplies, setSavedReplies] = useState<SavedReply[]>([]);
@@ -136,20 +104,15 @@ function GrowthEnginePage() {
   const load = useCallback(async () => {
     const brand = await fetchCurrentBrand();
     setBrand(brand);
-    const [runPayload, itemPayload, accountPayload, replyPayload] = await Promise.all([
-      apiGet<ResearchRun[] | ListEnvelope<ResearchRun>>(
-        `/api/marketing/research-runs/?brand_id=${brand.id}`,
-      ),
+    const [itemPayload, accountPayload, replyPayload] = await Promise.all([
       apiGet<InboxItem[] | ListEnvelope<InboxItem>>(
         `/api/marketing/engagement/items/?brand_id=${brand.id}`,
       ),
       apiGet<Connection[] | ListEnvelope<Connection>>("/api/marketing/social-accounts/"),
       apiGet<SavedReply[] | ListEnvelope<SavedReply>>("/api/marketing/engagement/saved-replies/"),
     ]);
-    const nextRuns = rows(runPayload);
     const nextItems = rows(itemPayload);
     const nextConnections = rows(accountPayload).filter((item) => item.status === "CONNECTED");
-    setRuns(nextRuns);
     setItems(nextItems);
     setConnections(nextConnections);
     setSavedReplies(rows(replyPayload));
@@ -165,7 +128,7 @@ function GrowthEnginePage() {
     load()
       .catch((cause: unknown) => {
         if (!cancelled)
-          setError(cause instanceof Error ? cause.message : "Could not load Growth Engine.");
+          setError(cause instanceof Error ? cause.message : "Could not load the engagement inbox.");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -176,10 +139,8 @@ function GrowthEnginePage() {
   }, [load]);
 
   const shouldPoll = useMemo(
-    () =>
-      runs.some((run) => ACTIVE_RESEARCH.has(run.status)) ||
-      items.some((item) => ACTIVE_DRAFT.has(item.draft_status) || item.status === "SENDING"),
-    [items, runs],
+    () => items.some((item) => ACTIVE_DRAFT.has(item.draft_status) || item.status === "SENDING"),
+    [items],
   );
 
   useEffect(() => {
@@ -206,24 +167,11 @@ function GrowthEnginePage() {
   return (
     <div>
       <PageHeader
-        eyebrow="Autonomous social operating system"
-        title="Growth Engine"
-        subtitle={`Discover what is working, turn it into governed brand direction, and respond from one workspace for ${brand?.name || "this client"}.`}
+        eyebrow="Governed customer engagement"
+        title="Engagement"
+        subtitle={`Every mention and comment for ${brand?.name || "this client"} in one inbox — claimed by a person, drafted with routed AI, and sent only after human approval.`}
         backTo="/"
       />
-
-      <div className="mb-8 overflow-x-auto rounded-2xl border border-border bg-black px-4 py-4 text-white">
-        <div className="flex min-w-max items-center gap-2" aria-label="Scaleezy operating loop">
-          {LOOP.map((step, index) => (
-            <div key={step} className="flex items-center gap-2">
-              <span className="rounded-full border border-white/15 px-3 py-1.5 text-xs font-semibold tracking-wide uppercase">
-                {index + 1}. {step}
-              </span>
-              {index < LOOP.length - 1 ? <span className="text-primary">→</span> : null}
-            </div>
-          ))}
-        </div>
-      </div>
 
       {error ? (
         <div className="mb-6 flex items-center gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
@@ -231,293 +179,20 @@ function GrowthEnginePage() {
         </div>
       ) : null}
 
-      <Tabs defaultValue="research" className="space-y-6">
-        <TabsList className="h-auto w-full justify-start rounded-xl bg-secondary p-1 sm:w-auto">
-          <TabsTrigger value="research" className="gap-2 px-4 py-2.5">
-            <Radar className="size-4" /> Research & inspirations
-          </TabsTrigger>
-          <TabsTrigger value="inbox" className="gap-2 px-4 py-2.5">
-            <Inbox className="size-4" /> Engagement inbox
-            {items.filter((item) => item.status === "NEW").length ? (
-              <span className="rounded-full bg-primary px-1.5 text-[10px] text-primary-foreground">
-                {items.filter((item) => item.status === "NEW").length}
-              </span>
-            ) : null}
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="research">
-          <ResearchPanel
-            key={brand?.id ?? "loading"}
-            brand={brand}
-            runs={runs}
-            loading={loading}
-            working={working}
-            act={act}
-          />
-        </TabsContent>
-
-        <TabsContent value="inbox">
-          <InboxPanel
-            brandId={brand?.id ?? ""}
-            connections={connections}
-            selectedConnection={selectedConnection}
-            setSelectedConnection={setSelectedConnection}
-            items={items}
-            selectedItem={selectedItem}
-            setSelectedItemId={setSelectedItemId}
-            savedReplies={savedReplies}
-            working={working}
-            act={act}
-          />
-        </TabsContent>
-      </Tabs>
+      <InboxPanel
+        brandId={brand?.id ?? ""}
+        connections={connections}
+        selectedConnection={selectedConnection}
+        setSelectedConnection={setSelectedConnection}
+        items={items}
+        selectedItem={selectedItem}
+        setSelectedItemId={setSelectedItemId}
+        savedReplies={savedReplies}
+        loading={loading}
+        working={working}
+        act={act}
+      />
     </div>
-  );
-}
-
-function ResearchPanel({
-  brand,
-  runs,
-  loading,
-  working,
-  act,
-}: {
-  brand: BrandDto | null;
-  runs: ResearchRun[];
-  loading: boolean;
-  working: string;
-  act: <T>(key: string, request: () => Promise<T>, success: string) => Promise<void>;
-}) {
-  const guided = brand ? buildGuidedResearchText(brand) : { query: "", objectives: "" };
-  const [query, setQuery] = useState(guided.query);
-  const [objectives, setObjectives] = useState(guided.objectives);
-  const [sources, setSources] = useState("");
-  const latest = runs[0];
-
-  const start = () =>
-    act(
-      "research",
-      () =>
-        apiPost("/api/marketing/research-runs/", {
-          brand: brand?.id,
-          query,
-          objectives: objectives
-            .split(",")
-            .map((value) => value.trim())
-            .filter(Boolean),
-          sources: sources
-            .split(",")
-            .map((value) => value.trim())
-            .filter(Boolean),
-        }),
-      "Research queued. Scaleezy will verify every cited source.",
-    );
-
-  return (
-    <div className="grid gap-6 xl:grid-cols-[22rem_minmax(0,1fr)]">
-      <section className="surface-card h-fit p-5 xl:sticky xl:top-6">
-        <p className="label-eyebrow">Creative discovery</p>
-        <h2 className="mt-2 text-2xl font-bold tracking-tight">Start with a ready brief.</h2>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          Scaleezy drafted this from Brand Master. Edit anything, or run it as-is to discover cited
-          public references from any industry. You decide what enters Brand Master.
-        </p>
-        <div className="mt-5 space-y-4">
-          <div>
-            <Label htmlFor="research-query">What should Scaleezy find?</Label>
-            <Textarea
-              id="research-query"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Example: bold ecommerce launch posters in premium skincare, including unconventional references outside our industry"
-              className="mt-2 min-h-28"
-            />
-          </div>
-          <details className="rounded-xl border p-4">
-            <summary className="cursor-pointer text-sm font-semibold">
-              Fine-tune focus or preferred sources (optional)
-            </summary>
-            <div className="mt-4 space-y-4">
-              <div>
-                <Label htmlFor="research-objectives">Focus areas</Label>
-                <Input
-                  id="research-objectives"
-                  value={objectives}
-                  onChange={(event) => setObjectives(event.target.value)}
-                  placeholder="layout, hook, product staging"
-                  className="mt-2"
-                />
-              </div>
-              <div>
-                <Label htmlFor="research-sources">Preferred places</Label>
-                <Input
-                  id="research-sources"
-                  value={sources}
-                  onChange={(event) => setSources(event.target.value)}
-                  placeholder="Leave blank to search the unrestricted public web"
-                  className="mt-2"
-                />
-              </div>
-            </div>
-          </details>
-          <Button
-            className="w-full"
-            disabled={!brand?.id || query.trim().length < 3 || working === "research"}
-            onClick={start}
-          >
-            {working === "research" ? <Loader2 className="animate-spin" /> : <Search />}
-            Find ideas for {brand?.name || "this brand"}
-          </Button>
-          <p className="text-xs leading-5 text-muted-foreground">
-            References default to “rights unknown.” Scaleezy does not copy or grant rights to
-            third-party work.
-          </p>
-        </div>
-      </section>
-
-      <section>
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="label-eyebrow">Cited reference board</p>
-            <h2 className="mt-1 text-2xl font-bold">Industry-wide inspiration</h2>
-          </div>
-          {latest ? <StatusBadge status={latest.status.replaceAll("_", " ")} /> : null}
-        </div>
-        {loading ? (
-          <div className="surface-card p-10 text-center text-sm text-muted-foreground">
-            Loading research…
-          </div>
-        ) : !latest ? (
-          <div className="surface-card p-10 text-center">
-            <Lightbulb className="mx-auto size-8 text-primary" />
-            <p className="mt-3 font-semibold">Your first reference board starts here.</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Describe anything you want to explore.
-            </p>
-          </div>
-        ) : latest.error ? (
-          <div className="surface-card border-destructive/30 p-5 text-sm text-destructive">
-            {latest.error}
-          </div>
-        ) : (
-          <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
-            {latest.findings.map((finding) => (
-              <FindingCard key={finding.id} finding={finding} working={working} act={act} />
-            ))}
-            {!latest.findings.length ? (
-              <div className="surface-card col-span-full p-10 text-center text-sm text-muted-foreground">
-                {ACTIVE_RESEARCH.has(latest.status)
-                  ? "Research is running in the background. You can leave this page."
-                  : "No source passed verification. Try a broader query or route a web-enabled research provider."}
-              </div>
-            ) : null}
-          </div>
-        )}
-      </section>
-    </div>
-  );
-}
-
-function FindingCard({
-  finding,
-  working,
-  act,
-}: {
-  finding: Finding;
-  working: string;
-  act: <T>(key: string, request: () => Promise<T>, success: string) => Promise<void>;
-}) {
-  const verified = finding.verification_status === "VERIFIED";
-  return (
-    <article className="surface-card overflow-hidden">
-      <div className="aspect-[4/3] bg-black/5">
-        {finding.preview_url ? (
-          <img
-            src={finding.preview_url}
-            alt=""
-            loading="lazy"
-            referrerPolicy="no-referrer"
-            className="size-full object-cover"
-          />
-        ) : (
-          <div className="grid size-full place-items-center text-muted-foreground">
-            <Sparkles className="size-8" />
-          </div>
-        )}
-      </div>
-      <div className="p-4">
-        <div className="flex items-start justify-between gap-3">
-          <span className="text-xs font-semibold tracking-wide text-primary uppercase">
-            {finding.kind.replaceAll("_", " ")}
-          </span>
-          <StatusBadge
-            status={finding.verification_status}
-            tone={verified ? "success" : "danger"}
-          />
-        </div>
-        <h3 className="mt-2 line-clamp-2 font-semibold">{finding.title}</h3>
-        <p className="mt-2 line-clamp-3 text-sm leading-6 text-muted-foreground">
-          {finding.excerpt}
-        </p>
-        <a
-          href={finding.source_url}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-primary"
-        >
-          {finding.source_name || finding.platform || "Open source"}{" "}
-          <ArrowUpRight className="size-3.5" />
-        </a>
-        <div className="mt-4">
-          <Select
-            value={finding.rights_status}
-            disabled={!!finding.adopted_inspiration}
-            onValueChange={(rights_status) =>
-              void act(
-                `rights-${finding.id}`,
-                () =>
-                  apiPost(`/api/marketing/research-findings/${finding.id}/set-rights/`, {
-                    rights_status,
-                  }),
-                "Rights status updated.",
-              )
-            }
-          >
-            <SelectTrigger aria-label="Rights status">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="UNKNOWN">Rights unknown</SelectItem>
-              <SelectItem value="PUBLIC_REFERENCE">Public reference only</SelectItem>
-              <SelectItem value="OWNED">Owned by this client</SelectItem>
-              <SelectItem value="LICENSED">Licensed for reuse</SelectItem>
-              <SelectItem value="RESTRICTED">Restricted — do not use</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <Button
-          variant={finding.adopted_inspiration ? "outline" : "default"}
-          className="mt-3 w-full"
-          disabled={
-            !verified ||
-            !!finding.adopted_inspiration ||
-            working === `adopt-${finding.id}` ||
-            finding.rights_status === "RESTRICTED"
-          }
-          onClick={() =>
-            void act(
-              `adopt-${finding.id}`,
-              () => apiPost(`/api/marketing/research-findings/${finding.id}/adopt/`, {}),
-              "Added to Brand Master Inspirations.",
-            )
-          }
-        >
-          {finding.adopted_inspiration ? <Check /> : <Lightbulb />}
-          {finding.adopted_inspiration ? "In Brand Master" : "Use as inspiration"}
-        </Button>
-      </div>
-    </article>
   );
 }
 
@@ -530,6 +205,7 @@ function InboxPanel({
   selectedItem,
   setSelectedItemId,
   savedReplies,
+  loading,
   working,
   act,
 }: {
@@ -541,6 +217,7 @@ function InboxPanel({
   selectedItem: InboxItem | null;
   setSelectedItemId: (value: string) => void;
   savedReplies: SavedReply[];
+  loading: boolean;
   working: string;
   act: <T>(key: string, request: () => Promise<T>, success: string) => Promise<void>;
 }) {
@@ -565,8 +242,7 @@ function InboxPanel({
     <div>
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="label-eyebrow">Governed customer engagement</p>
-          <h2 className="mt-1 text-2xl font-bold">One inbox, clear ownership.</h2>
+          <h2 className="text-2xl font-bold">One inbox, clear ownership.</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Live sync currently supports X mentions and YouTube comments. Replies require human
             approval.
@@ -630,7 +306,9 @@ function InboxPanel({
             ))}
             {!items.length ? (
               <div className="p-8 text-center text-sm text-muted-foreground">
-                Sync a supported account to populate the inbox.
+                {loading
+                  ? "Loading conversations…"
+                  : "Sync a supported account to populate the inbox."}
               </div>
             ) : null}
           </div>
@@ -691,6 +369,30 @@ function InboxPanel({
               >
                 <LockKeyhole /> Claim
               </Button>
+              {selectedItem.locked_by_name ? (
+                <Button
+                  variant="outline"
+                  disabled={working === `release-${selectedItem.id}`}
+                  onClick={() =>
+                    void act(
+                      `release-${selectedItem.id}`,
+                      () =>
+                        apiPost(
+                          `/api/marketing/engagement/items/${selectedItem.id}/release/`,
+                          {},
+                        ),
+                      "Lock released.",
+                    )
+                  }
+                >
+                  {working === `release-${selectedItem.id}` ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <LockKeyholeOpen />
+                  )}{" "}
+                  Release
+                </Button>
+              ) : null}
               <Button
                 variant="outline"
                 disabled={
@@ -734,6 +436,9 @@ function InboxPanel({
                   </span>
                 ) : null}
               </div>
+              {/* Rendered only when the workspace actually has saved replies:
+                  there is no way to create one from here, so an empty
+                  dropdown would be a dead end. */}
               {savedReplies.length ? (
                 <Select
                   onValueChange={(id) =>

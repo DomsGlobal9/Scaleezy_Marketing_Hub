@@ -89,7 +89,7 @@ class ConfigureAIRoutingTests(TestCase):
         for route in routes.values():
             self.assertTrue(route.enabled)
             self.assertEqual(route.priority, 100)
-            self.assertEqual(route.strategy, Strategy.FAILOVER)
+            self.assertEqual(route.strategy, Strategy.ROUND_ROBIN)
 
     def test_running_twice_changes_nothing_further(self):
         self.run_command('--apply')

@@ -14,6 +14,7 @@ import json
 import logging
 from datetime import timedelta
 
+from django.db import transaction
 from django.tasks import task
 from django.utils import timezone
 
@@ -49,17 +50,43 @@ def generate_content(request_id: str):
         logger.warning("Generation request %s vanished before it ran", request_id)
         return {'request': str(request_id), 'status': 'MISSING'}
 
-    if request.status == GeminiGenerationRequest.Status.COMPLETED:
-        # A re-delivered or retried task for work that already finished. Run
-        # again and it would spend provider money a second time and leave a
-        # second draft; the honest response is to do nothing. Checked BEFORE
-        # the status is marked GENERATING, or the check could never be true.
-        logger.info("Generation %s already completed; skipping re-run", request_id)
-        return {'request': str(request_id), 'status': 'ALREADY_COMPLETED'}
+    # Claim with one database compare-and-swap. Two workers can receive the
+    # same task, but only one may move a PENDING request to GENERATING and buy
+    # provider work. FAILED remains claimable for the task backend's explicit
+    # retry semantics; the stuck-worker sweep first moves its one rescue back
+    # to PENDING, so that path is preserved too.
+    claimed = GeminiGenerationRequest.objects.filter(
+        pk=request.pk,
+        status__in=(
+            GeminiGenerationRequest.Status.PENDING,
+            GeminiGenerationRequest.Status.FAILED,
+        ),
+    ).update(
+        status=GeminiGenerationRequest.Status.GENERATING,
+        error_message='',
+        updated_at=timezone.now(),
+    )
+    if not claimed:
+        request.refresh_from_db(fields=['status'])
+        if request.status == GeminiGenerationRequest.Status.COMPLETED:
+            logger.info("Generation %s already completed; skipping re-run", request_id)
+            return {'request': str(request_id), 'status': 'ALREADY_COMPLETED'}
+        if request.status == GeminiGenerationRequest.Status.GENERATING:
+            logger.info("Generation %s already has an active worker", request_id)
+            return {'request': str(request_id), 'status': 'ALREADY_RUNNING'}
+        return {'request': str(request_id), 'status': 'NOT_CLAIMED'}
 
     request.status = GeminiGenerationRequest.Status.GENERATING
     request.error_message = ''
-    request.save(update_fields=['status', 'error_message'])
+
+    # Lifecycle may change after the API accepted the request. Do not analyse
+    # a reference or spend with a provider for a client that is now suspended
+    # or archived.
+    if not request.workspace.is_active:
+        request.status = GeminiGenerationRequest.Status.FAILED
+        request.error_message = 'This client is inactive. Generation was not started.'
+        request.save(update_fields=['status', 'error_message'])
+        return {'request': str(request_id), 'status': 'FAILED'}
 
     # prompt_data is a TextField that predates this path, so the brief is
     # stored as JSON in it rather than adding a parallel column.
@@ -80,22 +107,151 @@ def generate_content(request_id: str):
 
     try:
         creative = brief.get('creative_direction') or {}
+        from apps.brands.models import Brand
+
+        brand = Brand.objects.filter(workspace=request.workspace).order_by('-is_default').first()
+        if brand is None or brand.status != Brand.Status.ACTIVE:
+            raise ValueError('The selected brand is inactive. Generation was not started.')
+        preprocessing_ids = brief.get('analyze_before_generation_ids') or []
+        if preprocessing_ids:
+            from apps.inspirations.analysis import analyze_inspiration
+            from apps.inspirations.models import BrandInspiration, InspirationSignal
+
+            selected_brand_ids = {
+                str(row.get('id'))
+                for row in (creative.get('selections') or [])
+                if row.get('source_type') == 'BRAND'
+            }
+            if (
+                not isinstance(preprocessing_ids, list)
+                or len(preprocessing_ids) > 12
+                or len(set(map(str, preprocessing_ids))) != len(preprocessing_ids)
+                or not set(map(str, preprocessing_ids)).issubset(selected_brand_ids)
+            ):
+                raise ValueError('Generation inspiration preprocessing is invalid.')
+            rows = {
+                str(row.pk): row
+                for row in BrandInspiration.objects.eligible_for_retrieval().filter(
+                    pk__in=preprocessing_ids,
+                    workspace=request.workspace,
+                    brand=brand,
+                )
+            }
+            if len(rows) != len(preprocessing_ids):
+                raise ValueError('One or more selected inspirations are unavailable.')
+            for inspiration_id in preprocessing_ids:
+                inspiration = rows[str(inspiration_id)]
+                stale_processing = False
+                if inspiration.analysis_status in (
+                    BrandInspiration.AnalysisStatus.QUEUED,
+                    BrandInspiration.AnalysisStatus.PROCESSING,
+                ):
+                    analysis = (inspiration.metadata or {}).get('analysis') or {}
+                    started_at = analysis.get('started_at')
+                    if (
+                        inspiration.analysis_status
+                        == BrandInspiration.AnalysisStatus.PROCESSING
+                        and started_at
+                    ):
+                        from django.utils.dateparse import parse_datetime
+
+                        parsed_started_at = parse_datetime(str(started_at))
+                        stale_processing = bool(
+                            parsed_started_at
+                            and parsed_started_at <= timezone.now() - STUCK_AFTER
+                        )
+                    if not stale_processing:
+                        raise ValueError(
+                            'A selected inspiration is already being analysed.'
+                        )
+                if inspiration.analysis_status in (
+                    BrandInspiration.AnalysisStatus.NOT_ANALYSED,
+                    BrandInspiration.AnalysisStatus.FAILED,
+                ) or stale_processing:
+                    analyze_inspiration(str(inspiration.pk))
+                has_grounded_observation = InspirationSignal.objects.filter(
+                    inspiration_id=inspiration.pk,
+                    superseded_at__isnull=True,
+                ).exclude(
+                    user_confirmation=InspirationSignal.UserConfirmation.REJECTED
+                ).exists()
+                if not has_grounded_observation:
+                    raise ValueError(
+                        'The selected inspiration produced no usable creative observations.'
+                    )
+
+            # Analysis can be slow. Re-read lifecycle after it finishes so a
+            # suspension during preprocessing cannot race into provider spend.
+            request.workspace.refresh_from_db(fields=['status'])
+            if not request.workspace.is_active:
+                raise ValueError('This client is inactive. Generation was not started.')
+            brand.refresh_from_db(fields=['status'])
+            if brand.status != Brand.Status.ACTIVE:
+                raise ValueError('The selected brand is inactive. Generation was not started.')
         if creative.get('selections'):
-            from apps.brands.models import Brand
             from apps.context.services.creative_direction import resolve_creative_direction
 
-            brand = Brand.objects.filter(workspace=request.workspace).order_by('-is_default').first()
             creative = resolve_creative_direction(
                 request.workspace,
                 brand,
                 creative.get('selections'),
                 layout=brief.get('layout', ''),
+                instruction=brief.get('instruction', ''),
             )
             brief['creative_direction'] = creative
         routed = generate_marketing_payload(
-            request.workspace, brief, progress=checkpoint
+            request.workspace,
+            brief,
+            instruction=brief.get('instruction', ''),
+            progress=checkpoint,
+            # A governed inspiration job must keep the exact brand whose
+            # Brain/reference was validated, even if the default changes
+            # while providers are working. Legacy jobs retain default lookup.
+            brand=brand if preprocessing_ids else None,
         )
         result_data = routed['payload']
+        if preprocessing_ids:
+            from apps.ai.models import Capability
+
+            # A client, brand, or selected reference can be revoked while the
+            # provider is working. Spending has already occurred, but no draft
+            # may be persisted under authority that no longer exists.
+            request.workspace.refresh_from_db(fields=['status'])
+            brand.refresh_from_db(fields=['status'])
+            if not request.workspace.is_active:
+                raise ValueError('This client is inactive. Generated output was not saved.')
+            if brand.status != Brand.Status.ACTIVE:
+                raise ValueError('The selected brand is inactive. Generated output was not saved.')
+            still_eligible = (
+                BrandInspiration.objects.eligible_for_retrieval()
+                .filter(
+                    pk__in=preprocessing_ids,
+                    workspace=request.workspace,
+                    brand=brand,
+                )
+                .count()
+            )
+            if still_eligible != len(preprocessing_ids):
+                raise ValueError(
+                    'One or more selected inspirations were revoked before output could be saved.'
+                )
+
+            capabilities = (routed.get('trace') or {}).get('capabilities') or {}
+            image_trace = capabilities.get(Capability.IMAGE) or {}
+            metadata = result_data.get('metadata') or {}
+            generated_image = metadata.get('generated_image') or {}
+            image_url = (
+                result_data.get('posterImageUrl')
+                or (
+                    generated_image.get('image_url')
+                    if isinstance(generated_image, dict)
+                    else ''
+                )
+            )
+            if image_trace.get('status') != 'OK' or not image_url:
+                raise RuntimeError(
+                    'Inspiration-based poster generation did not produce an image.'
+                )
     except Exception as exc:
         logger.exception("Generation %s failed", request_id)
         request.status = GeminiGenerationRequest.Status.FAILED
@@ -106,13 +262,51 @@ def generate_content(request_id: str):
         raise
 
     try:
-        content_item = _persist(request, brief, result_data, routed)
-        if content_item is None:
-            raise RuntimeError("Generated content could not be saved.")
+        # The draft and its durable polling result are one unit. If the result
+        # row cannot be written, roll the draft back so a worker retry cannot
+        # leave duplicates behind.
+        with transaction.atomic():
+            if preprocessing_ids:
+                locked_workspace = request.workspace.__class__.objects.select_for_update().get(
+                    pk=request.workspace_id
+                )
+                locked_brand = Brand.objects.select_for_update().get(
+                    pk=brand.pk, workspace=locked_workspace
+                )
+                if not locked_workspace.is_active:
+                    raise ValueError('This client is inactive. Generated output was not saved.')
+                if locked_brand.status != Brand.Status.ACTIVE:
+                    raise ValueError(
+                        'The selected brand is inactive. Generated output was not saved.'
+                    )
+                locked_references = list(
+                    BrandInspiration.objects.eligible_for_retrieval()
+                    .select_for_update()
+                    .filter(
+                        pk__in=preprocessing_ids,
+                        workspace=locked_workspace,
+                        brand=locked_brand,
+                    )
+                )
+                if len(locked_references) != len(preprocessing_ids):
+                    raise ValueError(
+                        'One or more selected inspirations were revoked before output could be saved.'
+                    )
+                brand = locked_brand
 
-        GeminiGenerationResult.objects.update_or_create(
-            generation_request=request,
-            defaults={
+            content_item = _persist(
+                request,
+                brief,
+                result_data,
+                routed,
+                brand=brand if preprocessing_ids else None,
+            )
+            if content_item is None:
+                raise RuntimeError("Generated content could not be saved.")
+
+            generation_result, _created = GeminiGenerationResult.objects.update_or_create(
+                generation_request=request,
+                defaults={
                 'generated_text': result_data.get('postDescription', ''),
                 # The composed poster when auto-compose succeeded, the raw
                 # media otherwise - the poller must see what will actually
@@ -141,8 +335,8 @@ def generate_content(request_id: str):
                     'contentItemId': str(content_item.id),
                     'assetId': str(content_item.asset_id) if content_item.asset_id else None,
                 },
-            },
-        )
+                },
+            )
     except Exception as exc:
         logger.exception("Generation %s could not be persisted", request_id)
         request.status = GeminiGenerationRequest.Status.FAILED
@@ -150,6 +344,34 @@ def generate_content(request_id: str):
         request.save(update_fields=['status', 'error_message'])
         _queue_autopilot_followups(request)
         raise
+
+    # Composition writes an optional derivative asset and therefore stays
+    # outside the exactly-once database transaction. A composition/storage
+    # failure keeps the original generated image and a completed request.
+    try:
+        from apps.layouts.services import compose_generated_poster
+
+        compose_generated_poster(content_item, user=request.user)
+        content_item.refresh_from_db(fields=['asset', 'preview_url'])
+        metadata = dict(generation_result.metadata or {})
+        metadata['assetId'] = (
+            str(content_item.asset_id) if content_item.asset_id else None
+        )
+        generation_result.asset = content_item.asset
+        generation_result.generated_asset_url = (
+            content_item.preview_url
+            or result_data.get('posterImageUrl', '')
+            or ''
+        )
+        generation_result.metadata = metadata
+        generation_result.save(
+            update_fields=['asset', 'generated_asset_url', 'metadata']
+        )
+    except Exception:
+        logger.exception(
+            "Auto-compose result refresh failed for background content %s; raw image kept",
+            content_item.pk,
+        )
 
     request.status = GeminiGenerationRequest.Status.COMPLETED
     request.provider = routed['provider']
@@ -487,7 +709,7 @@ def regenerate_revision(revision_id: str):
     return {'revision': str(revision_id), 'status': 'OK'}
 
 
-def _persist(request, brief, result_data, routed):
+def _persist(request, brief, result_data, routed, *, brand=None):
     """
     Mirrors the synchronous path's persistence so a background generation
     produces exactly the same ContentItem a foreground one would.
@@ -517,11 +739,12 @@ def _persist(request, brief, result_data, routed):
             asset = create_generated_asset(
                 request.workspace, result_data, user=request.user
             )
-            brand = (
-                Brand.objects.filter(workspace=request.workspace)
-                .order_by('-is_default')
-                .first()
-            )
+            if brand is None:
+                brand = (
+                    Brand.objects.filter(workspace=request.workspace)
+                    .order_by('-is_default')
+                    .first()
+                )
             item = ContentItem.objects.create(
                 workspace=request.workspace,
                 brand=brand,
@@ -558,13 +781,8 @@ def _persist(request, brief, result_data, routed):
                 created_by=request.user,
             )
 
-        # After the transaction commits, so a compose hiccup can never roll
-        # back the persisted generation. Only posters compose; the service
-        # skips video and carousel output on its own.
-        from apps.layouts.services import compose_generated_poster
-
-        compose_generated_poster(item, user=request.user)
-        return item
     except Exception:
         logger.exception("Could not persist background generation %s", request.pk)
         return None
+
+    return item

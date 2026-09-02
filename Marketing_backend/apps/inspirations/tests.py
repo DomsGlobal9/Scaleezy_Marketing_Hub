@@ -6,6 +6,7 @@ adversarial paths that prove it cannot be talked out of its rules. The second
 group is the point of the file.
 """
 from django.contrib.auth import get_user_model
+from io import BytesIO
 from unittest.mock import patch
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -14,6 +15,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
+from PIL import Image
 
 from apps.brands.models import Brand
 from apps.common.testing import (
@@ -40,6 +42,12 @@ User = get_user_model()
 
 INSPIRATIONS_URL = '/api/marketing/inspirations/'
 SIGNALS_URL = '/api/marketing/inspiration-signals/'
+
+
+def tiny_png_bytes():
+    payload = BytesIO()
+    Image.new('RGB', (2, 2), '#ffffff').save(payload, format='PNG')
+    return payload.getvalue()
 
 
 class InspirationTestBase(TenantFixtureMixin, TenantSecurityAssertions, TestCase):
@@ -103,7 +111,9 @@ class InspirationTestBase(TenantFixtureMixin, TenantSecurityAssertions, TestCase
         """The multipart equivalent of valid_payload()."""
         payload = {
             'brand': str(self.brand1.id),
-            'file': SimpleUploadedFile('ref.png', b'binary', content_type='image/png'),
+            'file': SimpleUploadedFile(
+                'ref.png', tiny_png_bytes(), content_type='image/png'
+            ),
         }
         payload.update(overrides)
         return payload
@@ -266,7 +276,9 @@ class InspirationHappyPathTests(InspirationTestBase):
         self.assertEqual(body['confirmed_by'], self.user1.id)
 
     def test_upload_stores_reference_and_server_assigns_storage(self):
-        file_obj = SimpleUploadedFile('ref.png', b'binary', content_type='image/png')
+        file_obj = SimpleUploadedFile(
+            'ref.png', tiny_png_bytes(), content_type='image/png'
+        )
         response = self.client1.post(
             f'{INSPIRATIONS_URL}upload/',
             {
@@ -286,6 +298,95 @@ class InspirationHappyPathTests(InspirationTestBase):
         self.assertEqual(data['file_name'], 'ref.png')
         self.assertIn(str(self.workspace1.id), data['file_url'])
         self.assertEqual(data['focus_areas'], ['LAYOUT'])
+
+
+class InspirationInputValidationTests(InspirationTestBase):
+    @patch('apps.marketing.services.storage.SupabaseStorageService.upload_and_describe')
+    def test_unsupported_upload_is_rejected_before_storage(self, upload):
+        response = self.client1.post(
+            f'{INSPIRATIONS_URL}upload/',
+            {
+                'brand': str(self.brand1.pk),
+                'file': SimpleUploadedFile(
+                    'reference.pdf', b'%PDF-1.7', content_type='application/pdf'
+                ),
+            },
+            format='multipart',
+            **self.ws1(),
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        upload.assert_not_called()
+        self.assertFalse(BrandInspiration.objects.exists())
+
+    @patch('apps.marketing.services.storage.SupabaseStorageService.upload_and_describe')
+    def test_renamed_binary_is_rejected_before_storage(self, upload):
+        response = self.client1.post(
+            f'{INSPIRATIONS_URL}upload/',
+            {
+                'brand': str(self.brand1.pk),
+                'file': SimpleUploadedFile(
+                    'reference.png', b'not an image', content_type='image/png'
+                ),
+            },
+            format='multipart',
+            **self.ws1(),
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        upload.assert_not_called()
+        self.assertFalse(BrandInspiration.objects.exists())
+
+    def test_decompression_bomb_is_a_400_before_storage(self):
+        with patch(
+            'apps.inspirations.serializers.Image.open',
+            side_effect=Image.DecompressionBombError('crafted dimensions'),
+        ), patch(
+            'apps.marketing.services.storage.SupabaseStorageService.upload_and_describe'
+        ) as upload:
+            response = self.client1.post(
+                f'{INSPIRATIONS_URL}upload/',
+                {
+                    'brand': str(self.brand1.pk),
+                    'file': SimpleUploadedFile(
+                        'reference.png', tiny_png_bytes(), content_type='image/png'
+                    ),
+                },
+                format='multipart',
+                **self.ws1(),
+            )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        upload.assert_not_called()
+        self.assertFalse(BrandInspiration.objects.exists())
+
+    @patch('apps.marketing.services.storage.SupabaseStorageService.upload_and_describe')
+    @patch('apps.inspirations.serializers.MAX_INSPIRATION_UPLOAD_BYTES', 4)
+    def test_oversized_upload_is_rejected_before_storage(self, upload):
+        response = self.client1.post(
+            f'{INSPIRATIONS_URL}upload/',
+            {
+                'brand': str(self.brand1.pk),
+                'file': SimpleUploadedFile(
+                    'reference.png', b'12345', content_type='image/png'
+                ),
+            },
+            format='multipart',
+            **self.ws1(),
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        upload.assert_not_called()
+
+    def test_public_link_requires_https_and_no_credentials(self):
+        for unsafe in (
+            'http://example.com/reference',
+            'https://user:secret@example.com/reference',
+        ):
+            response = self.client1.post(
+                INSPIRATIONS_URL,
+                self.valid_payload(reference_url=unsafe),
+                format='json',
+                **self.ws1(),
+            )
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(BrandInspiration.objects.exists())
 
 
 class InspirationTenantIsolationTests(InspirationTestBase):
@@ -839,6 +940,25 @@ class InspirationLifecycleTests(InspirationTestBase):
             signal.user_confirmation, InspirationSignal.UserConfirmation.PENDING
         )
         self.assertEqual(signal.extracted_by_provider, 'test-provider')
+
+    @patch('apps.inspirations.analysis._dispatch')
+    def test_fresh_processing_analysis_is_not_dispatched_twice(self, dispatch):
+        inspiration = self.make_inspiration(
+            analysis_status=BrandInspiration.AnalysisStatus.PROCESSING,
+            metadata={'analysis': {'started_at': timezone.now().isoformat()}},
+        )
+
+        from .analysis import analyze_inspiration
+
+        result = analyze_inspiration(str(inspiration.pk))
+
+        self.assertEqual(result['status'], 'ALREADY_PROCESSING')
+        dispatch.assert_not_called()
+        inspiration.refresh_from_db()
+        self.assertEqual(
+            inspiration.analysis_status,
+            BrandInspiration.AnalysisStatus.PROCESSING,
+        )
 
     def test_analyze_archived_inspiration_is_rejected(self):
         inspiration = self.make_inspiration()

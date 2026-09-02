@@ -173,7 +173,7 @@ class WorkspaceAIRoute(models.Model):
     enabled = models.BooleanField(default=True)
     # Set on any row for a capability; the router reads the first one it finds.
     strategy = models.CharField(
-        max_length=20, choices=Strategy.choices, default=Strategy.FAILOVER
+        max_length=20, choices=Strategy.choices, default=Strategy.ROUND_ROBIN
     )
 
     created_at = models.DateTimeField(auto_now_add=True)

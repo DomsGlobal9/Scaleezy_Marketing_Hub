@@ -38,9 +38,13 @@ def standard_payload(standard):
     }
 
 
-def inspiration_payload(inspiration, *, include_curator=True):
+def inspiration_payload(inspiration, *, include_curator=True, adoptions=None):
     """One `PlatformInspiration`. `adoption_count` is a live query, never a
-    stored counter, so it is exactly as current as the brands' own rows."""
+    stored counter, so it is exactly as current as the brands' own rows.
+
+    `adoptions` is that same number precomputed (services.adoption_counts) so
+    a listing pays one grouped query, not one COUNT per row. None — not 0 —
+    means "not precomputed, query it here"."""
     payload = {
         'id': str(inspiration.pk),
         'title': inspiration.title,
@@ -58,7 +62,7 @@ def inspiration_payload(inspiration, *, include_curator=True):
         'channel': inspiration.channel,
         'status': inspiration.status,
         'published_at': _iso(inspiration.published_at),
-        'adoption_count': adoption_count(inspiration),
+        'adoption_count': adoption_count(inspiration) if adoptions is None else adoptions,
         'created_at': _iso(inspiration.created_at),
     }
     if include_curator:

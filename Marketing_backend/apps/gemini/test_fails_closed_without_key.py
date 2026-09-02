@@ -10,6 +10,7 @@ identical mock directions.
 Nothing here calls Gemini. The two "a key is present" tests patch the two
 methods that would reach the network and assert only which key arrived.
 """
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import httpx
@@ -124,6 +125,36 @@ class AdapterCredentialTests(TestCase):
         adapter = GeminiAdapter(credentials='', model='m', config={})
         with self.assertRaises(GeminiNotConfigured):
             adapter.generate_text(BRIEF)
+
+    def test_structured_extraction_keeps_client_alive_until_request_finishes(self):
+        """Regression: a temporary google.genai Client closes its own transport."""
+        from apps.ai.adapters.gemini import GeminiAdapter
+
+        class LifetimeModels:
+            closed = False
+
+            def generate_content(self, **_kwargs):
+                if self.closed:
+                    raise RuntimeError('Cannot send a request, as the client has been closed.')
+                return SimpleNamespace(text='{"signals": []}')
+
+        class LifetimeClient:
+            def __init__(self, *_args, **_kwargs):
+                self.models = LifetimeModels()
+
+            def __del__(self):
+                if hasattr(self, 'models'):
+                    self.models.closed = True
+
+        adapter = GeminiAdapter(credentials='tenant-key', model='m', config={})
+        with patch.object(
+            GeminiGeneratorService, '_get_client', side_effect=LifetimeClient
+        ):
+            result = adapter.generate_text(
+                {'task': 'EXTRACT', 'structured': {'reference': 'saved-id'}}
+            )
+
+        self.assertEqual(result, {'raw': {'signals': []}})
 
     @override_settings(
         GEMINI_API_KEY='',

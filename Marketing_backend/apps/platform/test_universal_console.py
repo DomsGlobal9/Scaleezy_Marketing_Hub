@@ -228,7 +228,42 @@ class UniversalConsoleTests(TenantFixtureMixin, TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['adoption_count'], 1)
         self.assertEqual(rows[0]['tags'], ['minimal', 'poster'])
+        # The exact row shape is a contract with the console's library page.
+        self.assertEqual(set(rows[0]), {
+            'id', 'title', 'kind', 'reference_url', 'body', 'file_url',
+            'mime_type', 'file_name', 'annotation', 'tags', 'industry',
+            'channel', 'status', 'published_at', 'adoption_count',
+            'created_at', 'curated_by',
+        })
         self.assertIn('PLATFORM_INSPIRATIONS_VIEWED', self.actions())
+
+    def test_library_query_count_does_not_grow_with_entries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def queries_for_a_page():
+            with CaptureQueriesContext(connection) as ctx:
+                response = self.staff_api.get(INSPIRATIONS)
+                self.assertEqual(response.status_code, 200)
+            return len(ctx.captured_queries), response
+
+        publish_inspiration(PlatformInspiration.objects.create(**INSPIRATION_BODY))
+        baseline, _ = queries_for_a_page()
+        for i in range(4):
+            reference = publish_inspiration(PlatformInspiration.objects.create(
+                **{**INSPIRATION_BODY, 'title': f'Ref {i}'}
+            ))
+            adopt_inspiration(reference, self.brand, user=self.owner)
+        # Adoption counts come from one grouped query, never one per row —
+        # and the grouped numbers are the real per-entry counts.
+        queries, response = queries_for_a_page()
+        self.assertEqual(queries, baseline)
+        counts = {
+            row['title']: row['adoption_count']
+            for row in response.json()['data']['inspirations']
+        }
+        self.assertEqual(counts[INSPIRATION_BODY['title']], 0)
+        self.assertEqual(counts['Ref 0'], 1)
 
     def test_inspiration_url_must_be_http_and_edit_and_retire_are_audited(self):
         response = self.staff_api.post(

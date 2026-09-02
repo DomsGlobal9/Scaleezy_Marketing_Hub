@@ -57,7 +57,7 @@ import {
 } from "@/components/ui/select";
 import { api, apiFetch, apiPost } from "@/lib/api";
 import { asList } from "@/lib/brand-master";
-import { readSelectedWorkspaceId } from "@/lib/workspace";
+import { readSelectedWorkspaceId, useWorkspaces } from "@/lib/workspace";
 import {
   EmptyState,
   PageHeader,
@@ -163,6 +163,17 @@ function AccountsPage() {
   const [manageId, setManageId] = useState<string | null>(null);
   const [disconnectTarget, setDisconnectTarget] = useState<Connection | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+
+  // The backend gates disconnect at ADMIN (apps/social_accounts/views.py) —
+  // it clears tokens and halts scheduled publishing until someone re-runs
+  // OAuth. Mirror the rule here so lower roles don't discover it via a 403
+  // toast. An unknown role stays enabled; the server still decides.
+  const workspaceState = useWorkspaces();
+  const activeRole = workspaceState.workspaces.find(
+    (workspace) => workspace.id === workspaceState.selectedId,
+  )?.role;
+  const canDisconnect =
+    activeRole == null || activeRole === "ADMIN" || activeRole === "OWNER";
 
   const load = useCallback(async () => {
     try {
@@ -405,7 +416,7 @@ function AccountsPage() {
                         {account.publishing_enabled ? "Pause" : "Resume"} Publishing
                       </Button>
                     ) : null}
-                    {account.status !== "DISCONNECTED" ? (
+                    {account.status !== "DISCONNECTED" && canDisconnect ? (
                       <Button
                         size="sm"
                         variant="ghost"
@@ -483,6 +494,7 @@ function AccountsPage() {
       <ManageSheet
         account={manageAccount}
         busy={busy === manageAccount?.id}
+        canDisconnect={canDisconnect}
         onClose={() => setManageId(null)}
         onPatch={(body) => manageAccount && patch(manageAccount, body)}
         onVerify={() => manageAccount && verify(manageAccount)}
@@ -523,18 +535,27 @@ function AccountsPage() {
 
 function AuditTable() {
   const [rows, setRows] = useState<AuditRow[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [platform, setPlatform] = useState("all");
   const [user, setUser] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     apiFetch("/api/marketing/settings/")
-      .then((res) => res.json())
+      .then((res) => {
+        // apiFetch resolves on HTTP errors too; a failed request must show as
+        // a failure, not as "no events recorded".
+        if (!res.ok) throw new Error(`Request failed (${res.status})`);
+        return res.json();
+      })
       .then((data) => {
-        if (!cancelled) setRows(Array.isArray(data?.audit_logs) ? data.audit_logs : []);
+        if (!cancelled) {
+          setRows(Array.isArray(data?.audit_logs) ? data.audit_logs : []);
+          setLoadError(null);
+        }
       })
       .catch(() => {
-        if (!cancelled) setRows([]);
+        if (!cancelled) setLoadError("Could not load the audit log. Try reloading the page.");
       });
     return () => {
       cancelled = true;
@@ -576,7 +597,9 @@ function AuditTable() {
         />
       </div>
 
-      {rows === null ? (
+      {loadError ? (
+        <p className="px-4 py-10 text-center text-sm text-destructive">{loadError}</p>
+      ) : rows === null ? (
         <p className="px-4 py-10 text-center text-sm text-muted-foreground">Loading…</p>
       ) : visible.length === 0 ? (
         <p className="px-4 py-10 text-center text-sm text-muted-foreground">
@@ -746,6 +769,7 @@ function ConnectDialog({
 function ManageSheet({
   account,
   busy,
+  canDisconnect,
   onClose,
   onPatch,
   onVerify,
@@ -754,6 +778,7 @@ function ManageSheet({
 }: {
   account: Connection | null;
   busy: boolean;
+  canDisconnect: boolean;
   onClose: () => void;
   onPatch: (body: Partial<Pick<Connection, "publishing_enabled" | "is_default_account">>) => void;
   onVerify: () => void;
@@ -831,12 +856,17 @@ function ManageSheet({
               variant="outline"
               size="sm"
               className="text-destructive"
-              disabled={busy}
+              disabled={busy || !canDisconnect}
               onClick={onDisconnect}
             >
               <Unplug className="size-4" /> Disconnect
             </Button>
           </div>
+          {!canDisconnect ? (
+            <p className="text-xs text-muted-foreground">
+              Only a workspace admin can disconnect an account.
+            </p>
+          ) : null}
           <p className="text-xs text-muted-foreground">
             Access tokens are stored encrypted on the server and are never shown in the browser.
           </p>

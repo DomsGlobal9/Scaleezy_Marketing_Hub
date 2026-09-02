@@ -7,6 +7,10 @@ same checks run for the JSON and the multipart path (PR1-007, GLOBAL-010),
 which is why the relation rules live in `validate_reference_graph` rather than
 inside one serializer.
 """
+import mimetypes
+from urllib.parse import urlsplit
+
+from PIL import Image, UnidentifiedImageError
 from rest_framework import serializers
 
 from apps.brands.models import Brand
@@ -22,6 +26,25 @@ from .models import (
 )
 
 VALID_FOCUS_AREAS = {choice.value for choice in SignalCategory}
+MAX_INSPIRATION_UPLOAD_BYTES = 15 * 1024 * 1024
+SUPPORTED_INSPIRATION_UPLOAD_MIME_TYPES = frozenset({
+    'image/jpeg', 'image/png', 'image/webp',
+})
+PIL_FORMAT_MIME_TYPES = {
+    'JPEG': 'image/jpeg',
+    'PNG': 'image/png',
+    'WEBP': 'image/webp',
+}
+MAX_INSPIRATION_PIXELS = 50_000_000
+IMAGE_INSPIRATION_TYPES = frozenset({
+    BrandInspiration.InspirationType.IMAGE,
+    BrandInspiration.InspirationType.SCREENSHOT,
+    BrandInspiration.InspirationType.POST,
+    BrandInspiration.InspirationType.AD,
+    BrandInspiration.InspirationType.PIN,
+    BrandInspiration.InspirationType.REFERENCE,
+    BrandInspiration.InspirationType.MOODBOARD,
+})
 
 
 def request_workspace_or_raise(serializer):
@@ -105,6 +128,20 @@ class BrandInspirationSerializer(serializers.ModelSerializer):
 
     def get_retrieval_eligibility(self, obj):
         return obj.retrieval_eligibility()
+
+    def validate_reference_url(self, value):
+        if not value:
+            return value
+        parsed = urlsplit(str(value).strip())
+        if parsed.scheme.casefold() != 'https' or not parsed.hostname:
+            raise serializers.ValidationError(
+                'Inspiration links must use public HTTPS.'
+            )
+        if parsed.username is not None or parsed.password is not None:
+            raise serializers.ValidationError(
+                'Inspiration links cannot contain credentials.'
+            )
+        return str(value).strip()
 
     #: Written only by `apps.universal.services.adopt_inspiration`. They are
     #: what the platform counts adoptions by and dedupes on, so a client must
@@ -223,8 +260,80 @@ class BrandInspirationUploadSerializer(serializers.Serializer):
         self.fields['brand'].queryset = Brand.objects.filter(workspace=workspace)
         self.fields['source'].queryset = BrandSource.objects.filter(workspace=workspace)
 
+    def validate_file(self, file_obj):
+        """Reject bytes this poster-reference path cannot truthfully analyse."""
+        size = int(getattr(file_obj, 'size', 0) or 0)
+        if size <= 0:
+            raise serializers.ValidationError('The inspiration file is empty.')
+        if size > MAX_INSPIRATION_UPLOAD_BYTES:
+            raise serializers.ValidationError(
+                'The inspiration file exceeds the 15 MB upload limit.'
+            )
+
+        declared = str(getattr(file_obj, 'content_type', '') or '')
+        declared = declared.split(';', 1)[0].strip().casefold()
+        guessed = (mimetypes.guess_type(str(file_obj.name or ''))[0] or '').casefold()
+        if (
+            declared
+            and declared != 'application/octet-stream'
+            and guessed
+            and declared != guessed
+        ):
+            raise serializers.ValidationError('The file type does not match its filename.')
+        mime_type = (
+            declared
+            if declared in SUPPORTED_INSPIRATION_UPLOAD_MIME_TYPES
+            else guessed
+            if declared in ('', 'application/octet-stream')
+            else ''
+        )
+        if mime_type not in SUPPORTED_INSPIRATION_UPLOAD_MIME_TYPES:
+            raise serializers.ValidationError(
+                'Unsupported inspiration file. Upload a JPEG, PNG, or WebP image.'
+            )
+        if len(str(file_obj.name or '')) > 255:
+            raise serializers.ValidationError('The inspiration filename is too long.')
+
+        try:
+            file_obj.seek(0)
+            with Image.open(file_obj) as image:
+                if image.width * image.height > MAX_INSPIRATION_PIXELS:
+                    raise serializers.ValidationError(
+                        'The inspiration image dimensions are too large.'
+                    )
+                actual_mime = PIL_FORMAT_MIME_TYPES.get(str(image.format or '').upper())
+                image.verify()
+        except serializers.ValidationError:
+            raise
+        except (
+            Image.DecompressionBombError,
+            UnidentifiedImageError,
+            OSError,
+            ValueError,
+        ) as exc:
+            raise serializers.ValidationError(
+                'The uploaded file is not a readable JPEG, PNG, or WebP image.'
+            ) from exc
+        finally:
+            file_obj.seek(0)
+        if actual_mime != mime_type:
+            raise serializers.ValidationError(
+                'The file contents do not match the declared image type.'
+            )
+        file_obj.content_type = mime_type
+        return file_obj
+
     def validate(self, data):
         workspace = request_workspace_or_raise(self)
+        inspiration_type = data.get(
+            'inspiration_type', BrandInspiration.InspirationType.IMAGE
+        )
+        if inspiration_type not in IMAGE_INSPIRATION_TYPES:
+            raise serializers.ValidationError({
+                'inspiration_type': (
+                    'Uploaded poster references must be an image-based inspiration.'
+                )
+            })
         validate_reference_graph(
             workspace,
             data.get('brand'),

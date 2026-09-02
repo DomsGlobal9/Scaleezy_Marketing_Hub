@@ -25,6 +25,8 @@ from apps.brands.models import Brand
 from apps.brands.services.approval import approve_brand, reject_brand
 from apps.common.platform_health import platform_health
 from apps.common.responses import APIResponse
+from apps.inspirations.models import BrandInspiration
+from apps.knowledge.models import BrandSource
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 from apps.workspaces.services.team import TeamError, attach_user_to_workspace
 
@@ -68,14 +70,46 @@ class PlatformHealthView(PlatformView):
 
 # ───────────────────────────────────────────────────── P1 — approval queue
 
-def _signup_row(brand):
-    """One queue row. Every count is a query on the brand's own rows."""
+class QueueStats:
+    """Per-brand figures for a page of queue rows, one query per table.
+
+    `_signup_row` used to answer these with four queries per brand — owner,
+    two content counts, team size — an N+1 that reached ~800 queries on a
+    full 200-row page. Same numbers, grouped once per table, exactly as
+    `PortfolioStats` does for the client portfolio.
+    """
+
+    def __init__(self, brands):
+        brand_ids = [b.pk for b in brands]
+        workspace_ids = [b.workspace_id for b in brands]
+
+        # First OWNER by created_at per workspace — the signer-upper.
+        self.owner = {}
+        for member in (
+            WorkspaceMember.objects.filter(
+                workspace_id__in=workspace_ids, role=WorkspaceMember.Role.OWNER
+            ).select_related('user').order_by('created_at')
+        ):
+            self.owner.setdefault(member.workspace_id, member.user.get_username())
+
+        def grouped(queryset, key):
+            return {
+                row[key]: row['n']
+                for row in queryset.order_by().values(key).annotate(n=Count('id'))
+            }
+
+        self.knowledge = grouped(
+            BrandSource.objects.filter(brand_id__in=brand_ids), 'brand_id')
+        self.inspirations = grouped(
+            BrandInspiration.objects.filter(brand_id__in=brand_ids), 'brand_id')
+        self.team = grouped(
+            WorkspaceMember.objects.filter(workspace_id__in=workspace_ids),
+            'workspace_id')
+
+
+def _signup_row(brand, stats):
+    """One queue row. Every count comes from `stats`, never a per-row query."""
     workspace = brand.workspace
-    owner = (
-        WorkspaceMember.objects.filter(
-            workspace=workspace, role=WorkspaceMember.Role.OWNER
-        ).select_related('user').order_by('created_at').first()
-    )
     return {
         'brand_id': str(brand.pk),
         'workspace_id': str(workspace.pk),
@@ -89,12 +123,12 @@ def _signup_row(brand):
         'contact_phone': brand.contact_phone,
         'status': brand.status,
         'signed_up_at': brand.created_at.isoformat(),
-        'signed_up_by': owner.user.get_username() if owner else '',
+        'signed_up_by': stats.owner.get(workspace.pk, ''),
         # What they built while pending — real counts, so the reviewer can see
         # a serious client from a drive-by.
-        'knowledge_sources': brand.knowledge_sources.count(),
-        'inspirations': brand.inspirations.count(),
-        'team_size': WorkspaceMember.objects.filter(workspace=workspace).count(),
+        'knowledge_sources': stats.knowledge.get(brand.pk, 0),
+        'inspirations': stats.inspirations.get(brand.pk, 0),
+        'team_size': stats.team.get(workspace.pk, 0),
         'reviewed_at': brand.reviewed_at.isoformat() if brand.reviewed_at else None,
         'reviewed_by': brand.reviewed_by.get_username() if brand.reviewed_by_id else '',
     }
@@ -118,20 +152,28 @@ class SignupQueueView(PlatformView):
     """Pending clients, newest first. `?status=` to see ACTIVE/ARCHIVED too."""
 
     def get(self, request):
+        pending_total = Brand.objects.filter(status=Brand.Status.PENDING).count()
+
+        if request.query_params.get('count_only'):
+            # The Overview tile needs one number, not two hundred built rows.
+            self.audit('SIGNUP_QUEUE_VIEWED', detail={'count_only': True})
+            return APIResponse(success=True, data={'pending_total': pending_total})
+
         wanted = str(request.query_params.get('status', Brand.Status.PENDING)).upper()
         if wanted not in Brand.Status.values:
             wanted = Brand.Status.PENDING
-        brands = (
+        brands = list(
             Brand.objects.filter(status=wanted)
             .select_related('workspace', 'reviewed_by')
             .order_by('-created_at')[:200]
         )
-        rows = [_signup_row(b) for b in brands]
+        stats = QueueStats(brands)
+        rows = [_signup_row(b, stats) for b in brands]
         self.audit('SIGNUP_QUEUE_VIEWED', detail={'status': wanted, 'count': len(rows)})
         return APIResponse(success=True, data={
             'status': wanted,
             'count': len(rows),
-            'pending_total': Brand.objects.filter(status=Brand.Status.PENDING).count(),
+            'pending_total': pending_total,
             'signups': rows,
         })
 
@@ -224,18 +266,20 @@ class SignupDecisionView(PlatformView):
                         'BRAND_CORRECTED_AT_APPROVAL', workspace=brand.workspace,
                         target=f'brand:{brand.pk}', detail=corrections,
                     )
+            fresh = Brand.objects.select_related('workspace', 'reviewed_by').get(pk=brand.pk)
             return APIResponse(
                 success=True,
                 message=f"{brand.name} approved.",
-                data=_signup_row(Brand.objects.select_related('workspace').get(pk=brand.pk)),
+                data=_signup_row(fresh, QueueStats([fresh])),
             )
 
         if decision == 'reject':
             reject_brand(brand, by=request.user, reason=str(request.data.get('reason', ''))[:255])
+            fresh = Brand.objects.select_related('workspace', 'reviewed_by').get(pk=brand.pk)
             return APIResponse(
                 success=True,
                 message=f"{brand.name} rejected and archived. Reversible.",
-                data=_signup_row(Brand.objects.select_related('workspace').get(pk=brand.pk)),
+                data=_signup_row(fresh, QueueStats([fresh])),
             )
 
         return self.not_found("Decision")

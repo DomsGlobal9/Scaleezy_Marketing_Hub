@@ -10,15 +10,20 @@ from rest_framework.exceptions import PermissionDenied
 from apps.common.permissions import (
     IsWorkspaceMember,
     authorize_workspace,
+    cached_membership_for_workspace,
     get_request_workspace,
 )
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.responses import APIResponse
 from apps.brands.services.approval import approval_gate_response
+from apps.workspaces.models import WorkspaceMember
 from django.utils import timezone
 
 
 logger = logging.getLogger(__name__)
+
+MAX_CREATE_FROM_INSPIRATION_IDS = 12
+MAX_GENERATION_INSTRUCTION_CHARS = 1000
 
 
 # Moved to apps.context.services.generation so the background task records
@@ -63,6 +68,134 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 status=status.HTTP_402_PAYMENT_REQUIRED,
             )
         return None
+
+    @staticmethod
+    def _generation_instruction(data):
+        raw = data.get('instruction', '')
+        if raw in (None, ''):
+            return ''
+        if not isinstance(raw, str):
+            raise ValueError('instruction must be text.')
+        cleaned = ' '.join(raw.split())
+        if len(cleaned) > MAX_GENERATION_INSTRUCTION_CHARS:
+            raise ValueError(
+                f'instruction must be {MAX_GENERATION_INSTRUCTION_CHARS} characters or fewer.'
+            )
+        return cleaned
+
+    @staticmethod
+    def _analysis_ids(data, creative_direction, workspace, brand):
+        """Validate bounded preprocessing IDs against resolved BRAND selections."""
+        from uuid import UUID
+
+        raw_ids = data.get(
+            'analyzeBeforeGenerationIds',
+            data.get('analyze_before_generation_ids', []),
+        ) or []
+        if not isinstance(raw_ids, list):
+            raise ValueError('analyzeBeforeGenerationIds must be a list.')
+        if len(raw_ids) > MAX_CREATE_FROM_INSPIRATION_IDS:
+            raise ValueError(
+                f'No more than {MAX_CREATE_FROM_INSPIRATION_IDS} inspirations can be '
+                'preprocessed in one generation.'
+            )
+        normalized = []
+        for raw in raw_ids:
+            try:
+                value = str(UUID(str(raw)))
+            except (TypeError, ValueError, AttributeError):
+                raise ValueError(
+                    'One or more preprocessing inspiration IDs are invalid.'
+                ) from None
+            if value in normalized:
+                raise ValueError(
+                    'The same preprocessing inspiration cannot be named twice.'
+                )
+            normalized.append(value)
+
+        selected_brand_ids = {
+            str(row.get('id'))
+            for row in (creative_direction.get('selections') or [])
+            if row.get('source_type') == 'BRAND'
+        }
+        if not set(normalized).issubset(selected_brand_ids):
+            raise ValueError(
+                'Every preprocessing inspiration must be a selected brand inspiration.'
+            )
+
+        if normalized:
+            from apps.inspirations.models import BrandInspiration
+
+            available = BrandInspiration.objects.eligible_for_retrieval().filter(
+                pk__in=normalized, workspace=workspace, brand=brand
+            ).count()
+            if available != len(normalized):
+                raise ValueError('One or more selected inspirations are unavailable.')
+        return normalized
+
+    @staticmethod
+    def _queued_creative_direction(creative_direction):
+        """Keep only the selection graph needed to resolve at worker time.
+
+        Resolved reference URLs, annotations, and extracted signals are useful
+        provider context, but they do not belong in a durable PENDING request.
+        The worker re-resolves this graph after any requested analysis and the
+        final ContentItem then records the exact snapshot that was used.
+        """
+        selections = []
+        for row in creative_direction.get('selections') or []:
+            selections.append(
+                {
+                    'source_type': row.get('source_type', ''),
+                    'id': row.get('id', ''),
+                    'role': row.get('role', 'SUPPORTING'),
+                    'direction': row.get('direction', 'USE'),
+                    'focus_areas': list(row.get('focus_areas') or []),
+                }
+            )
+        return {
+            'selection_count': len(selections),
+            'layout': creative_direction.get('layout', ''),
+            'selections': selections,
+        }
+
+    @staticmethod
+    def _requests_brand_direction(data):
+        raw_analysis_ids = data.get(
+            'analyzeBeforeGenerationIds',
+            data.get('analyze_before_generation_ids', []),
+        )
+        raw_selections = data.get(
+            'inspirationSelections', data.get('inspiration_selections', [])
+        )
+        return bool(raw_analysis_ids) or (
+            isinstance(raw_selections, list)
+            and any(
+                isinstance(row, dict)
+                and str(
+                    row.get('sourceType', row.get('source_type', ''))
+                ).strip().upper() == 'BRAND'
+                for row in raw_selections
+            )
+        )
+
+    def _brand_direction_role_error(self, request, workspace, data):
+        if not self._requests_brand_direction(data):
+            return None
+        membership = cached_membership_for_workspace(request, workspace.pk)
+        if membership is not None and membership.has_at_least(
+            WorkspaceMember.Role.EDITOR
+        ):
+            return None
+        return APIResponse(
+            success=False,
+            message='Your role does not allow inspiration-based generation.',
+            error={
+                'code': 'ROLE_FORBIDDEN',
+                'message': 'Editor access is required.',
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     def _brand_context(self, request, task_type=None):
         """Brand intelligence for this generation, from the Context Gateway.
@@ -223,6 +356,22 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         workspace, workspace_error = get_request_workspace(request)
         if workspace_error:
             return workspace_error
+        role_error = self._brand_direction_role_error(request, workspace, data)
+        if role_error:
+            return role_error
+        if data.get(
+            'analyzeBeforeGenerationIds',
+            data.get('analyze_before_generation_ids', []),
+        ):
+            return APIResponse(
+                success=False,
+                message='Inspiration preprocessing requires async generation.',
+                error={
+                    'code': 'ASYNC_REQUIRED',
+                    'message': 'Inspiration preprocessing requires async generation.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         from apps.brands.models import Brand
         from apps.context.services.creative_direction import (
@@ -232,11 +381,21 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
 
         brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
         try:
+            instruction = self._generation_instruction(data)
+        except ValueError as exc:
+            return APIResponse(
+                success=False,
+                message=str(exc),
+                error={'code': 'INVALID_INSTRUCTION', 'message': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
             creative_direction = resolve_creative_direction(
                 workspace,
                 brand,
                 data.get('inspirationSelections', data.get('inspiration_selections', [])),
                 layout=data.get('layout', ''),
+                instruction=instruction,
             )
         except CreativeDirectionError as exc:
             return APIResponse(
@@ -406,6 +565,9 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             return approval_error
 
         data = request.data
+        role_error = self._brand_direction_role_error(request, workspace, data)
+        if role_error:
+            return role_error
         from apps.brands.models import Brand
         from apps.context.services.creative_direction import (
             CreativeDirectionError,
@@ -414,11 +576,21 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
 
         brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
         try:
+            instruction = self._generation_instruction(data)
+        except ValueError as exc:
+            return APIResponse(
+                success=False,
+                message=str(exc),
+                error={'code': 'INVALID_INSTRUCTION', 'message': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
             creative_direction = resolve_creative_direction(
                 workspace,
                 brand,
                 data.get('inspirationSelections', data.get('inspiration_selections', [])),
                 layout=data.get('layout', ''),
+                instruction=instruction,
             )
         except CreativeDirectionError as exc:
             return APIResponse(
@@ -427,6 +599,40 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 error={'code': exc.code, 'message': str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        try:
+            analyze_before_generation_ids = self._analysis_ids(
+                data, creative_direction, workspace, brand
+            )
+        except ValueError as exc:
+            return APIResponse(
+                success=False,
+                message=str(exc),
+                error={
+                    'code': 'INVALID_INSPIRATION_PREPROCESSING',
+                    'message': str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        content_type = str(data.get('contentType', data.get('content_type', ''))).strip()
+        if analyze_before_generation_ids and content_type.casefold() != 'poster':
+            return APIResponse(
+                success=False,
+                message='Inspiration preprocessing is available only for poster generation.',
+                error={
+                    'code': 'INVALID_INSPIRATION_PREPROCESSING',
+                    'message': (
+                        'Inspiration preprocessing is available only for poster generation.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        queued_creative_direction = (
+            self._queued_creative_direction(creative_direction)
+            if analyze_before_generation_ids
+            else creative_direction
+        )
 
         brief = {
             'campaign_name': data.get('campaignName', data.get('campaign_name', '')),
@@ -436,15 +642,28 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'occasion': data.get('occasion', ''),
             'offer': data.get('offer', ''),
             'brand_tone': data.get('brandTone', data.get('brand_tone', '')),
-            'reference_image_base64': data.get('referenceImageBase64', ''),
-            'contentType': data.get('contentType', ''),
+            # The governed create-from-inspiration path stores durable IDs,
+            # never a browser base64 blob. The legacy field remains only for
+            # calls that do not request durable preprocessing.
+            'reference_image_base64': (
+                '' if analyze_before_generation_ids
+                else data.get('referenceImageBase64', '')
+            ),
+            'instruction': instruction,
+            'analyze_before_generation_ids': analyze_before_generation_ids,
+            'contentType': content_type,
             'slides': data.get('slides') or [],
             'video_duration': data.get('videoDuration', data.get('video_duration', '')),
             'video_aspect': data.get('videoAspect', data.get('video_aspect', '')),
             'video_style': data.get('videoStyle', data.get('video_style', '')),
             'video_script': data.get('videoScript', data.get('video_script', '')),
-            'brand_rules': self._brand_rules(request),
-            'creative_direction': creative_direction,
+            # Governed inspiration jobs resolve the current compiled Brand
+            # Brain in the worker. Do not freeze potentially stale rules at
+            # queue time; legacy async generation retains its prior snapshot.
+            'brand_rules': (
+                [] if analyze_before_generation_ids else self._brand_rules(request)
+            ),
+            'creative_direction': queued_creative_direction,
             'layout': creative_direction['layout'],
         }
 
@@ -465,7 +684,26 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
 
         from apps.gemini.tasks import generate_content
 
-        task_result = generate_content.enqueue(str(generation.id))
+        try:
+            task_result = generate_content.enqueue(str(generation.id))
+        except Exception as exc:
+            logger.exception('Generation %s could not be queued', generation.pk)
+            generation.status = GeminiGenerationRequest.Status.FAILED
+            generation.error_message = 'Generation could not be queued. Please try again.'
+            generation.save(update_fields=['status', 'error_message', 'updated_at'])
+            return APIResponse(
+                success=False,
+                message=generation.error_message,
+                error={
+                    'code': 'QUEUE_FAILED',
+                    'message': generation.error_message,
+                },
+                data={
+                    'generationId': str(generation.id),
+                    'status': generation.status,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         return APIResponse(
             success=True,

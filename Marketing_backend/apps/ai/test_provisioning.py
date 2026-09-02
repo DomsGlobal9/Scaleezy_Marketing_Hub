@@ -100,7 +100,7 @@ class EnsureDefaultAIRoutingTests(TestCase):
         for route in routes.values():
             self.assertTrue(route.enabled)
             self.assertEqual(route.priority, 100)
-            self.assertEqual(route.strategy, Strategy.FAILOVER)
+            self.assertEqual(route.strategy, Strategy.ROUND_ROBIN)
 
     def test_no_credential_is_copied_into_the_database(self):
         """The adapter falls back to the server key. A key per tenant is one

@@ -11,11 +11,13 @@ import uuid
 from datetime import timedelta
 from unittest.mock import patch, MagicMock
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase, RequestFactory
 from django.utils import timezone
 from django.core.cache import cache
+from rest_framework.test import APIClient
 
-from apps.workspaces.models import MarketingWorkspace
+from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 from apps.social_accounts.models import SocialConnection, SocialAccountAuditLog
 from apps.social_accounts.integrations.linkedin import LinkedInAdapter
 from apps.social_accounts.integrations.exceptions import (
@@ -29,6 +31,8 @@ from apps.social_accounts.integrations.exceptions import (
     LinkedInStateValidationError,
 )
 from apps.social_accounts.utils.encryption import encrypt_token, decrypt_token
+
+User = get_user_model()
 
 
 class LinkedInAdapterTests(TestCase):
@@ -299,6 +303,79 @@ class LinkedInConnectionTests(TestCase):
         self.assertIsNone(connection.access_token_encrypted)
         self.assertIsNone(connection.refresh_token_encrypted)
         self.assertFalse(connection.publishing_enabled)
+
+
+class DisconnectRoleGateTests(TestCase):
+    """Role gate on POST /social-accounts/<id>/disconnect/.
+
+    Disconnecting clears tokens and halts scheduled publishing until someone
+    re-runs OAuth — account configuration, gated at ADMIN. Lower roles must
+    get a 403 and the connection must be left untouched.
+    """
+
+    def setUp(self):
+        self.workspace = MarketingWorkspace.objects.create(
+            customer_id="customer_gate",
+            workspace_name="Gate Workspace",
+        )
+
+    def _client_with_role(self, role):
+        user = User.objects.create_user(username=f"gate_{role.lower()}", password="pw")
+        WorkspaceMember.objects.create(workspace=self.workspace, user=user, role=role)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _connection(self):
+        # No stored token, so the best-effort platform-side revoke is skipped
+        # and no network call is ever attempted from the test.
+        return SocialConnection.objects.create(
+            workspace=self.workspace,
+            platform=SocialConnection.Platform.LINKEDIN,
+            external_account_id=f"member-{uuid.uuid4().hex[:8]}",
+            account_name="Gated User",
+            status=SocialConnection.Status.CONNECTED,
+            publishing_enabled=True,
+        )
+
+    def _disconnect(self, client, connection):
+        return client.post(
+            f"/api/marketing/social-accounts/{connection.id}/disconnect/",
+            {},
+            format="json",
+            HTTP_X_WORKSPACE_ID=str(self.workspace.id),
+        )
+
+    def test_roles_below_admin_get_403(self):
+        for role in (
+            WorkspaceMember.Role.VIEWER,
+            WorkspaceMember.Role.EDITOR,
+            WorkspaceMember.Role.MANAGER,
+        ):
+            client = self._client_with_role(role)
+            connection = self._connection()
+            response = self._disconnect(client, connection)
+            self.assertEqual(response.status_code, 403, role)
+            connection.refresh_from_db()
+            self.assertEqual(connection.status, SocialConnection.Status.CONNECTED, role)
+            self.assertTrue(connection.publishing_enabled, role)
+
+    def test_admin_and_owner_can_disconnect(self):
+        for role in (WorkspaceMember.Role.ADMIN, WorkspaceMember.Role.OWNER):
+            client = self._client_with_role(role)
+            connection = self._connection()
+            response = self._disconnect(client, connection)
+            self.assertEqual(response.status_code, 200, role)
+            connection.refresh_from_db()
+            self.assertEqual(connection.status, SocialConnection.Status.DISCONNECTED, role)
+            self.assertFalse(connection.publishing_enabled, role)
+            self.assertTrue(
+                SocialAccountAuditLog.objects.filter(
+                    social_connection=connection,
+                    action=SocialAccountAuditLog.Action.ACCOUNT_DISCONNECTION,
+                ).exists(),
+                role,
+            )
 
 
 class LinkedInPublishingTests(TestCase):

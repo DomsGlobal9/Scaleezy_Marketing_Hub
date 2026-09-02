@@ -821,7 +821,9 @@ def recent_headlines(workspace, limit=6):
     return list(dict.fromkeys(str(h)[:120] for h in rows if str(h).strip()))[:limit]
 
 
-def generate_marketing_payload(workspace, brief, *, instruction='', progress=None):
+def generate_marketing_payload(
+    workspace, brief, *, instruction='', progress=None, brand=None
+):
     """Return the legacy marketing payload without choosing a vendor.
 
     This is the shared boundary used by both foreground and queued generation.
@@ -830,7 +832,10 @@ def generate_marketing_payload(workspace, brief, *, instruction='', progress=Non
     """
     from apps.brands.models import Brand
 
-    brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
+    if brand is None:
+        brand = Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
+    elif brand.workspace_id != workspace.pk:
+        raise OutputRejected('The selected brand does not belong to this workspace.')
     content_type = str(brief.get('contentType') or '').strip().lower()
     if brand is None:
         if content_type in {'video', 'carousel'}:

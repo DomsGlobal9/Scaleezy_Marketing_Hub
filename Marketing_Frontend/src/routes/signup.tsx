@@ -151,7 +151,7 @@ function SignupPage() {
       // Re-runs beforeLoad everywhere so the guard sees the new session; the
       // hub then discovers the one workspace this signup created.
       await router.invalidate();
-      await navigate({ to: "/onboarding", replace: true });
+      await navigate({ to: "/brand-master", search: { tab: "teach" }, replace: true });
     } catch (err) {
       const fields = fieldErrors(err);
       setFieldError(fields);

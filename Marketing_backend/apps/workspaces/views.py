@@ -16,6 +16,8 @@ from apps.common.permissions import (
 from apps.common.responses import APIResponse
 from apps.ai.provisioning import AIProvisioningError, provision_default_ai
 from apps.brands.models import Brand
+from apps.social_accounts.models import SocialAccountAuditLog
+from apps.social_accounts.serializers import SocialAccountAuditRowSerializer
 
 from .models import MarketingWorkspace, WorkspaceMember
 from .serializers import AuditLogSerializer, MarketingWorkspaceSerializer
@@ -124,13 +126,32 @@ class WorkspaceSettingsView(APIView):
         if error:
             return error
 
-        audit_logs = AuditLog.objects.filter(workspace=workspace).order_by('-date')[:50]
+        # One combined feed: publishing outcomes (apps.audit.AuditLog)
+        # interleaved with connect/disconnect events, which are recorded in
+        # SocialAccountAuditLog and were previously never serialized anywhere.
+        publishing_rows = AuditLogSerializer(
+            AuditLog.objects.filter(workspace=workspace).order_by('-date')[:50],
+            many=True,
+        ).data
+        connection_rows = SocialAccountAuditRowSerializer(
+            SocialAccountAuditLog.objects.filter(workspace=workspace)
+            .select_related('social_connection', 'user')
+            .order_by('-created_at')[:50],
+            many=True,
+        ).data
+        # Both sides render ISO-8601 in the same timezone, so string order is
+        # time order — no reparsing needed to merge.
+        audit_logs = sorted(
+            list(publishing_rows) + list(connection_rows),
+            key=lambda row: row['date'] or '',
+            reverse=True,
+        )[:50]
         # Top-level keys, not the envelope: the settings page reads
         # data.workspace and data.audit_logs directly.
         return Response(
             {
                 "workspace": MarketingWorkspaceSerializer(workspace).data,
-                "audit_logs": AuditLogSerializer(audit_logs, many=True).data,
+                "audit_logs": audit_logs,
             }
         )
 
