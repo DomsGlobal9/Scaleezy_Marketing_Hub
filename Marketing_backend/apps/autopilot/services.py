@@ -350,22 +350,33 @@ def enqueue_due_autopilot_runs(now=None):
             next_slot = due_slot + interval
             while next_slot <= now:
                 next_slot += interval
-            claimed = AutopilotPolicy.objects.filter(
-                pk=policy_id, next_run_at=due_slot,
-            ).update(next_run_at=next_slot, updated_at=now)
-            if not claimed:
-                continue  # another sweep (or a concurrent edit) owns this slot
-            policy = AutopilotPolicy.objects.select_related('workspace').get(pk=policy_id)
-            try:
-                with transaction.atomic():
-                    run = create_run(
-                        policy,
-                        scheduled_for=due_slot,
-                        dedupe_key=f'sched:{policy_id}:{due_slot.isoformat()}',
-                    )
-            except IntegrityError:
-                continue  # this slot's run already exists — already created
+            run = None
+            # Claim and create commit together: a crash after a committed
+            # claim would advance the schedule with no run row and nothing to
+            # retry — the slot silently lost. Atomic, the claim rolls back
+            # with the failure and the next tick retries the slot.
+            with transaction.atomic():
+                if not _claim_due_slot(policy_id, due_slot, next_slot, now):
+                    continue  # another sweep (or a concurrent edit) owns this slot
+                policy = AutopilotPolicy.objects.select_related('workspace').get(pk=policy_id)
+                try:
+                    with transaction.atomic():
+                        run = create_run(
+                            policy,
+                            scheduled_for=due_slot,
+                            dedupe_key=f'sched:{policy_id}:{due_slot.isoformat()}',
+                        )
+                except IntegrityError:
+                    # This slot's run already exists. The savepoint rolled the
+                    # create back; the committed claim still advances the
+                    # schedule past the already-covered slot.
+                    run = None
+            if run is None:
+                continue
             created += 1
+            # Outside the claim transaction: if the process dies between the
+            # commit and this enqueue, the run exists as QUEUED with a dead
+            # task and the QUEUED-stale rescue re-drives it — never silent.
             try:
                 _enqueue_execute(run)
             except AutopilotQueueUnavailable:
@@ -377,6 +388,19 @@ def enqueue_due_autopilot_runs(now=None):
             # One bad policy must not stop the rest of the schedule.
             logger.exception('Scheduled autopilot policy %s could not be swept', policy_id)
     return created
+
+
+def _claim_due_slot(policy_id, due_slot, next_slot, now):
+    """Advance next_run_at only if it still holds the slot we read.
+
+    The compare-and-swap that makes two concurrent sweeps create one run:
+    the loser's update matches zero rows because the winner already moved
+    next_run_at. Kept as its own function so the conditional filter is
+    directly pinned by test — the dedupe constraint would mask its loss.
+    """
+    return AutopilotPolicy.objects.filter(
+        pk=policy_id, next_run_at=due_slot,
+    ).update(next_run_at=next_slot, updated_at=now)
 
 
 def sweep_stalled_autopilot_runs(now=None):

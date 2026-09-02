@@ -568,15 +568,65 @@ class AutopilotScheduleTests(TestCase):
         self.assertEqual(AutopilotRun.objects.filter(policy=policy).count(), 1)
 
     def test_cas_claim_blocks_a_stale_worker(self):
-        """Two workers read the same due slot; the loser's conditional update
-        matches nothing, so it never reaches run creation."""
+        """Pins the PRODUCTION claim, not a reimplementation: _claim_due_slot
+        must refuse a slot whose next_run_at another worker already moved.
+        Losing the conditional filter fails this test even though the dedupe
+        constraint would still protect the money."""
+        from .services import _claim_due_slot
+
         due = timezone.now() - timedelta(minutes=30)
         policy = self._policy(name='CAS daily', due=due)
+        now = timezone.now()
+        # Winner claims with the value it read.
+        self.assertEqual(
+            _claim_due_slot(policy.pk, due, due + timedelta(days=1), now), 1
+        )
+        # Loser read the same due slot but the row has moved on: zero rows.
+        self.assertEqual(
+            _claim_due_slot(policy.pk, due, due + timedelta(days=1), now), 0
+        )
+        policy.refresh_from_db()
+        self.assertEqual(policy.next_run_at, due + timedelta(days=1))
+
+    def test_a_crash_after_the_claim_rolls_the_slot_back(self):
+        """Claim and create commit together: a failure between them must not
+        advance the schedule with no run to show for it — the next tick
+        retries the slot instead of losing it silently."""
+        due = timezone.now() - timedelta(minutes=30)
+        policy = self._policy(name='Crashy daily', due=due)
+        with patch(
+            'apps.autopilot.services.create_run',
+            side_effect=RuntimeError('db blip'),
+        ):
+            self.assertEqual(enqueue_due_autopilot_runs(), 0)
+        policy.refresh_from_db()
+        self.assertEqual(policy.next_run_at, due)  # claim rolled back
+        self.assertEqual(AutopilotRun.objects.count(), 0)
+        # The next pass succeeds normally.
         self.assertEqual(enqueue_due_autopilot_runs(), 1)
-        stale_claim = AutopilotPolicy.objects.filter(
-            pk=policy.pk, next_run_at=due,
-        ).update(next_run_at=due + timedelta(days=1))
-        self.assertEqual(stale_claim, 0)
+
+    def test_changing_cadence_rearms_a_future_slot(self):
+        """DAILY→WEEKLY must not leave tomorrow's daily slot armed to buy a
+        generation on the schedule the user just slowed down."""
+        policy = self._policy(name='Slowed down')
+        daily_slot = policy.next_run_at
+        policy.cadence = AutopilotPolicy.Cadence.WEEKLY
+        policy.save(update_fields=['cadence', 'updated_at'])
+        policy.refresh_from_db()
+        self.assertGreater(policy.next_run_at, daily_slot + timedelta(days=5))
+
+    def test_unrelated_edit_rearms_a_past_due_slot_by_design(self):
+        """Accepted semantics, pinned: any save of a policy whose slot is
+        already past re-arms one interval out — editing a policy never spends
+        immediately, even when the edit was only a rename during a worker
+        outage. The missed slot is skipped, not queued."""
+        due = timezone.now() - timedelta(hours=2)
+        policy = self._policy(name='Renamed while due', due=due)
+        policy.name = 'Renamed while due (v2)'
+        policy.save(update_fields=['name', 'updated_at'])
+        policy.refresh_from_db()
+        self.assertGreater(policy.next_run_at, timezone.now())
+        self.assertEqual(AutopilotRun.objects.count(), 0)
 
     def test_duplicate_dedupe_key_is_treated_as_already_created(self):
         due = timezone.now() - timedelta(minutes=30)

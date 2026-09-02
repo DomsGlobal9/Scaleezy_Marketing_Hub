@@ -326,7 +326,7 @@ export function MissionsPanel() {
                   ]}
                 />
                 <p className="mt-2 text-xs text-muted-foreground">
-                  Scheduled runs create drafts for review — nothing publishes on its own.
+                  Scheduled runs only create drafts — nothing publishes on its own.
                 </p>
               </div>
               <Choice
@@ -416,8 +416,12 @@ export function MissionsPanel() {
                     </p>
                     {policy.cadence !== "MANUAL" && policy.next_run_at ? (
                       <p className="mt-1 text-xs text-muted-foreground">
-                        Next run {new Date(policy.next_run_at).toLocaleString()} · Runs create
-                        drafts for review — nothing publishes on its own.
+                        {/* A held policy's slot never fires; promising a time
+                            for it would be false. */}
+                        {policy.enabled && !policy.paused && !policy.emergency_stop
+                          ? `Next run ${new Date(policy.next_run_at).toLocaleString()}`
+                          : `Schedule held — would next run ${new Date(policy.next_run_at).toLocaleString()}`}{" "}
+                        · Runs only create drafts — nothing publishes on its own.
                       </p>
                     ) : null}
                   </div>

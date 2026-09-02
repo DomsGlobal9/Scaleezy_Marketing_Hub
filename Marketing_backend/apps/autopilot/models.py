@@ -101,11 +101,21 @@ class AutopilotPolicy(models.Model):
         interval = self.CADENCE_INTERVALS.get(self.cadence)
         rescheduled = False
         now = timezone.now()
+        # A cadence CHANGE re-arms even a still-future slot: switching
+        # DAILY→WEEKLY must not leave tomorrow's daily slot armed to buy a
+        # generation on the schedule the user just slowed down (and
+        # WEEKLY→DAILY must not wait a week for its first daily run).
+        cadence_changed = False
+        if self.pk:
+            stored = type(self).objects.filter(pk=self.pk).values_list(
+                'cadence', flat=True
+            ).first()
+            cadence_changed = stored is not None and stored != self.cadence
         if interval is None:
             if self.next_run_at is not None:
                 self.next_run_at = None
                 rescheduled = True
-        elif self.next_run_at is None or self.next_run_at <= now:
+        elif self.next_run_at is None or self.next_run_at <= now or cadence_changed:
             self.next_run_at = now + interval
             rescheduled = True
         update_fields = kwargs.get('update_fields')
