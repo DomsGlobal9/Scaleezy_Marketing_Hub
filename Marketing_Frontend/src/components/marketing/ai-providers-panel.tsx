@@ -244,7 +244,7 @@ export function AIProvidersPanel({
         .sort((a, b) => a.priority - b.priority);
       next[capability.value] = {
         providerIds: members.map((row) => row.provider),
-        strategy: members[0]?.strategy ?? "FAILOVER",
+        strategy: members[0]?.strategy ?? "ROUND_ROBIN",
         dirty: false,
       };
     }
@@ -538,7 +538,7 @@ export function AIProvidersPanel({
       ...current,
       [capability]: {
         providerIds: current[capability]?.providerIds ?? [],
-        strategy: current[capability]?.strategy ?? "FAILOVER",
+        strategy: current[capability]?.strategy ?? "ROUND_ROBIN",
         dirty: true,
         ...change,
       },
@@ -1238,7 +1238,7 @@ export function AIProvidersPanel({
           {capabilities.map((capability) => {
             const draft = routeDrafts[capability.value] ?? {
               providerIds: [],
-              strategy: "FAILOVER",
+              strategy: "ROUND_ROBIN",
               dirty: false,
             };
             const capable = catalogue

@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 REQUIRED_CAPABILITIES = (Capability.TEXT, Capability.IMAGE)
 
 DEFAULT_PRIORITY = 100
-DEFAULT_STRATEGY = Strategy.FAILOVER
+DEFAULT_STRATEGY = Strategy.ROUND_ROBIN
 
 
 class AIProvisioningError(ImproperlyConfigured):

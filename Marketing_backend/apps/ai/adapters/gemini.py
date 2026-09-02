@@ -52,7 +52,12 @@ class GeminiAdapter(AIProviderAdapter):
                 )
             )
             try:
-                response = self._service()._get_client(self.credentials).models.generate_content(
+                # Keep a strong reference for the full request. google.genai.Client
+                # closes its HTTP transport in __del__; chaining from a temporary
+                # client can destroy it after `.models` is resolved but before
+                # generate_content sends the request.
+                client = self._service()._get_client(self.credentials)
+                response = client.models.generate_content(
                     model=self.model or self._service().TEXT_MODEL,
                     contents=[prompt],
                 )
@@ -99,7 +104,8 @@ class GeminiAdapter(AIProviderAdapter):
             try:
                 from google.genai import types
 
-                response = self._service()._get_client(self.credentials).models.generate_content(
+                client = self._service()._get_client(self.credentials)
+                response = client.models.generate_content(
                     model=self.model or self._service().TEXT_MODEL,
                     contents=[
                         str(brief.get('instruction') or 'Analyze this creative reference as JSON.'),
@@ -146,7 +152,8 @@ class GeminiAdapter(AIProviderAdapter):
 
         model = self.config.get('embedding_model') or self.embedding_model
         try:
-            response = self._service()._get_client(self.credentials).models.embed_content(
+            client = self._service()._get_client(self.credentials)
+            response = client.models.embed_content(
                 model=model, contents=text
             )
             vector = list(response.embeddings[0].values)
@@ -170,7 +177,8 @@ class GeminiAdapter(AIProviderAdapter):
             + json.dumps(brief, ensure_ascii=False, sort_keys=True, default=str)
         )
         try:
-            response = self._service()._get_client(self.credentials).models.generate_content(
+            client = self._service()._get_client(self.credentials)
+            response = client.models.generate_content(
                 model=self.model or self._service().TEXT_MODEL,
                 contents=[prompt],
             )

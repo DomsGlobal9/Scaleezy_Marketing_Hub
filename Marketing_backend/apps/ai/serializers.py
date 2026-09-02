@@ -205,7 +205,7 @@ class ReplaceWorkspaceAIRouteSetSerializer(serializers.Serializer):
     routes = WorkspaceAIRouteMemberSerializer(many=True, allow_empty=True)
     strategy = serializers.ChoiceField(
         choices=Strategy.choices,
-        default=Strategy.FAILOVER,
+        default=Strategy.ROUND_ROBIN,
     )
 
     def validate_routes(self, routes):
