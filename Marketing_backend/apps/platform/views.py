@@ -100,6 +100,20 @@ def _signup_row(brand):
     }
 
 
+class SignupPendingCountView(PlatformView):
+    """GET .../signups/pending-count/ -> {pending_total}
+
+    Backs the console nav badge, which polls. Deliberately not audited: one
+    number, no client data, and a per-minute poll would bury the real audit
+    trail. Opening the queue itself is still audited as before.
+    """
+
+    def get(self, request):
+        return APIResponse(success=True, data={
+            'pending_total': Brand.objects.filter(status=Brand.Status.PENDING).count(),
+        })
+
+
 class SignupQueueView(PlatformView):
     """Pending clients, newest first. `?status=` to see ACTIVE/ARCHIVED too."""
 

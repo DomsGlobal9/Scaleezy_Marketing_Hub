@@ -15,6 +15,7 @@ from apps.common.responses import APIResponse
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
 from .models import AuthAuditLog, SignupWebsiteClaim, record_auth_event
+from .tasks import send_signup_alerts_task
 from .serializers import (
     CurrentUserSerializer,
     ScaleezyTokenObtainPairSerializer,
@@ -149,6 +150,14 @@ class SignupView(APIView):
             "Signup: user=%s workspace=%s brand=%s (pending approval)",
             user.pk, workspace.pk, brand.pk,
         )
+
+        # Announce the signup to Scaleezy (email / WhatsApp, whichever is
+        # configured) from the worker. Best effort: the client's signup must
+        # not fail because an alert channel is down.
+        try:
+            send_signup_alerts_task.enqueue(str(brand.pk))
+        except Exception as exc:
+            logger.error("Signup alert could not be enqueued: %s", exc)
 
         # Sign the new user straight in: the same token shape as /login/, with
         # the membership claim populated by the same serializer.

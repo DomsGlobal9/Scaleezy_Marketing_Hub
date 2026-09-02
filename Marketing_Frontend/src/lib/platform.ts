@@ -126,6 +126,10 @@ export interface SignupQueue {
 export const fetchSignups = (status: BrandStatus = "PENDING") =>
   apiGet<SignupQueue>(`/api/platform/signups/?status=${encodeURIComponent(status)}`);
 
+/** Just the number, for the nav badge poll — unaudited server-side, unlike the queue. */
+export const fetchPendingSignupCount = () =>
+  apiGet<{ pending_total: number }>("/api/platform/signups/pending-count/");
+
 export const approveSignup = (
   brandId: string,
   body: { name?: string; website?: string; plan?: string },
