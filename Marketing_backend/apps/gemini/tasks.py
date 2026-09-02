@@ -661,8 +661,12 @@ def regenerate_revision(revision_id: str):
         # Everything was flagged (or nothing classifiable): the full
         # regeneration this task always did.
         try:
+            # The revision's OWN brand, explicitly: resolving by workspace
+            # default would enforce another brand's guardrails on this
+            # brand's content in a multi-brand workspace.
             routed = generate_marketing_payload(
-                revision.workspace, brief, instruction=instruction
+                revision.workspace, brief, instruction=instruction,
+                brand=revision.brand,
             )
             payload = routed['payload']
         except Exception:

@@ -337,6 +337,9 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         self.assertIn('Move the logo to the top left', instruction)
         self.assertIn('Imagery subject', instruction)
         self.assertIn('Logo hides the border work', instruction)
+        # The revision's OWN brand rides along — resolving by workspace
+        # default would apply another brand's guardrails to this content.
+        self.assertEqual(dispatched.call_args.kwargs.get('brand'), self.brand)
 
         self.revision.refresh_from_db()
         self.assertEqual(self.revision.headline, 'Sharper teal drop')

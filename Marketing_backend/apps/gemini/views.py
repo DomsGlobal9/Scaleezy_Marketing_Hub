@@ -233,6 +233,32 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             logger.exception("Could not build brand context")
             return None
 
+    @staticmethod
+    def _guardrail_block(brand, brief):
+        """A 422 refusing this brief against the brand's written law, or None.
+
+        Runs before any provider is paid and before a request row exists.
+        Only human-written guardrails can block; a brand with none is a no-op.
+        """
+        from apps.brands.services import guardrails as guardrail_law
+
+        violations = guardrail_law.preflight_violations(
+            brand, guardrail_law.preflight_fields(brief)
+        )
+        if not violations:
+            return None
+        message = 'Blocked before any AI was paid: ' + ' '.join(violations)
+        return APIResponse(
+            success=False,
+            message=message,
+            error={
+                'code': 'GUARDRAIL_BLOCKED',
+                'message': message,
+                'violations': violations,
+            },
+            status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
     def _brand_rules(self, request):
         """The prompt-facing view of gateway context.
 
@@ -406,6 +432,13 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             )
         request_data['creative_direction'] = creative_direction
         request_data['layout'] = creative_direction['layout']
+        # The typed instruction must face the gate too — the async endpoint
+        # carries it in its brief and refuses the identical wording.
+        request_data['instruction'] = instruction
+
+        blocked = self._guardrail_block(brand, request_data)
+        if blocked:
+            return blocked
 
         quota_error = self._quota_error(workspace)
         if quota_error:
@@ -666,6 +699,12 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'creative_direction': queued_creative_direction,
             'layout': creative_direction['layout'],
         }
+
+        # The whole point of written guardrails: refuse BEFORE a request row
+        # exists or a provider is paid, with the reason in plain language.
+        blocked = self._guardrail_block(brand, brief)
+        if blocked:
+            return blocked
 
         generation = GeminiGenerationRequest.objects.create(
             workspace=workspace,
