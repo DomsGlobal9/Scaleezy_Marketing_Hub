@@ -11,12 +11,14 @@ import {
   RefreshCw,
   Send,
   Sparkles,
+  UserPlus,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { PageHeader, StatusBadge } from "@/components/marketing/primitives";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -26,9 +28,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { apiGet, apiPost } from "@/lib/api";
+import { apiFetch, apiGet, apiPost } from "@/lib/api";
 import { fetchCurrentBrand } from "@/lib/brand-master";
 import type { BrandDto } from "@/lib/brand-settings";
+import { useWorkspaces } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub/growth")({
   head: () => ({
@@ -80,6 +83,13 @@ interface SavedReply {
   body: string;
 }
 
+/** The slice of apps/analytics GrowthLeadSerializer this page reads. */
+interface GrowthLead {
+  id: string;
+  engagement_item: string | null;
+  status: string;
+}
+
 interface ListEnvelope<T> {
   results?: T[];
 }
@@ -95,6 +105,7 @@ function EngagementPage() {
   const [items, setItems] = useState<InboxItem[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [savedReplies, setSavedReplies] = useState<SavedReply[]>([]);
+  const [leads, setLeads] = useState<GrowthLead[]>([]);
   const [selectedConnection, setSelectedConnection] = useState("");
   const [selectedItemId, setSelectedItemId] = useState("");
   const [loading, setLoading] = useState(true);
@@ -104,18 +115,22 @@ function EngagementPage() {
   const load = useCallback(async () => {
     const brand = await fetchCurrentBrand();
     setBrand(brand);
-    const [itemPayload, accountPayload, replyPayload] = await Promise.all([
+    const [itemPayload, accountPayload, replyPayload, leadPayload] = await Promise.all([
       apiGet<InboxItem[] | ListEnvelope<InboxItem>>(
         `/api/marketing/engagement/items/?brand_id=${brand.id}`,
       ),
       apiGet<Connection[] | ListEnvelope<Connection>>("/api/marketing/social-accounts/"),
       apiGet<SavedReply[] | ListEnvelope<SavedReply>>("/api/marketing/engagement/saved-replies/"),
+      // Reads are VIEWER+, so every member sees which conversations are
+      // already in the pipeline; only capturing needs EDITOR.
+      apiGet<GrowthLead[] | ListEnvelope<GrowthLead>>("/api/marketing/analytics/leads/"),
     ]);
     const nextItems = rows(itemPayload);
     const nextConnections = rows(accountPayload).filter((item) => item.status === "CONNECTED");
     setItems(nextItems);
     setConnections(nextConnections);
     setSavedReplies(rows(replyPayload));
+    setLeads(rows(leadPayload));
     setSelectedConnection((current) => current || nextConnections[0]?.id || "");
     setSelectedItemId((current) =>
       current && nextItems.some((item) => item.id === current) ? current : (nextItems[0]?.id ?? ""),
@@ -151,11 +166,29 @@ function EngagementPage() {
 
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
 
-  async function act<T>(key: string, request: () => Promise<T>, success: string) {
+  // Mirrors the backend gate exactly (apps/analytics/views.py GrowthLeadView
+  // via GovernedAnalyticsView: POST needs EDITOR or above). An unknown role —
+  // the fallback membership path reports none — stays enabled rather than
+  // locking a real editor out: the server re-checks every request either way.
+  const { workspaces, selectedId } = useWorkspaces();
+  const role = workspaces.find((w) => w.id === selectedId)?.role ?? null;
+  const canCapture = role === null || ["EDITOR", "MANAGER", "ADMIN", "OWNER"].includes(role);
+
+  const leadByItem = useMemo(() => {
+    const map = new Map<string, GrowthLead>();
+    for (const lead of leads) if (lead.engagement_item) map.set(lead.engagement_item, lead);
+    return map;
+  }, [leads]);
+
+  async function act<T>(
+    key: string,
+    request: () => Promise<T>,
+    success: string | ((result: T) => string),
+  ) {
     setWorking(key);
     try {
-      await request();
-      toast.success(success);
+      const result = await request();
+      toast.success(typeof success === "function" ? success(result) : success);
       await load();
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : "Action failed.");
@@ -191,6 +224,8 @@ function EngagementPage() {
         loading={loading}
         working={working}
         act={act}
+        canCapture={canCapture}
+        capturedLead={selectedItem ? (leadByItem.get(selectedItem.id) ?? null) : null}
       />
     </div>
   );
@@ -208,6 +243,8 @@ function InboxPanel({
   loading,
   working,
   act,
+  canCapture,
+  capturedLead,
 }: {
   brandId: string;
   connections: Connection[];
@@ -219,13 +256,28 @@ function InboxPanel({
   savedReplies: SavedReply[];
   loading: boolean;
   working: string;
-  act: <T>(key: string, request: () => Promise<T>, success: string) => Promise<void>;
+  act: <T>(
+    key: string,
+    request: () => Promise<T>,
+    success: string | ((result: T) => string),
+  ) => Promise<void>;
+  canCapture: boolean;
+  capturedLead: GrowthLead | null;
 }) {
   const [response, setResponse] = useState("");
+  const [capturing, setCapturing] = useState(false);
+  const [leadValue, setLeadValue] = useState("");
+  const [leadNotes, setLeadNotes] = useState("");
 
   useEffect(() => {
     setResponse(selectedItem?.approved_response || selectedItem?.ai_draft || "");
   }, [selectedItem?.id, selectedItem?.approved_response, selectedItem?.ai_draft]);
+
+  useEffect(() => {
+    setCapturing(false);
+    setLeadValue("");
+    setLeadNotes("");
+  }, [selectedItem?.id]);
 
   const sync = () =>
     act(
@@ -418,6 +470,19 @@ function InboxPanel({
                 )}{" "}
                 Draft with routed AI
               </Button>
+              {capturedLead ? (
+                <Button variant="outline" disabled>
+                  <Check /> {capturedLead.status === "CONVERTED" ? "Lead converted" : "Lead captured"}
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  disabled={!canCapture}
+                  onClick={() => setCapturing((open) => !open)}
+                >
+                  <UserPlus /> Capture as lead
+                </Button>
+              )}
               {selectedItem.source_url ? (
                 <Button asChild variant="ghost">
                   <a href={selectedItem.source_url} target="_blank" rel="noreferrer">
@@ -426,6 +491,83 @@ function InboxPanel({
                 </Button>
               ) : null}
             </div>
+
+            {!canCapture && !capturedLead ? (
+              // Same explanation the backend's 403 gives, shown before anyone
+              // opens a form they cannot submit. The button stays visible so
+              // the inbox reads the same for everyone.
+              <p className="mt-3 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
+                Only a marketing executive or above can capture leads.
+              </p>
+            ) : null}
+
+            {capturing && !capturedLead && canCapture ? (
+              <div className="mt-4 rounded-xl border border-border p-4">
+                <p className="text-xs text-muted-foreground">
+                  Adds{" "}
+                  {selectedItem.author_handle || selectedItem.author_name || "this author"} to the
+                  growth pipeline. Name and handle are filled from the conversation.
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Input
+                    type="number"
+                    min="0"
+                    placeholder="Estimated value (USD)"
+                    className="w-44"
+                    value={leadValue}
+                    onChange={(event) => setLeadValue(event.target.value)}
+                  />
+                  <Input
+                    placeholder="Notes (optional)"
+                    className="min-w-44 flex-1"
+                    value={leadNotes}
+                    onChange={(event) => setLeadNotes(event.target.value)}
+                  />
+                  <Button
+                    disabled={working === `lead-${selectedItem.id}`}
+                    onClick={() =>
+                      void act(
+                        `lead-${selectedItem.id}`,
+                        async () => {
+                          // The one call here that needs the raw status: the
+                          // backend answers 201 when it created the lead and
+                          // 200 with the existing one when this conversation
+                          // was already captured (it dedupes per item).
+                          const res = await apiFetch("/api/marketing/analytics/leads/", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              engagement_item: selectedItem.id,
+                              estimated_value: leadValue.trim() || "0",
+                              notes: leadNotes.trim(),
+                            }),
+                          });
+                          const json = (await res.json().catch(() => null)) as {
+                            success?: boolean;
+                            message?: string;
+                          } | null;
+                          if (!res.ok || json?.success === false) {
+                            throw new Error(json?.message || `Capture failed (${res.status})`);
+                          }
+                          return res.status;
+                        },
+                        (status) =>
+                          status === 201
+                            ? "Captured as a growth lead."
+                            : "Already captured — this conversation has a lead.",
+                      )
+                    }
+                  >
+                    {working === `lead-${selectedItem.id}` ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <UserPlus />
+                    )}{" "}
+                    Capture lead
+                  </Button>
+                </div>
+              </div>
+            ) : null}
 
             <div className="mt-6 border-t border-border pt-5">
               <div className="flex items-center justify-between gap-3">
