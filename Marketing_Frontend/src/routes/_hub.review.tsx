@@ -168,17 +168,17 @@ function ReviewPage() {
     [report],
   );
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
       const data = await api<unknown>("/api/marketing/content/");
       // Tolerates both the bare array and a paginated envelope, so this page
       // cannot silently go empty if the endpoint is ever paginated by default.
       setAll(asList<ContentItem>(data));
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not load content.");
+      if (!quiet) toast.error(e instanceof Error ? e.message : "Could not load content.");
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, []);
 
@@ -205,9 +205,7 @@ function ReviewPage() {
     const target = shown.find((i) => i.id === focusItemId);
     if (!target) return;
     focusHandled.current = focusItemId;
-    const owningTab = TABS.find((t) =>
-      (t.statuses as readonly string[]).includes(target.status),
-    );
+    const owningTab = TABS.find((t) => (t.statuses as readonly string[]).includes(target.status));
     if (owningTab) setTab(owningTab.key);
     window.setTimeout(() => {
       document
@@ -219,9 +217,7 @@ function ReviewPage() {
   const counts = useMemo(() => {
     const acc: Record<string, number> = {};
     for (const t of TABS) {
-      acc[t.key] = shown.filter((i) =>
-        (t.statuses as readonly string[]).includes(i.status),
-      ).length;
+      acc[t.key] = shown.filter((i) => (t.statuses as readonly string[]).includes(i.status)).length;
     }
     return acc;
   }, [shown]);
@@ -259,6 +255,28 @@ function ReviewPage() {
   useEffect(() => {
     void loadReport();
   }, [loadReport]);
+
+  const hasRegeneratingRevision = useMemo(
+    () => all.some((item) => item.layout_config?.["regenerating"] === true),
+    [all],
+  );
+
+  useEffect(() => {
+    if (!hasRegeneratingRevision) return;
+
+    let active = true;
+    let timer: number | undefined;
+    const poll = async () => {
+      await load(true);
+      if (active) timer = window.setTimeout(poll, 2_000);
+    };
+    timer = window.setTimeout(poll, 1_000);
+
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [hasRegeneratingRevision, load]);
 
   const toggleTag = (id: string, key: string) =>
     setTags((prev) => {
@@ -335,7 +353,10 @@ function ReviewPage() {
     }
   };
 
-  const updateDraft = (id: string, patch: Partial<Pick<ContentItem, "headline" | "caption" | "hashtags">>) => {
+  const updateDraft = (
+    id: string,
+    patch: Partial<Pick<ContentItem, "headline" | "caption" | "hashtags">>,
+  ) => {
     setAll((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   };
 
@@ -672,11 +693,9 @@ function ReviewPage() {
                               key={key}
                               className="mt-2 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-[0.6875rem] text-muted-foreground"
                             >
-                              <span className="font-medium text-foreground">
-                                Already learned:
-                              </span>{" "}
-                              {ruleFor.get(key)} — tagging it again strengthens the rule,
-                              no note needed.
+                              <span className="font-medium text-foreground">Already learned:</span>{" "}
+                              {ruleFor.get(key)} — tagging it again strengthens the rule, no note
+                              needed.
                             </p>
                           ))}
                         <Textarea

@@ -54,10 +54,13 @@ def _probes():
         ).filter(pk=missing).first()),
         ('gemini.locked_brand', lambda: Brand.objects.select_for_update(
         ).filter(pk=missing).first()),
-        ('gemini.locked_references', lambda: list(
-            BrandInspiration.objects.eligible_for_retrieval()
-            .select_for_update(of=('self',))
-            .filter(pk__in=[missing])
+        # Calls the real helper so the probe tracks the code, not a copy: it
+        # executes the inspiration lock (join-free by design) and returns
+        # early on the count mismatch.
+        ('gemini.locked_references', lambda: __import__(
+            'apps.gemini.tasks', fromlist=['_lock_generation_references']
+        )._lock_generation_references(
+            reference_ids=[missing], workspace=None, brand=None
         )),
         # apps/inspirations/research.py adopt_finding
         ('research.adopt_finding', lambda: ResearchFinding.objects.select_for_update(

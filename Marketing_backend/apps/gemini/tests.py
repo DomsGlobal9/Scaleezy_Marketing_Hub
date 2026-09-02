@@ -10,10 +10,12 @@ headline block in the copy prompt.
 """
 import json
 import uuid
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
 
 from apps.common.testing import TenantFixtureMixin
 from apps.content.models import ContentItem
@@ -105,9 +107,15 @@ class RecentHeadlineMemoryTests(TenantFixtureMixin, TestCase):
 
     def setUp(self):
         self.workspace = self.make_workspace('Acme', 'c1')
+        self.created_at = timezone.now()
 
     def poster(self, headline):
-        return ContentItem.objects.create(workspace=self.workspace, headline=headline)
+        item = ContentItem.objects.create(workspace=self.workspace, headline=headline)
+        # SQLite's database clock is only millisecond-precise, so rapid test
+        # inserts can tie even though production orders them by creation time.
+        self.created_at += timedelta(seconds=1)
+        ContentItem.objects.filter(pk=item.pk).update(created_at=self.created_at)
+        return item
 
     def test_newest_distinct_headlines_only(self):
         for line in ['First drop', 'Second drop', 'Second drop', '', 'Third drop']:
