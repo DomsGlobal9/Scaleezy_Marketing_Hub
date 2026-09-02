@@ -53,12 +53,37 @@ class GeminiGeneratorService:
     #: How long to wait for Gemini to finish processing an uploaded video.
     VIDEO_PROCESSING_TIMEOUT_SECONDS = 180
 
+    #: One client per resolved key, held for the life of the process. Fresh
+    #: clients per call churned google.genai.Client instances whose __del__
+    #: closes HTTP transport state — seen in production as "Cannot send a
+    #: request, as the client has been closed" on a client that was still in
+    #: scope. A cached client is never garbage-collected mid-flight.
+    _client_cache: dict = {}
+
     @classmethod
     def _get_client(cls, api_key: str = ''):
-        return genai.Client(
-            api_key=cls._resolve_api_key(api_key),
-            http_options={'timeout': cls.HTTP_TIMEOUT_MS},
-        )
+        key = cls._resolve_api_key(api_key)
+        client = cls._client_cache.get(key)
+        if client is None:
+            client = genai.Client(
+                api_key=key,
+                http_options={'timeout': cls.HTTP_TIMEOUT_MS},
+            )
+            cls._client_cache[key] = client
+        return client
+
+    @classmethod
+    def _discard_client(cls, api_key: str = ''):
+        """Drop the cached client so the next call builds a fresh one.
+
+        For the one failure a cached client can still hit: its transport was
+        closed underneath it (process fork, SDK internals). Callers catch the
+        closed-client error, discard, and retry once.
+        """
+        try:
+            cls._client_cache.pop(cls._resolve_api_key(api_key), None)
+        except Exception:
+            cls._client_cache.clear()
         
     @staticmethod
     def _parse_base64_image(b64_string: str):

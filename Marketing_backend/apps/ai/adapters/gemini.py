@@ -80,19 +80,33 @@ class GeminiAdapter(AIProviderAdapter):
                 )
             )
             try:
-                # Keep a strong reference for the full request. google.genai.Client
-                # closes its HTTP transport in __del__; chaining from a temporary
-                # client can destroy it after `.models` is resolved but before
-                # generate_content sends the request.
-                client = self._service()._get_client(self.credentials)
+                # The client is process-cached (GeminiGeneratorService) so it
+                # cannot be garbage-collected mid-flight. If its transport was
+                # still closed underneath it (seen in production as "Cannot
+                # send a request, as the client has been closed", deterministic
+                # until a worker restart), discard the cache and retry once
+                # with a fresh client before failing.
+                service = self._service()
                 kwargs = {
-                    'model': self.model or self._service().TEXT_MODEL,
+                    'model': self.model or service.TEXT_MODEL,
                     'contents': [prompt],
                 }
                 config = self._structured_config(brief)
                 if config is not None:
                     kwargs['config'] = config
-                response = client.models.generate_content(**kwargs)
+                # The local binding stays load-bearing even with the cache:
+                # google.genai.Client closes its transport in __del__, so the
+                # client must be referenced for the whole request, never
+                # chained from a temporary.
+                client = service._get_client(self.credentials)
+                try:
+                    response = client.models.generate_content(**kwargs)
+                except Exception as exc:
+                    if 'client has been closed' not in str(exc).lower():
+                        raise
+                    service._discard_client(self.credentials)
+                    client = service._get_client(self.credentials)
+                    response = client.models.generate_content(**kwargs)
                 value = (response.text or '').strip()
                 if value.startswith('```') and value.endswith('```'):
                     value = value[3:-3].strip()
