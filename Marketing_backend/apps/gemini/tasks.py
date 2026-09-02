@@ -36,6 +36,46 @@ INTERRUPTED_MESSAGE = (
 )
 
 
+def _lock_generation_references(*, reference_ids, workspace, brand):
+    """Lock governed references without locking across a nullable outer join.
+
+    ``eligible_for_retrieval()`` joins the optional provenance source. Applying
+    PostgreSQL ``FOR UPDATE`` to that queryset attempts to lock the nullable
+    side of the join and is rejected. Lock the inspiration rows first, then
+    lock every non-null source row separately so source revocation cannot race
+    final draft persistence.
+    """
+    from apps.inspirations.models import BrandInspiration
+    from apps.knowledge.models import BrandSource
+
+    references = list(
+        BrandInspiration.objects.select_for_update().filter(
+            pk__in=reference_ids,
+            workspace=workspace,
+            brand=brand,
+            lifecycle_status=BrandInspiration.LifecycleStatus.ACTIVE,
+        )
+    )
+    if len(references) != len(reference_ids):
+        return []
+
+    source_ids = {row.source_id for row in references if row.source_id}
+    if source_ids:
+        sources = list(
+            BrandSource.objects.select_for_update().filter(
+                pk__in=source_ids,
+                workspace=workspace,
+                brand=brand,
+            )
+        )
+        if len(sources) != len(source_ids) or any(
+            source.status == BrandSource.SourceStatus.ARCHIVED for source in sources
+        ):
+            return []
+
+    return references
+
+
 @task
 def generate_content(request_id: str):
     """Runs one generation and records the outcome on the request row."""
@@ -285,14 +325,10 @@ def generate_content(request_id: str):
                     raise ValueError(
                         'The selected brand is inactive. Generated output was not saved.'
                     )
-                locked_references = list(
-                    BrandInspiration.objects.eligible_for_retrieval()
-                    .select_for_update()
-                    .filter(
-                        pk__in=preprocessing_ids,
-                        workspace=locked_workspace,
-                        brand=locked_brand,
-                    )
+                locked_references = _lock_generation_references(
+                    reference_ids=preprocessing_ids,
+                    workspace=locked_workspace,
+                    brand=locked_brand,
                 )
                 if len(locked_references) != len(preprocessing_ids):
                     raise ValueError(

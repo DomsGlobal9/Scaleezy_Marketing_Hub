@@ -4,7 +4,9 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.db import connection, transaction
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 
@@ -13,6 +15,7 @@ from apps.common.testing import TenantFixtureMixin, workspace_header
 from apps.content.models import ContentItem
 from apps.gemini.models import GeminiGenerationRequest, GeminiGenerationResult
 from apps.inspirations.models import BrandInspiration, InspirationSignal
+from apps.knowledge.models import BrandSource
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
 
@@ -690,6 +693,54 @@ class CreateFromInspirationTests(TenantFixtureMixin, TestCase):
         generation.refresh_from_db()
         self.assertEqual(generation.status, GeminiGenerationRequest.Status.FAILED)
         self.assertFalse(ContentItem.objects.exists())
+
+    def test_final_reference_lock_has_no_nullable_outer_join(self):
+        source = BrandSource.objects.create(
+            workspace=self.workspace,
+            brand=self.brand,
+            title='Reference provenance',
+            status=BrandSource.SourceStatus.READY,
+        )
+        reference = self.reference(source=source)
+
+        from apps.gemini.tasks import _lock_generation_references
+
+        with CaptureQueriesContext(connection) as captured, transaction.atomic():
+            locked = _lock_generation_references(
+                reference_ids=[str(reference.pk)],
+                workspace=self.workspace,
+                brand=self.brand,
+            )
+
+        self.assertEqual([row.pk for row in locked], [reference.pk])
+        inspiration_selects = [
+            query['sql']
+            for query in captured.captured_queries
+            if 'SELECT' in query['sql'].upper()
+            and 'inspirations_brandinspiration' in query['sql']
+        ]
+        self.assertEqual(len(inspiration_selects), 1)
+        self.assertNotIn(' JOIN ', inspiration_selects[0].upper())
+
+    def test_final_reference_lock_rejects_archived_source(self):
+        source = BrandSource.objects.create(
+            workspace=self.workspace,
+            brand=self.brand,
+            title='Revoked provenance',
+            status=BrandSource.SourceStatus.ARCHIVED,
+        )
+        reference = self.reference(source=source)
+
+        from apps.gemini.tasks import _lock_generation_references
+
+        with transaction.atomic():
+            locked = _lock_generation_references(
+                reference_ids=[str(reference.pk)],
+                workspace=self.workspace,
+                brand=self.brand,
+            )
+
+        self.assertEqual(locked, [])
 
     def test_default_brand_switch_cannot_reassign_inspiration_output(self):
         reference = self.reference(
