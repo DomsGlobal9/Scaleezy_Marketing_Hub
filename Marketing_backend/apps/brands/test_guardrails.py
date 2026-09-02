@@ -1,0 +1,332 @@
+"""
+Hard guardrails — written law that blocks before spend and survives output.
+
+Three promises are pinned here:
+* A brand with NO guardrails behaves byte-for-byte as before — the empty
+  rule set is a no-op at the service, the wrapper and the API boundary.
+* A brief that breaks a written rule is refused with a 422 BEFORE any
+  request row exists or any provider could be paid.
+* Generated copy that breaks the law earns exactly one text-only retry,
+  and the deterministic fixes (hashtags, required lines, CTA) always land.
+"""
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from django.test import SimpleTestCase, TestCase
+from rest_framework import status
+
+from apps.brands.models import Brand
+from apps.brands.services import guardrails as law
+from apps.common.testing import TenantFixtureMixin, workspace_header
+from apps.gemini.models import GeminiGenerationRequest
+from apps.workspaces.models import WorkspaceMember
+
+GENERATE_ASYNC_URL = '/api/marketing/gemini/generate-async/'
+
+RULES = {
+    'forbidden_words': ['cheap', 'sq.ft'],
+    'banned_hashtags': ['#sale', 'discount'],
+    'forbidden_imagery': ['butterflies'],
+    'required_on_every_post': ['rajvipackaging.com'],
+    'approved_ctas': ['PROTECT', 'SAMPLE'],
+    'language_rule': 'english_only',
+}
+
+
+def a_brand(rules=None):
+    return SimpleNamespace(guardrails=dict(RULES if rules is None else rules))
+
+
+class CleanTests(SimpleTestCase):
+    def test_junk_degrades_to_the_empty_rule_set(self):
+        for junk in (None, 'nope', 42, ['list'], {'forbidden_words': 'cheap'}):
+            cleaned = law.clean(junk)
+            self.assertTrue(all(cleaned[key] == [] for key in law.LIST_KEYS))
+            self.assertEqual(cleaned['language_rule'], '')
+
+    def test_terms_are_trimmed_deduped_and_capped(self):
+        cleaned = law.clean({
+            'forbidden_words': ['  cheap ', 'cheap', '', 'x' * 500, None],
+            'banned_hashtags': ['#Sale'],
+            'language_rule': 'klingon',
+        })
+        self.assertEqual(cleaned['forbidden_words'], ['cheap'])
+        # Hashtags are stored bare so "#sale" and "sale" mean the same ban.
+        self.assertEqual(cleaned['banned_hashtags'], ['Sale'])
+        self.assertEqual(cleaned['language_rule'], '')
+
+    def test_empty_guardrails_are_empty(self):
+        self.assertTrue(law.is_empty({}))
+        self.assertTrue(law.is_empty(None))
+        self.assertFalse(law.is_empty({'forbidden_words': ['cheap']}))
+
+
+class PreflightTests(SimpleTestCase):
+    def test_a_banned_word_names_itself_and_its_field(self):
+        fields = law.preflight_fields({'campaign_name': 'Cheap monsoon steals'})
+        messages = law.preflight_violations(a_brand(), fields)
+        self.assertEqual(len(messages), 1)
+        self.assertIn('"cheap"', messages[0])
+        self.assertIn('campaign name', messages[0])
+
+    def test_word_boundaries_hold(self):
+        # Banning "cheap" must not block "cheapest" — that would be the
+        # over-blocking failure mode that makes users hate the gate.
+        fields = law.preflight_fields({'campaign_name': 'The cheapest never wins'})
+        self.assertEqual(law.preflight_violations(a_brand(), fields), [])
+
+    def test_imagery_bans_read_as_visual_motifs(self):
+        fields = law.preflight_fields({'instruction': 'add butterflies everywhere'})
+        messages = law.preflight_violations(a_brand(), fields)
+        self.assertEqual(len(messages), 1)
+        self.assertIn('visual motif', messages[0])
+
+    def test_slides_are_scanned(self):
+        fields = law.preflight_fields({
+            'slides': [{'position': 1, 'description': 'a cheap look'}]
+        })
+        self.assertEqual(len(law.preflight_violations(a_brand(), fields)), 1)
+
+    def test_no_guardrails_no_blocking(self):
+        fields = law.preflight_fields({'campaign_name': 'Cheap butterflies sale'})
+        self.assertEqual(law.preflight_violations(a_brand({}), fields), [])
+        self.assertEqual(law.preflight_violations(None, fields), [])
+
+
+class CopyLawTests(SimpleTestCase):
+    def test_violations_cover_words_hashtags_and_missing_cta(self):
+        payload = {
+            'postTitle': 'Cheap and cheerful',
+            'postDescription': 'A lovely drop.',
+            'postHashtags': '#sale #fresh',
+        }
+        messages = law.copy_violations(a_brand(), payload)
+        joined = ' '.join(messages)
+        self.assertIn('"cheap"', joined)
+        self.assertIn('#sale', joined)
+        self.assertIn('DM keyword', joined)
+
+    def test_compliant_copy_raises_nothing(self):
+        payload = {
+            'postTitle': 'Precision protection',
+            'postDescription': 'Built to spec. DM PROTECT to get a fit check.\nrajvipackaging.com',
+            'postHashtags': '#foam #packaging',
+        }
+        self.assertEqual(law.copy_violations(a_brand(), payload), [])
+
+    def test_enforce_fixes_what_it_safely_can(self):
+        payload = {
+            'postTitle': 'Precision protection',
+            'postDescription': 'Built to spec.',
+            'postHashtags': '#sale #foam #discount',
+        }
+        fixed, notes = law.enforce(a_brand(), payload)
+        self.assertEqual(fixed['postHashtags'], '#foam')
+        self.assertIn('rajvipackaging.com', fixed['postDescription'])
+        self.assertIn('DM PROTECT', fixed['postDescription'])
+        self.assertEqual(len(notes), 3)
+
+    def test_enforce_is_idempotent(self):
+        payload = {
+            'postTitle': 'Precision protection',
+            'postDescription': 'Built to spec.',
+            'postHashtags': '#foam',
+        }
+        once, _ = law.enforce(a_brand(), payload)
+        twice, notes = law.enforce(a_brand(), once)
+        self.assertEqual(once, twice)
+        self.assertEqual(notes, [])
+
+    def test_enforce_with_no_rules_is_a_no_op(self):
+        payload = {'postTitle': 'T', 'postDescription': 'D', 'postHashtags': '#h'}
+        fixed, notes = law.enforce(a_brand({}), payload)
+        self.assertEqual(fixed, payload)
+        self.assertEqual(notes, [])
+
+    def test_prompt_lines_render_the_whole_law_and_nothing_when_empty(self):
+        lines = ' '.join(law.prompt_lines(a_brand()))
+        for expected in ('cheap', '#sale', 'butterflies',
+                        'rajvipackaging.com', 'PROTECT', 'English only'):
+            self.assertIn(expected, lines)
+        self.assertEqual(law.prompt_lines(a_brand({})), [])
+        self.assertEqual(law.prompt_lines(None), [])
+
+
+class PreflightGateTests(TenantFixtureMixin, TestCase):
+    """The API refuses a violating brief before any spend or request row."""
+
+    def setUp(self):
+        self.workspace = self.make_workspace('Rajvi', 'rajvi')
+        self.user, self.client = self.authenticate_as(
+            self.workspace, WorkspaceMember.Role.ADMIN, 'rajvi-admin'
+        )
+        self.brand = Brand.objects.create(
+            workspace=self.workspace, name='Rajvi Packaging', is_default=True,
+            guardrails=dict(RULES),
+        )
+
+    def generate(self, campaign):
+        return self.client.post(
+            GENERATE_ASYNC_URL,
+            {'campaignName': campaign, 'product': 'Foam inserts',
+             'contentType': 'poster'},
+            format='json',
+            **workspace_header(self.workspace),
+        )
+
+    def test_a_violating_brief_is_blocked_with_the_reason(self):
+        res = self.generate('Cheap monsoon steals')
+        self.assertEqual(res.status_code, status.HTTP_422_UNPROCESSABLE_ENTITY)
+        body = res.json()
+        self.assertEqual(body['error']['code'], 'GUARDRAIL_BLOCKED')
+        self.assertIn('"cheap"', body['message'])
+        self.assertIn('before any AI was paid', body['message'])
+        # Nothing was queued and nothing can spend later.
+        self.assertEqual(GeminiGenerationRequest.objects.count(), 0)
+
+    def test_a_clean_brief_queues_as_before(self):
+        res = self.generate('Precision foam for electronics')
+        self.assertEqual(res.status_code, status.HTTP_202_ACCEPTED, res.content[:300])
+        self.assertEqual(GeminiGenerationRequest.objects.count(), 1)
+
+    def test_a_brand_with_no_guardrails_is_untouched(self):
+        self.brand.guardrails = {}
+        self.brand.save(update_fields=['guardrails'])
+        res = self.generate('Cheap butterflies sale')
+        self.assertEqual(res.status_code, status.HTTP_202_ACCEPTED, res.content[:300])
+
+    def test_the_law_survives_a_patch_round_trip(self):
+        res = self.client.patch(
+            f'/api/marketing/brands/{self.brand.id}/',
+            {'guardrails': {'forbidden_words': ['  Cheap ', 'cheap'],
+                            'junk_key': ['x'], 'language_rule': 'english_only'}},
+            format='json',
+            **workspace_header(self.workspace),
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.content[:300])
+        self.brand.refresh_from_db()
+        self.assertEqual(self.brand.guardrails['forbidden_words'], ['Cheap'])
+        self.assertNotIn('junk_key', self.brand.guardrails)
+        self.assertEqual(self.brand.guardrails['language_rule'], 'english_only')
+
+
+class WrapperTests(TenantFixtureMixin, TestCase):
+    """The shared boundary lints, retries once, then fixes deterministically."""
+
+    def setUp(self):
+        self.workspace = self.make_workspace('Rajvi', 'rajvi-2')
+        self.brand = Brand.objects.create(
+            workspace=self.workspace, name='Rajvi Packaging', is_default=True,
+            status=Brand.Status.ACTIVE, guardrails=dict(RULES),
+        )
+
+    @staticmethod
+    def routed(payload):
+        return {
+            'provider': 'gemini', 'provider_name': 'Gemini',
+            'brain_version': '', 'trace': {'capabilities': {}},
+            'payload': dict(payload),
+        }
+
+    def test_violating_copy_gets_one_retry_and_the_trace_says_so(self):
+        from apps.context.services.generation import generate_marketing_payload
+
+        dirty = {'postTitle': 'Cheap wins', 'postDescription': 'x',
+                 'postHashtags': '#sale'}
+        clean = {'postTitle': 'Precision wins',
+                 'postDescription': 'DM PROTECT for a fit.\nrajvipackaging.com',
+                 'postHashtags': '#foam'}
+        with patch(
+            'apps.context.services.generation._route_marketing_payload',
+            return_value=self.routed(dirty),
+        ), patch(
+            'apps.context.services.generation.generate_copy_only',
+            return_value=dict(clean),
+        ) as retry:
+            result = generate_marketing_payload(
+                self.workspace, {'campaign_name': 'Launch', 'contentType': 'poster'}
+            )
+
+        retry.assert_called_once()
+        self.assertIn('guardrail_feedback', retry.call_args.args[2])
+        self.assertEqual(result['payload']['postTitle'], 'Precision wins')
+        guard = result['trace']['guardrails']
+        self.assertTrue(guard['caught'])
+        self.assertEqual(guard['unresolved'], [])
+
+    def test_a_failed_retry_still_gets_the_deterministic_fixes(self):
+        from apps.context.services.generation import generate_marketing_payload
+
+        dirty = {'postTitle': 'Cheap wins', 'postDescription': 'x',
+                 'postHashtags': '#sale #foam'}
+        with patch(
+            'apps.context.services.generation._route_marketing_payload',
+            return_value=self.routed(dirty),
+        ), patch(
+            'apps.context.services.generation.generate_copy_only',
+            side_effect=RuntimeError('provider down'),
+        ):
+            result = generate_marketing_payload(
+                self.workspace, {'campaign_name': 'Launch', 'contentType': 'poster'}
+            )
+
+        payload = result['payload']
+        self.assertEqual(payload['postHashtags'], '#foam')
+        self.assertIn('rajvipackaging.com', payload['postDescription'])
+        self.assertIn('DM PROTECT', payload['postDescription'])
+        self.assertTrue(result['trace']['guardrails']['unresolved'])
+
+    def test_no_guardrails_means_no_retry_no_trace_no_change(self):
+        from apps.context.services.generation import generate_marketing_payload
+
+        self.brand.guardrails = {}
+        self.brand.save(update_fields=['guardrails'])
+        payload = {'postTitle': 'Cheap wins', 'postDescription': 'x',
+                   'postHashtags': '#sale'}
+        with patch(
+            'apps.context.services.generation._route_marketing_payload',
+            return_value=self.routed(payload),
+        ) as route, patch(
+            'apps.context.services.generation.generate_copy_only',
+        ) as retry:
+            result = generate_marketing_payload(
+                self.workspace, {'campaign_name': 'Launch', 'contentType': 'poster'}
+            )
+
+        retry.assert_not_called()
+        self.assertEqual(result['payload'], payload)
+        self.assertNotIn('guardrails', result['trace'])
+        # And the routed brief carried no guardrail lines.
+        self.assertNotIn('guardrail_rules', route.call_args.args[1])
+
+    def test_the_law_rides_into_the_brief(self):
+        from apps.context.services.generation import generate_marketing_payload
+
+        clean = {'postTitle': 'Precision wins',
+                 'postDescription': 'DM PROTECT for a fit.\nrajvipackaging.com',
+                 'postHashtags': '#foam'}
+        with patch(
+            'apps.context.services.generation._route_marketing_payload',
+            return_value=self.routed(clean),
+        ) as route:
+            generate_marketing_payload(
+                self.workspace, {'campaign_name': 'Launch', 'contentType': 'poster'}
+            )
+        brief = route.call_args.args[1]
+        self.assertIn('guardrail_rules', brief)
+        self.assertTrue(any('cheap' in line for line in brief['guardrail_rules']))
+
+
+class GuardrailPromptBlockTests(SimpleTestCase):
+    def test_law_and_feedback_render_and_empty_is_empty(self):
+        from apps.gemini.services.generator import GeminiGeneratorService
+
+        block = GeminiGeneratorService._guardrail_block(
+            ['NEVER use these words anywhere in the copy: cheap.'],
+            ['The caption used the banned word "cheap".'],
+        )
+        self.assertIn('BRAND LAW', block)
+        self.assertIn('REJECTED', block)
+        self.assertIn('cheap', block)
+        self.assertEqual(GeminiGeneratorService._guardrail_block([], []), '')
+        self.assertEqual(GeminiGeneratorService._guardrail_block(None), '')

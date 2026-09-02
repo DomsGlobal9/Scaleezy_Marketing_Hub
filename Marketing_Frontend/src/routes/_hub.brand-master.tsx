@@ -44,6 +44,7 @@ import {
   useSlice,
 } from "@/components/marketing/brand-master-primitives";
 import { CreativeResearchPanel } from "@/components/marketing/creative-research-panel";
+import { HardRulesPanel } from "@/components/marketing/hard-rules-panel";
 import { InspirationsPanel } from "@/components/marketing/inspirations-panel";
 import { KnowledgePanel } from "@/components/marketing/knowledge-panel";
 import { LearningUsagePanel } from "@/components/marketing/learning-usage-panel";
@@ -1228,7 +1229,8 @@ function BrandMasterPage() {
           <TabsContent value="templates">
             <TemplatesPanel />
           </TabsContent>
-          <TabsContent value="rules">
+          <TabsContent value="rules" className="space-y-6">
+            <HardRulesPanel brandId={brandId} />
             <RulesTab brandId={brandId} onChanged={refresh} />
           </TabsContent>
           <TabsContent value="brain">

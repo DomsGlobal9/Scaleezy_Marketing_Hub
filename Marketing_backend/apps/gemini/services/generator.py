@@ -312,6 +312,37 @@ Return ONLY a valid JSON object with these exact keys:
         )
 
     @staticmethod
+    def _guardrail_block(rules, feedback=None) -> str:
+        """
+        Renders the brand's WRITTEN law — guardrails a human authored, as
+        opposed to the learned rules above. On a retry, `feedback` names what
+        the previous attempt got wrong, which is the strongest correction a
+        prompt can carry. Empty when the brand wrote no law, so the prompt is
+        byte-for-byte unchanged for every brand without guardrails.
+        """
+        lines = [str(r).strip() for r in (rules or []) if str(r).strip()]
+        notes = [str(f).strip() for f in (feedback or []) if str(f).strip()]
+        if not lines and not notes:
+            return ""
+        block = ""
+        if lines:
+            listed = "\n".join(f"- {line}" for line in lines)
+            block += (
+                "\n\nBRAND LAW — written by the brand owner, non-negotiable, "
+                "overrides every stylistic instruction above:\n"
+                f"{listed}\n"
+            )
+        if notes:
+            listed = "\n".join(f"- {note}" for note in notes)
+            block += (
+                "\n\nYOUR PREVIOUS ATTEMPT WAS REJECTED for breaking that law:\n"
+                f"{listed}\n"
+                "Fix exactly these problems and change nothing else about the "
+                "message.\n"
+            )
+        return block
+
+    @staticmethod
     def _variety_block(recent) -> str:
         """
         Renders the workspace's recent headlines as a do-not-repeat constraint.
@@ -360,6 +391,10 @@ Return ONLY a valid JSON object with these exact keys:
             *(request_data.get('brand_context') or []),
         ]))
         variety_block = cls._variety_block(request_data.get('recent_headlines'))
+        guardrail_block = cls._guardrail_block(
+            request_data.get('guardrail_rules'),
+            request_data.get('guardrail_feedback'),
+        )
         creative_direction = request_data.get('creative_direction') or {}
         creative_lines = creative_direction.get('instructions') or []
         creative_block = ''
@@ -400,6 +435,7 @@ For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just 
 CRITICAL — NO TEXT IN THE IMAGE: the `imagePrompt` must describe a photograph/visual with absolutely no text, lettering, numbers, captions, watermarks or logos rendered anywhere in it. All headlines, offers and typography are composed onto the image later by a separate layout engine; text baked into the image gets cropped and fights the real typography. The `imagePrompt` itself must end with the sentence: "No text, no lettering, no words, no logos, no watermarks anywhere in the image."
 
 {cls._rules_block(brand_rules)}
+{guardrail_block}
 {variety_block}
 {creative_block}
 Respond ONLY with a valid JSON object (no markdown, no code fences, no extra text):
