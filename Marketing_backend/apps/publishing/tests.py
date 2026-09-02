@@ -45,7 +45,7 @@ class ExecuteJobTests(TestCase):
 
     def test_an_already_published_item_is_never_posted_again(self):
         """
-        Both retry paths re-run the whole job. Without the skip, retrying one
+        Retrying an item re-runs its whole job. Without the skip, retrying one
         failed channel posts a second copy to every channel that worked.
         """
         published = self.item(
@@ -185,6 +185,24 @@ class PublishingRoleTests(APITestCase):
             'social_connection_ids': [str(self.connection.id)],
         }
 
+    def test_history_pages_newest_first_when_a_page_size_is_asked_for(self):
+        """The history table pages with ?page_size=; order must be stable."""
+        newer = PublishingJob.objects.create(
+            workspace=self.ws,
+            asset=self.asset,
+            content_item=self.content,
+            caption='Newer job',
+            status=PublishingJob.Status.PUBLISHED,
+        )
+        self.authenticate_as(WorkspaceMember.Role.VIEWER)
+
+        response = self.client.get('/api/marketing/publishing/jobs/?page_size=1')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 2)
+        self.assertIsNotNone(response.data['next'])
+        self.assertEqual(response.data['results'][0]['id'], str(newer.id))
+
     def test_viewer_and_editor_keep_read_access_but_cannot_create(self):
         for role in (WorkspaceMember.Role.VIEWER, WorkspaceMember.Role.EDITOR):
             with self.subTest(role=role):
@@ -283,16 +301,10 @@ class PublishingRoleTests(APITestCase):
         self.assertNotIn('Unreviewed replacement', created.caption)
 
     @patch('apps.publishing.views.publish_job')
-    def test_viewer_and_editor_cannot_retry_a_job_or_item(self, publish_task):
+    def test_viewer_and_editor_cannot_retry_an_item(self, publish_task):
         for role in (WorkspaceMember.Role.VIEWER, WorkspaceMember.Role.EDITOR):
-            with self.subTest(role=role, action='retry-job'):
+            with self.subTest(role=role):
                 self.authenticate_as(role)
-                response = self.client.post(
-                    f'/api/marketing/publishing/jobs/{self.job.id}/retry/', {}, format='json'
-                )
-                self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-
-            with self.subTest(role=role, action='retry-item'):
                 response = self.client.post(
                     f'/api/marketing/publishing/jobs/items/{self.item.id}/retry/',
                     {},
@@ -305,19 +317,6 @@ class PublishingRoleTests(APITestCase):
         self.assertEqual(self.item.status, PublishingJobItem.Status.FAILED)
         self.assertEqual(self.job.status, PublishingJob.Status.FAILED)
         publish_task.enqueue.assert_not_called()
-
-    @patch('apps.publishing.views.publish_job')
-    def test_manager_can_retry_a_job(self, publish_task):
-        self.authenticate_as(WorkspaceMember.Role.MANAGER)
-
-        response = self.client.post(
-            f'/api/marketing/publishing/jobs/{self.job.id}/retry/', {}, format='json'
-        )
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
-        self.item.refresh_from_db()
-        self.assertEqual(self.item.status, PublishingJobItem.Status.QUEUED)
-        publish_task.enqueue.assert_called_once_with(str(self.job.id))
 
     @patch('apps.publishing.views.publish_job')
     def test_manager_can_retry_a_failed_item(self, publish_task):

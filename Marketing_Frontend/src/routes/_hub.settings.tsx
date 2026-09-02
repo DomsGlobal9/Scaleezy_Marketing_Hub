@@ -2,8 +2,9 @@
  * Settings — workspace, account and security configuration only.
  *
  * Brand identity lives in Brand Master. Everything here reads and writes a
- * real backend record: the workspace row, the billing allowance and the
- * publishing audit trail. AI provider credentials and routing live only in
+ * real backend record: the workspace row and the billing allowance. The
+ * publishing audit trail lives on Social Media Accounts. AI provider
+ * credentials and routing live only in
  * the guarded Admin module. Panels whose controls
  * saved nowhere (publishing defaults, notifications, session toggles, the
  * static permission matrix) were removed rather than left as decoration.
@@ -16,7 +17,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { PageHeader, StatusBadge } from "@/components/marketing/primitives";
+import { PageHeader } from "@/components/marketing/primitives";
 import { UsagePanel } from "@/components/marketing/usage-panel";
 import { api, apiFetch } from "@/lib/api";
 
@@ -33,17 +34,6 @@ export const Route = createFileRoute("/_hub/settings")({
 interface WorkspaceDto {
   id: string;
   workspace_name: string;
-}
-
-interface AuditRow {
-  id: string;
-  date: string;
-  user: string;
-  platform: string;
-  account: string;
-  action: string;
-  result: string;
-  error?: string | null;
 }
 
 interface Membership {
@@ -88,8 +78,8 @@ const ROLE_LABEL: Record<string, string> = {
 function SettingsPage() {
   const [workspace, setWorkspace] = useState<WorkspaceDto | null>(null);
   const [name, setName] = useState("");
-  const [auditLogs, setAuditLogs] = useState<AuditRow[]>([]);
   const [me, setMe] = useState<Me | null>(null);
+  const [meLoaded, setMeLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,7 +94,6 @@ function SettingsPage() {
           setWorkspace(data.workspace);
           setName(data.workspace.workspace_name ?? "");
         }
-        if (Array.isArray(data.audit_logs)) setAuditLogs(data.audit_logs);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : "Could not load settings.");
@@ -116,7 +105,10 @@ function SettingsPage() {
       .then((data) => {
         if (!cancelled) setMe(data);
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setMeLoaded(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -165,24 +157,21 @@ function SettingsPage() {
 
       <div className="grid gap-6 xl:grid-cols-2">
         <Panel label="General" title="Workspace">
-          {loading ? (
+          {loading || !meLoaded ? (
             <p className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" /> Loading…
             </p>
-          ) : (
+          ) : canEditWorkspace ? (
             <div className="grid gap-4">
               <div>
                 <Label className="text-xs tracking-wide uppercase">Workspace name</Label>
                 <Input
                   className="mt-1.5"
                   value={name}
-                  disabled={!canEditWorkspace && myRole !== undefined}
                   onChange={(e) => setName(e.target.value)}
                 />
                 <p className="mt-1.5 text-xs text-muted-foreground">
-                  {canEditWorkspace || myRole === undefined
-                    ? "Shown across the hub and used as the default brand name."
-                    : "Only a workspace admin can rename the workspace."}
+                  Shown across the hub and used as the default brand name.
                 </p>
               </div>
               {error ? <p className="text-sm text-destructive">{error}</p> : null}
@@ -191,6 +180,16 @@ function SettingsPage() {
                   {saving ? <Loader2 className="size-4 animate-spin" /> : null} Save changes
                 </Button>
               </div>
+            </div>
+          ) : (
+            <div>
+              <Label className="text-xs tracking-wide uppercase">Workspace name</Label>
+              <p className="mt-1.5 text-sm text-foreground">
+                {workspace?.workspace_name ?? "—"}
+              </p>
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                Only a workspace admin can rename the workspace.
+              </p>
             </div>
           )}
         </Panel>
@@ -232,39 +231,14 @@ function SettingsPage() {
       </div>
 
       <div className="mt-6">
-        <Panel label="Security" title="Tokens & publishing audit trail">
+        <Panel label="Security" title="Tokens & audit trail">
           <div className="flex items-start gap-2 rounded-xl border border-gold/30 bg-gold/8 px-4 py-3 text-sm">
             <ShieldCheck className="mt-0.5 size-4 shrink-0 text-gold" />
             <p>
               OAuth tokens are encrypted at rest on the server, never exposed to the browser and
-              masked in logs. Manage connected accounts under Social Media Accounts.
+              masked in logs. Manage connected accounts — and the full publishing audit log —
+              under Social Media Accounts.
             </p>
-          </div>
-          <div className="mt-4 rounded-xl border border-border px-4 py-3">
-            <p className="text-xs tracking-wide text-muted-foreground uppercase">
-              Recent publishing events
-            </p>
-            {auditLogs.length === 0 ? (
-              <p className="mt-2 text-sm text-muted-foreground">No events recorded yet.</p>
-            ) : (
-              <ul className="mt-2 space-y-2 text-sm">
-                {auditLogs.slice(0, 10).map((log) => (
-                  <li
-                    key={log.id}
-                    className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2"
-                  >
-                    <span className="min-w-0 truncate text-foreground">
-                      {new Date(log.date).toLocaleString()} · {log.platform} · {log.action}
-                      {log.account ? ` · ${log.account}` : ""}
-                    </span>
-                    <StatusBadge
-                      status={log.result}
-                      tone={log.result === "Success" ? "success" : "danger"}
-                    />
-                  </li>
-                ))}
-              </ul>
-            )}
           </div>
         </Panel>
       </div>

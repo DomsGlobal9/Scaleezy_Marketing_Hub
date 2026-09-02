@@ -449,3 +449,28 @@ def adoption_count(platform_inspiration) -> int:
     return BrandInspiration.objects.filter(
         metadata__platform_inspiration_id=str(platform_inspiration.pk)
     ).count()
+
+
+def adoption_counts(platform_inspirations) -> dict:
+    """`adoption_count` for a whole page in ONE grouped query.
+
+    Returns {str(pk): count}; an entry nobody adopted is simply absent, so
+    callers read it with `.get(..., 0)`. Same live rows as `adoption_count`,
+    grouped instead of counted one COUNT(*) per entry.
+    """
+    from django.db.models import Count
+
+    from apps.inspirations.models import BrandInspiration
+
+    ids = [str(entry.pk) for entry in platform_inspirations]
+    if not ids:
+        return {}
+    return {
+        row['metadata__platform_inspiration_id']: row['n']
+        for row in (
+            BrandInspiration.objects
+            .filter(metadata__platform_inspiration_id__in=ids)
+            .values('metadata__platform_inspiration_id')
+            .annotate(n=Count('id'))
+        )
+    }

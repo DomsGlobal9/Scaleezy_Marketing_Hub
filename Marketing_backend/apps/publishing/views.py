@@ -26,7 +26,10 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     so every unsafe method requires MANAGER or above.
     """
 
-    queryset = PublishingJob.objects.all().prefetch_related('items')
+    # Newest first. The history table reads this, and the opt-in pagination
+    # (?page_size=) needs a deterministic order to page against — an
+    # unordered queryset makes page boundaries db-dependent.
+    queryset = PublishingJob.objects.order_by('-created_at', '-id').prefetch_related('items')
     serializer_class = PublishingJobSerializer
     permission_classes = [IsAuthenticated, IsWorkspaceMember, HasWorkspaceRole]
     # Lists are scoped by WorkspaceScopedMixin, so an unresolvable workspace
@@ -36,8 +39,8 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     required_read_role = WorkspaceMember.Role.VIEWER
     # A persisted job is an execution record for one reviewed version. Raw
     # PUT/PATCH/DELETE would let even an authorised manager swap its tenant,
-    # asset, content or copy after approval. Creation and the validated retry
-    # actions are the only public mutations.
+    # asset, content or copy after approval. Creation and the validated
+    # per-item retry action are the only public mutations.
     http_method_names = ['get', 'post', 'head', 'options']
 
     def create(self, request, *args, **kwargs):
@@ -189,25 +192,6 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         except Exception as e:
             return APIResponse(success=False, message=str(e), status=status.HTTP_400_BAD_REQUEST)
 
-    @action(detail=True, methods=['post'])
-    def retry(self, request, pk=None):
-        """
-        Retries all failed items in a job.
-        """
-        job = self.get_object()
-        failed_items = job.items.filter(status=PublishingJobItem.Status.FAILED)
-        
-        for item in failed_items:
-            item.status = PublishingJobItem.Status.QUEUED
-            item.save()
-        publish_job.enqueue(str(job.id))
-
-        if failed_items.exists():
-            job.status = PublishingJob.Status.PUBLISHING
-            job.save()
-            
-        return APIResponse(success=True, message=f"Queued {failed_items.count()} items for retry.")
-        
     @action(detail=False, methods=['post'], url_path='items/(?P<item_id>[^/.]+)/retry')
     def retry_item(self, request, item_id=None):
         """

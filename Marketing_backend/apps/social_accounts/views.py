@@ -6,10 +6,10 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.utils import timezone
 
 from .models import SocialConnection, SocialAccountAuditLog
-from apps.workspaces.models import MarketingWorkspace
+from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 from .serializers import SocialConnectionSerializer, ConnectPlatformSerializer
 from apps.common.mixins import WorkspaceScopedMixin
-from apps.common.permissions import IsWorkspaceMember, authorize_workspace
+from apps.common.permissions import HasWorkspaceRole, IsWorkspaceMember, authorize_workspace
 from apps.common.responses import APIResponse
 from .integrations.meta.facebook import FacebookAdapter
 from .integrations.meta.instagram import InstagramAdapter
@@ -34,6 +34,12 @@ logger = logging.getLogger(__name__)
 class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     queryset = SocialConnection.objects.all()
     serializer_class = SocialConnectionSerializer
+    # Read by HasWorkspaceRole, which get_permissions attaches to `disconnect`
+    # only: disconnecting clears tokens and halts scheduled publishing until
+    # someone re-runs OAuth, which is account configuration — an ADMIN concern
+    # in the product's permission matrix. Every other action keeps its
+    # existing member-level gate.
+    required_role = WorkspaceMember.Role.ADMIN
 
     def get_permissions(self):
         # The OAuth callback is reached straight after an external redirect and
@@ -41,6 +47,8 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         # be replayed. Everything else requires an authenticated member.
         if self.action == 'oauth_callback':
             return [AllowAny()]
+        if self.action == 'disconnect':
+            return [IsAuthenticated(), IsWorkspaceMember(), HasWorkspaceRole()]
         return [IsAuthenticated(), IsWorkspaceMember()]
 
     def get_adapter(self, platform):

@@ -303,7 +303,9 @@ export const setClientUniversal = (
 export const setClientPlan = (workspaceId: string, plan: string) =>
   apiPost<unknown>(`/api/platform/clients/${workspaceId}/plan/`, { plan });
 
-export const setClientSpendCap = (workspaceId: string, spendCap: string) =>
+/** A decimal string sets the override ("0" = explicitly uncapped); null clears
+ *  it so the plan's own cap applies again. */
+export const setClientSpendCap = (workspaceId: string, spendCap: string | null) =>
   apiPost<unknown>(`/api/platform/clients/${workspaceId}/spend-cap/`, { spend_cap: spendCap });
 
 export const recompileClientBrain = (workspaceId: string) =>
@@ -416,8 +418,11 @@ export interface PatternContributor {
   name: string;
 }
 
-export const fetchLearnedPatterns = async () =>
-  rows<LearnedPattern>(await apiGet<unknown>("/api/platform/patterns/"), "patterns");
+/** The server filters (`?status=`) and sorts; ALL/undefined means every row. */
+export const fetchLearnedPatterns = async (params: { status?: string } = {}) => {
+  const qs = params.status ? `?status=${encodeURIComponent(params.status)}` : "";
+  return rows<LearnedPattern>(await apiGet<unknown>(`/api/platform/patterns/${qs}`), "patterns");
+};
 
 export const compileLearnedPatterns = () =>
   apiPost<{ status: string; task_id: string; pattern_version: string | null }>(

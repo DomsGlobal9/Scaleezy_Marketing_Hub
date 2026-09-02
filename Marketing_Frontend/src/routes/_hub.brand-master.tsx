@@ -311,18 +311,6 @@ function OverviewTab({
           </div>
         </div>
 
-        {brain.positioning?.statements?.length ? (
-          <div>
-            <SectionTitle title="Positioning" />
-            <ul className="mt-3 space-y-2">
-              {brain.positioning.statements.map((statement) => (
-                <li key={statement} className="rounded-xl border p-3 text-sm">
-                  {statement}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
       </div>
 
       <div className="space-y-6">
@@ -760,15 +748,9 @@ function BrainTab({
 
   return (
     <div className="space-y-8">
-      <div className="flex flex-wrap gap-3 rounded-xl border bg-muted/40 p-4 text-sm">
-        <span className="text-muted-foreground">Version</span>
-        <span className="font-mono text-xs">{brain.brain_version.slice(0, 16)}</span>
-        <span className="text-muted-foreground">· Compiled</span>
-        <span>{new Date(brain.compiled_at).toLocaleString()}</span>
-        <span className="text-muted-foreground">
-          · This is exactly what the Context Gateway hands to generation.
-        </span>
-      </div>
+      <p className="rounded-xl border bg-muted/40 p-4 text-sm text-muted-foreground">
+        This is exactly what the Context Gateway hands to generation.
+      </p>
 
       {nothingYet ? (
         <Empty
@@ -898,7 +880,6 @@ function AttentionTab({
   const sources = useSlice<KnowledgeSource[]>(() => fetchKnowledge(brandId), true);
   const [busy, setBusy] = useState<string | null>(null);
   const conflicts = overview.conflicts;
-  const missing = overview.readiness.dimensions.filter((d) => !d.complete && d.score < 0.5);
   const failed = (sources.data ?? []).filter(
     (s) => s.status === "FAILED" || s.status === "NEEDS_REVIEW",
   );
@@ -940,11 +921,11 @@ function AttentionTab({
     brand_preference: "Retire this preference",
   };
 
-  if (!conflicts.length && !missing.length && !failed.length) {
+  if (!conflicts.length && !failed.length) {
     return (
       <Empty
         title="Nothing needs your decision"
-        hint="When two equally trusted sources disagree, or a high-value input is missing, it shows up here with a way to fix it."
+        hint="When two equally trusted sources disagree, or a knowledge source needs review, it shows up here with a way to fix it."
       />
     );
   }
@@ -1022,36 +1003,6 @@ function AttentionTab({
                 </span>
               </li>
             ))}
-          </ul>
-        </div>
-      ) : null}
-
-      {missing.length ? (
-        <div>
-          <SectionTitle
-            title="Missing high-value inputs"
-            description="The gaps that hold readiness back most."
-          />
-          <ul className="mt-3 space-y-2">
-            {missing.map((dimension) => {
-              const target = tabForReadinessKey(dimension.key);
-              return (
-                <li
-                  key={dimension.key}
-                  className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3 text-sm"
-                >
-                  <span>
-                    <span className="font-medium">{dimension.label}</span>
-                    <span className="text-muted-foreground"> — {dimension.hint}</span>
-                  </span>
-                  {target === "create" ? null : (
-                    <Button size="sm" variant="outline" onClick={() => onGoToTab(target)}>
-                      Fix
-                    </Button>
-                  )}
-                </li>
-              );
-            })}
           </ul>
         </div>
       ) : null}
