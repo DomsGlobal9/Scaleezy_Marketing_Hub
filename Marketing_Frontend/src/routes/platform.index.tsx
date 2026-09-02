@@ -3,7 +3,10 @@
  *
  * Every tile shows `signal.display`, never `value`: a signal that is not live
  * has no number, and painting one would be a lie. The pending-signups count is
- * the approval queue's own `pending_total`.
+ * the approval queue's own `pending_total`, fetched count-only — this page
+ * never builds queue rows. It is rendered once, on the tile that links to the
+ * queue; the health feed's `pending_approvals` signal is the same number and
+ * is filtered from the grid below so the screen does not say it twice.
  */
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { AlertTriangle, ArrowRight, CheckCircle2, Inbox, RefreshCw } from "lucide-react";
@@ -14,8 +17,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorNote, PlatformPageHeader } from "@/components/platform/shared";
 import {
   errorText,
+  fetchPendingSignupTotal,
   fetchPlatformHealth,
-  fetchSignups,
   formatDateTime,
   type HealthSignal,
   type PlatformHealth,
@@ -71,7 +74,7 @@ function OverviewPage() {
     setPendingError(null);
     const [healthResult, queueResult] = await Promise.allSettled([
       fetchPlatformHealth(),
-      fetchSignups("PENDING"),
+      fetchPendingSignupTotal(),
     ]);
     if (healthResult.status === "fulfilled") setHealth(healthResult.value);
     else setError(errorText(healthResult.reason, "Could not load platform health."));
@@ -86,6 +89,9 @@ function OverviewPage() {
 
   const live = health?.signals.filter((s) => s.live) ?? [];
   const unmonitored = health?.signals.filter((s) => !s.live) ?? [];
+  // The pending-approvals signal is the "Awaiting approval" tile above — same
+  // number, and the tile links to the queue — so the grid does not repeat it.
+  const liveTiles = live.filter((s) => s.key !== "pending_approvals");
 
   return (
     <div>
@@ -134,7 +140,10 @@ function OverviewPage() {
 
         <Link
           to="/platform/signups"
-          className="surface-card group flex items-center gap-4 p-5 transition-transform hover:-translate-y-0.5"
+          className={cn(
+            "surface-card group flex items-center gap-4 p-5 transition-transform hover:-translate-y-0.5",
+            (pending ?? 0) > 0 && "border-amber-400/60 bg-amber-50/60",
+          )}
         >
           <span className="grid size-11 shrink-0 place-items-center rounded-lg bg-foreground text-primary">
             <Inbox className="size-5" strokeWidth={1.75} />
@@ -168,9 +177,9 @@ function OverviewPage() {
               <Skeleton key={i} className="h-28 rounded-xl" />
             ))}
           </div>
-        ) : live.length ? (
+        ) : liveTiles.length ? (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {live.map((signal) => (
+            {liveTiles.map((signal) => (
               <SignalTile key={signal.key} signal={signal} />
             ))}
           </div>

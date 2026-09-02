@@ -2,6 +2,7 @@ import {
   Activity,
   ArrowDown,
   ArrowUp,
+  Bot,
   CheckCircle2,
   CircleAlert,
   Gauge,
@@ -44,9 +45,10 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { MissionsPanel } from "@/components/marketing/missions-panel";
 import { api, apiPost } from "@/lib/api";
 
-export const AI_ADMIN_TABS = ["overview", "providers", "routing", "activity"] as const;
+export const AI_ADMIN_TABS = ["overview", "providers", "routing", "activity", "missions"] as const;
 export type AIAdminTab = (typeof AI_ADMIN_TABS)[number];
 
 interface CatalogueProvider {
@@ -641,6 +643,9 @@ export function AIProvidersPanel({
         </TabsTrigger>
         <TabsTrigger value="activity" className="gap-1.5">
           <Activity className="size-3.5" /> Activity
+        </TabsTrigger>
+        <TabsTrigger value="missions" className="gap-1.5">
+          <Bot className="size-3.5" /> Missions
         </TabsTrigger>
       </TabsList>
 
@@ -1476,6 +1481,10 @@ export function AIProvidersPanel({
             )}
           </CardContent>
         </Card>
+      </TabsContent>
+
+      <TabsContent value="missions" className="space-y-5">
+        <MissionsPanel />
       </TabsContent>
     </Tabs>
   );

@@ -59,6 +59,7 @@ import {
   setClientSpendCap,
   setClientUniversal,
   suspendClient,
+  type AttachUserResult,
   type ClientDetail,
   type UsageSummary,
 } from "@/lib/platform";
@@ -261,7 +262,12 @@ function AttachUser({
 }) {
   const [username, setUsername] = useState("");
   const [role, setRole] = useState<string>("EDITOR");
+  // The likely duplicate signups the attach call reported. Attach archived
+  // nothing — these are listed so the operator can archive the right one
+  // deliberately, each linking to the client where that control lives.
+  const [duplicates, setDuplicates] = useState<AttachUserResult["duplicate_candidates"]>([]);
   return (
+    <>
     <form
       className="flex flex-wrap items-end gap-2"
       onSubmit={(e) => {
@@ -276,6 +282,7 @@ function AttachUser({
             const result = await attachUserToClient(workspaceId, name, role);
             toast.success(`${name} attached as ${result.role}.`);
             setUsername("");
+            setDuplicates(result.duplicate_candidates ?? []);
           },
         });
       }}
@@ -307,6 +314,31 @@ function AttachUser({
         <UserPlus className="size-3.5" /> Attach…
       </Button>
     </form>
+    {duplicates.length ? (
+      <div className="mt-2 rounded-lg border border-amber-400/60 bg-amber-50/60 px-3 py-2 text-xs">
+        <p className="font-medium text-foreground">
+          Possible duplicate signup{duplicates.length === 1 ? "" : "s"} — nothing was archived.
+          Review and archive deliberately:
+        </p>
+        <ul className="mt-1 space-y-0.5">
+          {duplicates.map((c) => (
+            <li key={c.workspace_id}>
+              <Link
+                to="/platform/clients/$workspaceId"
+                params={{ workspaceId: c.workspace_id }}
+                className="text-foreground underline-offset-2 hover:underline"
+              >
+                {c.name || "Unnamed client"}
+              </Link>
+              <span className="text-muted-foreground">
+                {" "}· {c.client_code} · {c.approval_status.replaceAll("_", " ")}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null}
+    </>
   );
 }
 

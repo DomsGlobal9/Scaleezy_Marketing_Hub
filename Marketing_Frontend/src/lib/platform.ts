@@ -122,6 +122,10 @@ export interface SignupQueue {
 export const fetchSignups = (status: BrandStatus = "PENDING") =>
   apiGet<SignupQueue>(`/api/platform/signups/?status=${encodeURIComponent(status)}`);
 
+/** Just the queue's headline number — the Overview needs one figure, not 200 rows. */
+export const fetchPendingSignupTotal = () =>
+  apiGet<{ pending_total: number }>("/api/platform/signups/?count_only=1");
+
 export const approveSignup = (
   brandId: string,
   body: { name?: string; website?: string; plan?: string },
@@ -339,6 +343,8 @@ export interface StandardInput {
   guidance: string;
   scope: UniversalScope;
   scope_value: string;
+  /** Id of the published standard this draft replaces; publishing the draft retires it. */
+  supersedes?: string;
 }
 
 export interface StandardPreview {
@@ -599,8 +605,6 @@ export const fetchLibraryGalleryPage = async (offset = 0): Promise<LibraryGaller
     nextOffset: typeof object["next_offset"] === "number" ? object["next_offset"] : null,
   };
 };
-
-export const fetchLibraryGallery = async () => (await fetchLibraryGalleryPage()).items;
 
 export interface AdoptResult {
   inspiration_id: string;

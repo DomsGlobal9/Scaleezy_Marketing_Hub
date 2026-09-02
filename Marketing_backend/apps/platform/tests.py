@@ -91,16 +91,60 @@ class PlatformBoundaryTests(TenantFixtureMixin, TestCase):
     # ───────────────────────────────────────────── P1 approval queue
 
     def test_the_queue_lists_pending_clients_with_real_counts(self):
+        from apps.inspirations.models import BrandInspiration
+        from apps.knowledge.models import BrandSource
+
+        BrandSource.objects.create(workspace=self.workspace, brand=self.brand, title='Deck')
+        BrandInspiration.objects.create(workspace=self.workspace, brand=self.brand, title='Ref')
+        self.authenticate_as(self.workspace, WorkspaceMember.Role.EDITOR, 'second@pending.test')
+
         response = self.staff_api.get(SIGNUPS)
         self.assertEqual(response.status_code, 200, response.content)
         data = response.json()['data']
         self.assertEqual(data['pending_total'], 1)
+        # The exact response shape is a contract with the console pages.
+        self.assertEqual(set(data), {'status', 'count', 'pending_total', 'signups'})
         row = data['signups'][0]
+        self.assertEqual(set(row), {
+            'brand_id', 'workspace_id', 'client_code', 'name', 'website',
+            'industry', 'status', 'signed_up_at', 'signed_up_by',
+            'knowledge_sources', 'inspirations', 'team_size',
+            'reviewed_at', 'reviewed_by',
+        })
         self.assertEqual(row['brand_id'], str(self.brand.id))
         self.assertEqual(row['client_code'], self.workspace.client_code)
         self.assertEqual(row['signed_up_by'], 'owner@pending.test')
-        self.assertEqual(row['knowledge_sources'], 0)
+        self.assertEqual(row['knowledge_sources'], 1)
+        self.assertEqual(row['inspirations'], 1)
+        self.assertEqual(row['team_size'], 2)
         self.assertTrue(PlatformAuditLog.objects.filter(action='SIGNUP_QUEUE_VIEWED').exists())
+
+    def test_count_only_returns_just_the_pending_total(self):
+        response = self.staff_api.get(f'{SIGNUPS}?count_only=1')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['data'], {'pending_total': 1})
+        entry = PlatformAuditLog.objects.filter(action='SIGNUP_QUEUE_VIEWED').order_by('-pk').first()
+        self.assertTrue(entry.detail.get('count_only'))
+
+    def test_queue_query_count_does_not_grow_with_rows(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def queries_for_a_page():
+            with CaptureQueriesContext(connection) as ctx:
+                self.assertEqual(self.staff_api.get(SIGNUPS).status_code, 200)
+            return len(ctx.captured_queries)
+
+        baseline = queries_for_a_page()
+        for i in range(4):
+            workspace = self.make_workspace(f'Bulk {i}', f'bulk{i}')
+            self.authenticate_as(workspace, WorkspaceMember.Role.OWNER, f'owner{i}@bulk.test')
+            Brand.objects.create(
+                workspace=workspace, name=f'Bulk {i}',
+                is_default=True, status=Brand.Status.PENDING,
+            )
+        # Counts come from grouped queries per table, never per row.
+        self.assertEqual(queries_for_a_page(), baseline)
 
     def test_approve_activates_creates_subscription_records_decider_and_corrections(self):
         response = self.staff_api.post(

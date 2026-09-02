@@ -44,6 +44,7 @@ import {
   fetchSignups,
   formatDateTime,
   rejectSignup,
+  type AttachUserResult,
   type BrandStatus,
   type SignupQueue,
   type SignupRow,
@@ -186,10 +187,48 @@ function ApproveDialog({
 
 /* -------------------------------------------------------------- attach user */
 
+/**
+ * The likely duplicate signups the attach call reported. Attach archived
+ * nothing — these are listed so the operator can archive the right one
+ * deliberately, each linking to the client where that control lives.
+ */
+function DuplicateCandidates({
+  candidates,
+}: {
+  candidates: AttachUserResult["duplicate_candidates"];
+}) {
+  if (!candidates.length) return null;
+  return (
+    <div className="rounded-lg border border-amber-400/60 bg-amber-50/60 px-3 py-2 text-xs">
+      <p className="font-medium text-foreground">
+        Possible duplicate signup{candidates.length === 1 ? "" : "s"} — nothing was archived.
+        Review and archive deliberately:
+      </p>
+      <ul className="mt-1 space-y-0.5">
+        {candidates.map((c) => (
+          <li key={c.workspace_id}>
+            <Link
+              to="/platform/clients/$workspaceId"
+              params={{ workspaceId: c.workspace_id }}
+              className="text-foreground underline-offset-2 hover:underline"
+            >
+              {c.name || "Unnamed client"}
+            </Link>
+            <span className="text-muted-foreground">
+              {" "}· {c.client_code} · {c.approval_status.replaceAll("_", " ")}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function AttachUserForm({ row, onDone }: { row: SignupRow; onDone: () => void }) {
   const [username, setUsername] = useState("");
   const [role, setRole] = useState<string>("EDITOR");
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
+  const [duplicates, setDuplicates] = useState<AttachUserResult["duplicate_candidates"]>([]);
 
   return (
     <>
@@ -207,6 +246,7 @@ function AttachUserForm({ row, onDone }: { row: SignupRow; onDone: () => void })
               const result = await attachUserToClient(row.workspace_id, name, role);
               toast.success(`${name} attached as ${result.role}.`);
               setUsername("");
+              setDuplicates(result.duplicate_candidates ?? []);
               onDone();
             },
           });
@@ -240,6 +280,7 @@ function AttachUserForm({ row, onDone }: { row: SignupRow; onDone: () => void })
           <UserPlus className="size-3.5" /> Attach
         </Button>
       </form>
+      <DuplicateCandidates candidates={duplicates} />
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </>
   );
