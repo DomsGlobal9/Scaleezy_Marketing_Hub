@@ -86,7 +86,6 @@ interface Kpi {
   value: number;
   icon: string;
   hint?: string | null;
-  accent?: "gold";
 }
 
 const ICON_MAP: Record<string, LucideIcon> = {
