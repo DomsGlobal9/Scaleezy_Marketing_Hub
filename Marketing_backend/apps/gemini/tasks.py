@@ -287,7 +287,12 @@ def generate_content(request_id: str):
                     )
                 locked_references = list(
                     BrandInspiration.objects.eligible_for_retrieval()
-                    .select_for_update()
+                    # of=('self',): eligible_for_retrieval() LEFT-JOINs the
+                    # nullable source FK, and PostgreSQL refuses FOR UPDATE on
+                    # the nullable side of an outer join. Only the inspiration
+                    # rows need the lock. SQLite ignores row locks, so tests
+                    # cannot catch a regression here — probe_pg_locks can.
+                    .select_for_update(of=('self',))
                     .filter(
                         pk__in=preprocessing_ids,
                         workspace=locked_workspace,

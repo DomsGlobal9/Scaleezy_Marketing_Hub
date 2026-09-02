@@ -166,7 +166,10 @@ KIND_TO_INSPIRATION = {
 def adopt_finding(finding, *, user, annotation='', usage_scope='FULL_REFERENCE', focus_areas=None):
     from .models import BrandInspiration
 
-    finding = ResearchFinding.objects.select_for_update().select_related(
+    # of=('self',): adopted_inspiration is nullable, so select_related
+    # LEFT-JOINs it and PostgreSQL refuses FOR UPDATE on the nullable side of
+    # an outer join. Only the finding row needs the lock.
+    finding = ResearchFinding.objects.select_for_update(of=('self',)).select_related(
         'run', 'workspace', 'brand', 'adopted_inspiration'
     ).get(pk=finding.pk)
     if finding.adopted_inspiration_id:

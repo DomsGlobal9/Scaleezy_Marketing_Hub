@@ -63,7 +63,13 @@ class EngagementItemViewSet(GovernedWorkspaceViewSet):
     @action(detail=True, methods=['post'])
     def claim(self, request, pk=None):
         with transaction.atomic():
-            item = get_object_or_404(self.get_queryset().select_for_update(), pk=pk)
+            # of=('self',): the class queryset select_relates nullable user
+            # FKs (assigned_to/locked_by/approved_by), and PostgreSQL refuses
+            # FOR UPDATE on the nullable side of an outer join. Only the item
+            # row needs the lock.
+            item = get_object_or_404(
+                self.get_queryset().select_for_update(of=('self',)), pk=pk
+            )
             if item.status in (
                 EngagementItem.Status.SENDING,
                 EngagementItem.Status.RESOLVED,
@@ -156,7 +162,10 @@ class EngagementItemViewSet(GovernedWorkspaceViewSet):
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
         with transaction.atomic():
-            item = get_object_or_404(self.get_queryset().select_for_update(), pk=pk)
+            # of=('self',) for the same nullable-join reason as claim above.
+            item = get_object_or_404(
+                self.get_queryset().select_for_update(of=('self',)), pk=pk
+            )
             response_text = str(
                 request.data.get('response') or item.ai_draft or ''
             ).strip()[:5000]
