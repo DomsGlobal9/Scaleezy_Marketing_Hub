@@ -102,6 +102,11 @@ class ServiceCredentialTests(TestCase):
 class AdapterCredentialTests(TestCase):
     """The adapter must hand its workspace credential to the service."""
 
+    def test_adapter_default_matches_the_supported_generation_model(self):
+        from apps.ai.adapters.gemini import GeminiAdapter
+
+        self.assertEqual(GeminiAdapter.default_model, GeminiGeneratorService.TEXT_MODEL)
+
     @override_settings(GEMINI_API_KEY='', GEMINI_MOCK_MODE=False)
     def test_adapter_passes_its_credential_through(self):
         from apps.ai.adapters.gemini import GeminiAdapter
@@ -165,15 +170,38 @@ class AdapterCredentialTests(TestCase):
     def test_health_check_authenticates_without_generation(self, get):
         from apps.ai.adapters.gemini import GeminiAdapter
 
-        get.return_value = Mock(status_code=200)
+        get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={'supportedGenerationMethods': ['generateContent']}),
+        )
         result = GeminiAdapter(credentials='tenant-key').health_check()
 
         self.assertTrue(result['ok'])
         url, kwargs = get.call_args
-        self.assertEqual(url[0], 'https://gemini.test/v1beta/models')
+        self.assertEqual(
+            url[0],
+            'https://gemini.test/v1beta/models/gemini-2.5-flash',
+        )
         self.assertEqual(kwargs['headers']['x-goog-api-key'], 'tenant-key')
         self.assertEqual(kwargs['timeout'], 4.0)
         self.assertNotIn('tenant-key', str(result))
+
+    @override_settings(GEMINI_API_KEY='')
+    @patch('apps.ai.adapters.gemini.httpx.get')
+    def test_health_check_rejects_a_retired_model_without_generation(self, get):
+        from apps.ai.adapters.gemini import GeminiAdapter
+
+        get.return_value = Mock(status_code=404, text='private upstream detail')
+        result = GeminiAdapter(
+            credentials='tenant-key', model='gemini-1.5-pro'
+        ).health_check()
+
+        self.assertEqual(
+            result,
+            {'ok': False, 'detail': 'Gemini model gemini-1.5-pro is not available.'},
+        )
+        self.assertNotIn('tenant-key', str(result))
+        self.assertNotIn('private upstream detail', str(result))
 
     @override_settings(GEMINI_API_KEY='')
     @patch('apps.ai.adapters.gemini.httpx.get')

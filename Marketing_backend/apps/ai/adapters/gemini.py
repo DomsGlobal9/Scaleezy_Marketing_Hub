@@ -33,7 +33,7 @@ class GeminiAdapter(AIProviderAdapter):
         Capability.EMBEDDING,
         Capability.ENGAGEMENT_RESPONSE,
     )
-    default_model = 'gemini-1.5-pro'
+    default_model = 'gemini-2.5-flash'
     unit_cost = 0.02
 
     def _service(self):
@@ -206,9 +206,9 @@ class GeminiAdapter(AIProviderAdapter):
         if not key:
             return {'ok': False, 'detail': 'No Gemini API key configured.'}
 
-        # Model discovery is an authenticated, read-only request. Unlike a
-        # prompt it consumes no generation tokens, so the Admin Test control
-        # can distinguish a saved key from a key that actually authenticates.
+        # Exact-model discovery is an authenticated, read-only request. Unlike
+        # a prompt it consumes no generation tokens, and it catches a retired
+        # or mistyped model before the first real generation fails.
         try:
             base_url = str(
                 getattr(
@@ -219,10 +219,11 @@ class GeminiAdapter(AIProviderAdapter):
                 or 'https://generativelanguage.googleapis.com/v1beta'
             ).rstrip('/')
             timeout = float(getattr(settings, 'AI_PROVIDER_HEALTH_TIMEOUT', 10.0))
+            model = str(self.model or self.default_model).strip()
+            model_path = model if model.startswith('models/') else f'models/{model}'
             response = httpx.get(
-                f'{base_url}/models',
+                f'{base_url}/{model_path}',
                 headers={'x-goog-api-key': key},
-                params={'pageSize': 1},
                 timeout=timeout,
             )
         except httpx.TimeoutException:
@@ -234,10 +235,22 @@ class GeminiAdapter(AIProviderAdapter):
 
         if response.status_code in (400, 401, 403):
             return {'ok': False, 'detail': 'Gemini authentication failed.'}
+        if response.status_code == 404:
+            return {'ok': False, 'detail': f'Gemini model {model} is not available.'}
         if response.status_code == 429:
             return {'ok': False, 'detail': 'Gemini health check was rate limited.'}
         if response.status_code >= 500:
             return {'ok': False, 'detail': 'Gemini is temporarily unavailable.'}
         if response.status_code >= 300:
             return {'ok': False, 'detail': 'Gemini health check failed.'}
-        return {'ok': True, 'detail': f'Connected (model {self.model}).'}
+        try:
+            payload = response.json()
+        except (TypeError, ValueError):
+            payload = {}
+        methods = payload.get('supportedGenerationMethods') if isinstance(payload, dict) else None
+        if isinstance(methods, list) and 'generateContent' not in methods:
+            return {
+                'ok': False,
+                'detail': f'Gemini model {model} cannot generate content.',
+            }
+        return {'ok': True, 'detail': f'Connected (model {model}).'}
