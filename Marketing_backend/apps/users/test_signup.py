@@ -39,8 +39,12 @@ VALID = {
     'email': 'founder@acme.test',
     'password': 'orbit-lantern-42-quartz',
     'brand_name': 'Acme Coffee',
+    'legal_name': 'Acme Beverages Pvt Ltd',
     'website': 'https://acme.test',
     'industry': 'Coffee',
+    'location': 'Bengaluru, India',
+    'contact_person': 'Priya Sharma',
+    'contact_phone': '+91 98765 43210',
 }
 
 
@@ -108,6 +112,12 @@ class SignupTests(SignupTestBase):
         self.assertEqual(brand.industry, 'Coffee')
         self.assertEqual(brand.created_by, user)
         self.assertIsNone(brand.reviewed_at)
+
+        # Intake details land on the brand, where Brand Master edits them.
+        self.assertEqual(brand.legal_name, 'Acme Beverages Pvt Ltd')
+        self.assertEqual(brand.location, 'Bengaluru, India')
+        self.assertEqual(brand.contact_person, 'Priya Sharma')
+        self.assertEqual(brand.contact_phone, '+91 98765 43210')
 
         # The same bootstrap the add-client path performs: a routable workspace.
         self.assertEqual(

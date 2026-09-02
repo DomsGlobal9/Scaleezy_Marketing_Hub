@@ -34,9 +34,28 @@ export const Route = createFileRoute("/signup")({
   component: SignupPage,
 });
 
-type FieldKey = "brand_name" | "website" | "email" | "password";
+type FieldKey =
+  | "legal_name"
+  | "brand_name"
+  | "website"
+  | "email"
+  | "contact_person"
+  | "contact_phone"
+  | "industry"
+  | "location"
+  | "password";
 
-const FIELD_KEYS: readonly FieldKey[] = ["brand_name", "website", "email", "password"];
+const FIELD_KEYS: readonly FieldKey[] = [
+  "legal_name",
+  "brand_name",
+  "website",
+  "email",
+  "contact_person",
+  "contact_phone",
+  "industry",
+  "location",
+  "password",
+];
 
 /**
  * The backend answers validation failures with
@@ -69,9 +88,14 @@ function SignupPage() {
   const navigate = useNavigate();
   const { auth } = Route.useRouteContext();
 
+  const [legalName, setLegalName] = useState("");
   const [brandName, setBrandName] = useState("");
   const [website, setWebsite] = useState("");
   const [email, setEmail] = useState("");
+  const [contactPerson, setContactPerson] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [industry, setIndustry] = useState("");
+  const [location, setLocation] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -79,8 +103,12 @@ function SignupPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const canSubmit =
-    brandName.trim().length > 0 &&
+    legalName.trim().length > 0 &&
     email.trim().length > 0 &&
+    contactPerson.trim().length > 0 &&
+    contactPhone.trim().length > 0 &&
+    industry.trim().length > 0 &&
+    location.trim().length > 0 &&
     password.length >= 8 &&
     confirm.length > 0;
 
@@ -102,8 +130,15 @@ function SignupPage() {
         {
           email: email.trim(),
           password,
-          brand_name: brandName.trim(),
+          // The brand speaks as its trading name; when "Brand name" was left
+          // blank the legal name IS the trading name.
+          brand_name: brandName.trim() || legalName.trim(),
+          legal_name: legalName.trim(),
           website: normaliseWebsite(website),
+          industry: industry.trim(),
+          location: location.trim(),
+          contact_person: contactPerson.trim(),
+          contact_phone: contactPhone.trim(),
         },
         { public: true },
       );
@@ -131,7 +166,7 @@ function SignupPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-brand-dark px-4 py-10">
-      <div className="w-full max-w-md">
+      <div className="w-full max-w-lg">
         <div className="mb-8 flex flex-col items-center text-center">
           <ScaleezyLogo className="w-[12rem]" priority />
           <p className="mt-3 text-[0.625rem] tracking-[0.18em] text-white/45 uppercase">
@@ -160,23 +195,83 @@ function SignupPage() {
 
           <div className="mt-5 space-y-4">
             <div>
-              <Label htmlFor="brand_name" className="text-xs tracking-wide uppercase">
-                Brand name
+              <Label htmlFor="legal_name" className="text-xs tracking-wide uppercase">
+                Legal business name
               </Label>
               <Input
-                id="brand_name"
-                name="brand_name"
+                id="legal_name"
+                name="legal_name"
                 autoComplete="organization"
                 autoFocus
                 required
                 className="mt-1.5"
+                value={legalName}
+                onChange={(e) => setLegalName(e.target.value)}
+                disabled={submitting}
+              />
+              {fieldError.legal_name ? (
+                <p className="mt-1 text-xs text-destructive">{fieldError.legal_name}</p>
+              ) : null}
+            </div>
+            <div>
+              <Label htmlFor="brand_name" className="text-xs tracking-wide uppercase">
+                Brand name{" "}
+                <span className="normal-case text-muted-foreground">(if different)</span>
+              </Label>
+              <Input
+                id="brand_name"
+                name="brand_name"
+                className="mt-1.5"
+                placeholder={legalName.trim() || undefined}
                 value={brandName}
                 onChange={(e) => setBrandName(e.target.value)}
                 disabled={submitting}
               />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Leave blank if you trade under the legal name.
+              </p>
               {fieldError.brand_name ? (
                 <p className="mt-1 text-xs text-destructive">{fieldError.brand_name}</p>
               ) : null}
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <Label htmlFor="industry" className="text-xs tracking-wide uppercase">
+                  Industry / vertical
+                </Label>
+                <Input
+                  id="industry"
+                  name="industry"
+                  required
+                  placeholder="Specialty coffee"
+                  className="mt-1.5"
+                  value={industry}
+                  onChange={(e) => setIndustry(e.target.value)}
+                  disabled={submitting}
+                />
+                {fieldError.industry ? (
+                  <p className="mt-1 text-xs text-destructive">{fieldError.industry}</p>
+                ) : null}
+              </div>
+              <div>
+                <Label htmlFor="location" className="text-xs tracking-wide uppercase">
+                  City / region
+                </Label>
+                <Input
+                  id="location"
+                  name="location"
+                  required
+                  autoComplete="address-level2"
+                  placeholder="Bengaluru, India"
+                  className="mt-1.5"
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value)}
+                  disabled={submitting}
+                />
+                {fieldError.location ? (
+                  <p className="mt-1 text-xs text-destructive">{fieldError.location}</p>
+                ) : null}
+              </div>
             </div>
             <div>
               <Label htmlFor="website" className="text-xs tracking-wide uppercase">
@@ -216,6 +311,46 @@ function SignupPage() {
               {fieldError.email ? (
                 <p className="mt-1 text-xs text-destructive">{fieldError.email}</p>
               ) : null}
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <Label htmlFor="contact_person" className="text-xs tracking-wide uppercase">
+                  Contact person
+                </Label>
+                <Input
+                  id="contact_person"
+                  name="contact_person"
+                  required
+                  autoComplete="name"
+                  className="mt-1.5"
+                  value={contactPerson}
+                  onChange={(e) => setContactPerson(e.target.value)}
+                  disabled={submitting}
+                />
+                {fieldError.contact_person ? (
+                  <p className="mt-1 text-xs text-destructive">{fieldError.contact_person}</p>
+                ) : null}
+              </div>
+              <div>
+                <Label htmlFor="contact_phone" className="text-xs tracking-wide uppercase">
+                  Contact number
+                </Label>
+                <Input
+                  id="contact_phone"
+                  name="contact_phone"
+                  type="tel"
+                  required
+                  autoComplete="tel"
+                  placeholder="+91 98765 43210"
+                  className="mt-1.5"
+                  value={contactPhone}
+                  onChange={(e) => setContactPhone(e.target.value)}
+                  disabled={submitting}
+                />
+                {fieldError.contact_phone ? (
+                  <p className="mt-1 text-xs text-destructive">{fieldError.contact_phone}</p>
+                ) : null}
+              </div>
             </div>
             <div>
               <Label htmlFor="password" className="text-xs tracking-wide uppercase">

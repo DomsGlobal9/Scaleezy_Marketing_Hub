@@ -44,6 +44,9 @@ class Brand(models.Model):
     )
 
     name = models.CharField(max_length=255)
+    # The registered company name behind the brand. Collected at signup for
+    # the approval decision and invoicing; `name` stays what posts speak as.
+    legal_name = models.CharField(max_length=255, blank=True)
     industry = models.CharField(max_length=100, blank=True)
     website = models.URLField(max_length=500, blank=True)
     location = models.CharField(max_length=255, blank=True)
@@ -87,6 +90,9 @@ class Brand(models.Model):
     logo_file_name = models.CharField(max_length=255, blank=True)
 
     contact_phone = models.CharField(max_length=50, blank=True)
+    # Who Scaleezy talks to at this client. The signup email lives on the
+    # owning user; this is the human name that goes with it.
+    contact_person = models.CharField(max_length=150, blank=True)
 
     # Defaults for the poster generator; overridable per generation.
     show_logo_on_posters = models.BooleanField(default=False)

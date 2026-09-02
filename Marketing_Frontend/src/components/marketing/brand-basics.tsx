@@ -138,6 +138,22 @@ export function ClientBasicsSection({ editor }: { editor: BrandEditor }) {
             onChange={(e) => update({ name: e.target.value })}
           />
         </Field>
+        <Field label="Legal business name" hint="The registered company behind the brand.">
+          <Input
+            placeholder="Acme Beverages Pvt Ltd"
+            value={settings.legalName}
+            disabled={loading}
+            onChange={(e) => update({ legalName: e.target.value })}
+          />
+        </Field>
+        <Field label="Contact person" hint="Who Scaleezy talks to at this client.">
+          <Input
+            placeholder="Priya Sharma"
+            value={settings.contactPerson}
+            disabled={loading}
+            onChange={(e) => update({ contactPerson: e.target.value })}
+          />
+        </Field>
         <Field label="Industry / category">
           <Input
             placeholder="Specialty coffee"

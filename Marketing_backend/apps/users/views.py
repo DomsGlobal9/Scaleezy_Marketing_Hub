@@ -44,7 +44,8 @@ class SignupRateThrottle(AnonRateThrottle):
 class SignupView(APIView):
     """
     POST /api/auth/signup/
-        {email, password, brand_name, website?, industry?, first_name?, last_name?}
+        {email, password, brand_name, legal_name?, website?, industry?,
+         location?, contact_person?, contact_phone?, first_name?, last_name?}
         -> {access, refresh, workspace_id, brand_id, brand_status}
 
     One transaction creates the user, their workspace, an OWNER membership, a
@@ -99,8 +100,12 @@ class SignupView(APIView):
                 brand = Brand.objects.create(
                     workspace=workspace,
                     name=data['brand_name'],
+                    legal_name=data.get('legal_name', ''),
                     website=data.get('website', ''),
                     industry=data.get('industry', ''),
+                    location=data.get('location', ''),
+                    contact_person=data.get('contact_person', ''),
+                    contact_phone=data.get('contact_phone', ''),
                     is_default=True,
                     status=Brand.Status.PENDING,
                     created_by=user,

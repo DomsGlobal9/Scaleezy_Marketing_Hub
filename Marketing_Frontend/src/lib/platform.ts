@@ -100,8 +100,12 @@ export interface SignupRow {
   workspace_id: string;
   client_code: string;
   name: string;
+  legal_name: string;
   website: string;
   industry: string;
+  location: string;
+  contact_person: string;
+  contact_phone: string;
   status: BrandStatus | string;
   signed_up_at: string;
   signed_up_by: string;
