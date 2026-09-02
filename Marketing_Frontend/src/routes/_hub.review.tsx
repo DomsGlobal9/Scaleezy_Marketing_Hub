@@ -9,7 +9,7 @@ import {
   Palette,
   XCircle,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,10 @@ import { cn } from "@/lib/utils";
 import { useWorkspaces } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub/review")({
+  // ?item=<content id> deep-links one card: the Missions ledger (and anything
+  // else that produces content) can point at the exact item to look at.
+  validateSearch: (search: Record<string, unknown>): { item?: string } =>
+    typeof search["item"] === "string" && search["item"] ? { item: search["item"] } : {},
   head: () => ({
     meta: [
       { title: "Review — Scaleezy Marketing Hub" },
@@ -191,6 +195,26 @@ function ReviewPage() {
     () => all.filter((i) => !(i.status === "NEEDS_EDITS" && superseded.has(i.id))),
     [all, superseded],
   );
+
+  // Honor ?item= once per target: switch to the tab holding it, then scroll
+  // its card into view after that tab's list has rendered.
+  const { item: focusItemId } = Route.useSearch();
+  const focusHandled = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusItemId || loading || focusHandled.current === focusItemId) return;
+    const target = shown.find((i) => i.id === focusItemId);
+    if (!target) return;
+    focusHandled.current = focusItemId;
+    const owningTab = TABS.find((t) =>
+      (t.statuses as readonly string[]).includes(target.status),
+    );
+    if (owningTab) setTab(owningTab.key);
+    window.setTimeout(() => {
+      document
+        .getElementById(`content-item-${focusItemId}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+  }, [focusItemId, loading, shown]);
 
   const counts = useMemo(() => {
     const acc: Record<string, number> = {};
@@ -437,7 +461,11 @@ function ReviewPage() {
       ) : (
         <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
           {items.map((item) => (
-            <article key={item.id} className="surface-card overflow-hidden">
+            <article
+              key={item.id}
+              id={`content-item-${item.id}`}
+              className="surface-card overflow-hidden"
+            >
               {item.preview_url ? (
                 <button
                   type="button"

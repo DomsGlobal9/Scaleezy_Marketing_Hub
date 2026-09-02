@@ -456,7 +456,9 @@ export function MissionsPanel() {
                   <StatusBadge status={run.status} />
                   {run.content_item ? (
                     <Button asChild size="sm" variant="outline">
-                      <Link to="/review">Open content</Link>
+                      <Link to="/review" search={{ item: run.content_item }}>
+                        Open content
+                      </Link>
                     </Button>
                   ) : null}
                 </div>
