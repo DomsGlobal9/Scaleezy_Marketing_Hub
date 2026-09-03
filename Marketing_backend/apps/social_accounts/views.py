@@ -1,6 +1,6 @@
 import logging
 
-from rest_framework import viewsets, status
+from rest_framework import mixins, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.utils import timezone
@@ -31,25 +31,31 @@ from .utils.encryption import encrypt_token, decrypt_token
 logger = logging.getLogger(__name__)
 
 
-class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
+class SocialConnectionViewSet(
+    WorkspaceScopedMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
     queryset = SocialConnection.objects.all()
     serializer_class = SocialConnectionSerializer
-    # Read by HasWorkspaceRole, which get_permissions attaches to `disconnect`
-    # only: disconnecting clears tokens and halts scheduled publishing until
-    # someone re-runs OAuth, which is account configuration — an ADMIN concern
-    # in the product's permission matrix. Every other action keeps its
-    # existing member-level gate.
+    # OAuth owns creation and disconnect preserves the publishing history.
+    # Ordinary resource writes are limited to the serializer's PATCH toggles;
+    # custom POST actions remain available, but raw POST/PUT/DELETE do not.
+    http_method_names = ['get', 'patch', 'post', 'head', 'options']
     required_role = WorkspaceMember.Role.ADMIN
+    required_read_role = WorkspaceMember.Role.VIEWER
 
     def get_permissions(self):
         # The OAuth callback is reached straight after an external redirect and
         # must not 401 — it carries a single-use authorization code that cannot
-        # be replayed. Everything else requires an authenticated member.
+        # be replayed. Its state originates in the ADMIN-gated connect action.
+        # Every other mutation is account configuration and requires ADMIN;
+        # safe reads remain available to every active workspace member.
         if self.action == 'oauth_callback':
             return [AllowAny()]
-        if self.action == 'disconnect':
-            return [IsAuthenticated(), IsWorkspaceMember(), HasWorkspaceRole()]
-        return [IsAuthenticated(), IsWorkspaceMember()]
+        return [IsAuthenticated(), IsWorkspaceMember(), HasWorkspaceRole()]
 
     def get_adapter(self, platform):
         adapters = {

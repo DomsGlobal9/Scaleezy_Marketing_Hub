@@ -53,4 +53,5 @@ Separate controlled backend slices still required:
 - Frontend production build: PASS (client, SSR, and Nitro output).
 - Combined changed-module backend gate: PASS — 162 tests across `apps.brands.tests`, `apps.knowledge`, and `apps.inspirations`, zero failures.
 - Django system check: PASS, zero issues.
-- Full backend regression and post-change browser verification remain release gates; this checkpoint is not a deployment claim.
+- Full backend regression subsequently passed on 2026-09-04: 1,264 tests, zero failures.
+- Post-change authenticated browser verification remains NOT VERIFIED. Full source lint still reports repository-wide formatting/CRLF failures; see `FIRST_PASS_LEDGER.md`. This checkpoint is not a deployment or complete-product claim.

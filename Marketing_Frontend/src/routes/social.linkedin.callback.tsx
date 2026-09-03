@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
@@ -12,8 +12,12 @@ function LinkedInCallbackPage() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
   const [errorMessage, setErrorMessage] = useState("");
+  const fired = useRef(false);
 
   useEffect(() => {
+    if (fired.current) return;
+    fired.current = true;
+
     const params = new URLSearchParams(window.location.search);
     const code = params.get("code");
     const state = params.get("state");
@@ -76,7 +80,7 @@ function LinkedInCallbackPage() {
     <div className="flex min-h-screen items-center justify-center bg-background">
       <div className="text-center max-w-md px-6">
         {status === "loading" && (
-          <>
+          <div role="status" aria-live="polite">
             <Loader2 className="mx-auto size-10 animate-spin text-primary" />
             <h2 className="mt-4 text-lg font-semibold text-foreground">
               Connecting your LinkedIn account…
@@ -84,32 +88,28 @@ function LinkedInCallbackPage() {
             <p className="mt-2 text-sm text-muted-foreground">
               Please wait while we verify your authorization with LinkedIn.
             </p>
-          </>
+          </div>
         )}
 
         {status === "success" && (
-          <>
+          <div role="status" aria-live="polite">
             <CheckCircle2 className="mx-auto size-10 text-emerald-500" />
-            <h2 className="mt-4 text-lg font-semibold text-foreground">
-              LinkedIn Connected!
-            </h2>
+            <h2 className="mt-4 text-lg font-semibold text-foreground">LinkedIn Connected!</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Redirecting you back to Social Accounts…
             </p>
-          </>
+          </div>
         )}
 
         {status === "error" && (
-          <>
+          <div role="alert">
             <AlertTriangle className="mx-auto size-10 text-amber-500" />
-            <h2 className="mt-4 text-lg font-semibold text-foreground">
-              Connection Failed
-            </h2>
+            <h2 className="mt-4 text-lg font-semibold text-foreground">Connection Failed</h2>
             <p className="mt-2 text-sm text-muted-foreground">{errorMessage}</p>
             <p className="mt-3 text-xs text-muted-foreground">
               Redirecting you back to Social Accounts…
             </p>
-          </>
+          </div>
         )}
       </div>
     </div>

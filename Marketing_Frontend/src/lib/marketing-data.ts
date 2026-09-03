@@ -75,11 +75,11 @@ export const PLATFORMS: PlatformMeta[] = [
   {
     id: "linkedin",
     name: "LinkedIn",
-    accountType: "Organization Page",
-    accountTypeOptions: ["Organization Page", "Member Profile"],
+    accountType: "Personal profile",
+    accountTypeOptions: ["Personal profile"],
     requiredPermissions: ["Publish content", "Upload image / video", "Check publishing status"],
     optionalPermissions: ["Read analytics"],
-    fields: ["Organization Page ID", "Organization name", "Page URL", "Content role"],
+    fields: ["Member ID", "Profile name", "Profile URL"],
     supported: true,
   },
   {

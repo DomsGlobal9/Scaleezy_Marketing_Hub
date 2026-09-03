@@ -17,8 +17,11 @@ from django.utils import timezone
 from django.core.cache import cache
 from rest_framework.test import APIClient
 
+from apps.marketing.models import MarketingAsset
+from apps.publishing.models import PublishingJob, PublishingJobItem
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 from apps.social_accounts.models import SocialConnection, SocialAccountAuditLog
+from apps.social_accounts.serializers import SocialConnectionSerializer
 from apps.social_accounts.integrations.linkedin import LinkedInAdapter
 from apps.social_accounts.integrations.exceptions import (
     LinkedInAuthenticationError,
@@ -306,7 +309,7 @@ class LinkedInConnectionTests(TestCase):
 
 
 class DisconnectRoleGateTests(TestCase):
-    """Role gate on POST /social-accounts/<id>/disconnect/.
+    """Role gates and closed raw mutation paths for social accounts.
 
     Disconnecting clears tokens and halts scheduled publishing until someone
     re-runs OAuth — account configuration, gated at ADMIN. Lower roles must
@@ -376,6 +379,180 @@ class DisconnectRoleGateTests(TestCase):
                 ).exists(),
                 role,
             )
+
+    @patch('apps.social_accounts.views.SocialConnectionViewSet.get_adapter')
+    def test_lower_roles_cannot_connect_patch_or_verify(self, get_adapter):
+        for role in (
+            WorkspaceMember.Role.VIEWER,
+            WorkspaceMember.Role.EDITOR,
+            WorkspaceMember.Role.MANAGER,
+        ):
+            client = self._client_with_role(role)
+            connection = self._connection()
+            headers = {'HTTP_X_WORKSPACE_ID': str(self.workspace.id)}
+            requests = (
+                (
+                    'post', '/api/marketing/social-accounts/connect/',
+                    {'workspace_id': str(self.workspace.id), 'platform': 'LINKEDIN'},
+                ),
+                (
+                    'patch', f'/api/marketing/social-accounts/{connection.id}/',
+                    {'publishing_enabled': False, 'is_default_account': True},
+                ),
+                (
+                    'post', f'/api/marketing/social-accounts/{connection.id}/verify/', {},
+                ),
+            )
+            for method, url, payload in requests:
+                with self.subTest(role=role, method=method, url=url):
+                    response = getattr(client, method)(url, payload, format='json', **headers)
+                    self.assertEqual(response.status_code, 403)
+            connection.refresh_from_db()
+            self.assertTrue(connection.publishing_enabled)
+            self.assertFalse(connection.is_default_account)
+            self.assertEqual(connection.status, SocialConnection.Status.CONNECTED)
+            self.assertIsNone(connection.last_verified_at)
+        get_adapter.assert_not_called()
+        self.assertFalse(SocialAccountAuditLog.objects.exists())
+
+    def test_every_member_role_can_list_and_retrieve(self):
+        connection = self._connection()
+        for role in WorkspaceMember.Role.values:
+            client = self._client_with_role(role)
+            headers = {'HTTP_X_WORKSPACE_ID': str(self.workspace.id)}
+            with self.subTest(role=role):
+                response = client.get('/api/marketing/social-accounts/', **headers)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual([str(row['id']) for row in response.data], [str(connection.id)])
+                response = client.get(
+                    f'/api/marketing/social-accounts/{connection.id}/', **headers
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(str(response.data['id']), str(connection.id))
+
+    def test_raw_create_put_delete_are_refused_and_publishing_history_survives(self):
+        connection = self._connection()
+        asset = MarketingAsset.objects.create(
+            workspace=self.workspace, file_name='history.jpg', source='MANUAL_UPLOAD'
+        )
+        job = PublishingJob.objects.create(
+            workspace=self.workspace, asset=asset, status=PublishingJob.Status.PUBLISHED
+        )
+        item = PublishingJobItem.objects.create(
+            publishing_job=job,
+            social_connection=connection,
+            status=PublishingJobItem.Status.PUBLISHED,
+            external_post_id='confirmed-post',
+            external_post_url='https://example.test/confirmed-post',
+            published_at=timezone.now(),
+        )
+        for role in WorkspaceMember.Role.values:
+            client = self._client_with_role(role)
+            expected = 405 if role in (
+                WorkspaceMember.Role.ADMIN, WorkspaceMember.Role.OWNER
+            ) else 403
+            requests = (
+                ('post', '/api/marketing/social-accounts/'),
+                ('put', f'/api/marketing/social-accounts/{connection.id}/'),
+                ('delete', f'/api/marketing/social-accounts/{connection.id}/'),
+            )
+            for method, url in requests:
+                with self.subTest(role=role, method=method):
+                    response = getattr(client, method)(
+                        url,
+                        {'platform': 'X', 'external_account_id': 'forged', 'account_name': 'Forged'},
+                        format='json',
+                        HTTP_X_WORKSPACE_ID=str(self.workspace.id),
+                    )
+                    self.assertEqual(response.status_code, expected)
+                    self.assertTrue(SocialConnection.objects.filter(pk=connection.pk).exists())
+                    self.assertTrue(PublishingJob.objects.filter(pk=job.pk).exists())
+                    item.refresh_from_db()
+                    self.assertEqual(item.status, PublishingJobItem.Status.PUBLISHED)
+                    self.assertEqual(item.external_post_id, 'confirmed-post')
+        self.assertEqual(SocialConnection.objects.count(), 1)
+        self.assertFalse(SocialAccountAuditLog.objects.exists())
+
+    @patch('apps.social_accounts.views.SocialConnectionViewSet.get_adapter')
+    def test_admin_can_start_connect_or_reconnect(self, get_adapter):
+        client = self._client_with_role(WorkspaceMember.Role.ADMIN)
+        self._connection()
+        get_adapter.return_value.get_authorization_url.return_value = 'https://example.test/oauth'
+        response = client.post(
+            '/api/marketing/social-accounts/connect/',
+            {'workspace_id': str(self.workspace.id), 'platform': 'LINKEDIN'},
+            format='json',
+            HTTP_X_WORKSPACE_ID=str(self.workspace.id),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['data']['authorization_url'], 'https://example.test/oauth')
+        get_adapter.return_value.get_authorization_url.assert_called_once_with(
+            workspace_id=str(self.workspace.id)
+        )
+
+    @patch('apps.social_accounts.views.decrypt_token', return_value='access-token')
+    @patch('apps.social_accounts.views.SocialConnectionViewSet.get_adapter')
+    def test_admin_can_verify(self, get_adapter, decrypt):
+        client = self._client_with_role(WorkspaceMember.Role.ADMIN)
+        connection = self._connection()
+        get_adapter.return_value.get_account_info.return_value = {'id': connection.external_account_id}
+        response = client.post(
+            f'/api/marketing/social-accounts/{connection.id}/verify/',
+            {},
+            format='json',
+            HTTP_X_WORKSPACE_ID=str(self.workspace.id),
+        )
+        self.assertEqual(response.status_code, 200)
+        get_adapter.return_value.get_account_info.assert_called_once_with('access-token')
+        connection.refresh_from_db()
+        self.assertEqual(connection.status, SocialConnection.Status.CONNECTED)
+        self.assertIsNotNone(connection.last_verified_at)
+
+    def test_admin_patch_only_changes_explicit_configuration_fields(self):
+        writable = {
+            name for name, field in SocialConnectionSerializer().fields.items()
+            if not field.read_only
+        }
+        self.assertEqual(writable, {'publishing_enabled', 'is_default_account'})
+        client = self._client_with_role(WorkspaceMember.Role.ADMIN)
+        connection = self._connection()
+        other = MarketingWorkspace.objects.create(customer_id='other', workspace_name='Other')
+        before = SocialConnection.objects.values().get(pk=connection.pk)
+        forged_time = (timezone.now() + timedelta(days=30)).isoformat()
+        response = client.patch(
+            f'/api/marketing/social-accounts/{connection.id}/',
+            {
+                'publishing_enabled': False,
+                'is_default_account': True,
+                'id': str(uuid.uuid4()),
+                'workspace': str(other.id),
+                'platform': 'YOUTUBE',
+                'account_type': 'organization',
+                'external_account_id': 'forged-id',
+                'account_name': 'Forged account',
+                'username': 'forged-user',
+                'profile_url': 'https://example.test/forged',
+                'profile_image_url': 'https://example.test/forged.png',
+                'status': SocialConnection.Status.DISCONNECTED,
+                'last_verified_at': forged_time,
+                'last_published_at': forged_time,
+                'last_error': 'Forged error',
+                'connected_at': forged_time,
+                'reauthorization_required': True,
+            },
+            format='json',
+            HTTP_X_WORKSPACE_ID=str(self.workspace.id),
+        )
+        self.assertEqual(response.status_code, 200)
+        after = SocialConnection.objects.values().get(pk=connection.pk)
+        self.assertFalse(after['publishing_enabled'])
+        self.assertTrue(after['is_default_account'])
+        for field, value in before.items():
+            if field not in {'publishing_enabled', 'is_default_account', 'updated_at'}:
+                with self.subTest(field=field):
+                    self.assertEqual(after[field], value)
+        self.assertNotIn('access_token_encrypted', response.data)
+        self.assertNotIn('refresh_token_encrypted', response.data)
 
 
 class LinkedInPublishingTests(TestCase):

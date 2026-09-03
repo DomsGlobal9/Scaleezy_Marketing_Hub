@@ -745,17 +745,11 @@ function PublishingPage() {
       };
     }
 
-    const saved = await api<{ id: string }>("/api/marketing/assets/", {
-      method: "POST",
-      body: {
-        file_name: draft.name || "content-media",
-        file_url: draft.previewUrl,
-        asset_type: draft.contentType === "video" ? "VIDEO" : "IMAGE",
-        source: draft.source === "ai" ? "AI_GENERATED" : "MANUAL_UPLOAD",
-      },
-    });
-    if (!saved.id) throw new Error("The media was saved without an id.");
-    return { id: saved.id, fileUrl: draft.previewUrl };
+    // Generated media already has a persisted asset id. A URL alone must not
+    // become a trusted publishing asset: integrations may download its bytes.
+    throw new Error(
+      "This media has no saved asset. Open its saved draft in Content or upload the file before saving.",
+    );
   };
 
   const saveContentDraft = async ({ submit = false }: { submit?: boolean } = {}) => {

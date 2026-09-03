@@ -21,7 +21,7 @@ import {
   ShieldCheck,
   Unplug,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -56,7 +56,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api, apiFetch, apiPost } from "@/lib/api";
-import { asList } from "@/lib/brand-master";
 import { readSelectedWorkspaceId, useWorkspaces } from "@/lib/workspace";
 import {
   EmptyState,
@@ -113,6 +112,47 @@ interface AuditRow {
   error: string | null;
 }
 
+const isNullableString = (value: unknown): value is string | null =>
+  value === null || typeof value === "string";
+
+function isConnection(value: unknown): value is Connection {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row["id"] === "string" &&
+    typeof row["platform"] === "string" &&
+    isNullableString(row["account_type"]) &&
+    typeof row["external_account_id"] === "string" &&
+    typeof row["account_name"] === "string" &&
+    isNullableString(row["username"]) &&
+    isNullableString(row["profile_url"]) &&
+    isNullableString(row["profile_image_url"]) &&
+    typeof row["status"] === "string" &&
+    typeof row["publishing_enabled"] === "boolean" &&
+    typeof row["is_default_account"] === "boolean" &&
+    isNullableString(row["last_verified_at"]) &&
+    isNullableString(row["last_published_at"]) &&
+    isNullableString(row["last_error"]) &&
+    typeof row["connected_at"] === "string" &&
+    typeof row["reauthorization_required"] === "boolean"
+  );
+}
+
+function parseConnections(payload: unknown): Connection[] {
+  const rows = Array.isArray(payload)
+    ? payload
+    : payload &&
+        typeof payload === "object" &&
+        Array.isArray((payload as { results?: unknown }).results)
+      ? (payload as { results: unknown[] }).results
+      : null;
+
+  if (!rows || !rows.every(isConnection)) {
+    throw new Error("The accounts service returned an invalid account list.");
+  }
+  return rows;
+}
+
 const ATTENTION = new Set([
   "TOKEN_EXPIRED",
   "REAUTHORIZATION_REQUIRED",
@@ -159,30 +199,31 @@ async function startOAuth(platform: string) {
 function AccountsPage() {
   const [accounts, setAccounts] = useState<Connection[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [connectPlatform, setConnectPlatform] = useState<PlatformMeta | null>(null);
   const [manageId, setManageId] = useState<string | null>(null);
   const [disconnectTarget, setDisconnectTarget] = useState<Connection | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const platformChooserRef = useRef<HTMLElement>(null);
 
-  // The backend gates disconnect at ADMIN (apps/social_accounts/views.py) —
-  // it clears tokens and halts scheduled publishing until someone re-runs
-  // OAuth. Mirror the rule here so lower roles don't discover it via a 403
-  // toast. An unknown role stays enabled; the server still decides.
+  // Account configuration is an ADMIN concern. Keep an unresolved role
+  // fail-closed while workspace membership is still loading or failed.
   const workspaceState = useWorkspaces();
   const activeRole = workspaceState.workspaces.find(
     (workspace) => workspace.id === workspaceState.selectedId,
   )?.role;
-  const canDisconnect =
-    activeRole == null || activeRole === "ADMIN" || activeRole === "OWNER";
+  const canManageAccounts = activeRole === "ADMIN" || activeRole === "OWNER";
 
   const load = useCallback(async () => {
+    setLoadingAccounts(true);
+    setLoadError(null);
     try {
       const rows = await api<unknown>("/api/marketing/social-accounts/");
-      setAccounts(asList<Connection>(rows));
-      setLoadError(null);
+      setAccounts(parseConnections(rows));
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "Could not load accounts.");
-      setAccounts([]);
+    } finally {
+      setLoadingAccounts(false);
     }
   }, []);
 
@@ -196,15 +237,22 @@ function AccountsPage() {
       connected: list.filter((a) => a.status === "CONNECTED").length,
       enabled: list.filter((a) => a.publishing_enabled && a.status === "CONNECTED").length,
       attention: list.filter((a) => ATTENTION.has(a.status) || a.reauthorization_required).length,
-      paused: list.filter((a) => !a.publishing_enabled && a.status === "CONNECTED").length,
+      disabled: list.filter((a) => !a.publishing_enabled && a.status === "CONNECTED").length,
     }),
     [list],
   );
 
+  const requireAccountAdmin = () => {
+    if (canManageAccounts) return true;
+    toast.error("Only a workspace owner or admin can manage social accounts.");
+    return false;
+  };
+
   const patch = async (
     account: Connection,
-    body: Partial<Pick<Connection, "publishing_enabled" | "is_default_account">>,
+    body: Partial<Pick<Connection, "publishing_enabled">>,
   ) => {
+    if (!requireAccountAdmin()) return;
     setBusy(account.id);
     try {
       await api(`/api/marketing/social-accounts/${account.id}/`, { method: "PATCH", body });
@@ -218,6 +266,7 @@ function AccountsPage() {
   };
 
   const verify = async (account: Connection) => {
+    if (!requireAccountAdmin()) return;
     setBusy(account.id);
     try {
       await apiPost(`/api/marketing/social-accounts/${account.id}/verify/`, {});
@@ -233,6 +282,7 @@ function AccountsPage() {
   };
 
   const reconnect = async (account: Connection) => {
+    if (!requireAccountAdmin()) return;
     setBusy(account.id);
     try {
       await startOAuth(account.platform);
@@ -243,6 +293,7 @@ function AccountsPage() {
   };
 
   const disconnect = async (account: Connection) => {
+    if (!requireAccountAdmin()) return;
     setBusy(account.id);
     try {
       await apiPost(`/api/marketing/social-accounts/${account.id}/disconnect/`, {});
@@ -258,6 +309,11 @@ function AccountsPage() {
 
   const manageAccount = list.find((a) => a.id === manageId) ?? null;
 
+  const showPlatformChooser = () => {
+    platformChooserRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    platformChooserRef.current?.focus({ preventScroll: true });
+  };
+
   return (
     <div>
       <PageHeader
@@ -266,7 +322,7 @@ function AccountsPage() {
         subtitle="Connect your social accounts securely and publish approved marketing content from Scaleezy."
         backTo="/"
         actions={
-          <Button onClick={() => setConnectPlatform(PLATFORMS.find((p) => p.supported) ?? null)}>
+          <Button onClick={showPlatformChooser}>
             <Plus className="size-4" /> Connect Account
           </Button>
         }
@@ -285,7 +341,7 @@ function AccountsPage() {
           { label: "Connected Accounts", value: summary.connected },
           { label: "Publishing Enabled", value: summary.enabled },
           { label: "Needs Attention", value: summary.attention },
-          { label: "Publishing Paused", value: summary.paused },
+          { label: "Publishing Disabled", value: summary.disabled },
         ].map((item) => (
           <div key={item.label} className="surface-card p-5">
             <p className="text-2xl font-semibold text-foreground">
@@ -298,20 +354,41 @@ function AccountsPage() {
         ))}
       </section>
 
-      <section className="mt-10">
+      <section className="mt-10" aria-busy={loadingAccounts}>
         <SectionTitle
           label="Connected"
           title="Your connected accounts"
           description="Account details are retrieved automatically after authorization."
         />
         {loadError ? (
-          <p className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
-            {loadError}
+          <div
+            role="alert"
+            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+          >
+            <p>
+              {loadError}
+              {accounts !== null ? " The last loaded account list is still shown." : ""}
+            </p>
+            <Button size="sm" variant="outline" onClick={() => void load()}>
+              <RefreshCw className="size-4" /> Try again
+            </Button>
+          </div>
+        ) : null}
+        {loadingAccounts && accounts !== null ? (
+          <p role="status" aria-live="polite" className="py-3 text-sm text-muted-foreground">
+            Refreshing accounts…
           </p>
-        ) : accounts === null ? (
-          <p className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" /> Loading accounts…
-          </p>
+        ) : null}
+        {accounts === null ? (
+          loadingAccounts ? (
+            <p
+              role="status"
+              aria-live="polite"
+              className="flex items-center gap-2 py-8 text-sm text-muted-foreground"
+            >
+              <Loader2 className="size-4 animate-spin" /> Loading accounts…
+            </p>
+          ) : null
         ) : list.length === 0 ? (
           <EmptyState
             icon={Link2}
@@ -348,7 +425,7 @@ function AccountsPage() {
                         ) : null}
                         {!account.publishing_enabled && account.status === "CONNECTED" ? (
                           <span className="rounded-full border border-border bg-secondary/60 px-2 py-0.5 text-xs text-muted-foreground">
-                            Publishing paused
+                            Publishing disabled
                           </span>
                         ) : null}
                       </div>
@@ -370,7 +447,10 @@ function AccountsPage() {
                   </dl>
 
                   {account.last_error ? (
-                    <p className="mt-3 flex items-start gap-2 rounded-lg border border-gold/30 bg-gold/8 px-3 py-2 text-xs text-foreground">
+                    <p
+                      role="status"
+                      className="mt-3 flex items-start gap-2 rounded-lg border border-gold/30 bg-gold/8 px-3 py-2 text-xs text-foreground"
+                    >
                       <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-gold" />
                       {account.last_error}
                     </p>
@@ -380,51 +460,57 @@ function AccountsPage() {
                     <Button size="sm" variant="outline" onClick={() => setManageId(account.id)}>
                       <Settings2 className="size-4" /> Manage
                     </Button>
-                    {needsReauth ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy === account.id}
-                        onClick={() => reconnect(account)}
-                      >
-                        <RefreshCw className="size-4" /> Reconnect
-                      </Button>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy === account.id}
-                        onClick={() => verify(account)}
-                      >
-                        <RefreshCw className="size-4" /> Verify
-                      </Button>
-                    )}
-                    {account.status === "CONNECTED" ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy === account.id}
-                        onClick={() =>
-                          patch(account, { publishing_enabled: !account.publishing_enabled })
-                        }
-                      >
-                        {account.publishing_enabled ? (
-                          <PauseCircle className="size-4" />
+                    {canManageAccounts ? (
+                      <>
+                        {needsReauth ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busy === account.id}
+                            onClick={() => reconnect(account)}
+                          >
+                            <RefreshCw className="size-4" /> Reconnect
+                          </Button>
                         ) : (
-                          <PlayCircle className="size-4" />
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busy === account.id}
+                            onClick={() => verify(account)}
+                          >
+                            <RefreshCw className="size-4" /> Verify
+                          </Button>
                         )}
-                        {account.publishing_enabled ? "Pause" : "Resume"} Publishing
-                      </Button>
-                    ) : null}
-                    {account.status !== "DISCONNECTED" && canDisconnect ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="text-destructive hover:text-destructive"
-                        onClick={() => setDisconnectTarget(account)}
-                      >
-                        <Unplug className="size-4" /> Disconnect
-                      </Button>
+                        {account.status === "CONNECTED" ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busy === account.id}
+                            onClick={() =>
+                              patch(account, { publishing_enabled: !account.publishing_enabled })
+                            }
+                          >
+                            {account.publishing_enabled ? (
+                              <PauseCircle className="size-4" />
+                            ) : (
+                              <PlayCircle className="size-4" />
+                            )}
+                            {account.publishing_enabled
+                              ? "Disable publishing"
+                              : "Enable publishing"}
+                          </Button>
+                        ) : null}
+                        {account.status !== "DISCONNECTED" ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => setDisconnectTarget(account)}
+                          >
+                            <Unplug className="size-4" /> Disconnect
+                          </Button>
+                        ) : null}
+                      </>
                     ) : null}
                   </div>
                 </article>
@@ -434,18 +520,30 @@ function AccountsPage() {
         )}
       </section>
 
-      <section className="mt-10">
+      <section
+        ref={platformChooserRef}
+        tabIndex={-1}
+        aria-label="Available platforms"
+        className="mt-10 focus:outline-none"
+      >
         <SectionTitle
           label="Available Platforms"
           title="Add another channel"
           description="Authorization uses official platform OAuth. Scaleezy never stores your password."
         />
+        {!canManageAccounts ? (
+          <p className="mb-4 text-sm text-muted-foreground">
+            {activeRole == null
+              ? "Account controls are unavailable until your workspace role is confirmed."
+              : "Only a workspace owner or admin can connect social accounts."}
+          </p>
+        ) : null}
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {PLATFORMS.map((platform) => {
-            const existing = list.find(
+            const connectedCount = list.filter(
               (a) => platformId(a.platform) === platform.id && a.status !== "DISCONNECTED",
-            );
-            if (existing) return null;
+            ).length;
+            const accountStateKnown = accounts !== null;
             return (
               <div key={platform.id} className="surface-card p-5">
                 <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
@@ -459,21 +557,29 @@ function AccountsPage() {
                 </div>
                 <div className="mt-4 flex items-center justify-between gap-3">
                   <StatusBadge
-                    status={platform.supported ? "Not Connected" : "Platform Unavailable"}
+                    status={
+                      !platform.supported
+                        ? "Platform Unavailable"
+                        : !accountStateKnown
+                          ? "Status Unavailable"
+                          : connectedCount > 0
+                            ? "Connected"
+                            : "Not Connected"
+                    }
                   />
                   {platform.supported ? (
-                    <Button size="sm" onClick={() => setConnectPlatform(platform)}>
-                      <Link2 className="size-4" /> Connect Account
+                    <Button
+                      size="sm"
+                      disabled={!canManageAccounts || !accountStateKnown || !!loadError}
+                      onClick={() => setConnectPlatform(platform)}
+                    >
+                      <Link2 className="size-4" />
+                      {connectedCount > 0 ? "Add Another" : "Connect Account"}
                     </Button>
                   ) : (
                     <span className="text-xs text-muted-foreground">Not available yet</span>
                   )}
                 </div>
-                <ul className="mt-4 space-y-1 text-xs text-muted-foreground">
-                  {platform.fields.slice(0, 3).map((f) => (
-                    <li key={f}>· {f} retrieved automatically</li>
-                  ))}
-                </ul>
               </div>
             );
           })}
@@ -489,12 +595,16 @@ function AccountsPage() {
         <AuditTable />
       </section>
 
-      <ConnectDialog platform={connectPlatform} onClose={() => setConnectPlatform(null)} />
+      <ConnectDialog
+        platform={connectPlatform}
+        canManageAccounts={canManageAccounts}
+        onClose={() => setConnectPlatform(null)}
+      />
 
       <ManageSheet
         account={manageAccount}
         busy={busy === manageAccount?.id}
-        canDisconnect={canDisconnect}
+        canManageAccounts={canManageAccounts}
         onClose={() => setManageId(null)}
         onPatch={(body) => manageAccount && patch(manageAccount, body)}
         onVerify={() => manageAccount && verify(manageAccount)}
@@ -518,7 +628,7 @@ function AccountsPage() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={!!busy}
+              disabled={!!busy || !canManageAccounts}
               onClick={(e) => {
                 e.preventDefault();
                 if (disconnectTarget) void disconnect(disconnectTarget);
@@ -538,6 +648,9 @@ function AuditTable() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [platform, setPlatform] = useState("all");
   const [user, setUser] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const platformFilterId = useId();
+  const userFilterId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -555,12 +668,18 @@ function AuditTable() {
         }
       })
       .catch(() => {
-        if (!cancelled) setLoadError("Could not load the audit log. Try reloading the page.");
+        if (!cancelled) setLoadError("Could not load the audit log.");
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadAttempt]);
+
+  const retry = () => {
+    setRows(null);
+    setLoadError(null);
+    setLoadAttempt((attempt) => attempt + 1);
+  };
 
   const platforms = useMemo(
     () => Array.from(new Set((rows ?? []).map((r) => r.platform).filter(Boolean))).sort(),
@@ -576,8 +695,11 @@ function AuditTable() {
   return (
     <div className="surface-card overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+        <Label htmlFor={platformFilterId} className="sr-only">
+          Filter audit log by platform
+        </Label>
         <Select value={platform} onValueChange={setPlatform}>
-          <SelectTrigger className="w-[180px]">
+          <SelectTrigger id={platformFilterId} className="w-[180px]">
             <SelectValue placeholder="Platform" />
           </SelectTrigger>
           <SelectContent>
@@ -589,7 +711,11 @@ function AuditTable() {
             ))}
           </SelectContent>
         </Select>
+        <Label htmlFor={userFilterId} className="sr-only">
+          Filter audit log by user
+        </Label>
         <Input
+          id={userFilterId}
           placeholder="Filter by user"
           className="w-[180px]"
           value={user}
@@ -598,9 +724,20 @@ function AuditTable() {
       </div>
 
       {loadError ? (
-        <p className="px-4 py-10 text-center text-sm text-destructive">{loadError}</p>
+        <div role="alert" className="px-4 py-10 text-center text-sm text-destructive">
+          <p>{loadError}</p>
+          <Button className="mt-3" size="sm" variant="outline" onClick={retry}>
+            <RefreshCw className="size-4" /> Try again
+          </Button>
+        </div>
       ) : rows === null ? (
-        <p className="px-4 py-10 text-center text-sm text-muted-foreground">Loading…</p>
+        <p
+          role="status"
+          aria-live="polite"
+          className="px-4 py-10 text-center text-sm text-muted-foreground"
+        >
+          Loading audit log…
+        </p>
       ) : visible.length === 0 ? (
         <p className="px-4 py-10 text-center text-sm text-muted-foreground">
           {rows.length === 0 ? "No events recorded yet." : "No audit events match these filters."}
@@ -611,6 +748,7 @@ function AuditTable() {
         <>
           <div className="hidden overflow-x-auto lg:block">
             <table className="w-full text-sm">
+              <caption className="sr-only">Social account activity for this workspace</caption>
               <thead>
                 <tr className="border-b border-border text-left text-xs tracking-wide text-muted-foreground uppercase">
                   {[
@@ -694,15 +832,17 @@ function AuditTable() {
 
 function ConnectDialog({
   platform,
+  canManageAccounts,
   onClose,
 }: {
   platform: PlatformMeta | null;
+  canManageAccounts: boolean;
   onClose: () => void;
 }) {
   const [authorizing, setAuthorizing] = useState(false);
 
   const start = async () => {
-    if (!platform) return;
+    if (!platform || !canManageAccounts) return;
     setAuthorizing(true);
     try {
       await startOAuth(platform.id);
@@ -749,7 +889,7 @@ function ConnectDialog({
               from {platform.name} after you authorize.
             </p>
             <DialogFooter>
-              <Button disabled={authorizing} onClick={start}>
+              <Button disabled={authorizing || !canManageAccounts} onClick={start}>
                 {authorizing ? (
                   <>
                     <RefreshCw className="size-4 animate-spin" /> Redirecting to {platform.name}…
@@ -769,7 +909,7 @@ function ConnectDialog({
 function ManageSheet({
   account,
   busy,
-  canDisconnect,
+  canManageAccounts,
   onClose,
   onPatch,
   onVerify,
@@ -778,13 +918,14 @@ function ManageSheet({
 }: {
   account: Connection | null;
   busy: boolean;
-  canDisconnect: boolean;
+  canManageAccounts: boolean;
   onClose: () => void;
-  onPatch: (body: Partial<Pick<Connection, "publishing_enabled" | "is_default_account">>) => void;
+  onPatch: (body: Partial<Pick<Connection, "publishing_enabled">>) => void;
   onVerify: () => void;
   onReconnect: () => void;
   onDisconnect: () => void;
 }) {
+  const publishingEnabledId = useId();
   if (!account) return null;
   return (
     <Sheet open onOpenChange={(o) => !o && onClose()}>
@@ -827,44 +968,49 @@ function ManageSheet({
           <div className="space-y-4">
             <p className="label-eyebrow">Publishing</p>
             <div className="flex items-center justify-between gap-4">
-              <Label className="text-sm font-normal">Publishing enabled</Label>
+              <Label htmlFor={publishingEnabledId} className="text-sm font-normal">
+                Publishing enabled
+              </Label>
               <Switch
+                id={publishingEnabledId}
                 checked={account.publishing_enabled}
-                disabled={busy || account.status !== "CONNECTED"}
+                disabled={busy || !canManageAccounts || account.status !== "CONNECTED"}
                 onCheckedChange={(v) => onPatch({ publishing_enabled: v })}
-              />
-            </div>
-            <div className="flex items-center justify-between gap-4">
-              <Label className="text-sm font-normal">Default account for this platform</Label>
-              <Switch
-                checked={account.is_default_account}
-                disabled={busy}
-                onCheckedChange={(v) => onPatch({ is_default_account: v })}
               />
             </div>
           </div>
 
           <Separator />
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" disabled={busy} onClick={onVerify}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy || !canManageAccounts}
+              onClick={onVerify}
+            >
               <RefreshCw className="size-4" /> Verify connection
             </Button>
-            <Button variant="outline" size="sm" disabled={busy} onClick={onReconnect}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy || !canManageAccounts}
+              onClick={onReconnect}
+            >
               <Link2 className="size-4" /> Reconnect
             </Button>
             <Button
               variant="outline"
               size="sm"
               className="text-destructive"
-              disabled={busy || !canDisconnect}
+              disabled={busy || !canManageAccounts}
               onClick={onDisconnect}
             >
               <Unplug className="size-4" /> Disconnect
             </Button>
           </div>
-          {!canDisconnect ? (
+          {!canManageAccounts ? (
             <p className="text-xs text-muted-foreground">
-              Only a workspace admin can disconnect an account.
+              Only a workspace owner or admin can change account settings.
             </p>
           ) : null}
           <p className="text-xs text-muted-foreground">

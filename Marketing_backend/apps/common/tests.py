@@ -108,7 +108,9 @@ class TenantIsolationTests(APITestCase):
     def test_cannot_delete_another_workspaces_connection(self):
         self.as_(self.mallory, self.ws_b)
         res = self.client.delete(f'/api/marketing/social-accounts/{self.conn_a.id}/')
-        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        # Raw deletion is unavailable even to owners; disconnect preserves the
+        # connection and its publishing history instead of cascading them away.
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
         self.assertTrue(SocialConnection.objects.filter(id=self.conn_a.id).exists())
 
     def test_retry_item_idor_is_closed(self):
