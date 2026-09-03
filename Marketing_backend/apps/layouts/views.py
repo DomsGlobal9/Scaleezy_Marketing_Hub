@@ -143,8 +143,6 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
         return (
             data.get('layout')
             or (item.layout_plugin if item and item.layout_plugin else '')
-            or (brand.layout_preference if brand else '')
-            or registry.DEFAULT_KEY
         )
 
     # -- actions ---------------------------------------------------------
@@ -172,6 +170,13 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
 
         spec, brand = self._spec_for(workspace, data, item=item)
         layout = self._layout_key(data, brand, item)
+        if not layout:
+            return APIResponse(
+                success=False,
+                message='Choose a template before previewing it.',
+                error={'code': 'TEMPLATE_REQUIRED', 'message': 'Choose a template first.'},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
 
         try:
             image = render_engine.compose(spec, layout)
@@ -225,6 +230,13 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
 
         spec, brand = self._spec_for(workspace, data, item=item)
         layout = self._layout_key(data, brand, item)
+        if not layout:
+            return APIResponse(
+                success=False,
+                message='Choose a template before composing this poster.',
+                error={'code': 'TEMPLATE_REQUIRED', 'message': 'Choose a template first.'},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
 
         try:
             image = render_engine.compose(spec, layout)
@@ -284,6 +296,26 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
         else:
             config.pop('copy', None)
 
+        # A manual Poster Studio render is an explicit per-content template
+        # choice. Record that truth so a later request-edits pass preserves
+        # this layout instead of treating the older AI/reference source mode
+        # as permission to silently choose a different one. Original source
+        # provenance remains available separately for audit/lineage.
+        previous_direction = config.get('creative_direction')
+        if isinstance(previous_direction, dict) and previous_direction.get('mode') not in (
+            None,
+            '',
+            'CATALOG_TEMPLATE',
+        ):
+            config.setdefault('source_creative_direction', dict(previous_direction))
+        config['creative_direction'] = {
+            'mode': 'CATALOG_TEMPLATE',
+            'layout': layout,
+            'selection_count': 0,
+            'selections': [],
+            'instructions': [f'Use the selected Scaleezy composition layout: {layout}.'],
+        }
+
         item.layout_plugin = layout
         item.layout_config = config
         item.asset = asset
@@ -294,11 +326,6 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
                 'asset', 'preview_url', 'updated_at',
             ]
         )
-
-        # Picking a layout is a taste decision, and it was going nowhere but
-        # onto this one item. Two independent picks now establish a visual
-        # preference through the ordinary threshold — no special case.
-        self._record_layout_choice(item, layout, request.user)
 
         return APIResponse(
             success=True,
@@ -360,51 +387,6 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
             created_by=user,
         )
 
-    def _record_layout_choice(self, item, layout, user):
-        """One layout pick, recorded as ordinary evidence.
-
-        Deliberately POSITIVE and deliberately not special-cased: it goes
-        through the same threshold as everything else, so a single
-        experimental pick proves nothing and two independent ones establish
-        a leaning the Brand Brain can read.
-        """
-        from apps.learning.models import LearningEvent, LearningScope, SubjectType
-        from apps.learning.services import (
-            LearningError,
-            record_event_safely,
-            reinforce_preference,
-        )
-
-        if item.brand_id is None or not layout:
-            return
-        event = record_event_safely(
-            workspace=item.workspace,
-            brand=item.brand,
-            event_type=LearningEvent.EventType.PREFERENCE_SIGNAL,
-            outcome=LearningEvent.Outcome.POSITIVE,
-            subject_type=SubjectType.CONTENT_ITEM,
-            subject_id=item.pk,
-            context={'action': 'LAYOUT_CHOSEN', 'layout': layout},
-            dedupe_key=f'layout-chosen:{item.pk}:{layout}',
-            created_by=user,
-        )
-        if event is None:
-            return
-        try:
-            reinforce_preference(
-                workspace=item.workspace,
-                brand=item.brand,
-                event=event,
-                category='LAYOUT',
-                attribute='poster_layout',
-                value=layout,
-                scope=LearningScope.BRAND,
-            )
-        except LearningError as exc:
-            # A contradiction with the live preference, or a retired row.
-            # Honest silence: the pick stands, the brand is not re-taught.
-            logger.info("Layout preference not reinforced for %s: %s", item.pk, exc)
-
     @action(detail=False, methods=['post'])
     def export(self, request):
         """Composes the same poster once per destination size."""
@@ -430,6 +412,13 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
         # screen rather than silently reverting to older ones.
         spec, brand = self._spec_for(workspace, data, item=item)
         layout = self._layout_key(data, brand, item)
+        if not layout:
+            return APIResponse(
+                success=False,
+                message='Choose a template before exporting this poster.',
+                error={'code': 'TEMPLATE_REQUIRED', 'message': 'Choose a template first.'},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
         sizes = export_engine.valid(data.get('sizes') or export_engine.DEFAULT_SIZES)
 
         results, failures = [], []

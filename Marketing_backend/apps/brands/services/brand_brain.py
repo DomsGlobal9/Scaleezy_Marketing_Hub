@@ -440,7 +440,6 @@ def compile_brand_brain_from_records(brand, *, memories, rules, preferences, sig
         'visual_language': {
             'palette': brand.palette or {},
             'fonts': brand.fonts or {},
-            'layout_preference': brand.layout_preference,
             'claims': visual,
         },
         'verified_product_truth': _memory_texts(

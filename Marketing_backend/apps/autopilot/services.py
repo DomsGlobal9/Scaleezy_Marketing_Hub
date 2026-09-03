@@ -164,7 +164,17 @@ def _queue_generation(run, policy):
         'contentType': content_type,
         'slides': [],
         'brand_rules': [],
-        'layout': policy.brand.layout_preference,
+        # Enabling an autopilot mission is an explicit delegation to create an
+        # original composition for each run. Template choice never comes from
+        # Brand Brain or a brand-wide default.
+        'creative_direction': {
+            'mode': 'AI_ORIGINAL',
+            'selection_count': 0,
+            'layout': '',
+            'selections': [],
+            'instructions': [],
+        },
+        'layout': '',
         'autopilot': {
             'run_id': str(run.pk),
             'policy_id': str(policy.pk),

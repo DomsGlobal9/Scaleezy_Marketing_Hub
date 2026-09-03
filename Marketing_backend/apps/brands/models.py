@@ -58,10 +58,10 @@ class Brand(models.Model):
     # Visual identity
     palette = models.JSONField(default=default_palette, blank=True)
     fonts = models.JSONField(default=default_fonts, blank=True)
-    # Blank means "no preference", and the compose engine rotates the brand
-    # through the whole template catalogue. This must not default to a named
-    # pattern: it did, and the phantom "preference" pinned every brand's
-    # posters to one skeleton nobody had actually chosen.
+    # Deprecated compatibility column. It is no longer writable, compiled
+    # into Brand Brain, or read by generation. Template choice belongs to the
+    # individual ContentItem. Keep the column for one compatibility window so
+    # old rows and revisions remain readable without a destructive migration.
     layout_preference = models.CharField(
         max_length=64, choices=Layout.choices, default='', blank=True
     )

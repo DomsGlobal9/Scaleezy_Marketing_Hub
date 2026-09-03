@@ -34,6 +34,10 @@ INTERRUPTED_MESSAGE = (
     "Generation was interrupted by a server restart and could not be "
     "completed. Please try again."
 )
+TEMPLATE_INTERRUPTED_MESSAGE = (
+    "The selected template render was interrupted. The generated draft was "
+    "kept and needs a template before review."
+)
 
 
 def _lock_generation_references(*, reference_ids, workspace, brand):
@@ -83,12 +87,28 @@ def generate_content(request_id: str):
     from apps.context.services.generation import generate_marketing_payload
 
     try:
-        request = GeminiGenerationRequest.objects.select_related('workspace').get(
-            id=request_id
-        )
+        request = GeminiGenerationRequest.objects.select_related(
+            'workspace', 'result'
+        ).get(id=request_id)
     except GeminiGenerationRequest.DoesNotExist:
         logger.warning("Generation request %s vanished before it ran", request_id)
         return {'request': str(request_id), 'status': 'MISSING'}
+
+    existing_result = getattr(request, 'result', None)
+    existing_metadata = (
+        existing_result.metadata
+        if existing_result is not None and isinstance(existing_result.metadata, dict)
+        else {}
+    )
+    existing_composition = existing_metadata.get('composition') or {}
+    if (
+        request.status == GeminiGenerationRequest.Status.FAILED
+        and existing_composition.get('status') == 'FAILED'
+    ):
+        # Provider output and a recoverable draft already exist. Retrying this
+        # request would buy the providers again and create a duplicate draft;
+        # template repair happens against the saved ContentItem instead.
+        return {'request': str(request_id), 'status': 'TERMINAL_FAILED'}
 
     # Claim with one database compare-and-swap. Two workers can receive the
     # same task, but only one may move a PENDING request to GENERATING and buy
@@ -234,17 +254,28 @@ def generate_content(request_id: str):
             brand.refresh_from_db(fields=['status'])
             if brand.status != Brand.Status.ACTIVE:
                 raise ValueError('The selected brand is inactive. Generation was not started.')
-        if creative.get('selections'):
+        # New Create Studio jobs always carry an explicit source mode. Resolve
+        # it again at execution time even when it has no reference rows: a
+        # selected catalogue layout can be removed while the job is queued.
+        # Pre-deploy governed inspiration jobs carried selections but no mode;
+        # those are unambiguously REFERENCE and must retain their revocation
+        # checks. Rows with neither stay on the legacy path without inference.
+        creative_mode = str(creative.get('mode') or '')
+        if not creative_mode and creative.get('selections'):
+            creative_mode = 'REFERENCE'
+        if creative_mode:
             from apps.context.services.creative_direction import resolve_creative_direction
 
             creative = resolve_creative_direction(
                 request.workspace,
                 brand,
-                creative.get('selections'),
-                layout=brief.get('layout', ''),
+                creative.get('selections') or [],
+                creative_mode=creative_mode,
+                layout=creative.get('layout', brief.get('layout', '')),
                 instruction=brief.get('instruction', ''),
             )
             brief['creative_direction'] = creative
+            brief['layout'] = creative['layout']
         routed = generate_marketing_payload(
             request.workspace,
             brief,
@@ -346,6 +377,17 @@ def generate_content(request_id: str):
             if content_item is None:
                 raise RuntimeError("Generated content could not be saved.")
 
+            creative_mode = str(
+                (brief.get('creative_direction') or {}).get('mode') or ''
+            )
+            composition = (
+                {
+                    'status': 'PENDING',
+                    'layout': brief.get('layout', ''),
+                }
+                if creative_mode == 'CATALOG_TEMPLATE'
+                else None
+            )
             generation_result, _created = GeminiGenerationResult.objects.update_or_create(
                 generation_request=request,
                 defaults={
@@ -368,11 +410,13 @@ def generate_content(request_id: str):
                     'provider_name': routed['provider_name'],
                     'brain_version': routed['brain_version'],
                     'creative_direction': {
+                        'mode': creative_mode,
                         'selection_count': (brief.get('creative_direction') or {}).get(
                             'selection_count', 0
                         ),
                         'layout': brief.get('layout', ''),
                     },
+                    **({'composition': composition} if composition else {}),
                     'completed_at': timezone.now().isoformat(),
                     'contentItemId': str(content_item.id),
                     'assetId': str(content_item.asset_id) if content_item.asset_id else None,
@@ -399,6 +443,15 @@ def generate_content(request_id: str):
         metadata['assetId'] = (
             str(content_item.asset_id) if content_item.asset_id else None
         )
+        if creative_mode == 'CATALOG_TEMPLATE':
+            metadata['composition'] = {
+                'status': 'COMPLETED',
+                'layout': brief.get('layout', ''),
+            }
+            config = dict(content_item.layout_config or {})
+            config['composition'] = dict(metadata['composition'])
+            content_item.layout_config = config
+            content_item.save(update_fields=['layout_config', 'updated_at'])
         generation_result.asset = content_item.asset
         generation_result.generated_asset_url = (
             content_item.preview_url
@@ -409,7 +462,30 @@ def generate_content(request_id: str):
         generation_result.save(
             update_fields=['asset', 'generated_asset_url', 'metadata']
         )
-    except Exception:
+    except Exception as exc:
+        from apps.layouts.services import PosterCompositionError
+
+        if isinstance(exc, PosterCompositionError):
+            config = dict(content_item.layout_config or {})
+            config['composition'] = {
+                'status': 'FAILED',
+                'error': str(exc)[:300],
+            }
+            content_item.layout_config = config
+            content_item.save(update_fields=['layout_config', 'updated_at'])
+            metadata = dict(generation_result.metadata or {})
+            metadata['composition'] = {
+                'status': 'FAILED',
+                'layout': brief.get('layout', ''),
+                'error': str(exc)[:300],
+            }
+            generation_result.metadata = metadata
+            generation_result.save(update_fields=['metadata'])
+            logger.warning(
+                "Selected template could not be rendered for content %s; "
+                "provider output kept as an honest partial result",
+                content_item.pk,
+            )
         logger.exception(
             "Auto-compose result refresh failed for background content %s; raw image kept",
             content_item.pk,
@@ -478,6 +554,47 @@ def sweep_stuck_generations(now=None):
             pk=request.pk, status=GeminiGenerationRequest.Status.GENERATING
         )
         if getattr(request, 'result', None) is not None:
+            metadata = (
+                dict(request.result.metadata or {})
+                if isinstance(request.result.metadata, dict)
+                else {}
+            )
+            composition = metadata.get('composition') or {}
+            if composition.get('status') == 'PENDING':
+                # Provider output and the draft are durable, but a killed
+                # worker never proved the explicitly selected template was
+                # applied. Fail honestly and keep that draft recoverable;
+                # never rerun providers and never call raw output complete.
+                finished = generating.update(
+                    status=GeminiGenerationRequest.Status.COMPLETED,
+                    error_message='',
+                    completed_at=now,
+                    updated_at=now,
+                )
+                swept += finished
+                if finished:
+                    metadata['composition'] = {
+                        **composition,
+                        'status': 'FAILED',
+                        'error': TEMPLATE_INTERRUPTED_MESSAGE,
+                    }
+                    request.result.metadata = metadata
+                    request.result.save(update_fields=['metadata'])
+                    content_item_id = metadata.get('contentItemId')
+                    if content_item_id:
+                        from apps.content.models import ContentItem
+
+                        item = ContentItem.objects.filter(
+                            pk=content_item_id,
+                            workspace=request.workspace,
+                        ).first()
+                        if item is not None:
+                            config = dict(item.layout_config or {})
+                            config['composition'] = dict(metadata['composition'])
+                            item.layout_config = config
+                            item.save(update_fields=['layout_config', 'updated_at'])
+                    _queue_autopilot_followups(request)
+                continue
             # The generation finished; the worker died between writing the
             # result and the final status save. Finish the bookkeeping rather
             # than paying for the same work again.
@@ -592,10 +709,11 @@ def regenerate_revision(revision_id: str):
     )
     from apps.feedback.models import Feedback
     from apps.feedback.training import element_labels
-    from apps.layouts.services import compose_generated_poster
+    from apps.layouts import registry, variants
+    from apps.layouts.services import compose_generated_poster, generated_layout
 
     revision = (
-        ContentItem.objects.select_related('workspace', 'brand')
+        ContentItem.objects.select_related('workspace', 'brand', 'parent')
         .filter(pk=revision_id, status=ContentItem.Status.DRAFT)
         .first()
     )
@@ -655,6 +773,62 @@ def regenerate_revision(revision_id: str):
     scope = _regeneration_scope(feedback)
     config = dict(revision.layout_config or {})
     config.pop('regenerating', None)
+    parent_config = (
+        revision.parent.layout_config
+        if revision.parent is not None
+        and isinstance(revision.parent.layout_config, dict)
+        else {}
+    )
+    creative_direction = (
+        config.get('creative_direction')
+        or parent_config.get('creative_direction')
+        or {}
+    )
+    if not isinstance(creative_direction, dict):
+        creative_direction = {}
+    if (
+        str(creative_direction.get('mode') or '').strip().upper() == 'REFERENCE'
+        and (scope['copy'] or scope['image'] or revision.brand is None)
+    ):
+        from apps.context.services.creative_direction import (
+            CreativeDirectionError,
+            resolve_creative_direction,
+        )
+
+        try:
+            creative_direction = resolve_creative_direction(
+                revision.workspace,
+                revision.brand,
+                creative_direction.get('selections') or [],
+                creative_mode='REFERENCE',
+                layout='',
+                instruction=instruction,
+            )
+        except CreativeDirectionError as exc:
+            logger.info(
+                "Regeneration %s refused because a reference is no longer available: %s",
+                revision_id,
+                exc,
+            )
+            return finish(
+                'REFERENCE_UNAVAILABLE',
+                regeneration_error={
+                    'code': 'REFERENCE_UNAVAILABLE',
+                    'message': str(exc)[:300],
+                },
+            )
+    if creative_direction:
+        # `request_edits` now carries this directly. The parent fallback keeps
+        # revisions already queued before that fix attributable without ever
+        # consulting a brand-wide or platform-default template.
+        creative_direction = dict(creative_direction)
+        config['creative_direction'] = creative_direction
+    brief['creative_direction'] = creative_direction
+    brief['layout'] = (
+        str(creative_direction.get('layout') or '')
+        if creative_direction.get('mode') == 'CATALOG_TEMPLATE'
+        else ''
+    )
     brain_version = str(getattr(revision.brand, 'brain_version', '') or '')
 
     if (scope['copy'] and scope['image']) or revision.brand is None:
@@ -744,11 +918,24 @@ def regenerate_revision(revision_id: str):
                 **intelligence_in_force(revision.brand, brain_version),
             }
         if scope['restyle']:
-            # The complaint is about the dress, not the photograph or the
-            # words: drop the inherited look and let the compose engine pick
-            # this revision's own layout and style variant. No provider spend.
-            config.pop('style_variant', None)
-            revision.layout_plugin = ''
+            # The complaint is about the dress, not the photograph or words.
+            # A user-delegated AI/reference design may choose a fresh
+            # composition. A catalogue choice (and a legacy stored layout)
+            # remains fixed: regeneration must never silently replace an
+            # explicit per-content template.
+            inherited_variant = config.get('style_variant')
+            if creative_direction.get('mode') in {'AI_ORIGINAL', 'REFERENCE'}:
+                revision.layout_plugin = ''
+                restyle_layout = generated_layout(revision)
+            else:
+                restyle_layout = revision.layout_plugin or str(
+                    creative_direction.get('layout') or ''
+                )
+            config['style_variant'] = variants.different_variant_for(
+                revision,
+                inherited_variant,
+                uses_photo=getattr(registry.get(restyle_layout), 'uses_photo', True),
+            )
 
     revision.layout_config = config
     revision.save(

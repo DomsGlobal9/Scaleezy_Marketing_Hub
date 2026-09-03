@@ -340,7 +340,7 @@ class NothingIsPersistedFromAMissingKeyTests(TestCase):
     def test_create_is_refused_and_persists_no_content_item(self):
         response = self.client.post(
             '/api/marketing/gemini/generate/',
-            {'campaignName': 'Diwali', 'contentType': 'poster'},
+            {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Diwali', 'contentType': 'poster'},
             format='json', **self.hdr,
         )
 
@@ -352,7 +352,7 @@ class NothingIsPersistedFromAMissingKeyTests(TestCase):
     def test_the_usage_log_records_a_failure_not_a_success(self):
         self.client.post(
             '/api/marketing/gemini/generate/',
-            {'campaignName': 'Diwali', 'contentType': 'poster'},
+            {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Diwali', 'contentType': 'poster'},
             format='json', **self.hdr,
         )
 
@@ -383,7 +383,8 @@ class NothingIsPersistedFromAMissingKeyTests(TestCase):
     def test_the_brand_brain_is_not_credited_with_a_generation(self):
         """A refused generation must not look like a compile-worthy event."""
         self.client.post(
-            '/api/marketing/gemini/generate/', {'campaignName': 'Diwali'},
+            '/api/marketing/gemini/generate/',
+            {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Diwali'},
             format='json', **self.hdr,
         )
         self.brand.refresh_from_db()

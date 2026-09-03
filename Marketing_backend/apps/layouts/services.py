@@ -28,6 +28,10 @@ from . import variants
 logger = logging.getLogger(__name__)
 
 
+class PosterCompositionError(RuntimeError):
+    """An explicitly selected poster template could not be rendered."""
+
+
 def persist_composed(workspace, user, item, image, fmt, layout, suffix=''):
     """Uploads one composed image and records it as a MarketingAsset."""
     extension = 'pdf' if fmt == 'PDF' else 'jpg'
@@ -141,20 +145,40 @@ def compose_generated_poster(item, *, user=None):
 
     if item is None or item.content_format != ContentItem.Format.POSTER:
         return None
-    if item.brand is None or not (item.headline or item.cta):
-        return None
-    if item.asset is None or not getattr(item.asset, 'file_url', ''):
+
+    direction = (
+        (item.layout_config or {}).get('creative_direction', {})
+        if isinstance(item.layout_config, dict)
+        else {}
+    )
+    mode = str(direction.get('mode') or '')
+    layout = item.layout_plugin or str(direction.get('layout') or '')
+    required = mode == 'CATALOG_TEMPLATE'
+    if (
+        item.brand is None
+        or not (item.headline or item.cta)
+        or item.asset is None
+        or not getattr(item.asset, 'file_url', '')
+    ):
+        if required:
+            raise PosterCompositionError(
+                'The selected template could not be applied to the generated content.'
+            )
         return None
 
     try:
         # The recorded source photograph when there is one — composing from an
         # already composed poster would bake the words on twice.
         photo = render_engine.photo_for(asset=source_photo_asset(item))
-        layout = (
-            item.layout_plugin
-            or (item.brand.layout_preference or '')
-            or generated_layout(item)
-        )
+        if not layout and mode in {'AI_ORIGINAL', 'REFERENCE'}:
+            # The user explicitly delegated the composition decision for this
+            # one content item. No brand-level template preference participates.
+            layout = generated_layout(item)
+        if not layout:
+            # Old or malformed requests did not make a creative-source choice.
+            # Keeping the paid raw image is honest; silently choosing a
+            # template is not.
+            return None
         _label, width, height, _platform = export_engine.SIZES['instagram_portrait']
         # The copy a studio render saved on this item travels into automatic
         # composes too, so a regenerated revision carries the same words the
@@ -187,8 +211,12 @@ def compose_generated_poster(item, *, user=None):
         image = render_engine.compose(spec, layout)
         source = item.asset
         asset = persist_composed(item.workspace, user, item, image, 'JPEG', layout)
-    except Exception:
+    except Exception as exc:
         logger.exception("Auto-compose failed for content %s; raw image kept", item.pk)
+        if required:
+            raise PosterCompositionError(
+                'The selected template could not be rendered. The generated draft was kept.'
+            ) from exc
         return None
 
     config = dict(item.layout_config or {})

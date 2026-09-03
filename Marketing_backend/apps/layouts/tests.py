@@ -91,6 +91,16 @@ class StyleVariantTests(APITestCase):
         item = self.an_item(42)
         self.assertEqual(variants.variant_for(item), variants.variant_for(item))
 
+    def test_restyle_pick_changes_even_when_the_uuid_pick_collides(self):
+        item = self.an_item(42)
+        inherited = variants.variant_for(item)
+
+        picked = variants.different_variant_for(item, inherited)
+
+        self.assertNotEqual(picked, inherited)
+        self.assertEqual(picked, variants.different_variant_for(item, inherited))
+        self.assertEqual(picked, variants.coerce(picked))
+
     def test_nearby_items_dress_differently(self):
         seen = {tuple(sorted(variants.variant_for(self.an_item(n)).items()))
                 for n in range(48)}
@@ -325,18 +335,18 @@ class LayoutAPITests(APITestCase):
         self.assertTrue(res.data['data']['preview'].startswith('data:image/jpeg;base64,'))
         self.assertFalse(MarketingAsset.objects.exists())
 
-    def test_preview_uses_the_brands_layout_when_none_is_named(self):
+    def test_preview_requires_an_explicit_layout(self):
         self.as_(self.editor)
         res = self.client.post(
             '/api/marketing/layouts/preview/', {'headline': 'Hi'}, format='json'
         )
-        self.assertEqual(res.data['data']['layout'], 'cos_split')
+        self.assertEqual(res.status_code, status.HTTP_422_UNPROCESSABLE_ENTITY)
 
     def test_preview_honours_the_requested_size(self):
         self.as_(self.editor)
         res = self.client.post(
             '/api/marketing/layouts/preview/',
-            {'headline': 'Hi', 'size': 'x'},
+            {'headline': 'Hi', 'size': 'x', 'layout': 'agency_column'},
             format='json',
         )
         self.assertEqual((res.data['data']['width'], res.data['data']['height']), (1600, 900))
@@ -363,7 +373,7 @@ class LayoutAPITests(APITestCase):
         self.as_(self.editor)
         res = self.client.post(
             '/api/marketing/layouts/preview/',
-            {'headline': 'Hi', 'brand': str(theirs.id)},
+            {'headline': 'Hi', 'brand': str(theirs.id), 'layout': 'agency_column'},
             format='json',
         )
         # Falls back to no brand rather than rendering with theirs.
@@ -388,6 +398,34 @@ class LayoutAPITests(APITestCase):
         self.assertIsNotNone(self.item.asset)
         self.assertEqual(self.item.asset.source, MarketingAsset.Source.COMPOSED)
         self.assertEqual((self.item.asset.width, self.item.asset.height), (1080, 1350))
+
+    def test_manual_render_becomes_the_explicit_per_content_template_choice(self):
+        self.item.layout_config = {
+            'creative_direction': {
+                'mode': 'REFERENCE',
+                'selection_count': 1,
+                'selections': [{'id': 'reference-1'}],
+            }
+        }
+        self.item.save(update_fields=['layout_config'])
+        self.as_(self.editor)
+
+        res = self.client.post(
+            '/api/marketing/layouts/render/',
+            {'content_item': str(self.item.id), 'layout': 'data_hero'},
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.item.refresh_from_db()
+        direction = self.item.layout_config['creative_direction']
+        self.assertEqual(direction['mode'], 'CATALOG_TEMPLATE')
+        self.assertEqual(direction['layout'], 'data_hero')
+        self.assertEqual(direction['selections'], [])
+        self.assertEqual(
+            self.item.layout_config['source_creative_direction']['mode'],
+            'REFERENCE',
+        )
 
     def test_render_persists_the_copy_it_composed_with(self):
         """The studio's edited words survive the render: headline/offer land on
@@ -432,6 +470,7 @@ class LayoutAPITests(APITestCase):
             '/api/marketing/layouts/render/',
             {
                 'content_item': str(self.item.id),
+                'layout': 'cos_split',
                 'subheadline': 'Weekend drop only.',
             },
             format='json',
@@ -459,6 +498,7 @@ class LayoutAPITests(APITestCase):
             '/api/marketing/layouts/export/',
             {
                 'content_item': str(self.item.id),
+                'layout': 'cos_split',
                 'sizes': ['instagram_portrait'],
                 'headline': 'Words from the screen',
                 'subheadline': 'Exactly as previewed.',
@@ -475,7 +515,7 @@ class LayoutAPITests(APITestCase):
         self.as_(self.editor)
         res = self.client.post(
             '/api/marketing/layouts/preview/',
-            {'content_item': str(self.item.id)},
+            {'content_item': str(self.item.id), 'layout': 'cos_split'},
             format='json',
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK, res.content[:300])
@@ -524,7 +564,7 @@ class LayoutAPITests(APITestCase):
         self.as_(self.editor)
         res = self.client.post(
             '/api/marketing/layouts/render/',
-            {'content_item': str(self.item.id)},
+            {'content_item': str(self.item.id), 'layout': 'cos_split'},
             format='json',
         )
         self.assertEqual(res.status_code, status.HTTP_502_BAD_GATEWAY)
@@ -592,6 +632,7 @@ class AutoComposeTests(APITestCase):
             workspace=self.ws, brand=self.brand, asset=self.photo,
             headline='Festive drop', cta='50% OFF',
             preview_url=self.photo.file_url,
+            layout_config={'creative_direction': {'mode': 'AI_ORIGINAL'}},
         )
 
     def test_composes_and_points_the_item_at_the_poster(self):
@@ -613,6 +654,26 @@ class AutoComposeTests(APITestCase):
             side_effect=StorageError('down'),
         ):
             self.assertIsNone(services.compose_generated_poster(self.item))
+
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.asset_id, self.photo.id)
+        self.assertEqual(self.item.preview_url, self.photo.file_url)
+
+    def test_selected_template_failure_is_not_reported_as_success(self):
+        self.item.layout_plugin = 'cos_split'
+        self.item.layout_config = {
+            'creative_direction': {
+                'mode': 'CATALOG_TEMPLATE',
+                'layout': 'cos_split',
+            }
+        }
+        self.item.save(update_fields=['layout_plugin', 'layout_config'])
+
+        with patch(
+            'apps.layouts.services.SupabaseStorageService.upload_and_describe',
+            side_effect=StorageError('down'),
+        ), self.assertRaises(services.PosterCompositionError):
+            services.compose_generated_poster(self.item)
 
         self.item.refresh_from_db()
         self.assertEqual(self.item.asset_id, self.photo.id)

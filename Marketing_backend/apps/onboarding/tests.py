@@ -436,7 +436,7 @@ class AcceleratorTests(OnboardingTestBase):
         with patch('apps.ai.router.AIRouter.dispatch', fake_router()):
             response = self.client1.post(
                 GENERATE_URL,
-                {'campaignName': 'Spring', 'product': 'Beans'},
+                {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Spring', 'product': 'Beans'},
                 format='json', **self.ws1(),
             )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -448,7 +448,9 @@ class AcceleratorTests(OnboardingTestBase):
     def test_provider_metadata_is_accurate(self):
         with patch('apps.ai.router.AIRouter.dispatch', fake_router()):
             response = self.client1.post(
-                GENERATE_URL, {'campaignName': 'Spring'}, format='json', **self.ws1(),
+                GENERATE_URL,
+                {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Spring'},
+                format='json', **self.ws1(),
             )
         data = response.json()['data']
         self.assertEqual(data['metadata']['provider'], 'OPENAI')
@@ -470,7 +472,9 @@ class FirstGenerationTests(OnboardingTestBase):
         calls = []
         with patch('apps.ai.router.AIRouter.dispatch', fake_router(calls)):
             response = self.client1.post(
-                GENERATE_URL, {'campaignName': 'First post'}, format='json', **self.ws1(),
+                GENERATE_URL,
+                {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'First post'},
+                format='json', **self.ws1(),
             )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)

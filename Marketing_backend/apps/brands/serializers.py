@@ -18,6 +18,9 @@ class BrandSerializer(serializers.ModelSerializer):
             'logo_url',
             'logo_storage_path',
             'logo_file_name',
+            # Retained temporarily for old rows only. Creative execution is a
+            # per-content decision in Create Studio, never a brand mutation.
+            'layout_preference',
             'created_by',
             'created_at',
             'updated_at',

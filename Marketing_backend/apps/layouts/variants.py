@@ -65,6 +65,28 @@ def variant_for(item, *, uses_photo=True):
     return picks
 
 
+def different_variant_for(item, inherited, *, uses_photo=True):
+    """Pick a deterministic valid dress that differs from ``inherited``.
+
+    A revision's UUID can naturally decode to the same variant as its parent.
+    That is fine for ordinary composition but false for an explicit restyle.
+    In that collision only, rotate the palette to the next valid value; this
+    stays deterministic and guarantees a visible axis changes without adding
+    random state or another provider call.
+    """
+    previous = coerce(inherited)
+    if not uses_photo:
+        previous['photo'] = 'asis'
+    picked = variant_for(item, uses_photo=uses_photo)
+    if picked != previous:
+        return picked
+
+    picked = dict(picked)
+    palette_index = PALETTES.index(picked['palette'])
+    picked['palette'] = PALETTES[(palette_index + 1) % len(PALETTES)]
+    return picked
+
+
 def coerce(candidate):
     """A stored variant dict with every unknown value degraded to its default.
 

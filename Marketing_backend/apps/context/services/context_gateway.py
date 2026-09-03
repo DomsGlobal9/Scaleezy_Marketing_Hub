@@ -244,10 +244,9 @@ def build_generation_context(
             {
                 'palette': visual.get('palette', {}),
                 'fonts': visual.get('fonts', {}),
-                'layout_preference': visual.get('layout_preference', ''),
                 'claims': visual.get('claims', [])[:MAX_ITEMS],
             },
-            {'palette': {}, 'fonts': {}, 'layout_preference': '', 'claims': []},
+            {'palette': {}, 'fonts': {}, 'claims': []},
         ),
 
         # Never trimmed and never task-filtered. A hard rule the model was not

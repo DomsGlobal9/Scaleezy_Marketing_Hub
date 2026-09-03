@@ -3,8 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, apiFetch } from "@/lib/api";
 
 /**
- * Brand basics — identity, logo and the poster defaults the layout engine
- * reads.
+ * Brand basics — identity, logo and reusable brand contact defaults.
  *
  * Server-backed. This used to live in localStorage, which meant the brand kit
  * was lost on a browser change and invisible to the server that actually
@@ -45,8 +44,6 @@ export interface BrandSettings {
   competitors: string[];
   productsServices: ProductService[];
   socialLinks: Record<string, string>;
-  /** Default layout the server composes posters with. */
-  layoutPreference: string;
 }
 
 export const DEFAULT_BRAND_SETTINGS: BrandSettings = {
@@ -70,8 +67,6 @@ export const DEFAULT_BRAND_SETTINGS: BrandSettings = {
   competitors: [],
   productsServices: [],
   socialLinks: {},
-  // Blank = no preference: the engine rotates the whole template catalogue.
-  layoutPreference: "",
 };
 
 /** Raw Brand as the API returns it. */
@@ -99,7 +94,6 @@ export interface BrandDto {
   contact_phone: string;
   show_logo_on_posters: boolean;
   show_phone_on_posters: boolean;
-  layout_preference: string;
 }
 
 /**
@@ -156,7 +150,6 @@ const toSettings = (b: BrandDto): BrandSettings => ({
   competitors: toStringList(b.competitors),
   productsServices: toProducts(b.products_services),
   socialLinks: toStringMap(b.social_links),
-  layoutPreference: b.layout_preference ?? "",
 });
 
 /** Only the fields the API accepts; logo fields are set via the upload route. */
@@ -189,7 +182,6 @@ const toPayload = (patch: Partial<BrandSettings>) => {
   if (patch.showLogoOnPosters !== undefined) out["show_logo_on_posters"] = patch.showLogoOnPosters;
   if (patch.showPhoneOnPosters !== undefined)
     out["show_phone_on_posters"] = patch.showPhoneOnPosters;
-  if (patch.layoutPreference !== undefined) out["layout_preference"] = patch.layoutPreference;
   return out;
 };
 

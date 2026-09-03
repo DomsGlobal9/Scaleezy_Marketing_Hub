@@ -17,7 +17,6 @@ import {
   GraduationCap,
   IdCard,
   Image as ImageIcon,
-  LayoutGrid,
   Lightbulb,
   Loader2,
   RefreshCw,
@@ -52,7 +51,6 @@ import { EnrichFromWebsite, NlNoteBox } from "@/components/marketing/nl-note-box
 import { PageHeader, SectionTitle } from "@/components/marketing/primitives";
 import { BrandProfilePanel } from "@/components/marketing/products-audience-panel";
 import { TeachScaleezy } from "@/components/marketing/teach-scaleezy";
-import { TemplatesPanel } from "@/components/marketing/templates-panel";
 import {
   BRAND_MASTER_TABS,
   LEGACY_TAB_ALIASES,
@@ -812,11 +810,6 @@ function BrainTab({
               {name}
             </span>
           ))}
-          {brain.visual_language.layout_preference ? (
-            <span className="rounded-lg border px-3 py-2 text-xs">
-              Layout: {humanize(brain.visual_language.layout_preference)}
-            </span>
-          ) : null}
         </div>
         <div className="mt-3">
           <ClaimList claims={brain.visual_language.claims ?? []} />
@@ -1162,9 +1155,6 @@ function BrandMasterPage() {
               <TabsTrigger value="inspirations" className="shrink-0 gap-1.5">
                 <Lightbulb className="size-3.5" /> Inspirations
               </TabsTrigger>
-              <TabsTrigger value="templates" className="shrink-0 gap-1.5">
-                <LayoutGrid className="size-3.5" /> Templates
-              </TabsTrigger>
               <TabsTrigger value="rules" className="shrink-0 gap-1.5">
                 <Scale className="size-3.5" /> Rules &amp; Learning
               </TabsTrigger>
@@ -1224,9 +1214,6 @@ function BrandMasterPage() {
                 refresh();
               }}
             />
-          </TabsContent>
-          <TabsContent value="templates">
-            <TemplatesPanel />
           </TabsContent>
           <TabsContent value="rules">
             <RulesTab brandId={brandId} onChanged={refresh} />

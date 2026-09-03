@@ -75,6 +75,7 @@ class CreateFromInspirationTests(TenantFixtureMixin, TestCase):
 
     def payload(self, reference, **overrides):
         values = {
+            'creativeMode': 'REFERENCE',
             'campaignName': 'New season',
             'contentType': 'poster',
             'instruction': 'Create a similar poster using our brand identity.',

@@ -154,6 +154,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 }
             )
         return {
+            'mode': creative_direction.get('mode', ''),
             'selection_count': len(selections),
             'layout': creative_direction.get('layout', ''),
             'selections': selections,
@@ -323,6 +324,9 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         offer = data.get('offer', '')
         brand_tone = data.get('brandTone', data.get('brand_tone', ''))
         reference_image_base64 = data.get('referenceImageBase64', '')
+        content_type = str(
+            data.get('contentType', data.get('content_type', ''))
+        ).strip()
 
         request_data = {
             'campaign_name': campaign_name,
@@ -333,7 +337,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'offer': offer,
             'brand_tone': brand_tone,
             'reference_image_base64': reference_image_base64,
-            'contentType': data.get('contentType', ''),
+            'contentType': content_type,
             'slides': data.get('slides') or [],
             'video_duration': data.get('videoDuration', data.get('video_duration', '')),
             'video_aspect': data.get('videoAspect', data.get('video_aspect', '')),
@@ -394,6 +398,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 workspace,
                 brand,
                 data.get('inspirationSelections', data.get('inspiration_selections', [])),
+                creative_mode=data.get('creativeMode', data.get('creative_mode', '')),
                 layout=data.get('layout', ''),
                 instruction=instruction,
             )
@@ -402,6 +407,45 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 success=False,
                 message=str(exc),
                 error={'code': exc.code, 'message': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if (
+            creative_direction['mode'] == 'REFERENCE'
+            and not creative_direction['selections']
+            and not reference_image_base64
+        ):
+            return APIResponse(
+                success=False,
+                message='Choose or upload a reference before generation.',
+                error={
+                    'code': 'REFERENCE_REQUIRED',
+                    'message': 'Choose or upload a reference before generation.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if creative_direction['mode'] != 'REFERENCE' and reference_image_base64:
+            return APIResponse(
+                success=False,
+                message='An uploaded reference can only be used in inspiration mode.',
+                error={
+                    'code': 'INVALID_CREATIVE_SOURCE',
+                    'message': (
+                        'An uploaded reference can only be used in inspiration mode.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if (
+            creative_direction['mode'] == 'CATALOG_TEMPLATE'
+            and content_type.casefold() not in {'', 'poster'}
+        ):
+            return APIResponse(
+                success=False,
+                message='Templates are available only for poster generation.',
+                error={
+                    'code': 'INVALID_CREATIVE_SOURCE',
+                    'message': 'Templates are available only for poster generation.',
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         request_data['creative_direction'] = creative_direction
@@ -478,12 +522,24 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             # Bake the copy onto the photo with the same engine the studio's
             # "Use this poster" uses. Best-effort — a compose failure leaves
             # the raw generated image in place.
-            from apps.layouts.services import compose_generated_poster
-
-            compose_generated_poster(
-                content_item,
-                user=request.user if request.user.is_authenticated else None,
+            from apps.layouts.services import (
+                PosterCompositionError,
+                compose_generated_poster,
             )
+
+            try:
+                compose_generated_poster(
+                    content_item,
+                    user=request.user if request.user.is_authenticated else None,
+                )
+            except PosterCompositionError as exc:
+                config = dict(content_item.layout_config or {})
+                config['composition'] = {
+                    'status': 'FAILED',
+                    'error': str(exc)[:300],
+                }
+                content_item.layout_config = config
+                content_item.save(update_fields=['layout_config', 'updated_at'])
 
         response_payload = {
             'postTitle': result_data.get('postTitle', ''),
@@ -503,9 +559,17 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 'provider_name': routed['provider_name'],
                 'brain_version': routed['brain_version'],
                 'creative_direction': {
+                    'mode': creative_direction['mode'],
                     'selection_count': creative_direction['selection_count'],
                     'layout': creative_direction['layout'],
                 },
+                **(
+                    {'composition': content_item.layout_config['composition']}
+                    if content_item
+                    and isinstance(content_item.layout_config, dict)
+                    and content_item.layout_config.get('composition')
+                    else {}
+                ),
             },
             'contentItemId': str(content_item.id) if content_item else None,
             'assetId': str(content_item.asset_id) if content_item and content_item.asset_id else None,
@@ -589,6 +653,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 workspace,
                 brand,
                 data.get('inspirationSelections', data.get('inspiration_selections', [])),
+                creative_mode=data.get('creativeMode', data.get('creative_mode', '')),
                 layout=data.get('layout', ''),
                 instruction=instruction,
             )
@@ -615,6 +680,46 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             )
 
         content_type = str(data.get('contentType', data.get('content_type', ''))).strip()
+        has_uploaded_reference = bool(data.get('referenceImageBase64'))
+        if (
+            creative_direction['mode'] == 'REFERENCE'
+            and not creative_direction['selections']
+            and not has_uploaded_reference
+        ):
+            return APIResponse(
+                success=False,
+                message='Choose or upload a reference before generation.',
+                error={
+                    'code': 'REFERENCE_REQUIRED',
+                    'message': 'Choose or upload a reference before generation.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if creative_direction['mode'] != 'REFERENCE' and has_uploaded_reference:
+            return APIResponse(
+                success=False,
+                message='An uploaded reference can only be used in inspiration mode.',
+                error={
+                    'code': 'INVALID_CREATIVE_SOURCE',
+                    'message': (
+                        'An uploaded reference can only be used in inspiration mode.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if (
+            creative_direction['mode'] == 'CATALOG_TEMPLATE'
+            and content_type.casefold() not in {'', 'poster'}
+        ):
+            return APIResponse(
+                success=False,
+                message='Templates are available only for poster generation.',
+                error={
+                    'code': 'INVALID_CREATIVE_SOURCE',
+                    'message': 'Templates are available only for poster generation.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if analyze_before_generation_ids and content_type.casefold() != 'poster':
             return APIResponse(
                 success=False,

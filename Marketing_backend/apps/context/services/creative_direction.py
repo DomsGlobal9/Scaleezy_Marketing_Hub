@@ -31,6 +31,7 @@ SOURCE_TYPES = frozenset({'PLATFORM', 'BRAND'})
 ROLES = frozenset({'PRIMARY', 'SUPPORTING'})
 DIRECTIONS = frozenset({'USE', 'AVOID'})
 FOCUS_AREAS = frozenset(choice.value for choice in SignalCategory)
+CREATIVE_MODES = frozenset({'AI_ORIGINAL', 'CATALOG_TEMPLATE', 'REFERENCE'})
 
 
 def _value(row, camel: str, snake: str, default=None):
@@ -233,7 +234,15 @@ def _prompt_lines(selections: list[dict], layout: str, instruction: str = '') ->
     return lines
 
 
-def resolve_creative_direction(workspace, brand, raw_rows, *, layout='', instruction='') -> dict:
+def resolve_creative_direction(
+    workspace,
+    brand,
+    raw_rows,
+    *,
+    creative_mode='',
+    layout='',
+    instruction='',
+) -> dict:
     """Validate, resolve and attribute every selection in input order.
 
     No selection-count cap is imposed.  Platform rows must be published and
@@ -242,7 +251,28 @@ def resolve_creative_direction(workspace, brand, raw_rows, *, layout='', instruc
     the endpoint cannot be used to probe another tenant's records.
     """
     normalized = _normalize_rows(raw_rows)
+    creative_mode = str(creative_mode or '').strip().upper()
     layout = str(layout or '').strip()
+    if creative_mode not in CREATIVE_MODES:
+        raise CreativeDirectionError(
+            'Choose how Scaleezy should design this content.',
+            code='CREATIVE_SOURCE_REQUIRED',
+        )
+    if creative_mode == 'CATALOG_TEMPLATE' and not layout:
+        raise CreativeDirectionError(
+            'Choose a template before generation.',
+            code='TEMPLATE_REQUIRED',
+        )
+    if creative_mode != 'CATALOG_TEMPLATE' and layout:
+        raise CreativeDirectionError(
+            'A catalogue template can only be used in template mode.',
+            code='INVALID_CREATIVE_SOURCE',
+        )
+    if creative_mode != 'REFERENCE' and normalized:
+        raise CreativeDirectionError(
+            'Creative references can only be used in inspiration mode.',
+            code='INVALID_CREATIVE_SOURCE',
+        )
     if layout and layout_registry.get(layout) is None:
         raise CreativeDirectionError('The selected layout is not installed.', code='INVALID_LAYOUT')
 
@@ -280,6 +310,7 @@ def resolve_creative_direction(workspace, brand, raw_rows, *, layout='', instruc
             resolved.append(_brand_payload(brand_rows[selection['id']], selection))
 
     return {
+        'mode': creative_mode,
         'selection_count': len(resolved),
         'layout': layout,
         'selections': resolved,

@@ -87,6 +87,7 @@ class GenerationRoutingTests(TenantFixtureMixin, TestCase):
 
     def payload(self, **overrides):
         data = {
+            'creativeMode': 'AI_ORIGINAL',
             'campaignName': 'Spring launch',
             'product': 'Single origin',
             'audience': 'Home brewers',

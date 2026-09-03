@@ -64,13 +64,13 @@ import { readSelectedWorkspaceId } from "@/lib/workspace";
 export const Route = createFileRoute("/_hub/publishing")({
   head: () => ({
     meta: [
-      { title: "Publishing — Scaleezy Marketing Hub" },
+      { title: "Create Studio — Scaleezy Marketing Hub" },
       {
         name: "description",
         content:
-          "Create or upload your marketing content, select your social channels, and publish everywhere from one place.",
+          "Create brand-aware posters, carousels and videos, then review and publish them from one place.",
       },
-      { property: "og:title", content: "Publishing — Scaleezy Marketing Hub" },
+      { property: "og:title", content: "Create Studio — Scaleezy Marketing Hub" },
       {
         property: "og:description",
         content: "Independent publishing jobs per platform with retry for failed channels only.",
@@ -81,16 +81,12 @@ export const Route = createFileRoute("/_hub/publishing")({
 });
 
 type WorkflowStep =
-  | "create_or_upload"
-  | "inspiration_form"
-  | "ai_form"
-  | "ai_generating"
-  | "manual_upload"
-  | "preview"
-  | "publish_setup";
+  "inspiration_form" | "ai_form" | "ai_generating" | "manual_upload" | "preview" | "publish_setup";
 
 /** What the AI is asked to produce. Drives the extra fields on the brief. */
 type ContentType = "poster" | "video" | "carousel";
+type CreativeMode = "AI_ORIGINAL" | "CATALOG_TEMPLATE" | "REFERENCE";
+const MAX_CREATIVE_BRIEF_CHARS = 1000;
 
 /** One carousel slide. `description` is the brief for that specific position. */
 interface CarouselSlide {
@@ -115,6 +111,8 @@ interface DraftAsset {
   postDescription: string;
   postHashtags: string;
   previewUrl?: string | undefined;
+  /** Honest partial state when provider output survived but a chosen template did not render. */
+  compositionWarning?: string | undefined;
   /** Populated for carousels — one entry per slide, in order. */
   slides?: CarouselSlide[];
 }
@@ -240,6 +238,32 @@ const CONTENT_TYPES: {
   },
 ];
 
+const CREATIVE_SOURCES: {
+  id: CreativeMode;
+  label: string;
+  hint: string;
+  icon: typeof ImageIcon;
+}[] = [
+  {
+    id: "AI_ORIGINAL",
+    label: "Design it for me",
+    hint: "Scaleezy creates a fresh direction from your brief and Brand Brain.",
+    icon: Sparkles,
+  },
+  {
+    id: "CATALOG_TEMPLATE",
+    label: "Choose a template",
+    hint: "Pick the exact Scaleezy composition for this poster only.",
+    icon: Images,
+  },
+  {
+    id: "REFERENCE",
+    label: "Use inspiration",
+    hint: "Upload your own or choose any saved or platform reference.",
+    icon: Wand2,
+  },
+];
+
 const VIDEO_DURATIONS = ["10 seconds", "15 seconds", "30 seconds", "60 seconds"];
 const VIDEO_ASPECTS = ["9:16 (Reels / Shorts)", "1:1 (Feed)", "16:9 (YouTube)"];
 const VIDEO_STYLES = [
@@ -312,7 +336,7 @@ const canPublishTo = (acc: PublishingAccount, isVideoAsset: boolean): boolean =>
 
 function PublishingPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [step, setStep] = useState<WorkflowStep>("create_or_upload");
+  const [step, setStep] = useState<WorkflowStep>("ai_form");
   const [asset, setAsset] = useState<DraftAsset | null>(null);
   const [contentSaving, setContentSaving] = useState(false);
   const [contentLocked, setContentLocked] = useState(false);
@@ -341,6 +365,8 @@ function PublishingPage() {
   const [occasion, setOccasion] = useState("");
   const [offer, setOffer] = useState("");
   const [brandTone, setBrandTone] = useState("");
+  const [creativeBrief, setCreativeBrief] = useState("");
+  const [creativeMode, setCreativeMode] = useState<CreativeMode | null>(null);
   const [creativeSelections, setCreativeSelections] = useState<CreativeSelection[]>([]);
   const [creativeLayout, setCreativeLayout] = useState("");
   const [inspirationFlowError, setInspirationFlowError] = useState<string | null>(null);
@@ -357,8 +383,22 @@ function PublishingPage() {
   const [slides, setSlides] = useState<CarouselSlide[]>([newSlide(), newSlide(), newSlide()]);
 
   const { brandId } = useBrandSettings();
-  const layoutCatalogue = useLayoutCatalogue();
+  const layoutCatalogue = useLayoutCatalogue(
+    creativeMode === "CATALOG_TEMPLATE" || Boolean(asset?.contentItemId),
+  );
   const creativeBrand = useRef<string | null>(null);
+
+  const chooseCreativeMode = (next: CreativeMode) => {
+    setCreativeMode(next);
+    if (next !== "CATALOG_TEMPLATE") setCreativeLayout("");
+  };
+
+  useEffect(() => {
+    if (contentType !== "poster" && creativeMode === "CATALOG_TEMPLATE") {
+      setCreativeMode(null);
+      setCreativeLayout("");
+    }
+  }, [contentType, creativeMode]);
 
   useEffect(() => {
     if (creativeBrand.current && creativeBrand.current !== brandId) {
@@ -372,7 +412,19 @@ function PublishingPage() {
       setInspirationFlowError(null);
       setActiveInspirationGeneration(null);
       setInspirationRetryAllowed(false);
-      setStep("create_or_upload");
+      setCampaignName("");
+      setProduct("");
+      setAudience("");
+      setLocation("");
+      setOccasion("");
+      setOffer("");
+      setBrandTone("");
+      setCreativeBrief("");
+      setCreativeMode(null);
+      setCreativeLayout("");
+      setVideoScript("");
+      setSlides([newSlide(), newSlide(), newSlide()]);
+      setStep("ai_form");
     }
     creativeBrand.current = brandId;
   }, [brandId]);
@@ -414,13 +466,29 @@ function PublishingPage() {
     let cancelled = false;
     void fetchCurrentBrand()
       .then((brand) => {
-        if (!cancelled) setAwaitingApproval(brand?.status === "PENDING");
+        if (cancelled) return;
+        setAwaitingApproval(brand?.status === "PENDING");
+        if (!brand) return;
+        setAudience((current) => current || brand.audience || "");
+        setLocation((current) => current || brand.location || "");
+        setBrandTone((current) => current || brand.brand_tone || "");
+        const firstProduct = Array.isArray(brand.products_services)
+          ? brand.products_services.find((row) => {
+              if (!row || typeof row !== "object") return false;
+              return typeof (row as { name?: unknown }).name === "string";
+            })
+          : undefined;
+        const firstProductName =
+          firstProduct && typeof firstProduct === "object"
+            ? String((firstProduct as { name?: unknown }).name || "")
+            : "";
+        setProduct((current) => current || firstProductName);
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [brandId]);
 
   /** (Re)loads the first page of history; "Load more" appends the rest. */
   const loadHistory = useCallback(async () => {
@@ -429,9 +497,7 @@ function PublishingPage() {
       // envelope so history stops fetching every job ever published.
       // An older deployment ignores the params and answers the bare
       // array it always has — asList reads both.
-      const res = await apiFetch(
-        `/api/marketing/publishing/jobs/?page_size=${HISTORY_PAGE_SIZE}`,
-      );
+      const res = await apiFetch(`/api/marketing/publishing/jobs/?page_size=${HISTORY_PAGE_SIZE}`);
       const data = await res.json();
       const jobs = asList<PublishingJobDto>(data);
       if (
@@ -532,6 +598,10 @@ function PublishingPage() {
 
   const refreshComposedPoster = async () => {
     if (!asset?.contentItemId) return;
+    // `onRendered` calls this only after the replacement composition was
+    // saved successfully. Resolve the partial-failure warning immediately;
+    // a follow-up preview refresh failure must not resurrect stale guidance.
+    setAsset((current) => (current ? { ...current, compositionWarning: undefined } : current));
     try {
       const item = await api<ContentItemDto>(`/api/marketing/content/${asset.contentItemId}/`);
       setAsset((current) =>
@@ -816,7 +886,7 @@ function PublishingPage() {
     } finally {
       setRunning(false);
       await loadHistory();
-      setStep("create_or_upload");
+      setStep("ai_form");
     }
   };
 
@@ -895,6 +965,30 @@ function PublishingPage() {
   };
 
   const handleGenerate = async (inspiration?: InspirationGenerationOptions) => {
+    const requestedContentType: ContentType = inspiration ? "poster" : contentType;
+    const requestedMode: CreativeMode = inspiration ? "REFERENCE" : creativeMode!;
+    if (!inspiration) {
+      if (!creativeMode) {
+        toast.error("Choose how Scaleezy should design this content.");
+        return;
+      }
+      if (creativeMode === "CATALOG_TEMPLATE" && !creativeLayout) {
+        toast.error("Choose a template before generation.");
+        return;
+      }
+      if (
+        creativeMode === "REFERENCE" &&
+        !referenceImageBase64 &&
+        creativeSelections.length === 0
+      ) {
+        toast.error("Upload or choose at least one inspiration.");
+        return;
+      }
+      if (!creativeBrief.trim() && !campaignName.trim() && !product.trim() && !offer.trim()) {
+        toast.error("Tell Scaleezy what you want to create.");
+        return;
+      }
+    }
     const startedBrandId = brandId;
     const controller = new AbortController();
     let queued = false;
@@ -913,10 +1007,10 @@ function PublishingPage() {
       // polling latency and returns the identical payload.
       const endpoint = "/api/marketing/ai-generation/generate-async/";
 
-      const requestedContentType: ContentType = inspiration ? "poster" : contentType;
       const requestedCampaignName = inspiration?.inspirationTitle || campaignName;
       const generationPayload = inspiration
         ? {
+            creativeMode: requestedMode,
             campaignName: requestedCampaignName,
             product: "",
             audience: "",
@@ -939,6 +1033,7 @@ function PublishingPage() {
             analyzeBeforeGenerationIds: [inspiration.inspirationId],
           }
         : {
+            creativeMode: requestedMode,
             campaignName,
             product,
             audience,
@@ -946,9 +1041,10 @@ function PublishingPage() {
             occasion,
             offer,
             brandTone,
-            referenceImageBase64,
-            inspirationSelections: creativeSelections,
-            layout: creativeLayout,
+            instruction: creativeBrief,
+            referenceImageBase64: requestedMode === "REFERENCE" ? referenceImageBase64 : "",
+            inspirationSelections: requestedMode === "REFERENCE" ? creativeSelections : [],
+            layout: requestedMode === "CATALOG_TEMPLATE" ? creativeLayout : "",
             contentType: requestedContentType,
             ...(requestedContentType === "video"
               ? {
@@ -1024,6 +1120,13 @@ function PublishingPage() {
         postDescription: d.postDescription || "",
         postHashtags: d.postHashtags || "",
         previewUrl: d.posterImageUrl || d.videoUrl || undefined,
+        compositionWarning:
+          d.metadata?.composition?.status === "FAILED"
+            ? String(
+                d.metadata.composition.error ||
+                  "The selected template could not be applied. Your generated draft was kept.",
+              )
+            : undefined,
         // Row the backend persisted for this generation; sent on publish
         // so the approval gate can be enforced.
         contentItemId: d.contentItemId || undefined,
@@ -1272,7 +1375,7 @@ function PublishingPage() {
       } catch (e) {
         console.error("Failed to process video", e);
         toast.error("Failed to process video.");
-        setStep("create_or_upload");
+        setStep("ai_form");
       } finally {
         setIsGeneratingCaptions(false);
       }
@@ -1350,7 +1453,7 @@ function PublishingPage() {
         } catch (e) {
           console.error("Failed to generate captions", e);
           toast.error("Failed to generate captions.");
-          setStep("create_or_upload");
+          setStep("ai_form");
         } finally {
           setIsGeneratingCaptions(false);
         }
@@ -1366,7 +1469,7 @@ function PublishingPage() {
         ? "Uploading your video and watching it to write the caption."
         : activeInspirationGeneration
           ? "Reading the inspiration and creating an original poster with this client's Brand Brain."
-          : referenceImageBase64
+          : creativeMode === "REFERENCE" && referenceImageBase64
             ? "Analysing your reference image to craft the marketing asset."
             : `Drafting your ${contentType} from the campaign brief.`;
 
@@ -1374,91 +1477,12 @@ function PublishingPage() {
     <div>
       <PageHeader
         eyebrow="Marketing Hub"
-        title="Publishing"
-        subtitle="Create or upload your marketing content, select your social channels, and publish everywhere from one place."
+        title="Create Studio"
+        subtitle="Describe the outcome, choose the creative direction, and let Scaleezy build it with your Brand Brain."
         backTo="/"
       />
 
       <div className="grid gap-6">
-        {/* STEP 1: CREATE OR UPLOAD */}
-        {step === "create_or_upload" && (
-          <section className="surface-card p-5 sm:p-8">
-            <h2 className="mb-6 text-xl font-semibold tracking-tight text-foreground">
-              CREATE YOUR CONTENT
-            </h2>
-
-            <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
-              <button
-                onClick={() => {
-                  setInspirationFlowError(null);
-                  setActiveInspirationGeneration(null);
-                  setInspirationRetryAllowed(false);
-                  setStep("inspiration_form");
-                }}
-                className="group relative flex flex-col items-center justify-center gap-4 rounded-lg border border-primary bg-black p-8 text-center text-white transition-colors hover:bg-black/90 sm:col-span-2 xl:col-span-1"
-              >
-                <div className="flex size-14 items-center justify-center rounded-full bg-primary text-black">
-                  <Wand2 className="size-6" />
-                </div>
-                <div>
-                  <p className="text-xs font-semibold tracking-[0.18em] text-primary uppercase">
-                    Fastest path
-                  </p>
-                  <h3 className="mt-1 text-lg font-semibold">Create from inspiration</h3>
-                  <p className="mt-2 text-sm text-white/70">
-                    Upload an image for visual direction or paste a public page for copy and tone.
-                    Scaleezy creates an original poster using this client&apos;s Brand Brain.
-                  </p>
-                </div>
-                <div className="mt-4 rounded-lg bg-primary px-6 py-2 text-sm font-semibold text-black transition-transform group-hover:scale-[1.02]">
-                  Create similar poster
-                </div>
-              </button>
-
-              <button
-                onClick={() => {
-                  setReferenceImageBase64("");
-                  setStep("ai_form");
-                }}
-                className="group relative flex flex-col items-center justify-center gap-4 rounded-lg border border-primary/35 bg-primary/8 p-8 text-center transition-colors hover:border-primary"
-              >
-                <div className="flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                  <Sparkles className="size-6" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-foreground">Generate with AI</h3>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    Create marketing content using AI.
-                  </p>
-                </div>
-                <div className="mt-4 rounded-lg bg-primary px-6 py-2 text-sm font-semibold text-primary-foreground transition-colors group-hover:bg-foreground group-hover:text-background">
-                  Generate Content
-                </div>
-              </button>
-
-              <button
-                onClick={() => setStep("manual_upload")}
-                className="group relative flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed border-border bg-secondary/30 p-8 text-center transition-all hover:border-primary/50 hover:bg-secondary/50"
-              >
-                <div className="flex size-14 items-center justify-center rounded-full bg-background text-muted-foreground shadow-sm group-hover:text-primary">
-                  <Upload className="size-6" />
-                </div>
-                <div>
-                  <h3 className="text-lg  font-semibold text-foreground">
-                    ↑ Upload Media (Image / Video)
-                  </h3>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    Upload a reference image or a final ready media file.
-                  </p>
-                </div>
-                <div className="cursor-pointer mt-4 rounded-full bg-background px-6 py-2 text-sm font-medium text-foreground border border-border transition-transform group-hover:scale-105 shadow-sm">
-                  Upload Media
-                </div>
-              </button>
-            </div>
-          </section>
-        )}
-
         {step === "inspiration_form" && (
           <CreateFromInspiration
             key={brandId ?? "no-brand"}
@@ -1484,7 +1508,7 @@ function PublishingPage() {
             }}
             onCancel={() => {
               setInspirationFlowError(null);
-              setStep("create_or_upload");
+              setStep("ai_form");
             }}
           />
         )}
@@ -1494,29 +1518,22 @@ function PublishingPage() {
           <section className="surface-card overflow-hidden">
             <div className="border-b border-border bg-secondary/70 p-5 sm:px-8 sm:py-6">
               <div className="flex items-center gap-4">
-                <button
-                  onClick={() => setStep("create_or_upload")}
-                  className="-ml-2 rounded-full p-2 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                  aria-label="Go back"
-                >
-                  <ArrowLeft className="size-5" />
-                </button>
                 <div className="flex size-12 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                   <Sparkles className="size-6" />
                 </div>
                 <div>
                   <h2 className="text-2xl font-semibold tracking-tight text-foreground">
-                    GENERATE WITH AI
+                    CREATE SOMETHING GREAT
                   </h2>
                   <p className="mt-1 text-xs font-semibold tracking-widest text-muted-foreground uppercase">
-                    POWERED BY AI
+                    YOU CHOOSE THE DIRECTION · SCALEEZY DOES THE WORK
                   </p>
                 </div>
               </div>
             </div>
 
             <div className="p-5 sm:p-8">
-              {referenceImageBase64 && (
+              {creativeMode === "REFERENCE" && referenceImageBase64 && (
                 <div className="mb-6 flex items-start gap-4 rounded-lg border border-primary/30 bg-primary/6 p-4">
                   <div className="relative w-24 h-24 rounded-lg overflow-hidden shrink-0 border border-border">
                     <img
@@ -1588,36 +1605,121 @@ function PublishingPage() {
                 </div>
               </div>
 
-              <div className="grid gap-5 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Campaign / promotion name</Label>
-                  <Input value={campaignName} onChange={(e) => setCampaignName(e.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Product or collection</Label>
-                  <Input value={product} onChange={(e) => setProduct(e.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Target audience</Label>
-                  <Input value={audience} onChange={(e) => setAudience(e.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Location</Label>
-                  <Input value={location} onChange={(e) => setLocation(e.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Occasion / festival</Label>
-                  <Input value={occasion} onChange={(e) => setOccasion(e.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Offer</Label>
-                  <Input value={offer} onChange={(e) => setOffer(e.target.value)} />
-                </div>
-                <div className="space-y-2 sm:col-span-2">
-                  <Label>Brand tone</Label>
-                  <Input value={brandTone} onChange={(e) => setBrandTone(e.target.value)} />
+              <div className="mb-8 space-y-2">
+                <Label htmlFor="creative-brief">What should Scaleezy create?</Label>
+                <Textarea
+                  id="creative-brief"
+                  rows={5}
+                  value={creativeBrief}
+                  onChange={(event) => setCreativeBrief(event.target.value)}
+                  maxLength={MAX_CREATIVE_BRIEF_CHARS}
+                  placeholder="Example: Launch our summer linen collection with a premium, energetic poster. Highlight 25% off this weekend and drive people to shop online."
+                  className="resize-y text-base"
+                />
+                <div className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
+                  <p>
+                    Audience, location, tone and product are filled from Brand Master when
+                    available.
+                  </p>
+                  <span className="shrink-0 tabular-nums" aria-live="polite">
+                    {creativeBrief.length}/{MAX_CREATIVE_BRIEF_CHARS}
+                  </span>
                 </div>
               </div>
+
+              <div className="mb-8">
+                <Label className="text-xs tracking-wide uppercase">
+                  Choose the creative direction
+                </Label>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Nothing is selected automatically. This choice applies only to this content.
+                </p>
+                <div className="mt-3 grid gap-3 md:grid-cols-3">
+                  {CREATIVE_SOURCES.map((source) => {
+                    const disabled = source.id === "CATALOG_TEMPLATE" && contentType !== "poster";
+                    const active = creativeMode === source.id;
+                    return (
+                      <button
+                        key={source.id}
+                        type="button"
+                        disabled={disabled}
+                        aria-pressed={active}
+                        onClick={() => chooseCreativeMode(source.id)}
+                        className={cn(
+                          "rounded-xl border p-4 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+                          active
+                            ? "border-primary bg-black text-white ring-1 ring-primary"
+                            : "border-border bg-background hover:border-primary",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "mb-3 grid size-10 place-items-center rounded-lg",
+                            active ? "bg-primary text-black" : "bg-secondary text-foreground",
+                          )}
+                        >
+                          <source.icon className="size-5" />
+                        </span>
+                        <span className="block text-sm font-semibold">{source.label}</span>
+                        <span
+                          className={cn(
+                            "mt-1 block text-xs",
+                            active ? "text-white/65" : "text-muted-foreground",
+                          )}
+                        >
+                          {disabled ? "Templates are available for posters." : source.hint}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUploadIntention("final");
+                    fileInputRef.current?.click();
+                  }}
+                  className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-foreground underline decoration-primary decoration-2 underline-offset-4"
+                >
+                  <Upload className="size-4" /> I already have finished media
+                </button>
+              </div>
+
+              <details className="rounded-xl border border-border bg-secondary/20 p-4">
+                <summary className="cursor-pointer text-sm font-semibold text-foreground">
+                  Fine-tune campaign details
+                </summary>
+                <div className="mt-5 grid gap-5 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Campaign / promotion name</Label>
+                    <Input value={campaignName} onChange={(e) => setCampaignName(e.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Product or collection</Label>
+                    <Input value={product} onChange={(e) => setProduct(e.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Target audience</Label>
+                    <Input value={audience} onChange={(e) => setAudience(e.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Location</Label>
+                    <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Occasion / festival</Label>
+                    <Input value={occasion} onChange={(e) => setOccasion(e.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Offer</Label>
+                    <Input value={offer} onChange={(e) => setOffer(e.target.value)} />
+                  </div>
+                  <div className="space-y-2 sm:col-span-2">
+                    <Label>Brand tone</Label>
+                    <Input value={brandTone} onChange={(e) => setBrandTone(e.target.value)} />
+                  </div>
+                </div>
+              </details>
 
               {/* VIDEO-ONLY FIELDS */}
               {contentType === "video" && (
@@ -1780,13 +1882,91 @@ function PublishingPage() {
                 </div>
               )}
 
-              <CreativeCommand
-                brandId={brandId}
-                selections={creativeSelections}
-                onSelectionsChange={setCreativeSelections}
-                layout={creativeLayout}
-                onLayoutChange={setCreativeLayout}
-              />
+              {creativeMode === "REFERENCE" ? (
+                <div className="mt-8 rounded-xl border border-dashed border-primary/50 bg-primary/5 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">
+                        Bring your own reference
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {contentType === "poster"
+                          ? "Upload an image, paste a public URL, or choose any number of saved references below."
+                          : "Upload an image now or choose any number of saved references below."}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          setUploadIntention("reference");
+                          fileInputRef.current?.click();
+                        }}
+                      >
+                        <Upload className="size-4" /> Use image now
+                      </Button>
+                      {contentType === "poster" ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            setInspirationFlowError(null);
+                            setStep("inspiration_form");
+                          }}
+                        >
+                          <ExternalLink className="size-4" /> Save reference &amp; create poster
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {creativeMode === "CATALOG_TEMPLATE" && layoutCatalogue.error ? (
+                <div
+                  role="alert"
+                  className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+                >
+                  <span>{layoutCatalogue.error}</span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={layoutCatalogue.reload}
+                  >
+                    Retry templates
+                  </Button>
+                </div>
+              ) : creativeMode === "CATALOG_TEMPLATE" &&
+                layoutCatalogue.loading &&
+                layoutCatalogue.layouts.length === 0 ? (
+                <div
+                  role="status"
+                  className="mt-5 flex items-center gap-2 rounded-xl border border-border p-4 text-sm text-muted-foreground"
+                >
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Loading templates…
+                </div>
+              ) : creativeMode === "CATALOG_TEMPLATE" && layoutCatalogue.layouts.length === 0 ? (
+                <div
+                  role="status"
+                  className="mt-5 rounded-xl border border-border p-4 text-sm text-muted-foreground"
+                >
+                  No templates are available right now. Choose “Design it for me” or use an
+                  inspiration.
+                </div>
+              ) : creativeMode === "CATALOG_TEMPLATE" || creativeMode === "REFERENCE" ? (
+                <CreativeCommand
+                  brandId={brandId}
+                  selections={creativeSelections}
+                  onSelectionsChange={setCreativeSelections}
+                  layout={creativeLayout}
+                  onLayoutChange={setCreativeLayout}
+                  layouts={layoutCatalogue.layouts}
+                  showTemplates={creativeMode === "CATALOG_TEMPLATE"}
+                  showReferences={creativeMode === "REFERENCE"}
+                />
+              ) : null}
 
               {awaitingApproval ? (
                 <div
@@ -1808,7 +1988,14 @@ function PublishingPage() {
               <div className="mt-8 flex items-center gap-4">
                 <Button
                   onClick={() => void handleGenerate()}
-                  disabled={awaitingApproval}
+                  disabled={
+                    awaitingApproval ||
+                    !creativeMode ||
+                    (creativeMode === "CATALOG_TEMPLATE" &&
+                      (layoutCatalogue.loading ||
+                        Boolean(layoutCatalogue.error) ||
+                        layoutCatalogue.layouts.length === 0))
+                  }
                   title={
                     awaitingApproval
                       ? "Generation unlocks once Scaleezy approves this client."
@@ -1816,10 +2003,19 @@ function PublishingPage() {
                   }
                   className="gap-2"
                 >
-                  <Sparkles className="size-4" /> Generate with AI
+                  <Sparkles className="size-4" /> Create now
                 </Button>
-                <Button variant="ghost" onClick={() => setStep("create_or_upload")}>
-                  Cancel
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setCreativeBrief("");
+                    setCreativeMode(null);
+                    setCreativeLayout("");
+                    setCreativeSelections([]);
+                    setReferenceImageBase64("");
+                  }}
+                >
+                  Clear
                 </Button>
               </div>
             </div>
@@ -1847,7 +2043,7 @@ function PublishingPage() {
           <section className="surface-card p-5 sm:p-8">
             <div className="flex items-center gap-3 mb-6">
               <button
-                onClick={() => setStep("create_or_upload")}
+                onClick={() => setStep("ai_form")}
                 className="text-muted-foreground hover:text-foreground transition-colors p-2 -ml-2 rounded-full hover:bg-secondary/50"
                 aria-label="Go back"
               >
@@ -1905,7 +2101,7 @@ function PublishingPage() {
             </div>
 
             <div className="mt-8 flex justify-center">
-              <Button variant="ghost" onClick={() => setStep("create_or_upload")}>
+              <Button variant="ghost" onClick={() => setStep("ai_form")}>
                 Cancel
               </Button>
             </div>
@@ -1916,7 +2112,7 @@ function PublishingPage() {
         {(step === "preview" || step === "publish_setup") && asset && (
           <div className="space-y-4">
             <button
-              onClick={() => setStep("create_or_upload")}
+              onClick={() => setStep("ai_form")}
               className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors w-fit p-2 pr-4 -ml-2 rounded-full hover:bg-secondary/50 text-sm font-medium"
             >
               {/* Renamed: this rewinds the wizard to step one. The dashboard
@@ -1927,6 +2123,16 @@ function PublishingPage() {
               {/* LEFT: CONTENT PREVIEW */}
               <section className="surface-card p-5 sm:p-8 animate-in fade-in">
                 <p className="label-eyebrow text-primary">CONTENT PREVIEW</p>
+
+                {asset.compositionWarning ? (
+                  <div
+                    role="alert"
+                    className="mt-4 rounded-xl border border-amber-400/50 bg-amber-50 px-4 py-3 text-sm text-amber-950"
+                  >
+                    <strong>Template needs attention.</strong> {asset.compositionWarning} Choose a
+                    template below to finish the poster; no AI generation was repeated.
+                  </div>
+                ) : null}
 
                 <div className="mt-4 rounded-xl border border-border overflow-hidden bg-background">
                   <div

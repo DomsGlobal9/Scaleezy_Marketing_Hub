@@ -139,6 +139,68 @@ class AsyncGenerationTaskTests(TenantFixtureMixin, TestCase):
             'learning-usage report undercounts everything made on the queue',
         )
 
+    def test_selected_template_render_failure_returns_honest_partial_without_repeating_ai(self):
+        from apps.layouts.services import PosterCompositionError
+
+        request = GeminiGenerationRequest.objects.create(
+            workspace=self.workspace,
+            user=self.user,
+            prompt_data=json.dumps({
+                'campaign_name': 'Launch',
+                'contentType': 'poster',
+                'layout': 'cos_split',
+                'creative_direction': {
+                    'mode': 'CATALOG_TEMPLATE',
+                    'layout': 'cos_split',
+                    'selection_count': 0,
+                    'selections': [],
+                },
+            }),
+            status=GeminiGenerationRequest.Status.PENDING,
+        )
+        routed = {
+            **ROUTED,
+            'payload': {
+                **ROUTED['payload'],
+                'metadata': {
+                    'generated_image': {
+                        'image_url': 'https://storage.test/generated/poster.png',
+                        'file_name': 'poster.png',
+                    }
+                },
+            },
+        }
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload',
+            return_value=routed,
+        ), patch(
+            'apps.layouts.services.compose_generated_poster',
+            side_effect=PosterCompositionError('Template render failed.'),
+        ):
+            outcome = generate_content.func(str(request.pk))
+
+        request.refresh_from_db()
+        self.assertEqual(outcome['content_item'], str(ContentItem.objects.get().pk))
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.COMPLETED)
+        self.assertEqual(request.error_message, '')
+        item = ContentItem.objects.get(workspace=self.workspace)
+        self.assertEqual(item.status, ContentItem.Status.DRAFT)
+        self.assertEqual(
+            item.layout_config['composition']['status'], 'FAILED'
+        )
+        result = GeminiGenerationResult.objects.get(generation_request=request)
+        self.assertEqual(result.metadata['composition']['status'], 'FAILED')
+
+        # A task redelivery must not buy providers again or leave a second
+        # draft after this completed-but-needs-attention composition result.
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload'
+        ) as dispatched:
+            redelivery = generate_content.func(str(request.pk))
+        self.assertEqual(redelivery['status'], 'ALREADY_COMPLETED')
+        dispatched.assert_not_called()
+        self.assertEqual(ContentItem.objects.filter(workspace=self.workspace).count(), 1)
+
 
 class StuckGenerationSweepTests(TenantFixtureMixin, TestCase):
     """A killed worker's generation is rescued once, then failed honestly.
@@ -233,6 +295,47 @@ class StuckGenerationSweepTests(TenantFixtureMixin, TestCase):
         # happen here.
         self.assertEqual(TaskRun.objects.count(), 0)
 
+    def test_interrupted_selected_template_completes_with_an_honest_warning(self):
+        request = self.stuck_request()
+        item = ContentItem.objects.create(
+            workspace=self.workspace,
+            brand=self.brand,
+            status=ContentItem.Status.DRAFT,
+            layout_plugin='cos_split',
+            layout_config={
+                'creative_direction': {
+                    'mode': 'CATALOG_TEMPLATE',
+                    'layout': 'cos_split',
+                }
+            },
+        )
+        GeminiGenerationResult.objects.create(
+            generation_request=request,
+            generated_text='The paid copy survived.',
+            metadata={
+                'contentItemId': str(item.pk),
+                'composition': {
+                    'status': 'PENDING',
+                    'layout': 'cos_split',
+                },
+            },
+        )
+
+        self.assertEqual(sweep_stuck_generations(), 1)
+
+        request.refresh_from_db()
+        item.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.COMPLETED)
+        self.assertEqual(request.error_message, '')
+        request.result.refresh_from_db()
+        self.assertEqual(request.result.metadata['composition']['status'], 'FAILED')
+        self.assertIn(
+            'template render was interrupted',
+            request.result.metadata['composition']['error'],
+        )
+        self.assertEqual(item.layout_config['composition']['status'], 'FAILED')
+        self.assertEqual(TaskRun.objects.count(), 0)
+
     def test_the_worker_pass_rescues_and_finishes_a_killed_generation(self):
         """A single worker pass sweeps the rescue in and runs it to done."""
         from apps.jobs import runner
@@ -296,6 +399,11 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
             status=ContentItem.Status.NEEDS_EDITS,
             headline='Drape yourself in teal', cta='30% OFF',
             review_note='Logo hides the border work.',
+            layout_config={
+                'creative_direction': {
+                    'mode': 'AI_ORIGINAL', 'layout': '', 'selections': [],
+                },
+            },
         )
         # Copy AND visual elements flagged, so the default fixture exercises
         # the full-regeneration path; the scoped tests below narrow it.
@@ -394,6 +502,74 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         # The marker never lingers: a card must not claim to be regenerating
         # after the attempt has already failed.
         self.assertNotIn('regenerating', self.revision.layout_config)
+
+    def test_revoked_references_stop_regeneration_before_provider_spend(self):
+        from apps.context.services.creative_direction import resolve_creative_direction
+        from apps.inspirations.models import BrandInspiration
+        from apps.universal.models import LifecycleStatus, PlatformInspiration
+        from apps.gemini.tasks import regenerate_revision
+
+        brand_reference = BrandInspiration.objects.create(
+            workspace=self.workspace,
+            brand=self.brand,
+            title='Client reference',
+            reference_url='https://example.com/client-reference',
+        )
+        platform_reference = PlatformInspiration.objects.create(
+            title='Platform reference',
+            reference_url='https://example.com/platform-reference',
+            status=LifecycleStatus.PUBLISHED,
+        )
+        cases = []
+        for source_type, reference in (
+            ('BRAND', brand_reference),
+            ('PLATFORM', platform_reference),
+        ):
+            direction = resolve_creative_direction(
+                self.workspace,
+                self.brand,
+                [{
+                    'source_type': source_type,
+                    'id': str(reference.pk),
+                    'role': 'PRIMARY',
+                    'direction': 'USE',
+                    'focus_areas': [],
+                }],
+                creative_mode='REFERENCE',
+            )
+            cases.append((source_type, reference, direction))
+
+        brand_reference.lifecycle_status = BrandInspiration.LifecycleStatus.ARCHIVED
+        brand_reference.save(update_fields=['lifecycle_status', 'updated_at'])
+        platform_reference.status = LifecycleStatus.RETIRED
+        platform_reference.save(update_fields=['status', 'updated_at'])
+
+        for source_type, _reference, direction in cases:
+            with self.subTest(source_type=source_type):
+                self.revision.layout_config = {
+                    'regenerating': True,
+                    'creative_direction': direction,
+                }
+                self.revision.save(update_fields=['layout_config', 'updated_at'])
+                with patch(
+                    'apps.context.services.generation.generate_marketing_payload'
+                ) as full, patch(
+                    'apps.context.services.generation.generate_copy_only'
+                ) as copy_call, patch(
+                    'apps.context.services.generation.retry_image'
+                ) as image_call:
+                    outcome = regenerate_revision.func(str(self.revision.pk))
+
+                self.assertEqual(outcome['status'], 'REFERENCE_UNAVAILABLE')
+                full.assert_not_called()
+                copy_call.assert_not_called()
+                image_call.assert_not_called()
+                self.revision.refresh_from_db()
+                self.assertNotIn('regenerating', self.revision.layout_config)
+                self.assertEqual(
+                    self.revision.layout_config['regeneration_error']['code'],
+                    'REFERENCE_UNAVAILABLE',
+                )
 
     # -- surgical scope: only what the reviewer flagged changes -------------
 
@@ -519,9 +695,55 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         self.assertEqual(config.get('source_asset'), str(photo.pk))
         self.assertEqual(self.revision.layout_plugin, generated_layout(self.revision))
         self.assertEqual(
-            config.get('style_variant'), variants.variant_for(self.revision)
+            config.get('style_variant'),
+            variants.different_variant_for(self.revision, self.PLANTED_VARIANT),
         )
         self.assertNotEqual(config.get('style_variant'), self.PLANTED_VARIANT)
+
+    def test_style_feedback_preserves_an_explicit_catalogue_template(self):
+        photo = self.with_inherited_look()
+        self.revision.layout_config = {
+            **self.revision.layout_config,
+            'creative_direction': {
+                'mode': 'CATALOG_TEMPLATE',
+                'layout': 'agency_column',
+                'selections': [],
+            },
+        }
+        self.revision.save(update_fields=['layout_config'])
+        self.scoped_feedback(
+            ['logo_placement', 'composition_balance'], 'Keep my template; fix its styling.'
+        )
+
+        full, copy_call, image_call = self.run_scoped()
+
+        full.assert_not_called()
+        copy_call.assert_not_called()
+        image_call.assert_not_called()
+        self.revision.refresh_from_db()
+        self.assertEqual(self.revision.layout_plugin, 'agency_column')
+        self.assertEqual(
+            self.revision.layout_config.get('source_asset'), str(photo.pk)
+        )
+        self.assertEqual(
+            self.revision.layout_config['creative_direction']['layout'],
+            'agency_column',
+        )
+
+    def test_legacy_revision_preserves_its_stored_layout_without_choosing_one(self):
+        self.with_inherited_look()
+        self.parent.layout_config = {}
+        self.parent.save(update_fields=['layout_config'])
+        self.scoped_feedback(['logo_placement'], 'Tidy the logo.')
+
+        full, copy_call, image_call = self.run_scoped()
+
+        full.assert_not_called()
+        copy_call.assert_not_called()
+        image_call.assert_not_called()
+        self.revision.refresh_from_db()
+        self.assertEqual(self.revision.layout_plugin, 'agency_column')
+        self.assertNotIn('creative_direction', self.revision.layout_config)
 
     def test_colour_feedback_changes_photo_and_look_but_not_words(self):
         self.with_inherited_look()
@@ -550,7 +772,15 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
             workspace=self.workspace, brand=self.brand,
             status=ContentItem.Status.PENDING_REVIEW,
             headline='Second look', cta='30% OFF',
-            layout_config={'style_variant': dict(self.PLANTED_VARIANT)},
+            layout_plugin='agency_column',
+            layout_config={
+                'style_variant': dict(self.PLANTED_VARIANT),
+                'creative_direction': {
+                    'mode': 'CATALOG_TEMPLATE',
+                    'layout': 'agency_column',
+                    'selections': [],
+                },
+            },
         )
         with patch('apps.gemini.tasks.regenerate_revision'):
             res = self.api.post(
@@ -563,6 +793,10 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         revision = ContentItem.objects.get(parent=pending)
         self.assertEqual(
             revision.layout_config.get('style_variant'), self.PLANTED_VARIANT
+        )
+        self.assertEqual(
+            revision.layout_config.get('creative_direction'),
+            pending.layout_config.get('creative_direction'),
         )
 
     def test_request_edits_queues_the_regeneration(self):

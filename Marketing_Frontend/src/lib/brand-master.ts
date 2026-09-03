@@ -121,7 +121,6 @@ export interface BrandBrain {
   visual_language: {
     palette?: Record<string, string>;
     fonts?: Record<string, string>;
-    layout_preference?: string;
     claims?: BrainClaim[];
   };
   verified_product_truth: string[];
@@ -649,7 +648,6 @@ export type BrandMasterTab =
   | "basics"
   | "knowledge"
   | "inspirations"
-  | "templates"
   | "rules"
   | "brain"
   | "attention"
@@ -660,7 +658,6 @@ export const BRAND_MASTER_TABS: BrandMasterTab[] = [
   "basics",
   "knowledge",
   "inspirations",
-  "templates",
   "rules",
   "brain",
   "attention",
@@ -676,6 +673,7 @@ export const BRAND_MASTER_TABS: BrandMasterTab[] = [
 export const LEGACY_TAB_ALIASES: Record<string, BrandMasterTab> = {
   products: "basics",
   learning: "rules",
+  templates: "inspirations",
 };
 
 /** Where the readiness engine's "do this next" actually lives. */

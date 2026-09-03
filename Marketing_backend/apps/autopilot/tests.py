@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -197,6 +198,12 @@ class AutopilotTests(TestCase):
         self.assertEqual(first['status'], AutopilotRun.Status.WAITING_GENERATION)
         self.assertEqual(run.generation_request.workspace, self.workspace)
         self.assertIn('autopilot', run.generation_request.prompt_data)
+        queued_brief = json.loads(run.generation_request.prompt_data)
+        self.assertEqual(
+            queued_brief['creative_direction']['mode'],
+            'AI_ORIGINAL',
+        )
+        self.assertNotIn('creative_mode', queued_brief)
 
         content = ContentItem.objects.create(
             workspace=self.workspace, brand=self.brand, status=ContentItem.Status.DRAFT
@@ -214,6 +221,38 @@ class AutopilotTests(TestCase):
         self.assertEqual(second['status'], AutopilotRun.Status.WAITING_REVIEW)
         self.assertEqual(content.status, ContentItem.Status.PENDING_REVIEW)
         self.assertIsNone(run.completed_at)
+
+    def test_ai_original_delegation_survives_into_the_persisted_draft(self):
+        run = create_run(self.policy, initiated_by=self.user)
+        execute_run(run.pk)
+        run.refresh_from_db()
+
+        routed = {
+            'provider': 'TEST',
+            'provider_name': 'Test provider',
+            'brain_version': '',
+            'trace': {},
+            'payload': {
+                'postTitle': 'A useful operating principle',
+                'postDescription': 'A clear explanation for founders.',
+                'postHashtags': '#operations',
+                'metadata': {},
+            },
+        }
+        from apps.gemini.tasks import generate_content
+
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload',
+            return_value=routed,
+        ), patch('apps.autopilot.tasks.execute_autopilot_run'):
+            result = generate_content.call(str(run.generation_request_id))
+
+        draft = ContentItem.objects.get(pk=result['content_item'])
+        self.assertEqual(
+            draft.layout_config['creative_direction']['mode'],
+            'AI_ORIGINAL',
+        )
+        self.assertEqual(draft.layout_config['creative_direction']['layout'], '')
 
     def test_emergency_stop_stops_pending_work(self):
         run = create_run(self.policy, initiated_by=self.user)
