@@ -164,14 +164,15 @@ export function HardRulesPanel({ brandId }: { brandId: string }) {
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
           <ShieldCheck className="size-4 text-primary" />
-          Hard rules
+          Enforced safeguards
           {saving ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" /> : null}
         </CardTitle>
         <p className="text-sm text-muted-foreground">
-          Enforced mechanically: a brief that breaks one is refused before any AI is paid, banned
-          hashtags are stripped, required lines are added. The stated and learned rules below guide
-          the AI&rsquo;s wording; these here are the ones the system enforces itself. Leave anything
-          empty and nothing changes.
+          Before AI runs, banned words or imagery named in your brief stop the request. Generated
+          copy is checked: Scaleezy retries banned words, removes banned hashtags, appends required
+          lines, and adds an approved DM keyword when one is missing. Language and visual safeguards
+          are also sent to the provider. The stated and learned rules below are a separate guidance
+          layer. Leave any safeguard empty and it has no effect.
         </p>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -210,14 +211,21 @@ export function HardRulesPanel({ brandId }: { brandId: string }) {
                     }}
                   >
                     <Input
+                      aria-label={`New ${label.toLowerCase()} safeguard`}
                       value={drafts[key] ?? ""}
                       onChange={(e) => setDrafts((d) => ({ ...d, [key]: e.target.value }))}
                       placeholder={placeholder}
                       maxLength={120}
                       className="h-7 w-40 text-xs"
                     />
-                    <Button type="submit" size="sm" variant="outline" className="h-7 px-2">
-                      <Plus className="size-3.5" />
+                    <Button
+                      type="submit"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2"
+                      aria-label={`Add ${label.toLowerCase()} safeguard`}
+                    >
+                      <Plus className="size-3.5" aria-hidden="true" />
                     </Button>
                   </form>
                 </div>
@@ -236,6 +244,7 @@ export function HardRulesPanel({ brandId }: { brandId: string }) {
                   <button
                     key={value}
                     type="button"
+                    aria-pressed={rules.language_rule === value}
                     onClick={() => save((current) => ({ ...current, language_rule: value }))}
                     className={
                       rules.language_rule === value

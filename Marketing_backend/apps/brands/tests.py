@@ -5,8 +5,12 @@ Covers the model's own rules plus the tenancy and role constraints every
 viewset in this project must satisfy, since the Phase 1c audit showed those
 are exactly what gets missed on a new endpoint.
 """
+from datetime import timedelta
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -255,6 +259,52 @@ class BrandAPITests(APITestCase):
         self.assertEqual(self.brand_a.cta_keyword, 'EXPERIENCE COMFORT')
         self.assertTrue(self.brand_a.show_phone_on_posters)
         self.assertEqual(self.brand_a.competitors, ['@andamen'])
+
+    def test_patch_cannot_forge_compiler_owned_brain_state_when_rebuild_fails(self):
+        compiled_at = timezone.now().replace(microsecond=0) - timedelta(hours=1)
+        trusted_brain = {
+            'schema_version': 1,
+            'brain_version': 'trusted-version',
+            'identity': {'name': self.brand_a.name},
+        }
+        Brand.objects.filter(pk=self.brand_a.pk).update(
+            creative_brain=trusted_brain,
+            brain_compiled_at=compiled_at,
+            brain_version='trusted-version',
+            brain_last_error='',
+            brain_failed_at=None,
+        )
+        forged_compiled_at = timezone.now() + timedelta(days=30)
+        forged_failed_at = timezone.now() + timedelta(days=31)
+        failure_started_at = timezone.now()
+
+        self.as_(self.alice, self.ws_a)
+        with patch(
+            'apps.brands.services.brand_brain.rebuild_brand_brain',
+            side_effect=RuntimeError('expected compile outage'),
+        ):
+            res = self.client.patch(
+                f'/api/marketing/brands/{self.brand_a.id}/',
+                {
+                    'cta_keyword': 'A legitimate edit',
+                    'creative_brain': {'schema_version': 999, 'brain_version': 'forged-version'},
+                    'brain_compiled_at': forged_compiled_at.isoformat(),
+                    'brain_version': 'forged-version',
+                    'brain_last_error': 'forged healthy state',
+                    'brain_failed_at': forged_failed_at.isoformat(),
+                },
+                format='json',
+            )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.brand_a.refresh_from_db()
+        self.assertEqual(self.brand_a.cta_keyword, 'A legitimate edit')
+        self.assertEqual(self.brand_a.creative_brain, trusted_brain)
+        self.assertEqual(self.brand_a.brain_compiled_at, compiled_at)
+        self.assertEqual(self.brand_a.brain_version, 'trusted-version')
+        self.assertEqual(self.brand_a.brain_last_error, 'expected compile outage')
+        self.assertGreaterEqual(self.brand_a.brain_failed_at, failure_started_at)
+        self.assertLess(self.brand_a.brain_failed_at, forged_failed_at)
 
     # ── business profile ─────────────────────────────────────────────────
     PROFILE = {

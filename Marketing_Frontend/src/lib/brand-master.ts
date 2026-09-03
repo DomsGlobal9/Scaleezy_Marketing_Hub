@@ -110,13 +110,14 @@ export interface BrandBrain {
   identity: {
     name: string;
     industry: string;
+    description?: string;
     tagline: string;
     cta_keyword?: string;
     has_logo?: boolean;
     canon?: string[];
   };
   positioning: { statements?: string[]; competitors?: string[] };
-  audiences: { pains?: string[]; objections?: string[] };
+  audiences: { stated?: string; pains?: string[]; objections?: string[] };
   voice: { tone: string; claims?: BrainClaim[] };
   visual_language: {
     palette?: Record<string, string>;
@@ -644,14 +645,7 @@ export const READINESS_COPY: Record<ReadinessLevel, { label: string; blurb: stri
 
 /** Brand Master tabs. Kept in the URL so every card and link can target one. */
 export type BrandMasterTab =
-  | "overview"
-  | "basics"
-  | "knowledge"
-  | "inspirations"
-  | "rules"
-  | "brain"
-  | "attention"
-  | "teach";
+  "overview" | "basics" | "knowledge" | "inspirations" | "rules" | "brain" | "attention" | "teach";
 
 export const BRAND_MASTER_TABS: BrandMasterTab[] = [
   "overview",

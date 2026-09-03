@@ -27,7 +27,10 @@ export function Empty({
 
 export function Failed({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
-    <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-6 text-center">
+    <div
+      role="alert"
+      className="rounded-xl border border-destructive/30 bg-destructive/5 p-6 text-center"
+    >
       <p className="text-sm font-medium text-destructive">{message}</p>
       <Button variant="outline" size="sm" className="mt-3" onClick={onRetry}>
         Try again
@@ -38,7 +41,7 @@ export function Failed({ message, onRetry }: { message: string; onRetry: () => v
 
 export function Loading({ rows = 3 }: { rows?: number }) {
   return (
-    <div className="space-y-3">
+    <div role="status" aria-label="Loading" className="space-y-3">
       {Array.from({ length: rows }).map((_, index) => (
         <Skeleton key={index} className="h-16 w-full rounded-xl" />
       ))}
@@ -49,7 +52,10 @@ export function Loading({ rows = 3 }: { rows?: number }) {
 export function InlineError({ message }: { message: string | null }) {
   if (!message) return null;
   return (
-    <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+    <p
+      role="alert"
+      className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+    >
       {message}
     </p>
   );

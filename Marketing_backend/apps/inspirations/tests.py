@@ -909,6 +909,31 @@ class InspirationLifecycleTests(InspirationTestBase):
             inspiration.analysis_status, BrandInspiration.AnalysisStatus.QUEUED
         )
 
+    @patch('apps.inspirations.tasks.analyze_inspiration_task')
+    def test_analyze_enqueue_failure_is_persisted_and_reported(self, task):
+        task.enqueue.side_effect = RuntimeError('broker credentials were rejected')
+        inspiration = self.make_inspiration()
+
+        response = self.client1.post(
+            f'{INSPIRATIONS_URL}{inspiration.id}/analyze/', format='json', **self.ws1()
+        )
+
+        self.assertEqual(
+            response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, response.content
+        )
+        body = response.json()
+        self.assertFalse(body['success'])
+        self.assertEqual(body['error']['code'], 'QUEUE_ENQUEUE_FAILED')
+        self.assertNotIn('credentials', str(body))
+        inspiration.refresh_from_db()
+        self.assertEqual(
+            inspiration.analysis_status, BrandInspiration.AnalysisStatus.FAILED
+        )
+        self.assertEqual(
+            inspiration.metadata['analysis']['error'], body['error']['message']
+        )
+        self.assertTrue(inspiration.metadata['analysis']['failed_at'])
+
     @patch('apps.inspirations.analysis._dispatch')
     def test_analysis_creates_reviewable_ai_signals(self, dispatch):
         dispatch.return_value = {

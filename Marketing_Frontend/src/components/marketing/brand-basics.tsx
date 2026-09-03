@@ -124,7 +124,7 @@ export function ClientBasicsSection({ editor }: { editor: BrandEditor }) {
     <section>
       <SectionTitle
         title="Client basics"
-        description="Who this brand is and where it trades. Saved as you type."
+        description="Who this brand is and where it trades. Changes save automatically; Save changes commits them immediately."
         action={<SavingHint saving={saving} />}
       />
       <div className="mt-4 grid gap-5 sm:grid-cols-2">

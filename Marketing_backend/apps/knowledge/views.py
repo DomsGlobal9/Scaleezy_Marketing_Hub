@@ -1,10 +1,12 @@
+import logging
+import mimetypes
+
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
-import mimetypes
 from django.utils import timezone
 
 from apps.common.mixins import WorkspaceScopedMixin
@@ -22,6 +24,9 @@ from apps.learning.services import record_event_safely
 
 from .models import BrandSource, BrandMemory
 from .serializers import BrandSourceSerializer, BrandMemorySerializer, BrandSourceUploadSerializer
+
+logger = logging.getLogger(__name__)
+
 
 class BrandSourceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     queryset = BrandSource.objects.all()
@@ -142,7 +147,42 @@ class BrandSourceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         }
         source.metadata = metadata
         source.save(update_fields=['status', 'metadata', 'updated_at'])
-        task_result = process_source_task.enqueue(str(source.pk))
+        try:
+            task_result = process_source_task.enqueue(str(source.pk))
+        except Exception:
+            failure_message = "Source processing could not enter the task queue. Try again."
+            logger.exception(
+                "Knowledge source could not enter the durable task queue.",
+                extra={
+                    'knowledge_source_id': str(source.pk),
+                    'workspace_id': str(source.workspace_id),
+                },
+            )
+            failed_at = timezone.now()
+            metadata = dict(source.metadata or {})
+            metadata['processing'] = {
+                **dict(metadata.get('processing') or {}),
+                'failed_at': failed_at.isoformat(),
+                'error': failure_message,
+            }
+            BrandSource.objects.filter(
+                pk=source.pk,
+                status=BrandSource.SourceStatus.QUEUED,
+            ).update(
+                status=BrandSource.SourceStatus.FAILED,
+                metadata=metadata,
+                updated_at=failed_at,
+            )
+            source.refresh_from_db()
+            return APIResponse(
+                success=False,
+                message=failure_message,
+                error={
+                    'code': 'QUEUE_ENQUEUE_FAILED',
+                    'message': failure_message,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return APIResponse(
             success=True,
             message="Source queued for processing.",
