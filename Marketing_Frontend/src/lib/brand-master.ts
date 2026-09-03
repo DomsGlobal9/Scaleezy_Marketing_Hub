@@ -638,7 +638,7 @@ export const READINESS_COPY: Record<ReadinessLevel, { label: string; blurb: stri
   },
   READY: {
     label: "Ready",
-    blurb: "Scaleezy understands this brand well enough to work unsupervised.",
+    blurb: "Scaleezy has strong brand context for creating drafts that still need your review.",
   },
 };
 

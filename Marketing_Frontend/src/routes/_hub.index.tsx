@@ -110,12 +110,12 @@ const READINESS_HEADLINE: Record<ReadinessLevel, string> = {
   STARTING: "Your brand is taking shape.",
   LEARNING: "Your brand is learning.",
   STRONG: "Your brand is ready to create.",
-  READY: "Your brand is scale-ready.",
+  READY: "Your brand context is ready.",
 };
 
 function kpiValue(kpis: Kpi[] | null, key: string): number | null {
   if (!kpis) return null;
-  return kpis.find((item) => item.key === key)?.value ?? 0;
+  return kpis.find((item) => item.key === key)?.value ?? null;
 }
 
 function OverviewPage() {
@@ -170,7 +170,7 @@ function OverviewPage() {
           </p>
 
           {brandError ? (
-            <div className="mt-7 border-l-2 border-destructive pl-5">
+            <div role="alert" className="mt-7 border-l-2 border-destructive pl-5">
               <h1 className="text-4xl leading-[1.02] font-bold tracking-[-0.045em] sm:text-6xl">
                 Your brand status is unavailable.
               </h1>
@@ -188,14 +188,24 @@ function OverviewPage() {
                 </strong>
                 .
               </p>
-              <Link
-                to="/brand-master"
-                search={{ tab: readinessTarget === "create" ? "overview" : readinessTarget }}
-                className="lime-link mt-6 inline-flex items-center gap-2 text-sm"
-              >
-                {overview.readiness.recommended_next_action.label}
-                <ArrowRight className="size-4" />
-              </Link>
+              {readinessTarget === "create" ? (
+                <Link
+                  to="/publishing"
+                  className="lime-link mt-6 inline-flex items-center gap-2 text-sm"
+                >
+                  {overview.readiness.recommended_next_action.label}
+                  <ArrowRight className="size-4" />
+                </Link>
+              ) : (
+                <Link
+                  to="/brand-master"
+                  search={{ tab: readinessTarget }}
+                  className="lime-link mt-6 inline-flex items-center gap-2 text-sm"
+                >
+                  {overview.readiness.recommended_next_action.label}
+                  <ArrowRight className="size-4" />
+                </Link>
+              )}
             </>
           ) : (
             <div className="mt-7 space-y-5">
@@ -224,9 +234,11 @@ function OverviewPage() {
               icon={Check}
               label="Review content"
               detail={
-                awaitingReview === null
+                kpis === null
                   ? "Loading the review queue…"
-                  : `${awaitingReview} item${awaitingReview === 1 ? "" : "s"} waiting for review.`
+                  : awaitingReview === null
+                    ? "Review queue count unavailable."
+                    : `${awaitingReview} item${awaitingReview === 1 ? "" : "s"} waiting for review.`
               }
               action="Review"
               to="/review"
@@ -235,24 +247,28 @@ function OverviewPage() {
               icon={Send}
               label="Publish approved work"
               detail={
-                approved === null
+                kpis === null
                   ? "Loading approved content…"
-                  : `${approved} approved item${approved === 1 ? "" : "s"} ready for publishing.`
+                  : approved === null
+                    ? "Approved content count unavailable."
+                    : `${approved} approved item${approved === 1 ? "" : "s"} ready for publishing.`
               }
               action="Publish"
               to="/publishing"
             />
-            <ActionRow
-              icon={GraduationCap}
-              label="Teach Scaleezy"
-              detail={
-                overview?.readiness.recommended_next_action.detail ??
-                "Add evidence to sharpen the next output."
-              }
-              action="Teach"
-              to="/brand-master"
-              search={{ tab: readinessTarget === "create" ? "teach" : readinessTarget }}
-            />
+            {readinessTarget !== "create" ? (
+              <ActionRow
+                icon={GraduationCap}
+                label="Teach Scaleezy"
+                detail={
+                  overview?.readiness.recommended_next_action.detail ??
+                  "Add evidence to sharpen the next output."
+                }
+                action="Teach"
+                to="/brand-master"
+                search={{ tab: readinessTarget }}
+              />
+            ) : null}
           </div>
         </div>
       </section>
@@ -275,7 +291,10 @@ function OverviewPage() {
         </div>
 
         {kpiError ? (
-          <p className="border-l-2 border-destructive bg-destructive/5 px-4 py-3 text-sm text-destructive">
+          <p
+            role="alert"
+            className="border-l-2 border-destructive bg-destructive/5 px-4 py-3 text-sm text-destructive"
+          >
             {kpiError}
           </p>
         ) : kpis === null ? (
@@ -334,8 +353,8 @@ function ActionRow({
   search?: { tab: BrandMasterTab };
   primary?: boolean;
 }) {
-  return (
-    <div className="relative grid grid-cols-[2.5rem_minmax(0,1fr)_auto] items-start gap-4 py-3 first:pt-0 last:pb-0">
+  const content = (
+    <>
       <span
         className={
           primary
@@ -349,19 +368,22 @@ function ActionRow({
         <span className="block text-sm font-semibold text-foreground">{label}</span>
         <span className="mt-1 block text-sm leading-5 text-muted-foreground">{detail}</span>
       </span>
-      {search ? (
-        <Link
-          to="/brand-master"
-          search={search}
-          className="lime-link mt-2 inline-flex items-center gap-1 text-sm"
-        >
-          {action} <ArrowRight className="size-4" />
-        </Link>
-      ) : (
-        <Link to={to} className="lime-link mt-2 inline-flex items-center gap-1 text-sm">
-          {action} <ArrowRight className="size-4" />
-        </Link>
-      )}
-    </div>
+      <span className="lime-link mt-2 inline-flex items-center gap-1 text-sm">
+        {action} <ArrowRight className="size-4" />
+      </span>
+    </>
+  );
+
+  const className =
+    "group relative grid min-h-16 grid-cols-[2.5rem_minmax(0,1fr)_auto] items-start gap-4 py-3 transition-colors first:pt-0 last:pb-0 hover:bg-secondary/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2";
+
+  return search ? (
+    <Link to="/brand-master" search={search} className={className}>
+      {content}
+    </Link>
+  ) : (
+    <Link to={to} className={className}>
+      {content}
+    </Link>
   );
 }

@@ -142,6 +142,7 @@ function WorkspaceSwitcher({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
+          aria-label={`Switch client. Current client: ${workspaceLabel(state)}`}
           disabled={state.switching}
           className={cn(
             "flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-60",
@@ -168,6 +169,7 @@ function WorkspaceSwitcher({
           <ChevronsUpDown
             className={cn("size-4 shrink-0", dark ? "text-primary" : "text-muted-foreground")}
             strokeWidth={1.75}
+            aria-hidden
           />
         </button>
       </DropdownMenuTrigger>
@@ -288,7 +290,14 @@ function NavList({
             className="size-5 shrink-0 group-data-[status=active]:text-primary"
             strokeWidth={1.75}
           />
-          <span className="truncate">{item.label}</span>
+          <span
+            className={cn(
+              "min-w-0 leading-snug",
+              item.to === "/accounts" ? "whitespace-normal" : "truncate",
+            )}
+          >
+            {item.label}
+          </span>
         </Link>
       ))}
       {isPlatformAdmin ? (
@@ -467,8 +476,8 @@ function HubLayout() {
         </Sheet>
         <Brand />
         <Button asChild size="sm" className="ml-auto">
-          <Link to="/publishing">
-            <Plus className="size-4" />
+          <Link to="/publishing" aria-label="Create content">
+            <Plus className="size-4" aria-hidden />
             <span className="hidden sm:inline">Create</span>
           </Link>
         </Button>

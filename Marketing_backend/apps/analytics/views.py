@@ -1,6 +1,6 @@
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Max, Sum
+from django.db.models import Count, Max, Q, Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import status
@@ -110,12 +110,33 @@ def workspace_kpis(workspace):
     state of the pipeline - accounts, review queue, scheduled and published
     posts - and each tile names the screen that owns it.
     """
-    content = ContentItem.objects.filter(workspace=workspace)
-    jobs = PublishingJob.objects.filter(workspace=workspace)
-    items = PublishingJobItem.objects.filter(publishing_job__workspace=workspace)
-    connections = SocialConnection.objects.filter(workspace=workspace)
+    content_counts = ContentItem.objects.filter(workspace=workspace).aggregate(
+        awaiting_review=Count(
+            'id', filter=Q(status=ContentItem.Status.PENDING_REVIEW)
+        ),
+        approved=Count('id', filter=Q(status=ContentItem.Status.APPROVED)),
+    )
+    job_counts = PublishingJob.objects.filter(workspace=workspace).aggregate(
+        scheduled=Count(
+            'id', filter=Q(status=PublishingJob.Status.SCHEDULED)
+        ),
+    )
+    item_counts = PublishingJobItem.objects.filter(
+        publishing_job__workspace=workspace
+    ).aggregate(
+        published=Count(
+            'id', filter=Q(status=PublishingJobItem.Status.PUBLISHED)
+        ),
+        failed=Count('id', filter=Q(status=PublishingJobItem.Status.FAILED)),
+    )
+    connection_counts = SocialConnection.objects.filter(workspace=workspace).aggregate(
+        connected=Count(
+            'id', filter=Q(status=SocialConnection.Status.CONNECTED)
+        ),
+        attention=Count('id', filter=Q(status__in=ACCOUNT_ATTENTION_STATUSES)),
+    )
 
-    attention = connections.filter(status__in=ACCOUNT_ATTENTION_STATUSES).count()
+    attention = connection_counts['attention']
     attention_hint = None
     if attention:
         attention_hint = "%d need%s attention" % (attention, "s" if attention == 1 else "")
@@ -124,29 +145,27 @@ def workspace_kpis(workspace):
         {
             "key": "awaiting_review",
             "label": "Awaiting review",
-            "value": content.filter(status=ContentItem.Status.PENDING_REVIEW).count(),
+            "value": content_counts['awaiting_review'],
             "icon": "CheckCircle2",
             "hint": "Generated content waiting for a decision",
         },
         {
             "key": "approved",
             "label": "Approved, not yet published",
-            "value": content.filter(status=ContentItem.Status.APPROVED).count(),
+            "value": content_counts['approved'],
             "icon": "Send",
             "accent": "gold",
         },
         {
             "key": "scheduled",
             "label": "Scheduled posts",
-            "value": jobs.filter(status__in=[
-                PublishingJob.Status.SCHEDULED, PublishingJob.Status.QUEUED,
-            ]).count(),
+            "value": job_counts['scheduled'],
             "icon": "CalendarClock",
         },
         {
             "key": "published",
             "label": "Published posts",
-            "value": items.filter(status=PublishingJobItem.Status.PUBLISHED).count(),
+            "value": item_counts['published'],
             "icon": "Megaphone",
             "accent": "gold",
             "hint": "Per platform, all time",
@@ -154,13 +173,13 @@ def workspace_kpis(workspace):
         {
             "key": "failed",
             "label": "Failed publishes",
-            "value": jobs.filter(status=PublishingJob.Status.FAILED).count(),
+            "value": item_counts['failed'],
             "icon": "AlertTriangle",
         },
         {
             "key": "connected_accounts",
             "label": "Connected accounts",
-            "value": connections.filter(status=SocialConnection.Status.CONNECTED).count(),
+            "value": connection_counts['connected'],
             "icon": "Share2",
             "hint": attention_hint,
         },
