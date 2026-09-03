@@ -430,6 +430,20 @@ export const compileLearnedPatterns = () =>
     {},
   );
 
+/** One queued compile as the worker's queue sees it. Polled after enqueueing. */
+export interface CompileTaskStatus {
+  task_id: string;
+  status: "READY" | "RUNNING" | "SUCCESSFUL" | "FAILED" | string;
+  enqueued_at: string;
+  finished_at: string | null;
+  attempts: number;
+  /** Short tail of the last traceback; non-empty only when status is FAILED. */
+  error: string;
+}
+
+export const fetchCompileStatus = (taskId: string) =>
+  apiGet<CompileTaskStatus>(`/api/platform/patterns/compile/${encodeURIComponent(taskId)}/`);
+
 export const publishLearnedPattern = (id: string) =>
   apiPost<unknown>(`/api/platform/patterns/${id}/publish/`, {});
 

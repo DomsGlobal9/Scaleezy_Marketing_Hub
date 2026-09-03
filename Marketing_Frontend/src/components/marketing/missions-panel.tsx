@@ -26,6 +26,8 @@ interface Policy {
   objective: string;
   campaign_brief: string;
   mode: string;
+  cadence: string;
+  next_run_at: string | null;
   allowed_formats: string[];
   social_connections: string[];
   daily_generation_limit: number;
@@ -62,6 +64,12 @@ interface ListEnvelope<T> {
 const list = <T,>(value: T[] | ListEnvelope<T>) =>
   Array.isArray(value) ? value : (value.results ?? []);
 
+const CADENCE_LABELS: Record<string, string> = {
+  MANUAL: "Manual",
+  DAILY: "Daily",
+  WEEKLY: "Weekly",
+};
+
 /**
  * Governed policy runs ("Missions"). Formerly the standalone /autopilot page;
  * now an Admin tab so it sits behind the same OWNER/ADMIN gate as its data.
@@ -80,6 +88,7 @@ export function MissionsPanel() {
     objective: "",
     campaign_brief: "",
     mode: "APPROVAL_REQUIRED",
+    cadence: "MANUAL",
     format: "POSTER",
     connection: "",
     daily_generation_limit: "1",
@@ -161,6 +170,7 @@ export function MissionsPanel() {
           objective: draft.objective,
           campaign_brief: draft.campaign_brief,
           mode: draft.mode,
+          cadence: draft.cadence,
           allowed_formats: [draft.format],
           social_connections: draft.connection ? [draft.connection] : [],
           daily_generation_limit: Number(draft.daily_generation_limit || 1),
@@ -280,7 +290,7 @@ export function MissionsPanel() {
           </div>
           <details className="rounded-xl border p-4">
             <summary className="cursor-pointer text-sm font-semibold">
-              Optional controls · review mode, format, account and limits
+              Optional controls · review mode, format, cadence, account and limits
             </summary>
             <div className="mt-4 space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
@@ -303,6 +313,21 @@ export function MissionsPanel() {
                     { value: "VIDEO", label: "Video" },
                   ]}
                 />
+              </div>
+              <div>
+                <Choice
+                  label="Cadence"
+                  value={draft.cadence}
+                  onChange={(cadence) => setDraft({ ...draft, cadence })}
+                  items={[
+                    { value: "MANUAL", label: "Manual — run by hand" },
+                    { value: "DAILY", label: "Daily" },
+                    { value: "WEEKLY", label: "Weekly" },
+                  ]}
+                />
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Scheduled runs only create drafts — nothing publishes on its own.
+                </p>
               </div>
               <Choice
                 label="Target account context"
@@ -386,8 +411,19 @@ export function MissionsPanel() {
                     <p className="mt-2 text-xs text-muted-foreground">
                       {policy.mode.replaceAll("_", " ")} ·{" "}
                       {policy.allowed_formats.join(", ") || "POSTER"} · limit{" "}
-                      {policy.daily_generation_limit}/day · cap {policy.monthly_spend_cap}
+                      {policy.daily_generation_limit}/day · cap {policy.monthly_spend_cap} ·{" "}
+                      {CADENCE_LABELS[policy.cadence] || policy.cadence}
                     </p>
+                    {policy.cadence !== "MANUAL" && policy.next_run_at ? (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {/* A held policy's slot never fires; promising a time
+                            for it would be false. */}
+                        {policy.enabled && !policy.paused && !policy.emergency_stop
+                          ? `Next run ${new Date(policy.next_run_at).toLocaleString()}`
+                          : `Schedule held — would next run ${new Date(policy.next_run_at).toLocaleString()}`}{" "}
+                        · Runs only create drafts — nothing publishes on its own.
+                      </p>
+                    ) : null}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {policy.emergency_stop ? (

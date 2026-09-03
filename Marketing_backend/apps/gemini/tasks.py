@@ -172,6 +172,19 @@ def generate_content(request_id: str):
         brand = Brand.objects.filter(workspace=request.workspace).order_by('-is_default').first()
         if brand is None or brand.status != Brand.Status.ACTIVE:
             raise ValueError('The selected brand is inactive. Generation was not started.')
+        # API generation preflights written brand law before queueing, but
+        # Autopilot enters here directly and a brand owner can also tighten
+        # guardrails while an ordinary job is waiting. Re-read the live law at
+        # the worker boundary before analysis or routing can spend anything.
+        from apps.brands.services import guardrails as guardrail_law
+
+        guardrail_violations = guardrail_law.preflight_violations(
+            brand, guardrail_law.preflight_fields(brief)
+        )
+        if guardrail_violations:
+            raise ValueError(
+                'Blocked before any AI was paid: ' + ' '.join(guardrail_violations)
+            )
         preprocessing_ids = brief.get('analyze_before_generation_ids') or []
         if preprocessing_ids:
             from apps.inspirations.analysis import analyze_inspiration
@@ -835,8 +848,12 @@ def regenerate_revision(revision_id: str):
         # Everything was flagged (or nothing classifiable): the full
         # regeneration this task always did.
         try:
+            # The revision's OWN brand, explicitly: resolving by workspace
+            # default would enforce another brand's guardrails on this
+            # brand's content in a multi-brand workspace.
             routed = generate_marketing_payload(
-                revision.workspace, brief, instruction=instruction
+                revision.workspace, brief, instruction=instruction,
+                brand=revision.brand,
             )
             payload = routed['payload']
         except Exception:

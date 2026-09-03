@@ -43,6 +43,7 @@ import {
   useSlice,
 } from "@/components/marketing/brand-master-primitives";
 import { CreativeResearchPanel } from "@/components/marketing/creative-research-panel";
+import { HardRulesPanel } from "@/components/marketing/hard-rules-panel";
 import { InspirationsPanel } from "@/components/marketing/inspirations-panel";
 import { KnowledgePanel } from "@/components/marketing/knowledge-panel";
 import { LearningUsagePanel } from "@/components/marketing/learning-usage-panel";
@@ -87,9 +88,7 @@ export const Route = createFileRoute("/_hub/brand-master")({
     if (typeof raw !== "string") return {};
     // Old deep links to merged-away tabs land on the tab that absorbed them.
     const tab = LEGACY_TAB_ALIASES[raw] ?? raw;
-    return (BRAND_MASTER_TABS as string[]).includes(tab)
-      ? { tab: tab as BrandMasterTab }
-      : {};
+    return (BRAND_MASTER_TABS as string[]).includes(tab) ? { tab: tab as BrandMasterTab } : {};
   },
   head: () => ({
     meta: [
@@ -308,7 +307,6 @@ function OverviewTab({
             />
           </div>
         </div>
-
       </div>
 
       <div className="space-y-6">
@@ -1143,41 +1141,41 @@ function BrandMasterPage() {
             aria-label="Brand Master sections"
             className="flex h-auto w-full flex-wrap justify-start gap-1"
           >
-              <TabsTrigger value="overview" className="shrink-0 gap-1.5">
-                <Sparkles className="size-3.5" /> Overview
-              </TabsTrigger>
-              <TabsTrigger value="basics" className="shrink-0 gap-1.5">
-                <IdCard className="size-3.5" /> Brand profile
-              </TabsTrigger>
-              <TabsTrigger value="knowledge" className="shrink-0 gap-1.5">
-                <BookOpen className="size-3.5" /> Knowledge
-              </TabsTrigger>
-              <TabsTrigger value="inspirations" className="shrink-0 gap-1.5">
-                <Lightbulb className="size-3.5" /> Inspirations
-              </TabsTrigger>
-              <TabsTrigger value="rules" className="shrink-0 gap-1.5">
-                <Scale className="size-3.5" /> Rules &amp; Learning
-              </TabsTrigger>
-              <TabsTrigger value="brain" className="shrink-0 gap-1.5">
-                <Brain className="size-3.5" /> Brand Brain
-              </TabsTrigger>
-              <TabsTrigger value="attention" className="shrink-0 gap-1.5">
-                {conflictCount > 0 ? (
-                  <AlertTriangle className="size-3.5 text-amber-600" />
-                ) : (
-                  <Check className="size-3.5" />
-                )}
-                Attention
-                {conflictCount > 0 ? (
-                  <Badge variant="secondary" className="ml-1">
-                    {conflictCount}
-                  </Badge>
-                ) : null}
-              </TabsTrigger>
-              <TabsTrigger value="teach" className="shrink-0 gap-1.5">
-                <GraduationCap className="size-3.5" /> Teach Scaleezy
-              </TabsTrigger>
-            </TabsList>
+            <TabsTrigger value="overview" className="shrink-0 gap-1.5">
+              <Sparkles className="size-3.5" /> Overview
+            </TabsTrigger>
+            <TabsTrigger value="basics" className="shrink-0 gap-1.5">
+              <IdCard className="size-3.5" /> Brand profile
+            </TabsTrigger>
+            <TabsTrigger value="knowledge" className="shrink-0 gap-1.5">
+              <BookOpen className="size-3.5" /> Knowledge
+            </TabsTrigger>
+            <TabsTrigger value="inspirations" className="shrink-0 gap-1.5">
+              <Lightbulb className="size-3.5" /> Inspirations
+            </TabsTrigger>
+            <TabsTrigger value="rules" className="shrink-0 gap-1.5">
+              <Scale className="size-3.5" /> Rules &amp; Learning
+            </TabsTrigger>
+            <TabsTrigger value="brain" className="shrink-0 gap-1.5">
+              <Brain className="size-3.5" /> Brand Brain
+            </TabsTrigger>
+            <TabsTrigger value="attention" className="shrink-0 gap-1.5">
+              {conflictCount > 0 ? (
+                <AlertTriangle className="size-3.5 text-amber-600" />
+              ) : (
+                <Check className="size-3.5" />
+              )}
+              Attention
+              {conflictCount > 0 ? (
+                <Badge variant="secondary" className="ml-1">
+                  {conflictCount}
+                </Badge>
+              ) : null}
+            </TabsTrigger>
+            <TabsTrigger value="teach" className="shrink-0 gap-1.5">
+              <GraduationCap className="size-3.5" /> Teach Scaleezy
+            </TabsTrigger>
+          </TabsList>
 
           <TabsContent value="overview">
             <OverviewTab
@@ -1215,7 +1213,8 @@ function BrandMasterPage() {
               }}
             />
           </TabsContent>
-          <TabsContent value="rules">
+          <TabsContent value="rules" className="space-y-6">
+            <HardRulesPanel brandId={brandId} />
             <RulesTab brandId={brandId} onChanged={refresh} />
           </TabsContent>
           <TabsContent value="brain">

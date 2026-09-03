@@ -96,6 +96,15 @@ class Brand(models.Model):
     # generator feeds it back into each prompt.
     creative_brain = models.JSONField(default=dict, blank=True)
 
+    # Hard guardrails — brand law a human wrote, as opposed to the learned
+    # rules above. Empty by default, and an empty dict changes NOTHING about
+    # generation. Shape is owned by apps.brands.services.guardrails.clean():
+    # forbidden_words / banned_hashtags / forbidden_imagery /
+    # required_on_every_post / approved_ctas (lists of strings) and
+    # language_rule. These are the only rules allowed to BLOCK a generation
+    # before any provider is paid.
+    guardrails = models.JSONField(default=dict, blank=True)
+
     # Compile health. `creative_brain` alone cannot answer "did the last
     # rebuild work?" — a brain that failed to recompile looks identical to one
     # that never needed to, because the previous snapshot is still sitting in

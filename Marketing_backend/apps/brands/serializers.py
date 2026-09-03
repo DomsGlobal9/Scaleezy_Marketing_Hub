@@ -106,6 +106,36 @@ class BrandSerializer(serializers.ModelSerializer):
             cleaned.append({'name': name.strip(), 'description': description.strip()})
         return cleaned
 
+    def validate_guardrails(self, value):
+        """Stored canonical: lists of trimmed unique strings, known keys only.
+
+        Rebuilt rather than accepted — a JSONField keeps whatever it is given
+        forever, and guardrails are read on every single generation. Limits
+        are refused loudly, not trimmed silently: a rule the founder typed
+        that quietly vanished would be worse than an error message."""
+        if not isinstance(value, dict):
+            raise serializers.ValidationError(
+                "Guardrails must be an object of rule lists."
+            )
+        from .services import guardrails as guardrail_law
+
+        for key in guardrail_law.LIST_KEYS:
+            items = value.get(key)
+            if not isinstance(items, list):
+                continue
+            if len(items) > guardrail_law.MAX_ITEMS:
+                raise serializers.ValidationError(
+                    f"Too many rules in {key.replace('_', ' ')} — "
+                    f"the limit is {guardrail_law.MAX_ITEMS}."
+                )
+            for item in items:
+                if isinstance(item, str) and len(item.strip()) > guardrail_law.MAX_TERM_LENGTH:
+                    raise serializers.ValidationError(
+                        f"A rule in {key.replace('_', ' ')} is longer than "
+                        f"{guardrail_law.MAX_TERM_LENGTH} characters — shorten it."
+                    )
+        return guardrail_law.clean(value)
+
     def validate_social_links(self, value):
         """{platform: url}. One flat level, strings only.
 

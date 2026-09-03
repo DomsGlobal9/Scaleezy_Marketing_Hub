@@ -5,7 +5,7 @@
 - Branch: `codex/create-studio-overhaul`
 - Base: `1284dba6`
 - Final release commit: this document ships with the release delta; the assigned SHA is reported in the deployment handoff
-- Reviewer mode run: YES — three parallel adversarial passes plus the final integrated gate
+- Reviewer mode run: YES — three parallel adversarial passes, integration with `origin/main` at `3429d6a1`, and the final merged gate
 - Status: **READY**
 
 ## Requirement traceability
@@ -49,13 +49,13 @@
 
 ## Mandatory final post-fix gates
 
-- [x] Focused backend generation/layout/content/Autopilot tests — 144 passed at the integrated pre-final snapshot; final affected `RevisionRegenerationTests` 12/12 passed
+- [x] Focused backend generation/layout/content/Autopilot/guardrail tests — 162/162 merged contract tests passed; final backend semantic audit set 88/88 passed
 - [x] Revoked-reference regeneration and legacy queued-reference tests — passed; provider spend asserted zero after revocation
 - [x] Selected-template composition failure/poller no-duplicate-spend test — passed in the final full suite
 - [x] Poster Studio explicit-choice provenance test — passed in the final full suite
 - [x] Frontend typecheck — exit 0, no diagnostics after the final UI fix
 - [x] Frontend production build — Vite client, SSR and Nitro/Cloudflare builds completed successfully after the final UI fix
-- [x] Final full backend regression with a valid test `FERNET_SECRET_KEY` — **1,185 tests passed, 0 failures in 52.387s**
+- [x] Final full post-merge backend regression with a valid test `FERNET_SECRET_KEY` — **1,241 tests passed, 0 failures in 56.556s**
 - [x] `makemigrations --check --dry-run` and `manage.py check` — no changes detected; check passed with only the expected local placeholder-key warning
 - [x] Git diff hygiene — `git diff --check` exit 0; only harmless Windows LF→CRLF notices
 - [x] Confirm `.claude/settings.local.json` is excluded from the commit — release staging uses explicit product/docs paths only

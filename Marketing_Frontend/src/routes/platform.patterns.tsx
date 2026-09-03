@@ -23,6 +23,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   compileLearnedPatterns,
   errorText,
+  fetchCompileStatus,
   fetchLearnedPatterns,
   fetchPatternContributors,
   formatDateTime,
@@ -39,6 +40,10 @@ export const Route = createFileRoute("/platform/patterns")({
 });
 
 type Filter = "ALL" | "DRAFT" | "PUBLISHED" | "RETIRED";
+
+/** Poll a queued compile every 3s, for at most ~2 minutes. */
+const COMPILE_POLL_MS = 3_000;
+const COMPILE_POLL_LIMIT = 40;
 
 function Contributors({ pattern, onClose }: { pattern: LearnedPattern | null; onClose: () => void }) {
   const [rows, setRows] = useState<PatternContributor[] | null>(null);
@@ -99,9 +104,10 @@ function PatternsPage() {
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [contributors, setContributors] = useState<LearnedPattern | null>(null);
-  // The compile runs on a worker with no status endpoint to poll, so all this
-  // page can honestly say is "queued — refresh". Cleared on the next load.
+  // A queued compile is polled (below) until it finishes; the note carries
+  // its live status. Cleared on the next load.
   const [compileNote, setCompileNote] = useState<string | null>(null);
+  const [compileTaskId, setCompileTaskId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -121,6 +127,58 @@ function PatternsPage() {
     void load();
   }, [load]);
 
+  // Watch one queued compile: every 3s until it reaches a terminal state, at
+  // most ~2 minutes. Success refreshes the list so the rebuilt drafts appear
+  // without a manual refresh; failure surfaces the worker's error tail.
+  useEffect(() => {
+    if (!compileTaskId) return;
+    let cancelled = false;
+    let ticks = 0;
+    const timer = setInterval(() => {
+      ticks += 1;
+      if (ticks > COMPILE_POLL_LIMIT) {
+        clearInterval(timer);
+        if (!cancelled) {
+          setCompileTaskId(null);
+          setCompileNote(
+            "Compile is still running after 2 minutes — refresh in a while to see the rebuilt drafts.",
+          );
+        }
+        return;
+      }
+      fetchCompileStatus(compileTaskId)
+        .then(async (task) => {
+          if (cancelled) return;
+          if (task.status === "SUCCESSFUL") {
+            clearInterval(timer);
+            setCompileTaskId(null);
+            toast.success("Compile finished — drafts rebuilt.");
+            await load();
+          } else if (task.status === "FAILED") {
+            clearInterval(timer);
+            setCompileTaskId(null);
+            setCompileNote(
+              `Compile failed: ${task.error || "the worker reported no detail."}`,
+            );
+          } else {
+            setCompileNote(
+              task.status === "RUNNING"
+                ? "Compile running on the worker…"
+                : "Compile queued — waiting for a worker…",
+            );
+          }
+        })
+        .catch(() => {
+          // A transient poll failure is not a compile failure; the next tick
+          // (or the 2-minute bound) settles it.
+        });
+    }, COMPILE_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [compileTaskId, load]);
+
   const compile = () =>
     setConfirm({
       title: "Compile learned patterns now?",
@@ -128,11 +186,10 @@ function PatternsPage() {
         "The worker rebuilds drafts from every CLIENT workspace. INTERNAL workspaces are excluded. Existing published patterns remain live when their evidence still exists.",
       confirmLabel: "Queue compile",
       run: async () => {
-        await compileLearnedPatterns();
+        const queued = await compileLearnedPatterns();
         toast.success("Compilation queued.");
-        setCompileNote(
-          "Compile queued. The worker reports no live status here — refresh in a minute to see the rebuilt drafts (a new compiled-at / version on the rows).",
-        );
+        setCompileNote("Compile queued — waiting for a worker…");
+        setCompileTaskId(queued.task_id);
       },
     });
 

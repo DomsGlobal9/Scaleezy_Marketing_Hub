@@ -4,7 +4,7 @@
 
 - Workstream: Create Studio explicit creative-source overhaul
 - Branch: `codex/create-studio-overhaul`
-- Base at preflight: `1284dba6`; release commit/PR pending
+- Base at preflight: `1284dba6`; release integrated with `origin/main` at `3429d6a1`
 - Authorized scope: remove template choice from Brand Master/Brand Brain; require an explicit per-content creative mode; preserve upload, inspiration, generation, review and regeneration paths; improve the Create Studio UI without changing PR0–PR6 ownership.
 - Explicitly out of scope: new provider architecture, new layout engine, publishing architecture changes, destructive removal of the compatibility database column, PR7 intelligence changes.
 - Governing instruction: no template may be selected from a Brand/default preference. A user may choose a catalogue template, provide a reference, or explicitly delegate an original design for that content item.

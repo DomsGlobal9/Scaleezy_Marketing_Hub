@@ -25,8 +25,11 @@ class AutopilotPolicySerializer(serializers.ModelSerializer):
             'daily_generation_limit', 'monthly_spend_cap', 'enabled', 'paused',
             'emergency_stop', 'created_at', 'updated_at',
         ]
+        # next_run_at stays read-only: the model owns its lifecycle (armed one
+        # interval out on save, advanced by the sweep) and a client writing it
+        # directly could schedule immediate spend.
         read_only_fields = [
-            'cadence', 'next_run_at', 'emergency_stop', 'created_at', 'updated_at'
+            'next_run_at', 'emergency_stop', 'created_at', 'updated_at'
         ]
 
     def validate(self, attrs):

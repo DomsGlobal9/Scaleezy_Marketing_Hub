@@ -1,5 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Activity, DollarSign, Eye, Loader2, RefreshCw, Target, Upload, Users } from "lucide-react";
+import {
+  Activity,
+  DollarSign,
+  Eye,
+  Loader2,
+  RefreshCw,
+  Target,
+  Upload,
+  UserPlus,
+  Users,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Bar,
@@ -28,6 +38,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiGet, apiPost } from "@/lib/api";
+import { useWorkspaces } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub/analytics")({
   head: () => ({ meta: [{ title: "Performance & Revenue — Scaleezy" }] }),
@@ -70,6 +81,16 @@ interface SyncRun {
   error: string;
   created_at: string;
 }
+interface Lead {
+  id: string;
+  name: string;
+  handle: string;
+  status: string;
+  source: string;
+  estimated_value: string;
+  currency: string;
+  created_at: string;
+}
 interface RevenueEvent {
   id: string;
   source: string;
@@ -84,6 +105,7 @@ interface Dashboard {
   platform_perf: PlatformMetric[];
   observations: Observation[];
   sync_runs: SyncRun[];
+  leads: Lead[];
   revenue_events: RevenueEvent[];
   summary: {
     observation_count: number;
@@ -130,6 +152,16 @@ function AnalyticsPage() {
     amount: "",
     currency: "USD",
   });
+  const [leadForm, setLeadForm] = useState({ name: "", email: "", estimated_value: "", notes: "" });
+
+  // Mirrors the backend gate exactly (apps/analytics/views.py GrowthLeadView
+  // via GovernedAnalyticsView: POST needs EDITOR or above). An unknown role —
+  // the fallback membership path reports none — stays enabled rather than
+  // locking a real editor out: the server re-checks every request either way.
+  const { workspaces, selectedId } = useWorkspaces();
+  const memberRole = workspaces.find((w) => w.id === selectedId)?.role ?? null;
+  const canWriteLeads =
+    memberRole === null || ["EDITOR", "MANAGER", "ADMIN", "OWNER"].includes(memberRole);
 
   const load = useCallback(async () => {
     const [dashboard, accounts] = await Promise.all([
@@ -226,6 +258,26 @@ function AnalyticsPage() {
       await load();
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : "Revenue could not be recorded");
+    } finally {
+      setWorking("");
+    }
+  };
+  const addLead = async () => {
+    setWorking("lead");
+    try {
+      // Manual intake: the backend defaults source to MANUAL when no
+      // engagement item is linked, so only the operator fields are sent.
+      await apiPost("/api/marketing/analytics/leads/", {
+        name: leadForm.name.trim(),
+        email: leadForm.email.trim(),
+        estimated_value: leadForm.estimated_value || "0",
+        notes: leadForm.notes.trim(),
+      });
+      setLeadForm({ name: "", email: "", estimated_value: "", notes: "" });
+      toast.success("Lead captured");
+      await load();
+    } catch (reason) {
+      toast.error(reason instanceof Error ? reason.message : "Lead could not be added");
     } finally {
       setWorking("");
     }
@@ -391,7 +443,7 @@ function AnalyticsPage() {
         <TabsList className="flex h-auto flex-wrap justify-start">
           <TabsTrigger value="platforms">Platforms</TabsTrigger>
           <TabsTrigger value="sources">Source ledger</TabsTrigger>
-          <TabsTrigger value="revenue">Revenue</TabsTrigger>
+          <TabsTrigger value="revenue">Leads &amp; revenue</TabsTrigger>
           <TabsTrigger value="intake">Data intake</TabsTrigger>
         </TabsList>
         <TabsContent value="platforms" className="mt-5">
@@ -426,30 +478,121 @@ function AnalyticsPage() {
           <SourceLedger rows={data.observations} />
         </TabsContent>
         <TabsContent value="revenue" className="mt-5">
-          <section className="surface-card p-5">
-            <SectionTitle
-              label="Revenue lineage"
-              title="Attributed events"
-              description="Idempotent billing, CRM or operator events."
-            />
-            <div className="mt-5 space-y-3">
-              {data.revenue_events.map((event) => (
-                <article
-                  key={event.id}
-                  className="flex items-center justify-between gap-4 rounded-lg border p-4"
+          <div className="grid gap-5 xl:grid-cols-2">
+            <section className="surface-card p-5">
+              <SectionTitle
+                label="Pipeline"
+                title="Captured leads"
+                description="Governed engagement capture and manual team intake."
+              />
+              <div className="mt-5 space-y-3">
+                {data.leads.map((lead) => (
+                  <article
+                    key={lead.id}
+                    className="flex items-center justify-between gap-4 rounded-lg border p-4"
+                  >
+                    <div>
+                      <p className="font-semibold">{lead.name || lead.handle || "Unnamed lead"}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {lead.source} · {new Date(lead.created_at).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {Number(lead.estimated_value) > 0 && (
+                        <span className="text-sm font-semibold">
+                          {money(lead.estimated_value, lead.currency)}
+                        </span>
+                      )}
+                      <StatusBadge
+                        status={lead.status}
+                        tone={lead.status === "CONVERTED" ? "success" : "neutral"}
+                      />
+                    </div>
+                  </article>
+                ))}
+                {!data.leads.length && (
+                  <p className="text-sm text-muted-foreground">
+                    No leads captured yet. Capture one from the Engagement inbox or add one below.
+                  </p>
+                )}
+              </div>
+              <div className="mt-5 border-t pt-4">
+                <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                  Add lead
+                </p>
+                {!canWriteLeads && (
+                  // Same explanation the backend's 403 gives, shown before
+                  // anyone fills a form they cannot submit.
+                  <p className="mt-3 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
+                    Only a marketing executive or above can capture leads.
+                  </p>
+                )}
+                <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                  <Field
+                    id="lead-name"
+                    label="Name"
+                    value={leadForm.name}
+                    onChange={(name) => setLeadForm({ ...leadForm, name })}
+                  />
+                  <Field
+                    id="lead-email"
+                    label="Email"
+                    value={leadForm.email}
+                    onChange={(email) => setLeadForm({ ...leadForm, email })}
+                  />
+                  <Field
+                    id="lead-value"
+                    label="Estimated value"
+                    value={leadForm.estimated_value}
+                    onChange={(estimated_value) => setLeadForm({ ...leadForm, estimated_value })}
+                    number
+                  />
+                  <Field
+                    id="lead-notes"
+                    label="Notes"
+                    value={leadForm.notes}
+                    onChange={(notes) => setLeadForm({ ...leadForm, notes })}
+                  />
+                </div>
+                <Button
+                  className="mt-4"
+                  onClick={addLead}
+                  disabled={!leadForm.name.trim() || !canWriteLeads || working === "lead"}
                 >
-                  <div>
-                    <p className="font-semibold">{event.campaign_name || event.source}</p>
-                    <p className="text-xs text-muted-foreground">{event.external_event_id}</p>
-                  </div>
-                  <strong>{money(event.amount, event.currency)}</strong>
-                </article>
-              ))}
-              {!data.revenue_events.length && (
-                <p className="text-sm text-muted-foreground">No attributed revenue yet.</p>
-              )}
-            </div>
-          </section>
+                  {working === "lead" ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <UserPlus className="size-4" />
+                  )}{" "}
+                  Add lead
+                </Button>
+              </div>
+            </section>
+            <section className="surface-card p-5">
+              <SectionTitle
+                label="Revenue lineage"
+                title="Attributed events"
+                description="Idempotent billing, CRM or operator events."
+              />
+              <div className="mt-5 space-y-3">
+                {data.revenue_events.map((event) => (
+                  <article
+                    key={event.id}
+                    className="flex items-center justify-between gap-4 rounded-lg border p-4"
+                  >
+                    <div>
+                      <p className="font-semibold">{event.campaign_name || event.source}</p>
+                      <p className="text-xs text-muted-foreground">{event.external_event_id}</p>
+                    </div>
+                    <strong>{money(event.amount, event.currency)}</strong>
+                  </article>
+                ))}
+                {!data.revenue_events.length && (
+                  <p className="text-sm text-muted-foreground">No attributed revenue yet.</p>
+                )}
+              </div>
+            </section>
+          </div>
         </TabsContent>
         <TabsContent value="intake" className="mt-5">
           <div className="grid gap-5 xl:grid-cols-2">
