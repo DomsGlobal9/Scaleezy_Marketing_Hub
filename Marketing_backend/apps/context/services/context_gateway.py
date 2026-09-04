@@ -391,6 +391,277 @@ NO_TEXT_LINE = (
 )
 
 
+#: The poster compositions a delegated design rotates through. Every AI-original
+#: poster used to be told ONE recipe (the framed social-sale panel), so a
+#: brand's drafts came back as the same template in different colours - the
+#: founder's "more or less the same template design". Each archetype places
+#: the headline, the CTA and the optional vertical offer line coherently; the
+#: on-image text rules around it are unchanged. `composition` is the image
+#: call's MUST line, with `{cta}` / `{offer}` filled from the archetype's own
+#: phrases only when the brief carries a CTA / offer, so nothing is invented.
+#: `step1` is how the copy model is told to describe the composition in its
+#: imagePrompt. The first entry is the legacy recipe, verbatim, and the
+#: fallback wherever no archetype was picked.
+COMPOSITION_ARCHETYPES = (
+    {
+        'key': 'framed_panel',
+        'label': 'Framed panel',
+        'composition': (
+            'Compose a clean social-sale poster: a framed border, a centred photo '
+            'panel, the headline overlaid on the photo{cta}{offer}, small social '
+            'icons, dotted accents.'
+        ),
+        'cta': ', a CTA pill',
+        'offer': ', the offer line set vertically along one edge',
+        'step1': (
+            'a framed border, a centred photo panel, and a big, bold, uppercase '
+            'headline overlaid on the photo with high contrast and generous '
+            'margins, plus room for a small call-to-action pill and an offer line '
+            'set vertically along one edge'
+        ),
+    },
+    {
+        'key': 'full_bleed_band',
+        'label': 'Full-bleed photo with bottom band',
+        'composition': (
+            'Compose a full-bleed poster: the photograph fills the entire frame '
+            'edge to edge, and a solid brand-colour band across the bottom third '
+            'carries the headline{cta}{offer}.'
+        ),
+        'cta': ' and a CTA pill',
+        'offer': ', with the offer line set vertically along one side edge of the photo',
+        'step1': (
+            'a full-bleed photograph filling the whole frame, with a solid '
+            'brand-colour band across the bottom third reserved for the headline '
+            'and a small call-to-action pill, and one side edge kept clear for an '
+            'offer line set vertically'
+        ),
+    },
+    {
+        'key': 'split_vertical',
+        'label': 'Vertical split',
+        'composition': (
+            'Compose a split poster: the photograph occupies one half of the frame '
+            'and the other half is a flat brand-colour field carrying the headline '
+            'stacked in large type{cta}{offer}.'
+        ),
+        'cta': ' above a CTA pill',
+        'offer': ', the offer line set vertically along the outer edge of the colour half',
+        'step1': (
+            'a vertical split - the photograph on one half, a flat brand-colour '
+            'half on the other with the headline stacked in large type above a '
+            'small call-to-action pill, and the outer edge kept clear for a '
+            'vertical offer line'
+        ),
+    },
+    {
+        'key': 'magazine_cover',
+        'label': 'Magazine cover',
+        'composition': (
+            'Compose a magazine-cover poster: a full-bleed portrait photograph with '
+            'the headline set as a masthead across the top of the frame{cta}{offer}.'
+        ),
+        'cta': ', a small CTA pill in a bottom corner',
+        'offer': ', the offer line set vertically along one edge like a cover strapline',
+        'step1': (
+            'a full-bleed portrait photograph with the headline as a masthead '
+            'across the top, a small call-to-action pill in a bottom corner, and '
+            'one edge kept clear for a vertical offer strapline'
+        ),
+    },
+    {
+        'key': 'minimal_centred',
+        'label': 'Minimal centred',
+        'composition': (
+            'Compose a minimal poster: generous negative space on a calm '
+            'brand-colour or off-white ground, a smaller centred photograph, the '
+            'headline set beneath it{cta}{offer}.'
+        ),
+        'cta': ' and a CTA pill under the headline',
+        'offer': ', the offer line set vertically along one edge in small type',
+        'step1': (
+            'generous negative space on a calm ground, a smaller centred '
+            'photograph with the headline beneath it and a small call-to-action '
+            'pill under that, and one edge kept clear for a small vertical offer '
+            'line'
+        ),
+    },
+    {
+        'key': 'diagonal_cut',
+        'label': 'Diagonal cut',
+        'composition': (
+            'Compose a diagonal-cut poster: the photograph is clipped along a bold '
+            'diagonal, and the remaining flat brand-colour wedge carries the '
+            'headline{cta}{offer}.'
+        ),
+        'cta': ' with a CTA pill beneath it',
+        'offer': ', the offer line set vertically along the edge of the wedge',
+        'step1': (
+            'a photograph clipped on a bold diagonal, with the flat brand-colour '
+            'wedge left for the headline, a small call-to-action pill beneath it, '
+            "and a vertical offer line along the wedge's edge"
+        ),
+    },
+    {
+        'key': 'type_first',
+        'label': 'Type first',
+        'composition': (
+            'Compose a type-first poster: the giant headline is the background '
+            'element filling the frame, and the photographed subject sits BESIDE '
+            'or BENEATH it, overlapping at most the descender space and never '
+            'covering a letter, so every word stays fully legible{cta}{offer}.'
+        ),
+        'cta': ', a CTA pill in a lower corner',
+        'offer': ', the offer line set vertically along one edge',
+        'step1': (
+            'a giant headline as the background element with the photographed '
+            'subject placed beside or beneath it - overlapping at most the '
+            'descender space, never covering the letters - a small call-to-action '
+            'pill in a lower corner, and one edge kept clear for a vertical offer '
+            'line'
+        ),
+    },
+    {
+        'key': 'polaroid_card',
+        'label': 'Polaroid card',
+        'composition': (
+            'Compose a polaroid-card poster: the photograph sits as a slightly '
+            'tilted white-bordered card on a textured brand-colour ground, and the '
+            'headline is set beside it{cta}{offer}.'
+        ),
+        'cta': ' with a CTA pill below',
+        'offer': ', the offer line set vertically along the far edge',
+        'step1': (
+            'a slightly tilted polaroid-style photo card on a textured '
+            'brand-colour ground with the headline set beside it, a small '
+            'call-to-action pill below the headline, and the far edge kept clear '
+            'for a vertical offer line'
+        ),
+    },
+)
+
+DEFAULT_COMPOSITION_ARCHETYPE = COMPOSITION_ARCHETYPES[0]['key']
+
+#: Scene seeds. Within one brand template - or one archetype - every run used
+#: to bring back the same pose in the same setting, because nothing varied the
+#: photograph itself. One of these rides in each poster brief (least recently
+#: used per brand) and is applied in template mode and archetype mode alike.
+#: Product-neutral on purpose: "the hero subject/product" is a saree, a
+#: coffee bag or a sofa alike. A seed marked `crops_face` frames tighter than
+#: a face - it is never drawn, and never rendered, for a poster that carries
+#: the brand ambassador's photo (see `scene_directive`).
+SCENE_VARIANTS = (
+    {
+        'key': 'studio_three_quarter',
+        'directive': (
+            'the hero subject/product in a studio seamless backdrop in a '
+            'brand-palette tone, shown three-quarter view under soft '
+            'directional light'
+        ),
+    },
+    {
+        'key': 'heritage_courtyard_walk',
+        'directive': (
+            'the hero subject/product in a heritage courtyard or arched veranda, '
+            'a walking shot caught mid-stride under warm natural light'
+        ),
+    },
+    {
+        'key': 'detail_close_up',
+        'crops_face': True,
+        'directive': (
+            'a close-up detail of the hero product - its texture, finish and '
+            'craft - with the subject only partly in frame and shallow depth of '
+            'field'
+        ),
+    },
+    {
+        'key': 'street_golden_hour',
+        'directive': (
+            'the hero subject/product on a city street at golden hour, standing '
+            'or leaning candidly with long soft shadows and glowing backlight'
+        ),
+    },
+    {
+        'key': 'interior_lounge_seated',
+        'directive': (
+            'the hero subject/product in an elegant interior lounge, seated on a '
+            'sofa or bench, side-lit through a window'
+        ),
+    },
+    {
+        'key': 'motion_mid_frame',
+        'directive': (
+            'the hero subject/product in motion mid-frame - a turn, a step, a '
+            'pour, a reveal - against a clean gradient ground'
+        ),
+    },
+)
+
+#: Appended to every scene seed when the brand ambassador's photo rides in
+#: the brief: a seed may vary the setting and the pose, never the face.
+FACE_VISIBLE_LINE = "the brand ambassador's face stays fully visible"
+
+
+def composition_archetype(key):
+    """The archetype row for `key`, or the legacy framed panel when the key
+    is absent or unknown - so a brief that never picked one still works."""
+    wanted = str(key or '').strip()
+    for row in COMPOSITION_ARCHETYPES:
+        if row['key'] == wanted:
+            return row
+    return COMPOSITION_ARCHETYPES[0]
+
+
+def scene_variant(key):
+    """The scene row for `key`, or None: with no seed picked, no scene line
+    is emitted and the brief reads exactly as it did before."""
+    wanted = str(key or '').strip()
+    for row in SCENE_VARIANTS:
+        if row['key'] == wanted:
+            return row
+    return None
+
+
+def _composition_line(archetype, cta, offer):
+    return 'MUST: ' + archetype['composition'].format(
+        cta=archetype['cta'] if cta else '',
+        offer=archetype['offer'] if offer else '',
+    )
+
+
+def scene_directive(brief):
+    """How this brief's photograph is shot, or '' with no seed picked.
+
+    One reading for both callers - the image call's MUST line and Step 1's
+    scene sentence - so the copy model and the image model never describe
+    two different scenes. Where the brief carries the brand ambassador's
+    photo (`ambassador_image_base64`), a seed that would crop the face is
+    swapped for the first face-safe one and every seed says the face stays
+    visible: the ambassador exists to be recognised.
+    """
+    scene = scene_variant(brief.get('scene_variant'))
+    if scene is None:
+        return ''
+    ambassador = bool(brief.get('ambassador_image_base64'))
+    if ambassador and scene.get('crops_face'):
+        scene = next(row for row in SCENE_VARIANTS if not row.get('crops_face'))
+    directive = scene['directive']
+    if ambassador:
+        directive += ', and ' + FACE_VISIBLE_LINE
+    return directive
+
+
+def _scene_line(brief):
+    directive = scene_directive(brief)
+    if not directive:
+        return []
+    return [
+        'MUST: Shoot the photograph as ' + directive + ' - a photograph '
+        'made fresh for this poster, never a repeat of an earlier one.'
+    ]
+
+
 def _direction(brief):
     direction = brief.get('creative_direction')
     return direction if isinstance(direction, dict) else {}
@@ -440,6 +711,12 @@ def on_image_text_lines(brief, headline):
     With no headline there is nothing to render and inventing words is worse
     than none, so the no-text line applies - as it does wherever the compose
     engine still owns the words (see `poster_renders_its_own_text`).
+
+    The composition comes from `brief['composition_archetype']` (see
+    `COMPOSITION_ARCHETYPES`; the framed social-sale panel when absent) and
+    the photograph's scene from `brief['scene_variant']` (nothing when
+    absent) - both picked least-recently-used per brand by the generation
+    layer, so one brand's drafts stop sharing a single layout and pose.
     """
     headline = ' '.join(str(headline or '').split())
     if not headline or not poster_renders_its_own_text(brief):
@@ -475,6 +752,13 @@ def on_image_text_lines(brief, headline):
             'call-to-action twice.',
             'MUST: No words beyond the template\'s own text slots - no '
             'paragraphs, captions, hashtags, watermarks or third-party logos.',
+            # Structure fidelity, not scene fidelity: every run of one
+            # template used to reproduce its photo - same model, same pose,
+            # same props - so two drafts were near-identical posters.
+            "MUST: Keep the template's structure; the photograph and scene "
+            'must be entirely new - vary pose, setting and hero colour '
+            'treatment within the brand palette.',
+            *_scene_line(brief),
         ]
 
     lines = [
@@ -501,22 +785,19 @@ def on_image_text_lines(brief, headline):
         + (' and the CTA/offer line' if extras else '') + ' above.'
     )
     if _mirrors_reference(direction):
+        # The reference lends its typographic feel; the layout itself comes
+        # from the rotating archetype below, so mirroring a reference no
+        # longer hard-wires every poster into the framed panel.
         lines.append(
-            "MUST: Mirror the reference's typographic hierarchy and text placement - "
-            'framed border, centred photo panel, headline overlay position, CTA '
-            "pill, vertical offer text - while using this brand's own colour palette."
+            "MUST: Mirror the reference's typographic hierarchy and text "
+            'treatment - headline weight, CTA styling, vertical offer text - '
+            "while using this brand's own colour palette and the composition "
+            'below.'
         )
-    else:
-        elements = [
-            'a framed border', 'a centred photo panel',
-            'the headline overlaid on the photo',
-        ]
-        if cta:
-            elements.append('a CTA pill')
-        if offer:
-            elements.append('the offer line set vertically along one edge')
-        elements += ['small social icons', 'dotted accents']
-        lines.append(
-            'MUST: Compose a clean social-sale poster: ' + ', '.join(elements) + '.'
+    lines.append(
+        _composition_line(
+            composition_archetype(brief.get('composition_archetype')), cta, offer,
         )
+    )
+    lines.extend(_scene_line(brief))
     return lines

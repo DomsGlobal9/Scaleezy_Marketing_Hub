@@ -8,6 +8,7 @@ tenant's inspiration by id.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from uuid import UUID
 
@@ -18,6 +19,8 @@ from apps.inspirations.models import BrandInspiration, InspirationSignal, Signal
 from apps.layouts import registry as layout_registry
 from apps.universal.models import LifecycleStatus, PlatformInspiration
 from apps.universal.services import settings_for
+
+logger = logging.getLogger(__name__)
 
 
 class CreativeDirectionError(Exception):
@@ -205,10 +208,12 @@ def _prompt_lines(selections: list[dict], layout: str, instruction: str = '') ->
         # posters match it. Matching it is the requirement, not the risk.
         lines.append(
             'Exception: any reference marked BRAND TEMPLATE is this brand\'s own '
-            'poster design, uploaded so new work matches it. Follow its composition, '
-            'typographic treatment and colour system faithfully while replacing the '
-            'campaign content with this brief. The anti-reproduction rule still '
-            'applies to any third-party element visible inside it.'
+            'poster design, uploaded so new work matches it. Match its layout '
+            'structure, typographic treatment and colour system; PRODUCE A NEW '
+            'PHOTOGRAPH every time - different subject pose, framing, setting and '
+            'styling; never reproduce the template\'s photo, model, scene or props. '
+            'Replace the campaign content with this brief. The anti-reproduction '
+            'rule still applies to any third-party element visible inside it.'
         )
     if instruction:
         lines.append(
@@ -434,3 +439,122 @@ def default_creative_direction(workspace, brand, *, allow_template=True, instruc
         ),
         [str(template.pk)],
     )
+# --------------------------------------------------------------------------
+# Per-brand variety: which composition and which scene this generation gets
+# --------------------------------------------------------------------------
+
+#: How many of the brand's most recent posters weigh on the next pick.
+_VARIETY_WINDOW = 8
+#: How many rows are read to fill that window - older items predate the
+#: keys and carry no value, so the window is over items that DO carry one.
+_VARIETY_SCAN = 32
+
+
+#: The trace keys the history is read for - every pick a generation makes,
+#: so the brand's history is read ONCE per generation, not once per key.
+_VARIETY_FIELDS = ('composition_archetype', 'scene_variant')
+
+
+def _recent_variety_keys(workspace, brand, fields=_VARIETY_FIELDS):
+    """The brand's last `_VARIETY_WINDOW` values of each of `fields`, newest
+    first, as `{field: [...]}` - one history read for every pick.
+
+    Read from `layout_config['generation_trace'][field]` - the trace lands
+    under that key on every persist path (the sync view, the queue, and
+    request-edits) - with a top-level `layout_config[field]` tolerated for
+    hand-written rows. Each field's window is over the items that DO carry
+    that field, so an older row that predates one key never crowds the
+    other's window. Same idiom and same degradation as
+    `apps.layouts.services.generated_layout`: the history is decoration and
+    a failed read must never fail a paid generation, so it degrades to an
+    empty history. Never crosses a brand or a workspace: both are filtered.
+    """
+    recent = {field: [] for field in fields}
+    brand_id = getattr(brand, 'pk', None)
+    workspace_id = getattr(workspace, 'pk', None)
+    if brand_id is None or workspace_id is None:
+        return recent
+    try:
+        from apps.content.models import ContentItem
+
+        configs = list(
+            ContentItem.objects.filter(brand_id=brand_id, workspace_id=workspace_id)
+            .order_by('-created_at')
+            .values_list('layout_config', flat=True)[:_VARIETY_SCAN]
+        )
+    except Exception:
+        # Variety is decoration; a history read must never fail a generation.
+        logger.exception("Variety history lookup failed; using an empty history")
+        return recent
+    for config in configs:
+        if not isinstance(config, dict):
+            continue
+        trace = config.get('generation_trace')
+        for field, seen in recent.items():
+            if len(seen) >= _VARIETY_WINDOW:
+                continue
+            value = trace.get(field) if isinstance(trace, dict) else None
+            if not value:
+                value = config.get(field)
+            if isinstance(value, str) and value:
+                seen.append(value)
+        if all(len(seen) >= _VARIETY_WINDOW for seen in recent.values()):
+            break
+    return recent
+
+
+def _least_recently_used(options, recent, request_id):
+    """The option with the fewest recent uses, then the one used longest ago,
+    then a uuid ring on `request_id` - a pure function of (request, history),
+    and with no history exactly the ring pick (the `generated_layout` rule)."""
+    try:
+        seed = UUID(str(request_id)).int
+    except (ValueError, AttributeError, TypeError):
+        seed = 0
+    count = len(options)
+
+    def crowding(key):
+        positions = [pos for pos, used in enumerate(recent) if used == key]
+        latest = positions[0] if positions else len(recent)
+        return (len(positions), -latest, (options.index(key) - seed) % count)
+
+    return min(options, key=crowding)
+
+
+def pick_variety(workspace, brand, request_id, *, face_safe=False):
+    """Both variety picks for one generation from ONE history read.
+
+    `composition_archetype` (see `COMPOSITION_ARCHETYPES`) and
+    `scene_variant` (see `SCENE_VARIANTS`), each least recently used by this
+    brand over its last 8 posters. `face_safe` drops the seeds that frame
+    tighter than a face - for a poster that carries the brand ambassador's
+    photo, whose face is the point.
+    """
+    from .context_gateway import COMPOSITION_ARCHETYPES, SCENE_VARIANTS
+
+    recent = _recent_variety_keys(workspace, brand)
+    scenes = [
+        row['key'] for row in SCENE_VARIANTS
+        if not (face_safe and row.get('crops_face'))
+    ]
+    return {
+        'composition_archetype': _least_recently_used(
+            [row['key'] for row in COMPOSITION_ARCHETYPES],
+            recent['composition_archetype'], request_id,
+        ),
+        'scene_variant': _least_recently_used(
+            scenes, recent['scene_variant'], request_id,
+        ),
+    }
+
+
+def pick_composition_archetype(workspace, brand, request_id):
+    """The composition archetype this poster gets (see `pick_variety`)."""
+    return pick_variety(workspace, brand, request_id)['composition_archetype']
+
+
+def pick_scene_variant(workspace, brand, request_id, *, face_safe=False):
+    """The scene seed this poster's photograph gets (see `pick_variety`)."""
+    return pick_variety(
+        workspace, brand, request_id, face_safe=face_safe,
+    )['scene_variant']

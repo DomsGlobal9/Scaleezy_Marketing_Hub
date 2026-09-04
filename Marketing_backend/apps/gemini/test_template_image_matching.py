@@ -52,7 +52,15 @@ class PosterImageTemplateTests(TestCase):
         image_part, directive = contents
         self.assertEqual(image_part.inline_data.data, PNG_BYTES)
         self.assertIn("BRAND'S OWN POSTER TEMPLATE", directive)
-        self.assertIn('Recreate THIS EXACT design', directive)
+        # Structure fidelity, scene novelty: the template is a layout
+        # reference, and the photograph inside it must be new every run.
+        self.assertIn('LAYOUT REFERENCE, not a scene to copy', directive)
+        self.assertIn('Recreate its design STRUCTURE exactly', directive)
+        self.assertIn('NEW photograph inside the photo area', directive)
+        self.assertIn("never reproduce the template's photo, model, scene or props", directive)
+        # Product-neutral: "styling" varies for any brand; "garment" only fits one.
+        self.assertIn('framing, setting and styling', directive)
+        self.assertNotIn('garment', directive)
         # Step 1's composition and the verbatim headline still ride along.
         self.assertIn('A serene product scene.', directive)
         self.assertIn('Big Sale', directive)

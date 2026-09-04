@@ -110,7 +110,11 @@ class OnImageTextDirectiveTests(SimpleTestCase):
         self.assertIn(MIRROR_LINE, joined)
         self.assertIn("this brand's own colour palette", joined)
         self.assertIn(f'"{HEADLINE}"', joined)
-        self.assertNotIn('Compose a clean social-sale poster', joined)
+        # The reference lends its typography; the layout is the rotating
+        # archetype (the framed panel when none was picked), never a
+        # hard-wired framed panel inside the mirror line itself.
+        self.assertNotIn('framed border, centred photo panel', joined)
+        self.assertIn('Compose a clean social-sale poster', joined)
 
     def test_a_brand_template_follows_the_templates_own_typography(self):
         # The uppercase-headline/CTA-pill social-sale style is for posters
