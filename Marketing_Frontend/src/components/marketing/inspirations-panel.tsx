@@ -55,6 +55,7 @@ import {
   fetchInspirations,
   fetchSignals,
   humanize,
+  isBrandTemplate,
   rejectSignal,
   uploadInspiration,
   type Inspiration,
@@ -128,7 +129,9 @@ export function InspirationsPanel({
   if (signals.loading && !signals.data) return <Loading />;
   if (signals.error) return <Failed message={signals.error} onRetry={signals.reload} />;
 
-  const rows = inspirations.data ?? [];
+  // Brand templates ride the same API but live on their own Templates tab;
+  // showing them here would list every upload twice.
+  const rows = (inspirations.data ?? []).filter((i) => !isBrandTemplate(i));
   const active = rows.filter((i) => i.lifecycle_status !== "ARCHIVED");
   const archived = rows.filter((i) => i.lifecycle_status === "ARCHIVED");
 

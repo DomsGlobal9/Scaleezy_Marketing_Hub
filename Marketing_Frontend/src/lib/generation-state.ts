@@ -33,14 +33,14 @@ export function canCreateGeneration(input: {
   mode: string | null;
   brief: string[];
   hasReference: boolean;
-  layout: string;
-  catalogueReady: boolean;
+  /** The chosen uploaded template; required in BRAND_TEMPLATE mode. */
+  templateId: string;
 }): boolean {
   // Resuming accepted work is a read, not a new generation or template choice.
   if (input.pending) return true;
   if (input.awaitingApproval || !input.mode || !input.brief.some((text) => text.trim()))
     return false;
   if (input.mode === "REFERENCE" && !input.hasReference) return false;
-  if (input.mode === "CATALOG_TEMPLATE" && (!input.layout || !input.catalogueReady)) return false;
+  if (input.mode === "BRAND_TEMPLATE" && !input.templateId) return false;
   return true;
 }

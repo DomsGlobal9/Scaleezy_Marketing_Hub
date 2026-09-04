@@ -11,10 +11,13 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type { LayoutOption } from "@/components/marketing/poster-studio";
-import { fetchInspirations, type Inspiration, SIGNAL_CATEGORIES } from "@/lib/brand-master";
+import {
+  fetchInspirations,
+  isBrandTemplate,
+  type Inspiration,
+  SIGNAL_CATEGORIES,
+} from "@/lib/brand-master";
 import { fetchLibraryGalleryPage, type LibraryItem } from "@/lib/platform";
-import { apiPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export type CreativeSourceType = "PLATFORM" | "BRAND";
@@ -95,16 +98,13 @@ function ReferencePreview({ card }: { card: CreativeCard }) {
   );
 }
 
-function LayoutChoice({
-  option,
-  preview,
-  previewFailed,
+/** One of the brand's uploaded templates, offered as the look to match. */
+function TemplateChoice({
+  template,
   active,
   onChoose,
 }: {
-  option: LayoutOption;
-  preview?: string | undefined;
-  previewFailed?: boolean | undefined;
+  template: Inspiration;
   active: boolean;
   onChoose: () => void;
 }) {
@@ -121,21 +121,21 @@ function LayoutChoice({
       )}
     >
       <span className="block aspect-[4/5] overflow-hidden bg-secondary">
-        {preview ? (
+        {template.file_url ? (
           <img
-            src={preview}
-            alt={`${option.display_name} template preview`}
+            src={template.file_url}
+            alt={`${template.title} template`}
             className="h-full w-full object-cover"
             loading="lazy"
             decoding="async"
           />
         ) : (
-          <span className="grid h-full place-items-center text-xs text-muted-foreground">
-            {previewFailed ? "Preview unavailable" : "Loading preview…"}
+          <span className="grid h-full place-items-center text-muted-foreground">
+            <ImageIcon className="size-8" aria-hidden="true" />
           </span>
         )}
       </span>
-      <span className="flex items-center gap-2 p-3 pb-0 text-sm font-semibold text-foreground">
+      <span className="flex items-center gap-2 p-3 text-sm font-semibold text-foreground">
         <span
           className={cn(
             "grid size-5 place-items-center rounded-full border",
@@ -144,9 +144,8 @@ function LayoutChoice({
         >
           {active ? <Check className="size-3" aria-hidden="true" /> : null}
         </span>
-        {option.display_name}
+        <span className="min-w-0 truncate">{template.title}</span>
       </span>
-      <span className="block p-3 pt-1 text-xs text-muted-foreground">{option.description}</span>
     </button>
   );
 }
@@ -155,18 +154,19 @@ export function CreativeCommand({
   brandId,
   selections,
   onSelectionsChange,
-  layout,
-  onLayoutChange,
-  layouts,
+  templates = [],
+  templateId = "",
+  onTemplateChange,
   showTemplates = false,
   showReferences = false,
 }: {
   brandId: string | null;
   selections: CreativeSelection[];
   onSelectionsChange: (next: CreativeSelection[]) => void;
-  layout: string;
-  onLayoutChange: (next: string) => void;
-  layouts: LayoutOption[];
+  /** The brand's uploaded BRAND_TEMPLATE inspirations, active only. */
+  templates?: Inspiration[];
+  templateId?: string;
+  onTemplateChange?: (next: string) => void;
   showTemplates?: boolean;
   showReferences?: boolean;
 }) {
@@ -178,8 +178,6 @@ export function CreativeCommand({
   const [error, setError] = useState("");
   const [tab, setTab] = useState<"ALL" | CreativeSourceType>("ALL");
   const [query, setQuery] = useState("");
-  const [previews, setPreviews] = useState<Record<string, string>>({});
-  const [previewFailures, setPreviewFailures] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!showReferences) {
@@ -197,7 +195,13 @@ export function CreativeCommand({
         if (cancelled) return;
         setLibrary(platformPage.items);
         setNextOffset(platformPage.nextOffset);
-        setBrandRows(ownRows.filter((row) => row.retrieval_eligibility?.eligible !== false));
+        // Templates have their own "Your templates" direction; here they
+        // would double as references and confuse the two flows.
+        setBrandRows(
+          ownRows.filter(
+            (row) => row.retrieval_eligibility?.eligible !== false && !isBrandTemplate(row),
+          ),
+        );
       })
       .catch((reason) => {
         if (!cancelled) {
@@ -213,35 +217,6 @@ export function CreativeCommand({
       cancelled = true;
     };
   }, [brandId, showReferences]);
-
-  useEffect(() => {
-    if (!showTemplates || layouts.length === 0) return;
-    let cancelled = false;
-    setPreviews({});
-    setPreviewFailures({});
-    void (async () => {
-      for (const option of layouts) {
-        if (cancelled) continue;
-        try {
-          const result = await apiPost<{ preview: string }>("/api/marketing/layouts/preview/", {
-            layout: option.key,
-            headline: "Your campaign headline",
-            offer: "Your offer",
-          });
-          if (!cancelled) {
-            setPreviews((current) => ({ ...current, [option.key]: result.preview }));
-          }
-        } catch {
-          if (!cancelled) {
-            setPreviewFailures((current) => ({ ...current, [option.key]: true }));
-          }
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [brandId, layouts, showTemplates]);
 
   const loadMore = async () => {
     if (nextOffset === null || loadingMore) return;
@@ -315,12 +290,12 @@ export function CreativeCommand({
           <div className="flex items-center gap-2">
             <Sparkles className="size-4 text-primary" aria-hidden="true" />
             <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-foreground">
-              {showTemplates ? "Choose a template" : "Choose inspiration"}
+              {showTemplates ? "Choose one of your templates" : "Choose inspiration"}
             </h3>
           </div>
           <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
             {showTemplates
-              ? "Pick one composition for this content only. Nothing is saved as a Brand Brain rule."
+              ? "This generation matches the template you pick — for this content only. Nothing is saved as a Brand Brain rule."
               : "Choose any number of references. Tell Scaleezy what to use, avoid, and focus on."}
           </p>
         </div>
@@ -334,14 +309,12 @@ export function CreativeCommand({
       {showTemplates ? (
         <div className="mt-5">
           <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
-            {layouts.map((option) => (
-              <LayoutChoice
-                key={option.key}
-                option={option}
-                preview={previews[option.key]}
-                previewFailed={previewFailures[option.key]}
-                active={layout === option.key}
-                onChoose={() => onLayoutChange(option.key)}
+            {templates.map((template) => (
+              <TemplateChoice
+                key={template.id}
+                template={template}
+                active={templateId === template.id}
+                onChoose={() => onTemplateChange?.(template.id)}
               />
             ))}
           </div>
