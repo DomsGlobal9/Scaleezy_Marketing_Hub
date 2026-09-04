@@ -14,11 +14,12 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from apps.common.testing import TenantFixtureMixin
 from apps.content.models import ContentItem
+from apps.context.services.context_gateway import NO_TEXT_LINE
 from apps.context.services.generation import recent_headlines
 from apps.gemini.services.generator import GeminiGeneratorService
 from apps.layouts import registry
@@ -113,6 +114,99 @@ class VarietyBlockTests(SimpleTestCase):
             })
         self.assertIn('ALREADY PUBLISHED', captured['prompt'])
         self.assertIn('Echoes of Elegance', captured['prompt'])
+
+
+class OnImageTextPipelineTests(SimpleTestCase):
+    """The Gemini two-step pipeline paints the headline onto the poster.
+
+    Step 1 describes the composition around the headline without wording it;
+    Step 2 carries the exact postTitle, CTA and offer verbatim. Where the
+    compose engine still owns the words (carousel slides, catalogue
+    templates) both steps keep the no-text rule."""
+
+    POSTER = {
+        'campaign_name': 'Launch',
+        'offer': '30% off',
+        'contentType': 'poster',
+        'structured': {'identity': {'cta_keyword': 'MORE INFO'}},
+        'creative_direction': {'mode': 'AI_ORIGINAL', 'selections': []},
+    }
+    STEP_ONE = {
+        'postTitle': 'Roasted this week', 'postDescription': 'D',
+        'postHashtags': '#h', 'imagePrompt': 'A warm cafe scene.',
+    }
+
+    def step_one_prompt(self, request_data):
+        captured = {}
+
+        class FakeModels:
+            def generate_content(self, model, contents):
+                captured['prompt'] = contents[0]
+                return SimpleNamespace(text=json.dumps(OnImageTextPipelineTests.STEP_ONE))
+
+        fake = SimpleNamespace(models=FakeModels())
+        with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
+            GeminiGeneratorService.generate_text_and_image_prompt(request_data)
+        return captured['prompt']
+
+    def image_call(self, request_data):
+        captured = {}
+
+        class FakeModels:
+            def generate_content(self, model, contents, config=None):
+                captured['contents'] = contents
+                part = SimpleNamespace(
+                    inline_data=SimpleNamespace(mime_type='image/png', data=b'img'),
+                )
+                return SimpleNamespace(
+                    candidates=[SimpleNamespace(content=SimpleNamespace(parts=[part]))],
+                )
+
+        fake = SimpleNamespace(models=FakeModels())
+        with override_settings(GEMINI_API_KEY='key', GEMINI_MOCK_MODE=False), patch.object(
+            GeminiGeneratorService, 'generate_text_and_image_prompt',
+            return_value=dict(self.STEP_ONE),
+        ), patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
+            result = GeminiGeneratorService.generate_marketing_content(request_data)
+        return captured['contents'][0], result
+
+    def test_step_one_describes_a_poster_composition_for_delegated_designs(self):
+        prompt = self.step_one_prompt(self.POSTER)
+        self.assertIn('ON-IMAGE TEXT', prompt)
+        self.assertIn('Do NOT write the headline', prompt)
+        self.assertNotIn('NO TEXT IN THE IMAGE', prompt)
+
+    def test_step_one_keeps_the_no_text_rule_where_the_compose_engine_owns_the_words(self):
+        slide = {**self.POSTER, 'contentType': 'carousel_slide'}
+        self.assertIn('NO TEXT IN THE IMAGE', self.step_one_prompt(slide))
+        template = {
+            **self.POSTER,
+            'creative_direction': {'mode': 'CATALOG_TEMPLATE', 'layout': 'x'},
+        }
+        self.assertIn('NO TEXT IN THE IMAGE', self.step_one_prompt(template))
+
+    def test_the_image_call_carries_the_exact_headline_and_the_cta_offer(self):
+        sent, result = self.image_call(self.POSTER)
+        self.assertTrue(sent.startswith('A warm cafe scene.'), sent)
+        self.assertIn('"Roasted this week"', sent)
+        self.assertIn('"MORE INFO"', sent)
+        self.assertIn('"30% off"', sent)
+        self.assertIn('Compose a clean social-sale poster', sent)
+        self.assertNotIn(NO_TEXT_LINE, sent)
+        self.assertTrue(result['posterImageUrl'].startswith('data:image/png;base64,'))
+
+    def test_the_image_call_mirrors_a_reference(self):
+        sent, _result = self.image_call({
+            **self.POSTER,
+            'creative_direction': {'mode': 'REFERENCE', 'selections': []},
+        })
+        self.assertIn("Mirror the reference's typographic hierarchy", sent)
+        self.assertIn('"Roasted this week"', sent)
+
+    def test_a_carousel_slide_image_call_stays_textless(self):
+        sent, _result = self.image_call({**self.POSTER, 'contentType': 'carousel_slide'})
+        self.assertIn(NO_TEXT_LINE, sent)
+        self.assertNotIn('"Roasted this week"', sent)
 
 
 class RecentHeadlineMemoryTests(TenantFixtureMixin, TestCase):

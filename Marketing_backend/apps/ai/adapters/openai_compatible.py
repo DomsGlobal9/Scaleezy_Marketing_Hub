@@ -221,9 +221,11 @@ class OpenAICompatibleTextAdapter(AIProviderAdapter):
             'model': self.model,
             'prompt': (
                 'Create one polished, brand-aligned marketing visual. '
-                'Do not invent business claims. The image must contain no '
-                'text, lettering, numbers, logos or watermarks - typography '
-                'is composed onto it separately.\nBRIEF_JSON:\n'
+                'Do not invent business claims. Render on the image only the '
+                "text the brief's MUST lines specify - typically the headline "
+                'and one CTA/offer line - as bold, legible, correctly spelled '
+                'typography; no other lettering, watermarks or third-party '
+                'logos.\nBRIEF_JSON:\n'
                 + self._brief_json(brief)
             ),
             'n': 1,

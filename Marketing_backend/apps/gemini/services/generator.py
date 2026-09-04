@@ -8,6 +8,12 @@ from django.conf import settings
 from google import genai
 from google.genai import types
 
+from apps.context.services.context_gateway import (
+    NO_TEXT_LINE,
+    on_image_text_lines,
+    poster_renders_its_own_text,
+)
+
 
 class GeminiNotConfigured(RuntimeError):
     """No Gemini credential is available, so nothing can be generated.
@@ -23,7 +29,8 @@ class GeminiGeneratorService:
     Two-step pipeline:
     1. Text model (gemini-2.5-flash) → generates post title, description, hashtags,
        AND a detailed image generation prompt for the poster (analyzing the reference image if provided).
-    2. Image model (gemini-3.1-flash-image) → takes that prompt (and optionally the reference image) and generates the poster.
+    2. Image model (gemini-3.1-flash-image) → takes that prompt plus the exact headline
+       (and CTA/offer) as on-image text, and generates the poster.
     """
 
     TEXT_MODEL = 'gemini-2.5-flash'
@@ -363,6 +370,44 @@ Return ONLY a valid JSON object with these exact keys:
             f"{listed}\n"
         )
 
+    @staticmethod
+    def _on_image_text_block(request_data: dict) -> str:
+        """
+        What Step 1 is told about words in the picture.
+
+        A delegated poster (AI_ORIGINAL / REFERENCE) ships the image model's
+        output untouched, so its headline has to be typography that model
+        paints: the imagePrompt describes the composition around it. The
+        exact wording is appended at the image step, once the postTitle
+        exists - Step 1 must not paraphrase it into the imagePrompt. Where
+        the compose engine still owns the words (catalogue templates,
+        carousel slides) the no-text rule stands, unchanged.
+        """
+        if not poster_renders_its_own_text(request_data):
+            return (
+                "CRITICAL — NO TEXT IN THE IMAGE: the `imagePrompt` must describe a "
+                "photograph/visual with absolutely no text, lettering, numbers, "
+                "captions, watermarks or logos rendered anywhere in it. All headlines, "
+                "offers and typography are composed onto the image later by a separate "
+                "layout engine; text baked into the image gets cropped and fights the "
+                "real typography. The `imagePrompt` itself must end with the sentence: "
+                "\"No text, no lettering, no words, no logos, no watermarks anywhere in "
+                "the image.\""
+            )
+        return (
+            "ON-IMAGE TEXT: this poster's headline is typography the image model "
+            "paints itself, in the style of a classic social-sale template. The "
+            "`imagePrompt` must therefore describe a poster composition, not a bare "
+            "photograph: a framed border, a centred photo panel, and a big, bold, "
+            "uppercase headline overlaid on the photo with high contrast and generous "
+            "margins, plus room for a small call-to-action pill and an offer line set "
+            "vertically along one edge. Do NOT write the headline's wording into the "
+            "`imagePrompt` - the exact `postTitle`, CTA and offer are appended to the "
+            "image call verbatim afterwards - and do not describe any other words, "
+            "captions, watermarks or logos on the image. Keep the `postTitle` short "
+            "and punchy so it stays legible as display type."
+        )
+
     @classmethod
     def generate_text_and_image_prompt(cls, request_data: dict, api_key: str = '') -> dict:
         """
@@ -432,7 +477,7 @@ For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just 
 - **Mood & Emotion**: (e.g., luxurious and mysterious, vibrant and energetic).
 - Make it suitable for Instagram (1080x1350 portrait).
 
-CRITICAL — NO TEXT IN THE IMAGE: the `imagePrompt` must describe a photograph/visual with absolutely no text, lettering, numbers, captions, watermarks or logos rendered anywhere in it. All headlines, offers and typography are composed onto the image later by a separate layout engine; text baked into the image gets cropped and fights the real typography. The `imagePrompt` itself must end with the sentence: "No text, no lettering, no words, no logos, no watermarks anywhere in the image."
+{cls._on_image_text_block(request_data)}
 
 {cls._rules_block(brand_rules)}{guardrail_block}
 {variety_block}
@@ -477,11 +522,11 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                 "postTitle": f"{campaign} — {occasion}",
                 "postDescription": raw_text[:300],
                 "postHashtags": f"#{occasion.replace(' ', '')} #{product.replace(' ', '')}",
+                # Words in the picture are decided at the image step, not here.
                 "imagePrompt": (
                     f"Professional marketing visual for {campaign}, {product}, "
                     f"{occasion}, {brand_tone} tone, Instagram portrait format "
-                    "1080x1350. No text, no lettering, no words, no logos, no "
-                    "watermarks anywhere in the image."
+                    "1080x1350."
                 )
             }
 
@@ -489,25 +534,28 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
 
     @classmethod
     def generate_poster_image(cls, image_prompt: str, reference_image_base64: str = "",
-                              api_key: str = '') -> str:
+                              api_key: str = '', text_lines=None) -> str:
         """
         Step 2: Send the AI-generated image prompt to the image model.
         Also send the original reference image if provided.
+
+        `text_lines` is the words-in-the-picture directive from the shared
+        helper: the exact headline (and CTA/offer) as MUST lines for a
+        delegated poster, or the no-text line where the compose engine still
+        owns the words. Absent, the no-text line applies - never invented
+        words.
         """
         client = cls._get_client(api_key)
-        
+
         # We ONLY pass the text prompt to the image model.
         # The reference image was already analyzed in Step 1 to create this highly detailed prompt.
         # Passing it here again restricts the AI to just editing the original image instead of generating a brand new creative one.
         #
-        # The no-text suffix is appended here as well as demanded of Step 1:
-        # the composition engine owns every word on the poster, and an image
-        # model that renders its own headline produces the half-cropped double
-        # text reviewers called "unfinished".
+        # The directive is appended after Step 1's composition. Step 1 never
+        # paraphrases the headline into the imagePrompt, so this is the only
+        # copy of the wording the image model sees - verbatim.
         contents = [
-            image_prompt.rstrip()
-            + "\n\nStrict requirement: no text, no lettering, no words, no "
-            "numbers, no logos, no watermarks anywhere in the image."
+            image_prompt.rstrip() + "\n\n" + "\n".join(text_lines or [NO_TEXT_LINE])
         ]
 
         response = client.models.generate_content(
@@ -572,6 +620,11 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                     image_prompt=image_prompt,
                     reference_image_base64=request_data.get('reference_image_base64', ''),
                     api_key=api_key,
+                    # The headline exists now - Step 1 just wrote it - so the
+                    # image call carries it word for word.
+                    text_lines=on_image_text_lines(
+                        request_data, text_result.get('postTitle', '')
+                    ),
                 )
         except Exception as e:
             print(f"[Gemini] Step 2 failed: {e}")

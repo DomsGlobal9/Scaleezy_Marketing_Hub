@@ -322,17 +322,9 @@ def context_as_brief(context):
         lines.append(f"Voice: {context['voice']['tone']}")
     for truth in context['verified_truth']:
         lines.append(f"Verified: {truth}")
-    if context['task_type'] == TaskType.IMAGE:
-        # The composition engine owns every word on the poster. An image model
-        # that renders its own headline produces the half-cropped double text
-        # reviewers called "unfinished": its lettering fights the composed
-        # typography and gets clipped by the layout. Stated with MUST weight so
-        # every adapter carries it like a hard rule.
-        lines.append(
-            "MUST: The image is a photograph/visual only - absolutely no text, "
-            "lettering, numbers, captions, watermarks or logos rendered in the "
-            "image. All typography is composed onto it later."
-        )
+    # Whether the words go INTO the image is not the gateway's call: it
+    # depends on the content type and creative mode the brief carries, which
+    # the context never sees. `on_image_text_lines` decides per dispatch.
     for rule in context['hard_rules']:
         lines.append(f"MUST: {rule.get('text', '')}")
     for rule in context['soft_rules']:
@@ -379,3 +371,121 @@ def context_as_brief(context):
             'learned_patterns': context.get('learned_patterns', []),
         },
     }
+
+
+# --------------------------------------------------------------------------
+# Words in the picture. One decision, shared by every image dispatch — the
+# provider-neutral IMAGE brief and the Gemini two-step pipeline alike — so no
+# adapter can drift back to its own idea of what text a poster carries.
+# --------------------------------------------------------------------------
+
+#: What the image model is told wherever the compose engine still owns the
+#: words — catalogue-template posters and carousel slides. An image model that
+#: renders its own headline there produces the half-cropped double text
+#: reviewers called "unfinished": its lettering fights the composed typography
+#: and gets clipped by the layout.
+NO_TEXT_LINE = (
+    "MUST: The image is a photograph/visual only - absolutely no text, "
+    "lettering, numbers, captions, watermarks or logos rendered in the "
+    "image. All typography is composed onto it later."
+)
+
+
+def _direction(brief):
+    direction = brief.get('creative_direction')
+    return direction if isinstance(direction, dict) else {}
+
+
+def poster_renders_its_own_text(brief):
+    """Whether this generation's words are typography the image model paints.
+
+    True for a delegated poster design (AI_ORIGINAL, REFERENCE, or no stated
+    mode): since the no-default-dress decision those ship the provider's
+    poster untouched, so a headline the image does not carry is a headline
+    nobody sees. False wherever the compose engine still owns the words - a
+    CATALOG_TEMPLATE poster - and for carousel slides, whose behaviour is
+    deliberately unchanged.
+    """
+    content_type = str(brief.get('contentType') or '').strip().lower()
+    if content_type not in ('', 'poster'):
+        return False
+    mode = str(_direction(brief).get('mode') or '').strip().upper()
+    return mode != 'CATALOG_TEMPLATE'
+
+
+def _mirrors_reference(direction):
+    if str(direction.get('mode') or '').strip().upper() == 'REFERENCE':
+        return True
+    return any(
+        isinstance(row, dict) and row.get('kind') == 'BRAND_TEMPLATE'
+        for row in (direction.get('selections') or [])
+    )
+
+
+def on_image_text_lines(brief, headline):
+    """The brief lines that put a poster's words INTO the image.
+
+    The founder's directive - "add the headline text on the image too" - in
+    the style of the classic social-sale template: big bold uppercase
+    headline over the photo, a CTA pill, the offer set vertically along an
+    edge, framed border, small social icons, dotted accents. The headline is
+    quoted verbatim so the model has an exact string to spell, never a
+    paraphrase; the CTA is the brand's own keyword and the offer the
+    campaign's, each only when present. Text stops there: no paragraphs on
+    the image.
+
+    With no headline there is nothing to render and inventing words is worse
+    than none, so the no-text line applies - as it does wherever the compose
+    engine still owns the words (see `poster_renders_its_own_text`).
+    """
+    headline = ' '.join(str(headline or '').split())
+    if not headline or not poster_renders_its_own_text(brief):
+        return [NO_TEXT_LINE]
+
+    identity = (brief.get('structured') or {}).get('identity') or {}
+    cta = ' '.join(str(identity.get('cta_keyword') or '').split())
+    offer = ' '.join(str(brief.get('offer') or '').split())
+
+    lines = [
+        'MUST: Render this exact headline ON the image, word for word and '
+        f'correctly spelled: "{headline}". Set it as the dominant element in big, '
+        'bold, uppercase display typography with high contrast against the photo '
+        'and generous margins, fully inside the frame - never cropped or clipped.'
+    ]
+    extras = []
+    if cta:
+        extras.append(f'a call-to-action pill/button reading "{cta}"')
+    if offer:
+        extras.append(
+            f'the offer line "{offer}" set vertically along one edge of the frame'
+        )
+    if extras:
+        lines.append(
+            'MUST: Also render ' + ' and '.join(extras) + ', smaller than the '
+            'headline and clearly legible.'
+        )
+    lines.append(
+        'MUST: No other words on the image - no paragraphs, captions, hashtags, '
+        'watermarks or third-party logos; only the headline'
+        + (' and the CTA/offer line' if extras else '') + ' above.'
+    )
+    if _mirrors_reference(_direction(brief)):
+        lines.append(
+            "MUST: Mirror the reference's typographic hierarchy and text placement - "
+            'framed border, centred photo panel, headline overlay position, CTA '
+            "pill, vertical offer text - while using this brand's own colour palette."
+        )
+    else:
+        elements = [
+            'a framed border', 'a centred photo panel',
+            'the headline overlaid on the photo',
+        ]
+        if cta:
+            elements.append('a CTA pill')
+        if offer:
+            elements.append('the offer line set vertically along one edge')
+        elements += ['small social icons', 'dotted accents']
+        lines.append(
+            'MUST: Compose a clean social-sale poster: ' + ', '.join(elements) + '.'
+        )
+    return lines

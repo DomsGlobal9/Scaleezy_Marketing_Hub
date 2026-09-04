@@ -342,9 +342,10 @@ class OpenAIAdapter(AIProviderAdapter):
             'prompt': (
                 'Create one polished, brand-aligned marketing visual from this '
                 'provider-neutral brief. Obey every hard rule. Do not add claims '
-                'that are not in the brief. The image must contain no text, '
-                'lettering, numbers, logos or watermarks - typography is '
-                'composed onto it separately.\nBRIEF_JSON:\n'
+                'that are not in the brief. Render on the image only the text '
+                "the brief's MUST lines specify - typically the headline and one "
+                'CTA/offer line - as bold, legible, correctly spelled typography; '
+                'no other lettering, watermarks or third-party logos.\nBRIEF_JSON:\n'
                 + self._brief_json(brief)
             ),
             'n': 1,
