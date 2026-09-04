@@ -44,6 +44,8 @@ class Brand(models.Model):
     )
 
     name = models.CharField(max_length=255)
+    # Administrative company identity; `name` remains the public brand name.
+    legal_name = models.CharField(max_length=255, blank=True)
     industry = models.CharField(max_length=100, blank=True)
     website = models.URLField(max_length=500, blank=True)
     location = models.CharField(max_length=255, blank=True)
@@ -87,6 +89,8 @@ class Brand(models.Model):
     logo_file_name = models.CharField(max_length=255, blank=True)
 
     contact_phone = models.CharField(max_length=50, blank=True)
+    # The named client contact, independent of any user's account profile.
+    contact_person = models.CharField(max_length=150, blank=True)
 
     # Defaults for the poster generator; overridable per generation.
     show_logo_on_posters = models.BooleanField(default=False)
