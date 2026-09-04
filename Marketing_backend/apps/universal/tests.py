@@ -27,6 +27,7 @@ from apps.learning.models import BrandRule
 from apps.universal import enrichment, nl
 from apps.universal.models import (
     RANK_UNIVERSAL_STANDARD,
+    ClientQualitySettings,
     EntryKind,
     LifecycleStatus,
     PlatformInspiration,
@@ -41,7 +42,9 @@ from apps.universal.services import (
     preview_affected,
     publish_inspiration,
     publish_standard,
+    quality_settings_for,
     retire_standard,
+    set_client_quality,
     set_client_universal,
     standards_for,
 )
@@ -130,6 +133,33 @@ class AuthorityTests(UniversalBase):
         self.assertEqual(kept, [])
         # The version changes too, so their cached context is invalidated.
         self.assertEqual(version, 'off')
+
+
+class ClientQualityTests(UniversalBase):
+    """The quality-engine switches follow the universal-settings idiom."""
+
+    def test_defaults_are_on_and_a_read_never_creates_a_row(self):
+        quality = quality_settings_for(self.workspace)
+        self.assertTrue(quality.critique_enabled)
+        self.assertTrue(quality.focus_crop_enabled)
+        self.assertTrue(quality.variety_enabled)
+        self.assertFalse(
+            ClientQualitySettings.objects.filter(workspace=self.workspace).exists()
+        )
+
+    def test_set_client_quality_writes_only_the_passed_fields(self):
+        set_client_quality(self.workspace, focus_crop_enabled=False, by=self.user)
+        row = ClientQualitySettings.objects.get(workspace=self.workspace)
+        self.assertTrue(row.critique_enabled)
+        self.assertFalse(row.focus_crop_enabled)
+        self.assertTrue(row.variety_enabled)
+
+        set_client_quality(self.workspace, critique_enabled=False, by=self.user)
+        row.refresh_from_db()
+        self.assertFalse(row.critique_enabled)
+        self.assertFalse(row.focus_crop_enabled)
+        self.assertTrue(row.variety_enabled)
+        self.assertEqual(quality_settings_for(self.workspace).pk, row.pk)
 
 
 class GatewayIntegrationTests(UniversalBase):
