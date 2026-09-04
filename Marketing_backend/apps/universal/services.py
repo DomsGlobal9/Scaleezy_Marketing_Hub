@@ -22,6 +22,7 @@ from .models import (
     RANK_LEARNED_PATTERN,
     RANK_PLATFORM_INSPIRATION,
     UPLOAD_KINDS,
+    ClientQualitySettings,
     ClientUniversalSettings,
     EntryKind,
     LearnedPattern,
@@ -66,6 +67,47 @@ def set_client_universal(workspace, *, standards=None, inspirations=None, by=Non
         detail={'before': before, 'after': {
             'standards': row.standards_enabled,
             'inspirations': row.inspirations_enabled,
+        }},
+    )
+    return row
+
+
+def quality_settings_for(workspace):
+    """This client's quality-engine switches. Never creates a row on read."""
+    return (
+        ClientQualitySettings.objects.filter(workspace=workspace).first()
+        or ClientQualitySettings(workspace=workspace)
+    )
+
+
+def set_client_quality(workspace, *, critique_enabled=None, focus_crop_enabled=None,
+                       variety_enabled=None, by=None):
+    """Turn quality-engine passes on or off for one client. Audited."""
+    from apps.audit.models import record_platform_event
+
+    row, _ = ClientQualitySettings.objects.get_or_create(workspace=workspace)
+    before = {
+        'critique': row.critique_enabled,
+        'focus_crop': row.focus_crop_enabled,
+        'variety': row.variety_enabled,
+    }
+    if critique_enabled is not None:
+        row.critique_enabled = bool(critique_enabled)
+    if focus_crop_enabled is not None:
+        row.focus_crop_enabled = bool(focus_crop_enabled)
+    if variety_enabled is not None:
+        row.variety_enabled = bool(variety_enabled)
+    row.save(update_fields=[
+        'critique_enabled', 'focus_crop_enabled', 'variety_enabled', 'updated_at',
+    ])
+
+    record_platform_event(
+        actor=by, action='CLIENT_QUALITY_TOGGLED', workspace=workspace,
+        target=f'workspace:{workspace.pk}',
+        detail={'before': before, 'after': {
+            'critique': row.critique_enabled,
+            'focus_crop': row.focus_crop_enabled,
+            'variety': row.variety_enabled,
         }},
     )
     return row

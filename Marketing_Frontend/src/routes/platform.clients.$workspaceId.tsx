@@ -50,17 +50,20 @@ import {
   attachUserToClient,
   errorText,
   fetchClient,
+  fetchClientQuality,
   formatAgo,
   formatDateTime,
   reactivateClient,
   recompileClientBrain,
   setClientLimits,
   setClientPlan,
+  setClientQuality,
   setClientSpendCap,
   setClientUniversal,
   suspendClient,
   type AttachUserResult,
   type ClientDetail,
+  type ClientQualitySettings,
   type UsageSummary,
 } from "@/lib/platform";
 import { cn } from "@/lib/utils";
@@ -340,6 +343,90 @@ function AttachUser({
         </div>
       ) : null}
     </>
+  );
+}
+
+function QualityPanel({
+  workspaceId,
+  clientName,
+  onConfirm,
+}: {
+  workspaceId: string;
+  clientName: string;
+  onConfirm: (request: ConfirmRequest) => void;
+}) {
+  // The quality switches have their own endpoint rather than riding the
+  // detail payload, so this panel loads its own state and updates it from
+  // the server's answer to each toggle.
+  const [quality, setQuality] = useState<ClientQualitySettings | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      setQuality(await fetchClientQuality(workspaceId));
+    } catch (e: unknown) {
+      setError(errorText(e, "Could not load the quality-engine switches."));
+    }
+  }, [workspaceId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (error) return <ErrorNote message={error} />;
+  if (!quality) return <Skeleton className="h-24 rounded-lg" />;
+
+  const toggles: Array<{
+    label: string;
+    description: string;
+    checked: boolean;
+    apply: (next: boolean) => Promise<ClientQualitySettings>;
+  }> = [
+    {
+      label: "Self-critique",
+      description: "LLM self-critique gate on generated copy.",
+      checked: quality.critique_enabled,
+      apply: (next) => setClientQuality(workspaceId, { critique: next }),
+    },
+    {
+      label: "Focus crop",
+      description: "Vision focal-point-aware poster cropping.",
+      checked: quality.focus_crop_enabled,
+      apply: (next) => setClientQuality(workspaceId, { focus_crop: next }),
+    },
+    {
+      label: "Layout variety",
+      description: "Recency-weighted layout variety.",
+      checked: quality.variety_enabled,
+      apply: (next) => setClientQuality(workspaceId, { variety: next }),
+    },
+  ];
+
+  return (
+    <div className="space-y-3">
+      {toggles.map((toggle) => (
+        <label key={toggle.label} className="flex items-center justify-between gap-3 text-sm">
+          <span>
+            {toggle.label}
+            <span className="block text-xs text-muted-foreground">{toggle.description}</span>
+          </span>
+          <Switch
+            checked={toggle.checked}
+            onCheckedChange={(next) =>
+              onConfirm({
+                title: `${next ? "Enable" : "Disable"} ${toggle.label.toLowerCase()} for ${clientName}?`,
+                confirmLabel: next ? "Enable" : "Disable",
+                run: async () => {
+                  setQuality(await toggle.apply(next));
+                  toast.success(`${toggle.label} ${next ? "enabled" : "disabled"}.`);
+                },
+              })
+            }
+          />
+        </label>
+      ))}
+    </div>
   );
 }
 
@@ -717,6 +804,17 @@ function ClientDetailPage() {
                 />
               </label>
             </div>
+          </Panel>
+
+          <Panel
+            title="Quality engine"
+            description="The generation-time quality passes. Off means this client's generations skip that pass."
+          >
+            <QualityPanel
+              workspaceId={client.workspace_id}
+              clientName={client.name}
+              onConfirm={ask}
+            />
           </Panel>
 
           <Panel

@@ -21,6 +21,7 @@ from apps.marketing.models import MarketingAsset
 from apps.marketing.services.storage import SupabaseStorageService
 
 from . import export as export_engine
+from . import focus as focus_engine
 from . import registry
 from . import render as render_engine
 from . import variants
@@ -115,8 +116,21 @@ def generated_layout(item):
     Falling through to the registry default meant every generated poster in a
     brand shared a single skeleton — reviewers saw "the same poster" over and
     over. The pick rotates across the photo-using patterns instead, keyed on
-    the item's id: stable for the item (a recompose or revision never reshuffles
-    a poster someone is already reviewing), different across items.
+    the item's id: stable for the item, different across items.
+
+    When the workspace's variety toggle is on, the pick also weighs the
+    brand's last 8 composed items and takes the pattern with the fewest —
+    then oldest — recent uses, so a brand stops drawing the same skeleton run
+    after run. Determinism holds twice over:
+
+    * ties (including an empty history) fall back to the original uuid-modulo
+      ring, so the choice is a pure function of (item id, history) — and with
+      no history at all it is exactly the legacy pick;
+    * a recompose of the SAME item never reshuffles regardless: verified —
+      `compose_generated_poster` persists `item.layout_plugin` on first
+      compose and prefers it (`layout = item.layout_plugin or ...`) before
+      this function is ever consulted, so history only steers items whose
+      pattern is still undecided.
 
     Type-only patterns (`uses_photo=False`) are excluded — they would throw
     away the photograph the generation just paid for.
@@ -129,7 +143,69 @@ def generated_layout(item):
         seed = uuid.UUID(str(item.pk)).int
     except (ValueError, AttributeError, TypeError):
         seed = 0
-    return options[seed % len(options)]
+    count = len(options)
+    legacy = options[seed % count]
+
+    # Callers without a persisted brand (restyle previews, unit fixtures)
+    # keep the stateless legacy pick — there is no history to weigh.
+    brand_id = getattr(item, 'brand_id', None)
+    workspace = getattr(item, 'workspace', None)
+    if brand_id is None or workspace is None:
+        return legacy
+    try:
+        from apps.universal.services import quality_settings_for
+
+        if not quality_settings_for(workspace).variety_enabled:
+            return legacy
+        from apps.content.models import ContentItem
+
+        recent = list(
+            ContentItem.objects.filter(brand_id=brand_id)
+            .exclude(layout_plugin='')
+            .order_by('-created_at')
+            .values_list('layout_plugin', flat=True)[:8]
+        )
+    except Exception:
+        # Layout choice is decoration; a settings or history read must never
+        # fail a compose.
+        logger.exception("Layout variety lookup failed; using the legacy pick")
+        return legacy
+    if not recent:
+        return legacy
+
+    def crowding(key):
+        # Recency-weighted: fewest uses in the window wins; among equals, the
+        # one whose latest use is furthest back (positions index 0 = newest,
+        # never-used counts as beyond the window); the final tie walks the
+        # option ring starting from the legacy uuid-modulo pick.
+        positions = [pos for pos, used in enumerate(recent) if used == key]
+        latest = positions[0] if positions else len(recent)
+        return (len(positions), -latest, (options.index(key) - seed) % count)
+
+    return min(options, key=crowding)
+
+
+def _prior_variant(item, layout):
+    """The dress this brand's most recent prior use of `layout` wore.
+
+    Returns a coerced variant dict, or None when there is no usable prior.
+    Read-only and defensive: `layout_config` is client-writable JSON.
+    """
+    from apps.content.models import ContentItem
+
+    if getattr(item, 'brand_id', None) is None:
+        return None
+    prior = (
+        ContentItem.objects.filter(brand_id=item.brand_id, layout_plugin=layout)
+        .exclude(pk=item.pk)
+        .order_by('-created_at')
+        .values_list('layout_config', flat=True)
+        .first()
+    )
+    stored = prior.get('style_variant') if isinstance(prior, dict) else None
+    if not isinstance(stored, dict):
+        return None
+    return variants.coerce(stored)
 
 
 def compose_generated_poster(item, *, user=None):
@@ -167,9 +243,35 @@ def compose_generated_poster(item, *, user=None):
         return None
 
     try:
+        from apps.universal.services import quality_settings_for
+
+        quality = quality_settings_for(item.workspace)
         # The recorded source photograph when there is one — composing from an
         # already composed poster would bake the words on twice.
         photo = render_engine.photo_for(asset=source_photo_asset(item))
+        config = dict(item.layout_config or {})
+
+        # -- focal point: ONE vision call per source photo ----------------
+        # A stored dict — success OR a cached skip marker — is final, so
+        # recomposes, restyles and exports never dispatch (or pay) again.
+        # Only final results are stored (see focus_engine.cacheable): a
+        # transient failure stays out of layout_config so the next compose
+        # event may retry — bounded by compose events, not loops.
+        focus_info = config.get('photo_focus')
+        if (
+            photo is not None
+            and not isinstance(focus_info, dict)
+            and quality.focus_crop_enabled
+        ):
+            focus_info = focus_engine.detect_photo_focus(item.workspace, photo)
+            if focus_engine.cacheable(focus_info):
+                config['photo_focus'] = focus_info
+                # Persisted immediately rather than with the final save: a
+                # storage failure further down must not make the next compose
+                # pay for the same vision call again.
+                item.layout_config = config
+                item.save(update_fields=['layout_config', 'updated_at'])
+
         if not layout and mode in {'AI_ORIGINAL', 'REFERENCE'}:
             # The user explicitly delegated the composition decision for this
             # one content item. No brand-level template preference participates.
@@ -200,14 +302,33 @@ def compose_generated_poster(item, *, user=None):
         # The style variant this item wears — same skeleton, different dress.
         # A stored one is reused so a recompose never restyles a poster
         # someone is already reviewing; otherwise the item's id decides.
-        stored = (item.layout_config or {}).get('style_variant')
+        stored = config.get('style_variant')
+        uses_photo = getattr(registry.get(layout), 'uses_photo', True)
         if isinstance(stored, dict):
             variant = variants.coerce(stored)
         else:
-            variant = variants.variant_for(
-                item, uses_photo=getattr(registry.get(layout), 'uses_photo', True)
-            )
+            variant = variants.variant_for(item, uses_photo=uses_photo)
+            if quality.variety_enabled:
+                # Same skeleton in the same colour scheme as its last outing
+                # for this brand reads as "the same poster again" — restyle
+                # deterministically away from that prior dress. The palette
+                # axis is rotated directly: `different_variant_for` only
+                # moves on a FULL five-axis match, and the common prior
+                # shares nothing but the palette, which would leave the
+                # nudge a no-op. The item's other axes stay its own.
+                prior = _prior_variant(item, layout)
+                if prior is not None and prior.get('palette') == variant.get('palette'):
+                    variant = dict(variant)
+                    index = variants.PALETTES.index(prior['palette'])
+                    variant['palette'] = variants.PALETTES[
+                        (index + 1) % len(variants.PALETTES)
+                    ]
         spec = variants.apply(spec, variant)
+        # `variants.apply` grades the photo in place (grayscale / blend /
+        # enhance) but never resizes it, and the focus is normalized 0..1 —
+        # so steering the crop after grading is exact.
+        if isinstance(focus_info, dict) and 'x' in focus_info:
+            spec.photo_focus = focus_info
         image = render_engine.compose(spec, layout)
         source = item.asset
         asset = persist_composed(item.workspace, user, item, image, 'JPEG', layout)
@@ -219,7 +340,8 @@ def compose_generated_poster(item, *, user=None):
             ) from exc
         return None
 
-    config = dict(item.layout_config or {})
+    # `config` is the copy taken (and possibly focus-annotated) inside the
+    # try block; the success path finishes filling it in.
     config.setdefault('source_asset', str(source.pk))
     config['style_variant'] = variant
     item.layout_plugin = layout

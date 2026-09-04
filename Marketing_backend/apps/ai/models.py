@@ -208,6 +208,12 @@ class AIUsageLog(models.Model):
     # Which strategy produced this call, and whether it won a BEST_OF race.
     strategy = models.CharField(max_length=20, blank=True)
     selected = models.BooleanField(default=True)
+    # Platform-initiated QA overhead (the copy judge, the focus vision call)
+    # rather than a unit of product the customer asked for. Internal rows are
+    # real spend — they count toward the spend cap — but they are excluded
+    # from per-capability unit counts, so 100 provisioned posters stay 100
+    # posters. This unit/spend split is surfaced for founder review.
+    is_internal = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
 

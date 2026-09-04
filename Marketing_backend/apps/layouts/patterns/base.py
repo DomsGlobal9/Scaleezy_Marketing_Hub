@@ -11,6 +11,7 @@ same code composes a 1080x1350 Instagram portrait and a 1600x900 X card
 without a second implementation or a resize — which is the whole point of
 composing locally instead of asking an image model for a finished poster.
 """
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
@@ -45,6 +46,14 @@ class Spec:
 
     photo: Optional[Image.Image] = None
     logo: Optional[Image.Image] = None
+
+    #: Focal-point steering for photo crops: {'x': fx, 'y': fy} normalized
+    #: 0..1 in source coordinates, optionally with 'bbox': [x0, y0, x1, y1]
+    #: (the subject's bounds, also normalized). None keeps the historical
+    #: centred crop. Populated from layout_config['photo_focus'] by the
+    #: automatic compose; every pattern gets it for free through
+    #: `photo_or_placeholder`.
+    photo_focus: Optional[dict] = None
 
     # Free-form per-pattern overrides, straight from ContentItem.layout_config.
     config: dict = field(default_factory=dict)
@@ -206,8 +215,31 @@ class LayoutPattern(ABC):
         return y
 
     @staticmethod
-    def cover(photo: Image.Image, width: int, height: int) -> Image.Image:
-        """Crop-to-fill, centred. Never distorts the aspect ratio."""
+    def cover(photo: Image.Image, width: int, height: int,
+              focus: Optional[dict] = None) -> Image.Image:
+        """Crop-to-fill. Never distorts the aspect ratio.
+
+        ``focus`` steers where the crop window lands on the resized photo:
+
+        * ``None`` (default) — the historical centred crop, pixel for pixel.
+        * ``{'x': fx, 'y': fy}`` — a focal point in normalized 0..1 source
+          coordinates; the window is centred on it, then clamped inside the
+          resized image.
+        * optional ``'bbox': [x0, y0, x1, y1]`` (normalized) — the subject's
+          bounds. Geometry, not a second AI call, keeps the subject whole:
+          per axis, a bbox that fits the window shifts the window the
+          minimum distance needed to contain it; a bbox larger than the
+          window centres the window on the bbox instead.
+
+        The focus values come from client-writable JSON, so everything is
+        re-validated here; anything malformed degrades to the centred crop.
+
+        Caveat: a degenerate tiny source (a 1px edge) is clamped by the
+        ``max(1, ...)`` resize floor, so integer rounding can leave the
+        resized image a pixel short of the window and the crop then pads the
+        missing edge. Real photographs never hit this; it is accepted rather
+        than special-cased.
+        """
         width, height = max(1, int(width)), max(1, int(height))
         source = photo.convert('RGB')
         scale = max(width / source.width, height / source.height)
@@ -215,8 +247,11 @@ class LayoutPattern(ABC):
             (max(1, int(source.width * scale)), max(1, int(source.height * scale))),
             Image.LANCZOS,
         )
-        left = (resized.width - width) // 2
-        top = (resized.height - height) // 2
+        fx, fy, bbox = _focus_values(focus)
+        left = _crop_origin(fx, resized.width, width,
+                            (bbox[0], bbox[2]) if bbox else None)
+        top = _crop_origin(fy, resized.height, height,
+                           (bbox[1], bbox[3]) if bbox else None)
         return resized.crop((left, top, left + width, top + height))
 
     def placeholder(self, width: int, height: int) -> Image.Image:
@@ -230,7 +265,9 @@ class LayoutPattern(ABC):
 
     def photo_or_placeholder(self, width: int, height: int) -> Image.Image:
         if self.spec.photo is not None and self.uses_photo:
-            return self.cover(self.spec.photo, width, height)
+            # The one seam every pattern's photo goes through, so a focal
+            # point on the Spec fixes face-cutting crops in all of them.
+            return self.cover(self.spec.photo, width, height, self.spec.photo_focus)
         return self.placeholder(width, height)
 
     @staticmethod
@@ -260,3 +297,65 @@ def text_box(spec: Spec) -> Tuple[int, int]:
     """Conventional side margin and content width."""
     margin = int(spec.width * 0.083)
     return margin, spec.width - margin * 2
+
+
+# -- focal-point crop maths ------------------------------------------------
+def _unit_interval(value, default):
+    """`value` as a float clamped to 0..1, or `default` when it is not one."""
+    try:
+        return min(1.0, max(0.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _focus_values(focus) -> Tuple[float, float, Optional[list]]:
+    """(fx, fy, bbox) out of a focus dict, defensively.
+
+    The dict ultimately comes from `layout_config`, which is client-writable
+    JSON — so every number is re-validated even though `detect_photo_focus`
+    clamps its own output. Malformed input degrades to the centred default
+    (0.5, 0.5, no bbox) rather than raising out of a render.
+    """
+    if not isinstance(focus, dict):
+        return 0.5, 0.5, None
+    fx = _unit_interval(focus.get('x'), 0.5)
+    fy = _unit_interval(focus.get('y'), 0.5)
+    bbox = None
+    raw = focus.get('bbox')
+    if isinstance(raw, (list, tuple)) and len(raw) == 4:
+        values = [_unit_interval(v, None) for v in raw]
+        if None not in values and values[2] > values[0] and values[3] > values[1]:
+            bbox = values
+    return fx, fy, bbox
+
+
+def _crop_origin(focal: float, resized: int, window: int, span) -> int:
+    """Left/top of a crop window along one axis.
+
+    `focal` is the normalized focal coordinate, `resized` the resized photo's
+    extent, `window` the crop's extent, and `span` the subject bbox's
+    normalized (lo, hi) on this axis, or None when no bbox is known.
+
+    Start by centring the window on the focal point. int() floors here on
+    purpose: floor(0.5 * n - w / 2) == (n - w) // 2 for every n and w, so
+    the default 0.5 focal point reproduces the historical centred crop
+    pixel for pixel (Python's round() half-to-even would drift by 1px on
+    odd slack).
+    """
+    origin = int(focal * resized - window / 2)
+    if span is not None:
+        lo, hi = span[0] * resized, span[1] * resized
+        if hi - lo <= window:
+            # The subject fits: shift only as far as containment demands.
+            # Applied lo-side first, hi-side last (ceil, so a fractional
+            # edge is not left half a pixel outside); when a bbox exactly
+            # the window's size straddles a pixel boundary the hi side wins
+            # by under a pixel — the closest any integer crop can get.
+            origin = min(origin, int(lo))
+            origin = max(origin, math.ceil(hi) - window)
+        else:
+            # The subject cannot fit: centre on it and crop equally from
+            # both ends — the least-bad window.
+            origin = int((lo + hi) / 2 - window / 2)
+    # Never read outside the resized image.
+    return max(0, min(origin, resized - window))

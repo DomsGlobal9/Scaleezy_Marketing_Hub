@@ -162,6 +162,30 @@ class ContentReviewTests(APITestCase):
         self.assertEqual(revision.status, ContentItem.Status.DRAFT)
         self.assertEqual(revision.headline, 'Festive drop')
 
+    def test_request_edits_revision_inherits_the_paid_photo_focus(self):
+        """The revision keeps the parent's photograph, so it must keep the
+        photograph's focal point too — otherwise every review round re-buys
+        the SUBJECT_FOCUS vision call for the same pixels."""
+        focus_dict = {'x': 0.3, 'y': 0.4, 'bbox': None,
+                      'has_face': True, 'provider': 'gemini'}
+        self.item.layout_config = {
+            'source_asset': str(self.asset.id),
+            'photo_focus': dict(focus_dict),
+        }
+        self.item.save(update_fields=['layout_config'])
+
+        self.as_(self.manager)
+        res = self.client.post(
+            f'/api/marketing/content/{self.item.id}/request-edits/',
+            {'note': 'Tighten the headline', 'elements': [self.feedback_element.key]},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        revision = ContentItem.objects.get(parent=self.item)
+        self.assertEqual(revision.layout_config.get('photo_focus'), focus_dict)
+        self.assertEqual(revision.layout_config.get('source_asset'), str(self.asset.id))
+
     def test_reject_requires_an_active_feedback_tag(self):
         self.as_(self.manager)
 

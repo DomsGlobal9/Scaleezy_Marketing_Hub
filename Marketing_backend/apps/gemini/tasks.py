@@ -969,8 +969,10 @@ def regenerate_revision(revision_id: str):
                 (payload.get('posterImageUrl') or '')[:1000] or revision.preview_url
             )
             # A new photograph replaces the parent's; the old source no longer
-            # describes what any future composition should build from.
+            # describes what any future composition should build from — and
+            # neither does its focal point, so the compose re-detects.
             config.pop('source_asset', None)
+            config.pop('photo_focus', None)
     else:
         # Surgical: only what the reviewer flagged changes. Elements they
         # liked keep their photograph, their words and their look.
@@ -1011,8 +1013,10 @@ def regenerate_revision(revision_id: str):
             if asset is not None:
                 revision.asset = asset
                 # A new photograph replaces the parent's; the compose below
-                # decides the preview.
+                # decides the preview — and re-detects the focal point,
+                # which described the old photograph.
                 config.pop('source_asset', None)
+                config.pop('photo_focus', None)
         if scope['copy'] or scope['image']:
             config['generation_trace'] = {
                 'brain_version': brain_version,

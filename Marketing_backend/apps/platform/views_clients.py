@@ -128,7 +128,11 @@ def _bulk_usage(workspace_ids):
             .values('workspace_id', 'capability')
             .annotate(
                 spend=Sum('cost'),
-                used=Count('id', filter=Q(success=True, selected=True)),
+                # Mirrors quota.capability_usage's billable-unit definition:
+                # internal QA dispatches are spend, never customer units.
+                used=Count(
+                    'id', filter=Q(success=True, selected=True, is_internal=False)
+                ),
             )
         ):
             workspace_id = row['workspace_id']
