@@ -9,7 +9,7 @@ import {
   Palette,
   XCircle,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -424,7 +424,11 @@ function ReviewPage() {
             size="sm"
             className="shrink-0"
             variant={tab === t.key ? "default" : "outline"}
-            onClick={() => setTab(t.key)}
+            // A transition, because switching renders every card of the target
+            // tab (image frame, note editor, 56-option tag picker each). Done
+            // synchronously that pass blocks the main thread past the 200ms
+            // INP budget; sliced, the click paints immediately.
+            onClick={() => startTransition(() => setTab(t.key))}
           >
             {t.label}
             {counts[t.key] ? (
