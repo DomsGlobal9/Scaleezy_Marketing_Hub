@@ -1,20 +1,26 @@
 """Phase 7 — the layout and export engine."""
 import base64
 import io
+import json
+import uuid as uuid_mod
+from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from PIL import Image
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.brands.models import Brand
 from apps.content.models import ContentItem
-from apps.layouts import export, fonts, images, registry, services, variants
-from apps.layouts.patterns.base import Spec
+from apps.layouts import export, focus, fonts, images, registry, services, variants
+from apps.layouts.patterns.base import LayoutPattern, Spec
 from apps.layouts.render import compose, compose_at, spec_from
 from apps.marketing.models import MarketingAsset
 from apps.marketing.services.storage import StorageError
+from apps.universal.services import set_client_quality
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
 User = get_user_model()
@@ -696,3 +702,523 @@ class AutoComposeTests(APITestCase):
         self.item.refresh_from_db()
         # The composed poster is the asset, but the photograph is the source.
         self.assertEqual(services.source_photo_asset(self.item).pk, self.photo.pk)
+
+
+class CoverFocusTests(APITestCase):
+    """Focal-point-aware crop-to-fill — the face-cutting fix, by geometry."""
+
+    @staticmethod
+    def gradient(width, height):
+        """Every column and row uniquely coloured, so a crop's position is
+        readable straight off its pixels."""
+        image = Image.new('RGB', (width, height))
+        px = image.load()
+        for x in range(width):
+            for y in range(height):
+                px[x, y] = (x % 256, y % 256, (x + y) % 256)
+        return image
+
+    @staticmethod
+    def legacy_cover(photo, width, height):
+        """The exact pre-focus algorithm, kept verbatim as the golden."""
+        width, height = max(1, int(width)), max(1, int(height))
+        source = photo.convert('RGB')
+        scale = max(width / source.width, height / source.height)
+        resized = source.resize(
+            (max(1, int(source.width * scale)), max(1, int(source.height * scale))),
+            Image.LANCZOS,
+        )
+        left = (resized.width - width) // 2
+        top = (resized.height - height) // 2
+        return resized.crop((left, top, left + width, top + height))
+
+    @classmethod
+    def resized(cls, photo, width, height):
+        """The intermediate scaled image, for computing expected windows."""
+        source = photo.convert('RGB')
+        scale = max(width / source.width, height / source.height)
+        return source.resize(
+            (max(1, int(source.width * scale)), max(1, int(source.height * scale))),
+            Image.LANCZOS,
+        )
+
+    def assertWindow(self, photo, size, focus, left, top):
+        """cover() with `focus` lands the (left, top) window exactly."""
+        width, height = size
+        expected = self.resized(photo, width, height).crop(
+            (left, top, left + width, top + height)
+        )
+        actual = LayoutPattern.cover(photo, width, height, focus)
+        self.assertEqual(actual.tobytes(), expected.tobytes())
+
+    def test_no_focus_is_the_legacy_centred_crop_pixel_for_pixel(self):
+        # 305->100 leaves odd slack: the case where round() would drift.
+        for source_size, crop in (
+            ((305, 100), (100, 100)),
+            ((300, 200), (90, 120)),
+            ((101, 103), (50, 50)),
+        ):
+            photo = self.gradient(*source_size)
+            self.assertEqual(
+                LayoutPattern.cover(photo, *crop).tobytes(),
+                self.legacy_cover(photo, *crop).tobytes(),
+                f"{source_size} -> {crop}",
+            )
+
+    def test_an_explicit_centre_focus_is_also_the_legacy_crop(self):
+        photo = self.gradient(305, 100)  # odd slack on x
+        self.assertEqual(
+            LayoutPattern.cover(photo, 100, 100, {'x': 0.5, 'y': 0.5}).tobytes(),
+            self.legacy_cover(photo, 100, 100).tobytes(),
+        )
+
+    def test_edge_focal_points_clamp_to_the_frame(self):
+        photo = self.gradient(400, 100)  # scale 1.0: window slides on x only
+        self.assertWindow(photo, (100, 100), {'x': 0.0, 'y': 0.5}, 0, 0)
+        self.assertWindow(photo, (100, 100), {'x': 1.0, 'y': 0.5}, 300, 0)
+
+    def test_the_focal_point_steers_the_window(self):
+        photo = self.gradient(400, 100)
+        # left = floor(0.25 * 400 - 100 / 2) = 50
+        self.assertWindow(photo, (100, 100), {'x': 0.25, 'y': 0.5}, 50, 0)
+
+    def test_a_vertical_focal_point_clamps_too(self):
+        photo = self.gradient(100, 400)
+        # top = floor(0.9 * 400 - 50) = 310, clamped to 400 - 100 = 300.
+        self.assertWindow(photo, (100, 100), {'x': 0.5, 'y': 0.9}, 0, 300)
+
+    def test_a_bbox_that_fits_is_shifted_fully_inside(self):
+        photo = self.gradient(400, 100)
+        # Focal pulls the window to the far left; the subject sits at
+        # x 280..360 and fits an 100-wide window, so the window shifts the
+        # minimum distance: left = ceil(360) - 100 = 260.
+        focus_dict = {'x': 0.1, 'y': 0.5, 'bbox': [0.7, 0.0, 0.9, 1.0]}
+        self.assertWindow(photo, (100, 100), focus_dict, 260, 0)
+
+    def test_a_bbox_bigger_than_the_window_centres_on_it(self):
+        photo = self.gradient(400, 100)
+        # Subject spans x 40..360 (320 wide, window 100): centre on its
+        # midpoint 200 -> left = floor(200 - 50) = 150.
+        focus_dict = {'x': 0.1, 'y': 0.5, 'bbox': [0.1, 0.0, 0.9, 1.0]}
+        self.assertWindow(photo, (100, 100), focus_dict, 150, 0)
+
+    def test_junk_focus_degrades_to_the_centred_crop(self):
+        photo = self.gradient(305, 100)
+        golden = self.legacy_cover(photo, 100, 100).tobytes()
+        for junk in (
+            {'x': 'oops', 'y': None, 'bbox': 'junk'},
+            {'bbox': [0.5, 0.5, 0.2, 'x']},
+            {'bbox': [0.9, 0.1, 0.9, 0.6]},  # zero-width bbox
+            'not-a-dict',
+            {'skipped': 'NoProviderAvailable'},
+        ):
+            self.assertEqual(
+                LayoutPattern.cover(photo, 100, 100, junk).tobytes(),
+                golden,
+                repr(junk),
+            )
+
+    def test_the_focus_travels_through_the_spec_into_a_pattern(self):
+        photo = self.gradient(2160, 400)
+        centred = compose(base_spec(photo=photo), 'cos_split')
+        steered = compose(
+            base_spec(photo=photo, photo_focus={'x': 0.05, 'y': 0.5}), 'cos_split'
+        )
+        self.assertNotEqual(centred.tobytes(), steered.tobytes())
+
+
+class PhotoFocusDetectionTests(APITestCase):
+    """One cached vision call per source photo, degrading to centred."""
+
+    GOOD = {
+        'analysis': {
+            'focal': {'x': 0.3, 'y': 0.4},
+            'subject_bbox': [0.2, 0.2, 0.5, 0.6],
+            'has_face': True,
+        },
+        'provider': 'gemini',
+    }
+
+    def setUp(self):
+        self.ws = MarketingWorkspace.objects.create(customer_id='f', workspace_name='Focus')
+
+    def test_a_good_payload_is_shaped_and_clamped(self):
+        payload = {
+            'analysis': {
+                'focal': {'x': 1.7, 'y': -0.2},
+                'subject_bbox': [0.9, 0.1, 0.4, 0.6],  # inverted on x
+                'has_face': 1,
+            },
+            'provider': 'gemini',
+        }
+        with patch('apps.ai.router.AIRouter.dispatch', return_value=payload):
+            result = focus.detect_photo_focus(self.ws, a_photo(200, 100))
+        self.assertEqual(result, {
+            'x': 1.0, 'y': 0.0, 'bbox': [0.4, 0.1, 0.9, 0.6],
+            'has_face': True, 'provider': 'gemini',
+        })
+
+    def test_the_brief_follows_the_inspiration_idiom(self):
+        with patch('apps.ai.router.AIRouter.dispatch', return_value=self.GOOD) as dispatch:
+            focus.detect_photo_focus(self.ws, a_photo(2000, 1000))
+        (capability, brief), _kwargs = dispatch.call_args
+        from apps.ai.models import Capability
+        self.assertEqual(capability, Capability.IMAGE_ANALYSIS)
+        self.assertEqual(brief['task'], 'SUBJECT_FOCUS')
+        self.assertIs(brief['response_schema'], focus.FOCUS_SCHEMA)
+        self.assertIn('untrusted evidence', brief['instruction'])
+        self.assertTrue(brief['reference_image_base64'].startswith('data:image/jpeg;base64,'))
+        # The photo is thumbnailed before the call — resolution buys nothing
+        # for normalized output, and small images are what keeps this cheap.
+        sent = images.from_base64(brief['reference_image_base64'])
+        self.assertLessEqual(max(sent.width, sent.height), focus.ANALYSIS_MAX_EDGE)
+
+    def test_dispatch_failure_becomes_a_skipped_marker_not_an_exception(self):
+        from apps.ai.router import NoProviderAvailable
+        with patch(
+            'apps.ai.router.AIRouter.dispatch',
+            side_effect=NoProviderAvailable('nobody home'),
+        ):
+            result = focus.detect_photo_focus(self.ws, a_photo())
+        self.assertEqual(result, {'skipped': 'NoProviderAvailable'})
+
+    def test_malformed_payloads_are_skipped_not_raised(self):
+        for payload, reason in (
+            ({'analysis': {'nope': 1}}, 'MALFORMED_RESPONSE'),
+            ({'analysis': {'focal': {'x': 'a', 'y': 0.2}}}, 'MALFORMED_RESPONSE'),
+            ({'analysis': 'not json {'}, 'JSONDecodeError'),
+        ):
+            with patch('apps.ai.router.AIRouter.dispatch', return_value=payload):
+                result = focus.detect_photo_focus(self.ws, a_photo())
+            self.assertEqual(result, {'skipped': reason}, repr(payload))
+
+    def test_a_broken_bbox_loses_only_the_bbox(self):
+        payload = {
+            'analysis': {
+                'focal': {'x': 0.6, 'y': 0.6},
+                'subject_bbox': [0.1, 'x', 0.9, 0.9],
+                'has_face': False,
+            },
+        }
+        with patch('apps.ai.router.AIRouter.dispatch', return_value=payload):
+            result = focus.detect_photo_focus(self.ws, a_photo())
+        self.assertEqual(result['x'], 0.6)
+        self.assertIsNone(result['bbox'])
+
+
+class ComposeFocusTests(APITestCase):
+    """The automatic compose pays for at most one vision call per photo."""
+
+    PAYLOAD = PhotoFocusDetectionTests.GOOD
+    STORED = {
+        'x': 0.3, 'y': 0.4, 'bbox': [0.2, 0.2, 0.5, 0.6],
+        'has_face': True, 'provider': 'gemini',
+    }
+
+    def setUp(self):
+        self.ws = MarketingWorkspace.objects.create(customer_id='d', workspace_name='Delta')
+        self.brand = Brand.objects.create(
+            workspace=self.ws, name='Delta Co', palette=dict(PALETTE), is_default=True,
+        )
+        self.photo = MarketingAsset.objects.create(
+            workspace=self.ws,
+            file_name='generated.png',
+            file_url='https://storage.test/generated/x/generated.png',
+            source=MarketingAsset.Source.AI_GENERATED,
+        )
+        self.item = ContentItem.objects.create(
+            workspace=self.ws, brand=self.brand, asset=self.photo,
+            headline='Festive drop', cta='50% OFF',
+            preview_url=self.photo.file_url,
+            layout_config={'creative_direction': {'mode': 'AI_ORIGINAL'}},
+        )
+        # The photograph resolves locally; nothing is fetched in tests.
+        patcher = patch('apps.layouts.render.photo_for', return_value=a_photo(800, 600))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_first_compose_detects_once_and_recompose_never_pays_again(self):
+        with patch('apps.ai.router.AIRouter.dispatch', return_value=self.PAYLOAD) as dispatch:
+            self.assertIsNotNone(services.compose_generated_poster(self.item))
+            self.item.refresh_from_db()
+            self.assertEqual(self.item.layout_config['photo_focus'], self.STORED)
+            self.assertEqual(dispatch.call_count, 1)
+            chosen = self.item.layout_plugin
+
+            # Recompose: stored focus wins; the layout never reshuffles.
+            self.assertIsNotNone(services.compose_generated_poster(self.item))
+            self.item.refresh_from_db()
+            self.assertEqual(dispatch.call_count, 1)
+            self.assertEqual(self.item.layout_plugin, chosen)
+            self.assertEqual(self.item.layout_config['photo_focus'], self.STORED)
+
+    def test_a_failed_detection_degrades_and_is_never_retried(self):
+        with patch(
+            'apps.ai.router.AIRouter.dispatch', side_effect=RuntimeError('boom')
+        ) as dispatch:
+            self.assertIsNotNone(services.compose_generated_poster(self.item))
+            self.item.refresh_from_db()
+            self.assertEqual(
+                self.item.layout_config['photo_focus'], {'skipped': 'RuntimeError'}
+            )
+            self.assertIsNotNone(services.compose_generated_poster(self.item))
+            self.assertEqual(dispatch.call_count, 1)
+
+    def test_the_toggle_off_never_dispatches(self):
+        set_client_quality(self.ws, focus_crop_enabled=False)
+        with patch('apps.ai.router.AIRouter.dispatch', return_value=self.PAYLOAD) as dispatch:
+            self.assertIsNotNone(services.compose_generated_poster(self.item))
+        self.assertEqual(dispatch.call_count, 0)
+        self.item.refresh_from_db()
+        self.assertNotIn('photo_focus', self.item.layout_config)
+
+    def test_a_pre_stored_focus_wins_without_a_dispatch(self):
+        config = dict(self.item.layout_config)
+        config['photo_focus'] = dict(self.STORED)
+        self.item.layout_config = config
+        self.item.save(update_fields=['layout_config'])
+        with patch('apps.ai.router.AIRouter.dispatch', return_value=self.PAYLOAD) as dispatch:
+            self.assertIsNotNone(services.compose_generated_poster(self.item))
+        self.assertEqual(dispatch.call_count, 0)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.layout_config['photo_focus'], self.STORED)
+
+    def test_the_focus_survives_a_storage_failure(self):
+        """A paid vision result is cached even when the compose itself fails,
+        so the retry after a storage hiccup does not pay twice."""
+        with patch('apps.ai.router.AIRouter.dispatch', return_value=self.PAYLOAD) as dispatch:
+            with patch(
+                'apps.layouts.services.SupabaseStorageService.upload_and_describe',
+                side_effect=StorageError('down'),
+            ):
+                self.assertIsNone(services.compose_generated_poster(self.item))
+            self.item.refresh_from_db()
+            self.assertEqual(self.item.layout_config['photo_focus'], self.STORED)
+
+            # Storage recovers; the vision call is not repeated.
+            self.assertIsNotNone(services.compose_generated_poster(self.item))
+            self.assertEqual(dispatch.call_count, 1)
+
+
+class VarietySelectionTests(APITestCase):
+    """Recency-weighted layout picking: the same brand stops getting the
+    same skeleton, without ever reshuffling an item under review."""
+
+    def setUp(self):
+        self.ws = MarketingWorkspace.objects.create(customer_id='v', workspace_name='Var')
+        self.brand = Brand.objects.create(
+            workspace=self.ws, name='Var Co', palette=dict(PALETTE), is_default=True,
+        )
+        self.options = [
+            key for key in registry.keys()
+            if getattr(registry.get(key), 'uses_photo', True)
+        ]
+
+    def composed(self, layout, age_minutes):
+        item = ContentItem.objects.create(
+            workspace=self.ws, brand=self.brand, headline='old', layout_plugin=layout,
+        )
+        ContentItem.objects.filter(pk=item.pk).update(
+            created_at=timezone.now() - timedelta(minutes=age_minutes)
+        )
+        return item
+
+    def fresh_item(self):
+        return ContentItem.objects.create(
+            workspace=self.ws, brand=self.brand, headline='new',
+        )
+
+    def legacy_pick(self, item):
+        seed = uuid_mod.UUID(str(item.pk)).int
+        return self.options[seed % len(self.options)]
+
+    def test_history_steers_away_from_the_recent_pattern(self):
+        for age in (1, 2, 3):
+            self.composed('cos_split', age)
+        item = self.fresh_item()
+        pick = services.generated_layout(item)
+        self.assertIn(pick, self.options)
+        self.assertNotEqual(pick, 'cos_split')
+        # Deterministic for a given (item, history).
+        self.assertEqual(pick, services.generated_layout(item))
+
+    def test_equal_counts_prefer_the_oldest_recent_use(self):
+        # Newest -> oldest: every option used exactly once; the winner is the
+        # one whose last outing is furthest back.
+        for age, layout in enumerate(self.options, start=1):
+            self.composed(layout, age)
+        pick = services.generated_layout(self.fresh_item())
+        self.assertEqual(pick, self.options[-1])
+
+    def test_no_history_falls_back_to_the_legacy_modulo(self):
+        item = self.fresh_item()
+        self.assertEqual(services.generated_layout(item), self.legacy_pick(item))
+
+    def test_disabled_variety_keeps_the_legacy_modulo(self):
+        set_client_quality(self.ws, variety_enabled=False)
+        item = self.fresh_item()
+        # Crowd the legacy pick's pattern; the toggle keeps the old maths.
+        for age in (1, 2, 3):
+            self.composed(self.legacy_pick(item), age)
+        self.assertEqual(services.generated_layout(item), self.legacy_pick(item))
+
+    def test_an_item_without_a_brand_keeps_the_stateless_pick(self):
+        # The gemini test-suite calls generated_layout with bare namespaces;
+        # nothing here may add a query (or a crash) to that path.
+        item = SimpleNamespace(pk=uuid_mod.UUID(int=5))
+        self.assertEqual(
+            services.generated_layout(item), self.options[5 % len(self.options)]
+        )
+
+
+class VariantNudgeTests(APITestCase):
+    """A repeated skeleton must not repeat its predecessor's dress too."""
+
+    def setUp(self):
+        self.ws = MarketingWorkspace.objects.create(customer_id='n', workspace_name='Nudge')
+        self.brand = Brand.objects.create(
+            workspace=self.ws, name='Nudge Co', palette=dict(PALETTE), is_default=True,
+        )
+        self.photo = MarketingAsset.objects.create(
+            workspace=self.ws,
+            file_name='generated.png',
+            file_url='https://storage.test/generated/x/generated.png',
+            source=MarketingAsset.Source.AI_GENERATED,
+        )
+        self.item = ContentItem.objects.create(
+            workspace=self.ws, brand=self.brand, asset=self.photo,
+            headline='Festive drop', cta='50% OFF',
+            preview_url=self.photo.file_url,
+            layout_config={'creative_direction': {'mode': 'AI_ORIGINAL'}},
+        )
+        # No photo -> no focus dispatch; the nudge is what is under test.
+        patcher = patch('apps.layouts.render.photo_for', return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        # Every photo pattern used once, oldest last: the picker will choose
+        # the pattern of the OLDEST prior, which this test controls.
+        self.options = [
+            key for key in registry.keys()
+            if getattr(registry.get(key), 'uses_photo', True)
+        ]
+        self.priors = []
+        for age, layout in enumerate(self.options, start=1):
+            prior = ContentItem.objects.create(
+                workspace=self.ws, brand=self.brand, headline='old',
+                layout_plugin=layout,
+            )
+            ContentItem.objects.filter(pk=prior.pk).update(
+                created_at=timezone.now() - timedelta(minutes=age)
+            )
+            self.priors.append(prior)
+        self.chosen = self.options[-1]
+        self.candidate = variants.variant_for(self.item, uses_photo=True)
+
+    def dress_prior(self, variant):
+        prior = self.priors[-1]  # the oldest: its pattern is the one chosen
+        prior.layout_config = {'style_variant': variant}
+        prior.save(update_fields=['layout_config'])
+
+    def test_a_same_dress_prior_triggers_a_deterministic_restyle(self):
+        self.dress_prior(dict(self.candidate))
+        self.assertIsNotNone(services.compose_generated_poster(self.item))
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.layout_plugin, self.chosen)
+        expected = variants.different_variant_for(
+            self.item, self.candidate, uses_photo=True
+        )
+        self.assertEqual(self.item.layout_config['style_variant'], expected)
+        self.assertNotEqual(self.item.layout_config['style_variant'], self.candidate)
+
+    def test_a_different_palette_prior_keeps_the_uuid_variant(self):
+        different = dict(self.candidate)
+        index = variants.PALETTES.index(different['palette'])
+        different['palette'] = variants.PALETTES[(index + 1) % len(variants.PALETTES)]
+        self.dress_prior(different)
+        self.assertIsNotNone(services.compose_generated_poster(self.item))
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.layout_config['style_variant'], self.candidate)
+
+    def test_variety_off_never_nudges(self):
+        set_client_quality(self.ws, variety_enabled=False)
+        self.dress_prior(dict(self.candidate))
+        self.assertIsNotNone(services.compose_generated_poster(self.item))
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.layout_config['style_variant'], self.candidate)
+
+
+class GeminiFocusGateTests(APITestCase):
+    """The adapter honours response_schema for SUBJECT_FOCUS and keeps the
+    legacy behaviour for every unlisted task. Lives here to keep the whole
+    quality-engine change set reviewable in one app."""
+
+    PAYLOAD = {
+        'focal': {'x': 0.5, 'y': 0.4},
+        'subject_bbox': [0.1, 0.1, 0.9, 0.9],
+        'has_face': True,
+    }
+
+    def stub(self, payload):
+        calls = {}
+
+        class Stub:
+            TEXT_MODEL = 'gemini-test'
+
+            @staticmethod
+            def _parse_base64_image(b64):
+                return 'image/jpeg', b'img-bytes'
+
+            @staticmethod
+            def _get_client(credentials):
+                def generate_content(**kwargs):
+                    calls['kwargs'] = kwargs
+                    return SimpleNamespace(text=json.dumps(payload))
+                return SimpleNamespace(
+                    models=SimpleNamespace(generate_content=generate_content)
+                )
+
+            @staticmethod
+            def analyze_reference_image(b64, api_key=''):
+                calls['legacy'] = True
+                return {'legacy': True}
+
+        return Stub, calls
+
+    def analyze(self, brief, payload=None):
+        from apps.ai.adapters.gemini import GeminiAdapter
+
+        stub, calls = self.stub(payload or self.PAYLOAD)
+        with patch.object(GeminiAdapter, '_service', lambda adapter: stub):
+            return GeminiAdapter().analyze_image(brief), calls
+
+    def test_subject_focus_goes_through_the_structured_path(self):
+        result, calls = self.analyze({
+            'task': 'SUBJECT_FOCUS',
+            'instruction': 'find the subject',
+            'response_schema': focus.FOCUS_SCHEMA,
+            'reference_image_base64': 'data:image/jpeg;base64,AAAA',
+        })
+        self.assertEqual(result['analysis'], self.PAYLOAD)
+        self.assertNotIn('legacy', calls)
+        # response_schema was actually forwarded to the model call.
+        self.assertIn('config', calls['kwargs'])
+
+    def test_an_incomplete_structured_payload_is_rejected(self):
+        from apps.ai.adapters.base import AIProviderError
+
+        with self.assertRaises(AIProviderError):
+            self.analyze(
+                {
+                    'task': 'SUBJECT_FOCUS',
+                    'response_schema': focus.FOCUS_SCHEMA,
+                    'reference_image_base64': 'data:image/jpeg;base64,AAAA',
+                },
+                payload={'focal': {'x': 0.5, 'y': 0.4}},  # missing required keys
+            )
+
+    def test_other_tasks_keep_the_legacy_path_identically(self):
+        result, calls = self.analyze({'reference_image_base64': 'AAAA'})
+        self.assertEqual(result, {'analysis': {'legacy': True}})
+        self.assertTrue(calls.get('legacy'))
+        self.assertNotIn('kwargs', calls)
