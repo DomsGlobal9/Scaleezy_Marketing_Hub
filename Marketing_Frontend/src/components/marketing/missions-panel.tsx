@@ -363,10 +363,7 @@ export function MissionsPanel() {
             className="w-full"
             onClick={createAndRun}
             disabled={
-              !brandId ||
-              !draft.name.trim() ||
-              !draft.objective.trim() ||
-              working === "create-run"
+              !brandId || !draft.name.trim() || !draft.objective.trim() || working === "create-run"
             }
           >
             {working === "create-run" ? (
@@ -483,8 +480,7 @@ export function MissionsPanel() {
                   <p className="font-semibold">{run.policy_name}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {new Date(run.created_at).toLocaleString()} ·{" "}
-                    {run.steps.map((step) => `${step.key}: ${step.status}`).join(" → ") ||
-                      "Queued"}
+                    {run.steps.map((step) => `${step.key}: ${step.status}`).join(" → ") || "Queued"}
                   </p>
                   {run.error && <p className="mt-2 text-xs text-destructive">{run.error}</p>}
                 </div>

@@ -18,6 +18,14 @@ class BrandSerializer(serializers.ModelSerializer):
             'logo_url',
             'logo_storage_path',
             'logo_file_name',
+            # This snapshot and its compile-health metadata are owned by the
+            # Brand Brain compiler. Accepting them through ordinary brand
+            # writes would let a client forge intelligence and health state.
+            'creative_brain',
+            'brain_compiled_at',
+            'brain_version',
+            'brain_last_error',
+            'brain_failed_at',
             # Retained temporarily for old rows only. Creative execution is a
             # per-content decision in Create Studio, never a brand mutation.
             'layout_preference',

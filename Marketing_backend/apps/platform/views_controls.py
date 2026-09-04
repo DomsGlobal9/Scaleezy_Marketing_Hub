@@ -437,6 +437,27 @@ class ProviderAvailabilityView(PlatformView):
         )
 
 
+class PlatformProviderListView(PlatformView):
+    """Global catalogue availability only; never workspace credentials/config."""
+
+    def get(self, request):
+        from .pagination import page_rows
+
+        queryset = AIProvider.objects.filter(owner_workspace__isnull=True)
+        search = str(request.query_params.get('q', '')).strip()[:200]
+        if search:
+            queryset = queryset.filter(Q(display_name__icontains=search) | Q(key__icontains=search))
+        providers, pagination = page_rows(request, queryset.order_by('display_name', 'pk'))
+        self.audit('PLATFORM_PROVIDER_AVAILABILITY_VIEWED', detail={'count': len(providers)})
+        return APIResponse(success=True, data={
+            'providers': [{
+                'id': str(provider.pk), 'key': provider.key,
+                'display_name': provider.display_name, 'is_available': provider.is_available,
+            } for provider in providers],
+            **pagination,
+        })
+
+
 # ─────────────────────────────────────────────────── P7 — platform admins
 
 def _admin_row(grant):

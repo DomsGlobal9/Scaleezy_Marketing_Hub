@@ -17,6 +17,7 @@ from .views_controls import (
     PlatformAdminRevokeView,
     PlatformAdminsView,
     ProviderAvailabilityView,
+    PlatformProviderListView,
 )
 
 urlpatterns = [
@@ -58,6 +59,7 @@ urlpatterns = [
         ClientRecompileBrainView.as_view(), name='client_recompile_brain',
     ),
     # ── P4 platform-wide kill switch
+    path('providers/', PlatformProviderListView.as_view(), name='provider_list'),
     path(
         'providers/<uuid:provider_id>/availability/',
         ProviderAvailabilityView.as_view(), name='provider_availability',

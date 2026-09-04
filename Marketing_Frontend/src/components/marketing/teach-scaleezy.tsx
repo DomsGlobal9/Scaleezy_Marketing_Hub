@@ -8,15 +8,7 @@
  * Each stage hands the user to the Brand Master tab that owns the work.
  */
 import { Link } from "@tanstack/react-router";
-import {
-  BookOpen,
-  Lightbulb,
-  Loader2,
-  Sparkles,
-  ThumbsDown,
-  ThumbsUp,
-  Wand2,
-} from "lucide-react";
+import { BookOpen, Lightbulb, Loader2, Sparkles, ThumbsDown, ThumbsUp, Wand2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -159,8 +151,8 @@ export function TeachScaleezy({
   return (
     <div className="space-y-6">
       <p className="max-w-2xl text-sm text-muted-foreground">
-        A few minutes of teaching now makes every generation after it sharper. Each step happens in
-        the tab that owns it — progress made anywhere in Brand Master counts here.
+        Teaching gives Scaleezy more eligible brand context to draw on. Each step happens in the tab
+        that owns it — progress made anywhere in Brand Master counts here.
       </p>
 
       <StageRail
@@ -203,7 +195,10 @@ export function TeachScaleezy({
       ) : null}
 
       {error ? (
-        <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+        <div
+          role="alert"
+          className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+        >
           {error}
         </div>
       ) : null}
@@ -277,7 +272,7 @@ export function TeachScaleezy({
               ? "Your brand is ready to create"
               : "Create your first brand-aligned content"
           }
-          body="Everything Scaleezy has learned goes into every generation from here on."
+          body="Eligible, in-force brand guidance is available to each generation; Scaleezy uses what is relevant to that task."
           action={
             <Button asChild>
               <Link to="/publishing">Create content</Link>

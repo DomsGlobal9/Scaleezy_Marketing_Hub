@@ -1,10 +1,14 @@
+import hashlib
+import json
+import logging
+import mimetypes
+
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
-import mimetypes
 from django.utils import timezone
 
 from apps.common.mixins import WorkspaceScopedMixin
@@ -22,6 +26,9 @@ from apps.learning.services import record_event_safely
 
 from .models import BrandSource, BrandMemory
 from .serializers import BrandSourceSerializer, BrandMemorySerializer, BrandSourceUploadSerializer
+
+logger = logging.getLogger(__name__)
+
 
 class BrandSourceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     queryset = BrandSource.objects.all()
@@ -142,7 +149,42 @@ class BrandSourceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         }
         source.metadata = metadata
         source.save(update_fields=['status', 'metadata', 'updated_at'])
-        task_result = process_source_task.enqueue(str(source.pk))
+        try:
+            task_result = process_source_task.enqueue(str(source.pk))
+        except Exception:
+            failure_message = "Source processing could not enter the task queue. Try again."
+            logger.exception(
+                "Knowledge source could not enter the durable task queue.",
+                extra={
+                    'knowledge_source_id': str(source.pk),
+                    'workspace_id': str(source.workspace_id),
+                },
+            )
+            failed_at = timezone.now()
+            metadata = dict(source.metadata or {})
+            metadata['processing'] = {
+                **dict(metadata.get('processing') or {}),
+                'failed_at': failed_at.isoformat(),
+                'error': failure_message,
+            }
+            BrandSource.objects.filter(
+                pk=source.pk,
+                status=BrandSource.SourceStatus.QUEUED,
+            ).update(
+                status=BrandSource.SourceStatus.FAILED,
+                metadata=metadata,
+                updated_at=failed_at,
+            )
+            source.refresh_from_db()
+            return APIResponse(
+                success=False,
+                message=failure_message,
+                error={
+                    'code': 'QUEUE_ENQUEUE_FAILED',
+                    'message': failure_message,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return APIResponse(
             success=True,
             message="Source queued for processing.",
@@ -197,13 +239,27 @@ class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 'normalized_key': memory.normalized_key,
                 'content': (memory.content or '')[:500],
             },
-            dedupe_key=f'memory-verdict:{memory.pk}:{memory.status}',
+            dedupe_key=(
+                f'memory-verdict:{memory.pk}:{memory.status}:'
+                + hashlib.sha256(json.dumps({
+                    field: str(getattr(memory, field, ''))
+                    for field in self.REVIEWED_FIELDS
+                }, sort_keys=True).encode()).hexdigest()[:24]
+            ),
             created_by=self.request.user,
         )
 
     @action(detail=True, methods=['post'])
     def confirm(self, request, pk=None):
         memory = self.get_object()
+        now = timezone.now()
+        if (
+            memory.status in (BrandMemory.MemoryStatus.SUPERSEDED, BrandMemory.MemoryStatus.EXPIRED)
+            or (memory.source_id and memory.source.status == BrandSource.SourceStatus.ARCHIVED)
+            or (memory.valid_until and memory.valid_until <= now)
+            or (memory.valid_from and memory.valid_from > now)
+        ):
+            raise ValidationError("This evidence is not current. Add a new fact or restore its source through the owning workflow.")
         memory.status = BrandMemory.MemoryStatus.CONFIRMED
         memory.reviewed_by = request.user
         memory.reviewed_at = timezone.now()
@@ -247,6 +303,8 @@ class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             status=status.HTTP_405_METHOD_NOT_ALLOWED,
         )
 
+    REVIEWED_FIELDS = ('content', 'memory_type', 'scope', 'valid_from', 'valid_until')
+
     def perform_update(self, serializer):
         """Editing what a confirmed fact SAYS withdraws the confirmation.
 
@@ -256,9 +314,9 @@ class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         """
         before = serializer.instance
         was_confirmed = before.status == BrandMemory.MemoryStatus.CONFIRMED
-        old_content = before.content
+        old_values = {field: getattr(before, field) for field in self.REVIEWED_FIELDS}
         memory = serializer.save()
-        if was_confirmed and memory.content != old_content:
+        if was_confirmed and any(getattr(memory, field) != value for field, value in old_values.items()):
             memory.status = BrandMemory.MemoryStatus.CANDIDATE
             memory.reviewed_by = None
             memory.reviewed_at = None

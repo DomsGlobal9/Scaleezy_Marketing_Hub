@@ -9,7 +9,9 @@
  */
 import { createFileRoute } from "@tanstack/react-router";
 import { Archive, CopyPlus, Eye, Loader2, Pencil, Plus, RefreshCw, Send } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { usePlatformPage } from "@/lib/use-platform-page";
+import { PlatformListControls } from "@/components/platform/list-controls";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -49,7 +51,6 @@ import {
 import {
   createStandard,
   errorText,
-  fetchStandards,
   formatDate,
   previewStandard,
   publishStandard,
@@ -70,8 +71,16 @@ export const Route = createFileRoute("/platform/standards")({
 const SCOPES: Array<{ value: UniversalScope; label: string; hint: string }> = [
   { value: "GLOBAL", label: "Every client", hint: "Applies to every generation on the platform." },
   { value: "INDUSTRY", label: "One industry", hint: "Matched exactly against Brand.industry." },
-  { value: "CHANNEL", label: "One channel", hint: "Matched exactly against the generation's channel." },
-  { value: "CONTENT_TYPE", label: "One content type", hint: "Matched exactly against the content type." },
+  {
+    value: "CHANNEL",
+    label: "One channel",
+    hint: "Matched exactly against the generation's channel.",
+  },
+  {
+    value: "CONTENT_TYPE",
+    label: "One content type",
+    hint: "Matched exactly against the content type.",
+  },
 ];
 
 const EMPTY_FORM: StandardInput = {
@@ -187,7 +196,11 @@ function EditorSheet({
         else if (replacing) await createStandard({ ...payload, supersedes: standard.id });
         else await updateStandard(standard.id, payload);
         toast.success(
-          !standard ? "Draft created." : replacing ? "Replacement draft created." : "Standard updated.",
+          !standard
+            ? "Draft created."
+            : replacing
+              ? "Replacement draft created."
+              : "Standard updated.",
         );
         onSaved();
         onClose();
@@ -211,9 +224,17 @@ function EditorSheet({
           </SheetHeader>
           <div className="mt-6 space-y-4">
             <Field label="Title" id="std-title">
-              <Input id="std-title" value={form.title} onChange={(e) => set("title", e.target.value)} />
+              <Input
+                id="std-title"
+                value={form.title}
+                onChange={(e) => set("title", e.target.value)}
+              />
             </Field>
-            <Field label="Rationale" id="std-rationale" hint="For the team. Never sent to a provider.">
+            <Field
+              label="Rationale"
+              id="std-rationale"
+              hint="For the team. Never sent to a provider."
+            >
               <Textarea
                 id="std-rationale"
                 rows={2}
@@ -237,10 +258,18 @@ function EditorSheet({
                 />
               </Field>
               <Field label="Value" id="std-value" hint="e.g. short">
-                <Input id="std-value" value={form.value} onChange={(e) => set("value", e.target.value)} />
+                <Input
+                  id="std-value"
+                  value={form.value}
+                  onChange={(e) => set("value", e.target.value)}
+                />
               </Field>
             </div>
-            <Field label="Guidance" id="std-guidance" hint="The sentence the generation actually receives.">
+            <Field
+              label="Guidance"
+              id="std-guidance"
+              hint="The sentence the generation actually receives."
+            >
               <Textarea
                 id="std-guidance"
                 rows={4}
@@ -354,9 +383,10 @@ function PreviewDialog({
             </p>
             {preview.exact_match_only ? (
               <p className="rounded-lg border border-amber-400/50 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                Scope matching is exact after trimming and case-folding. Brand industry is free text,
-                so "Apparel" and "Apparel &amp; fashion" are different industries here — a standard
-                that leaks into a neighbouring industry is worse than one that reaches nobody.
+                Scope matching is exact after trimming and case-folding. Brand industry is free
+                text, so "Apparel" and "Apparel &amp; fashion" are different industries here — a
+                standard that leaks into a neighbouring industry is worse than one that reaches
+                nobody.
               </p>
             ) : null}
             {preview.note ? <p className="text-xs text-muted-foreground">{preview.note}</p> : null}
@@ -373,30 +403,22 @@ function PreviewDialog({
 /* --------------------------------------------------------------------- page */
 
 function StandardsPage() {
-  const [standards, setStandards] = useState<UniversalStandard[] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<StatusFilter>("ALL");
+  const {
+    items: standards,
+    pageInfo,
+    loading,
+    error,
+    load,
+    setPage,
+    setQuery,
+  } = usePlatformPage<UniversalStandard>("/api/platform/standards/", "standards", {
+    status: filter,
+  });
   const [editing, setEditing] = useState<UniversalStandard | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [previewing, setPreviewing] = useState<UniversalStandard | null>(null);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setStandards(await fetchStandards());
-    } catch (e: unknown) {
-      setError(errorText(e, "Could not load standards."));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   const publish = (standard: UniversalStandard) =>
     setConfirm({
@@ -425,13 +447,8 @@ function StandardsPage() {
       },
     });
 
-  const visible = (standards ?? []).filter((s) => filter === "ALL" || s.status === filter);
-  const counts = {
-    ALL: standards?.length ?? 0,
-    DRAFT: standards?.filter((s) => s.status === "DRAFT").length ?? 0,
-    PUBLISHED: standards?.filter((s) => s.status === "PUBLISHED").length ?? 0,
-    RETIRED: standards?.filter((s) => s.status === "RETIRED").length ?? 0,
-  };
+  const visible = standards ?? [];
+  const counts = pageInfo?.status_counts;
 
   return (
     <div>
@@ -457,12 +474,19 @@ function StandardsPage() {
         }
       />
 
+      <PlatformListControls
+        pageInfo={pageInfo}
+        loading={loading}
+        setPage={setPage}
+        setQuery={setQuery}
+      />
       <div className="mb-4 flex flex-wrap gap-2">
         {(["ALL", "DRAFT", "PUBLISHED", "RETIRED"] as StatusFilter[]).map((value) => (
           <button
             key={value}
             type="button"
             onClick={() => setFilter(value)}
+            aria-pressed={filter === value}
             className={cn(
               "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
               filter === value
@@ -470,14 +494,15 @@ function StandardsPage() {
                 : "border-border bg-background text-muted-foreground hover:text-foreground",
             )}
           >
-            {value === "ALL" ? "All" : value.charAt(0) + value.slice(1).toLowerCase()} · {counts[value]}
+            {value === "ALL" ? "All" : value.charAt(0) + value.slice(1).toLowerCase()} ·{" "}
+            {counts ? (counts[value] ?? 0) : "—"}
           </button>
         ))}
       </div>
 
       <ErrorNote message={error} />
 
-      {loading && !standards ? (
+      {error && !standards ? null : loading && !standards ? (
         <div className="space-y-2">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-16 rounded-xl" />
@@ -485,7 +510,9 @@ function StandardsPage() {
         </div>
       ) : visible.length === 0 ? (
         <div className="surface-card p-10 text-center">
-          <p className="font-medium text-foreground">No standards {filter === "ALL" ? "yet" : "with this status"}.</p>
+          <p className="font-medium text-foreground">
+            No standards {filter === "ALL" ? "yet" : "with this status"}.
+          </p>
           <p className="mt-1 text-sm text-muted-foreground">
             {filter === "ALL"
               ? "Write the first one. It stays a draft until you publish it."
@@ -509,7 +536,9 @@ function StandardsPage() {
                 <tr key={standard.id} className="border-t border-border align-top">
                   <td className="max-w-md px-3 py-3">
                     <p className="font-medium text-foreground">{standard.title}</p>
-                    <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{standard.guidance}</p>
+                    <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                      {standard.guidance}
+                    </p>
                   </td>
                   <td className="px-3 py-3 font-mono text-[0.6875rem] text-muted-foreground">
                     {standard.category} / {standard.attribute} = {standard.value}

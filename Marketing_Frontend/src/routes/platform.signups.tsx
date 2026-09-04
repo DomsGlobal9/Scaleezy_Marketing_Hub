@@ -8,7 +8,9 @@
  */
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Check, Loader2, RefreshCw, UserPlus, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { usePlatformPage } from "@/lib/use-platform-page";
+import { PlatformListControls } from "@/components/platform/list-controls";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -41,12 +43,10 @@ import {
   approveSignup,
   attachUserToClient,
   errorText,
-  fetchSignups,
   formatDateTime,
   rejectSignup,
   type AttachUserResult,
   type BrandStatus,
-  type SignupQueue,
   type SignupRow,
 } from "@/lib/platform";
 import { cn } from "@/lib/utils";
@@ -201,8 +201,8 @@ function DuplicateCandidates({
   return (
     <div className="rounded-lg border border-amber-400/60 bg-amber-50/60 px-3 py-2 text-xs">
       <p className="font-medium text-foreground">
-        Possible duplicate signup{candidates.length === 1 ? "" : "s"} — nothing was archived.
-        Review and archive deliberately:
+        Possible duplicate signup{candidates.length === 1 ? "" : "s"} — nothing was archived. Review
+        and archive deliberately:
       </p>
       <ul className="mt-1 space-y-0.5">
         {candidates.map((c) => (
@@ -215,7 +215,8 @@ function DuplicateCandidates({
               {c.name || "Unnamed client"}
             </Link>
             <span className="text-muted-foreground">
-              {" "}· {c.client_code} · {c.approval_status.replaceAll("_", " ")}
+              {" "}
+              · {c.client_code} · {c.approval_status.replaceAll("_", " ")}
             </span>
           </li>
         ))}
@@ -253,7 +254,10 @@ function AttachUserForm({ row, onDone }: { row: SignupRow; onDone: () => void })
         }}
       >
         <div>
-          <Label htmlFor={`attach-${row.brand_id}`} className="text-[0.625rem] tracking-wide uppercase">
+          <Label
+            htmlFor={`attach-${row.brand_id}`}
+            className="text-[0.625rem] tracking-wide uppercase"
+          >
             Attach user
           </Label>
           <Input
@@ -290,29 +294,23 @@ function AttachUserForm({ row, onDone }: { row: SignupRow; onDone: () => void })
 
 function SignupsPage() {
   const [status, setStatus] = useState<BrandStatus>("PENDING");
-  const [queue, setQueue] = useState<SignupQueue | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { items, pageInfo, loading, error, load, setPage, setQuery } = usePlatformPage<SignupRow>(
+    "/api/platform/signups/",
+    "signups",
+    { status },
+  );
+  const queue =
+    pageInfo && items
+      ? {
+          signups: items,
+          count: items.length,
+          pending_total: pageInfo.status_counts?.["PENDING"] ?? 0,
+        }
+      : null;
   const [approving, setApproving] = useState<SignupRow | null>(null);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
 
-  const load = useCallback(async (wanted: BrandStatus) => {
-    setLoading(true);
-    setError(null);
-    try {
-      setQueue(await fetchSignups(wanted));
-    } catch (e: unknown) {
-      setError(errorText(e, "Could not load the approval queue."));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load(status);
-  }, [load, status]);
-
-  const reload = () => void load(status);
+  const reload = () => void load();
 
   const reject = (row: SignupRow) =>
     setConfirm({
@@ -342,12 +340,19 @@ function SignupsPage() {
         }
       />
 
+      <PlatformListControls
+        pageInfo={pageInfo}
+        loading={loading}
+        setPage={setPage}
+        setQuery={setQuery}
+      />
       <div className="mb-4 flex flex-wrap items-center gap-2">
         {STATUSES.map((s) => (
           <button
             key={s.value}
             type="button"
             onClick={() => setStatus(s.value)}
+            aria-pressed={status === s.value}
             className={cn(
               "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
               status === s.value
@@ -360,9 +365,7 @@ function SignupsPage() {
           </button>
         ))}
         {queue ? (
-          <span className="ml-auto text-xs text-muted-foreground">
-            {queue.count} shown{queue.count >= 200 ? " (first 200)" : ""}
-          </span>
+          <span className="ml-auto text-xs text-muted-foreground">{queue.count} shown</span>
         ) : null}
       </div>
 
@@ -376,7 +379,9 @@ function SignupsPage() {
         </div>
       ) : queue && queue.signups.length === 0 ? (
         <div className="surface-card p-10 text-center">
-          <p className="font-medium text-foreground">Nothing {status === "PENDING" ? "waiting" : "here"}.</p>
+          <p className="font-medium text-foreground">
+            Nothing {status === "PENDING" ? "waiting" : "here"}.
+          </p>
           <p className="mt-1 text-sm text-muted-foreground">
             {status === "PENDING"
               ? "Every signup has been reviewed."
@@ -407,7 +412,9 @@ function SignupsPage() {
                     >
                       {row.name || "Unnamed brand"}
                     </Link>
-                    <p className="font-mono text-[0.6875rem] text-muted-foreground">{row.client_code}</p>
+                    <p className="font-mono text-[0.6875rem] text-muted-foreground">
+                      {row.client_code}
+                    </p>
                     {row.legal_name && row.legal_name !== row.name ? (
                       <p className="text-xs text-muted-foreground">{row.legal_name}</p>
                     ) : null}
@@ -439,8 +446,13 @@ function SignupsPage() {
                     ) : null}
                   </td>
                   <td className="px-3 py-3 text-xs text-muted-foreground">
-                    <p>{row.knowledge_sources} knowledge source{row.knowledge_sources === 1 ? "" : "s"}</p>
-                    <p>{row.inspirations} inspiration{row.inspirations === 1 ? "" : "s"}</p>
+                    <p>
+                      {row.knowledge_sources} knowledge source
+                      {row.knowledge_sources === 1 ? "" : "s"}
+                    </p>
+                    <p>
+                      {row.inspirations} inspiration{row.inspirations === 1 ? "" : "s"}
+                    </p>
                     <p>{row.team_size} on the team</p>
                   </td>
                   <td className="px-3 py-3 text-xs">

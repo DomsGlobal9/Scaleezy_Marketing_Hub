@@ -17,6 +17,7 @@ from datetime import timedelta
 from django.db import transaction
 from django.tasks import task
 from django.utils import timezone
+from .execution import media_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ def generate_content(request_id: str):
     if (
         request.status == GeminiGenerationRequest.Status.FAILED
         and existing_composition.get('status') == 'FAILED'
+        and (existing_metadata.get('media') or {}).get('status') != 'FAILED'
     ):
         # Provider output and a recoverable draft already exist. Retrying this
         # request would buy the providers again and create a duplicate draft;
@@ -170,6 +172,8 @@ def generate_content(request_id: str):
         from apps.brands.models import Brand
 
         brand = Brand.objects.filter(workspace=request.workspace).order_by('-is_default').first()
+        if brief.get('retry_image_only'):
+            brand = Brand.objects.filter(workspace=request.workspace, pk=brief.get('retry_brand_id')).first()
         if brand is None or brand.status != Brand.Status.ACTIVE:
             raise ValueError('The selected brand is inactive. Generation was not started.')
         # API generation preflights written brand law before queueing, but
@@ -289,6 +293,8 @@ def generate_content(request_id: str):
             )
             brief['creative_direction'] = creative
             brief['layout'] = creative['layout']
+        if brief.get('retry_image_only'):
+            return _repair_missing_image(request, brief, brand)
         routed = generate_marketing_payload(
             request.workspace,
             brief,
@@ -301,7 +307,6 @@ def generate_content(request_id: str):
         )
         result_data = routed['payload']
         if preprocessing_ids:
-            from apps.ai.models import Capability
 
             # A client, brand, or selected reference can be revoked while the
             # provider is working. Spending has already occurred, but no draft
@@ -326,22 +331,9 @@ def generate_content(request_id: str):
                     'One or more selected inspirations were revoked before output could be saved.'
                 )
 
-            capabilities = (routed.get('trace') or {}).get('capabilities') or {}
-            image_trace = capabilities.get(Capability.IMAGE) or {}
-            metadata = result_data.get('metadata') or {}
-            generated_image = metadata.get('generated_image') or {}
-            image_url = (
-                result_data.get('posterImageUrl')
-                or (
-                    generated_image.get('image_url')
-                    if isinstance(generated_image, dict)
-                    else ''
-                )
-            )
-            if image_trace.get('status') != 'OK' or not image_url:
-                raise RuntimeError(
-                    'Inspiration-based poster generation did not produce an image.'
-                )
+            # A missing image is an explicit partial, not a claim that a
+            # reference-based poster exists. Preserve successful paid copy;
+            # media_outcome records FAILED and exposes image-only recovery.
     except Exception as exc:
         logger.exception("Generation %s failed", request_id)
         request.status = GeminiGenerationRequest.Status.FAILED
@@ -415,6 +407,7 @@ def generate_content(request_id: str):
                     or ''
                 ),
                 'metadata': {
+                    'media': media_outcome(content_item, routed),
                     'postTitle': result_data.get('postTitle', ''),
                     'postHashtags': result_data.get('postHashtags', ''),
                     'videoUrl': result_data.get('videoUrl', ''),
@@ -519,6 +512,97 @@ def generate_content(request_id: str):
         'request': str(request.id),
         'content_item': str(content_item.id) if content_item else None,
     }
+
+
+def _repair_missing_image(request, brief, brand):
+    """Repair one saved partial poster, without regenerating its paid copy."""
+    from apps.content.models import ContentItem
+    from apps.context.services.creative_direction import resolve_creative_direction
+    from apps.context.services.generation import create_generated_asset, retry_image
+    from apps.layouts.services import compose_generated_poster, PosterCompositionError
+
+    result = request.result
+    item = ContentItem.objects.select_related('brand').get(
+        pk=(result.metadata or {}).get('contentItemId'), workspace=request.workspace,
+        status=ContentItem.Status.DRAFT, content_format=ContentItem.Format.POSTER,
+    )
+    if item.brand is None or item.brand.status != 'ACTIVE':
+        raise ValueError('The saved draft needs an active brand before image retry.')
+    direction = (item.layout_config or {}).get('creative_direction') or {}
+    if direction.get('mode'):
+        brief['creative_direction'] = resolve_creative_direction(
+            request.workspace, item.brand, direction.get('selections') or [],
+            creative_mode=direction['mode'], layout=direction.get('layout', ''),
+            instruction=brief.get('instruction', ''),
+        )
+    # A previous attempt may have saved the image before its worker stopped.
+    # The durable asset is the checkpoint; never buy it a second time.
+    should_compose = item.asset_id is None or result.asset_id == item.asset_id
+    if item.asset_id is None:
+        image = retry_image(request.workspace, item.brand, brief, instruction=brief.get('instruction', ''))
+        with transaction.atomic():
+            locked = ContentItem.objects.select_for_update().get(pk=item.pk)
+            if locked.status != ContentItem.Status.DRAFT:
+                raise ValueError('The draft entered review before its image could be saved.')
+            request.workspace.refresh_from_db(fields=['status'])
+            if not request.workspace.is_active:
+                raise ValueError('This client is inactive. Generated output was not saved.')
+            item.brand.refresh_from_db(fields=['status'])
+            if locked.brand_id != item.brand_id or item.brand.status != 'ACTIVE':
+                raise ValueError('The saved draft brand changed before its image could be saved.')
+            if direction.get('mode'):
+                resolve_creative_direction(
+                    request.workspace, item.brand, direction.get('selections') or [],
+                    creative_mode=direction['mode'], layout=direction.get('layout', ''),
+                    instruction=brief.get('instruction', ''),
+                )
+            # A user may have supplied an image while the provider was busy.
+            # Preserve that durable choice rather than overwriting it.
+            if locked.asset_id is None:
+                locked.asset = create_generated_asset(
+                    request.workspace, {'metadata': {'generated_image': image}}, user=request.user,
+                )
+                if locked.asset is None:
+                    raise ValueError('The image was not saved. Your copy is unchanged.')
+                locked.preview_url = locked.asset.file_url
+                config = dict(locked.layout_config or {})
+                trace = dict(config.get('generation_trace') or {})
+                capabilities = dict(trace.get('capabilities') or {})
+                capabilities['IMAGE'] = {'status': 'OK', 'provider': image.get('provider', '')}
+                trace['capabilities'] = capabilities
+                config['generation_trace'] = trace
+                locked.layout_config = config
+                locked.save(update_fields=['asset', 'preview_url', 'layout_config', 'updated_at'])
+            else:
+                should_compose = False
+            item = locked
+            result.asset = item.asset
+            result.generated_asset_url = item.preview_url
+            result.metadata = {**(result.metadata or {}), 'assetId': str(item.asset_id), 'media': {'status': 'READY', 'error': ''}}
+            result.save(update_fields=['asset', 'generated_asset_url', 'metadata'])
+    try:
+        if should_compose:
+            compose_generated_poster(item, user=request.user)
+    except PosterCompositionError as exc:
+        config = dict(item.layout_config or {})
+        config['composition'] = {'status': 'FAILED', 'error': str(exc)[:300]}
+        item.layout_config = config
+        item.save(update_fields=['layout_config', 'updated_at'])
+        result.metadata = {**(result.metadata or {}), 'composition': config['composition']}
+    else:
+        result.metadata = dict(result.metadata or {})
+        if should_compose:
+            result.metadata.pop('composition', None)
+    item.refresh_from_db(fields=['asset', 'preview_url'])
+    result.asset = item.asset
+    result.generated_asset_url = item.preview_url
+    result.metadata = {**result.metadata, 'assetId': str(item.asset_id), 'media': {'status': 'READY', 'error': ''}}
+    result.save(update_fields=['asset', 'generated_asset_url', 'metadata'])
+    request.status = 'COMPLETED'
+    request.error_message = ''
+    request.completed_at = timezone.now()
+    request.save(update_fields=['status', 'error_message', 'completed_at', 'updated_at'])
+    return {'request': str(request.pk), 'content_item': str(item.pk)}
 
 
 def _queue_autopilot_followups(request):

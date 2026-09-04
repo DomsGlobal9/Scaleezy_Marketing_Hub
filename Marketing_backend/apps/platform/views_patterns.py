@@ -1,5 +1,6 @@
 """PR7 Super Admin controls for derived cross-client learned patterns."""
 from django.tasks import TaskResultStatus
+from django.db.models import Q
 from rest_framework import status
 
 from apps.common.responses import APIResponse
@@ -10,6 +11,7 @@ from apps.universal.tasks import compile_learned_patterns_task
 from apps.workspaces.models import MarketingWorkspace
 
 from .views import PlatformView
+from .pagination import facet_counts, page_rows, wants_page
 
 #: The one task_path the status route below will reveal. Anything else is a
 #: 404 — the console gets to watch its own compile, not browse the queue.
@@ -40,20 +42,27 @@ class PatternListView(PlatformView):
     def get(self, request):
         rows = LearnedPattern.objects.all()
         wanted = str(request.query_params.get('status', '')).upper()
-        if wanted in LifecycleStatus.values:
-            rows = rows.filter(status=wanted)
         category = str(request.query_params.get('category', '')).strip()
         if category:
             rows = rows.filter(category__iexact=category)
+        search = str(request.query_params.get('q', '')).strip()[:200]
+        if search:
+            rows = rows.filter(Q(category__icontains=search) | Q(attribute__icontains=search) | Q(value__icontains=search))
+        counts = facet_counts(rows, 'status') if wants_page(request) else None
+        if wanted in LifecycleStatus.values:
+            rows = rows.filter(status=wanted)
         direction = str(request.query_params.get('sort', 'contributors_desc')).lower()
         ordering = 'contributor_count' if direction == 'contributors_asc' else '-contributor_count'
-        rows = list(rows.order_by(ordering, 'category', 'attribute')[:500])
+        rows, pagination = page_rows(request, rows.order_by(ordering, 'category', 'attribute', 'pk'))
+        if counts is not None:
+            pagination['status_counts'] = counts
         self.audit('LEARNED_PATTERNS_VIEWED', detail={
             'status': wanted or 'ALL', 'count': len(rows), 'sort': direction,
         })
         return APIResponse(success=True, data={
             'count': len(rows),
             'patterns': [pattern_payload(row) for row in rows],
+            **pagination,
         })
 
 

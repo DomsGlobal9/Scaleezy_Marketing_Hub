@@ -10,7 +10,7 @@ import {
   UserPlus,
   Users,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -39,6 +39,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiGet, apiPost } from "@/lib/api";
 import { useWorkspaces } from "@/lib/workspace";
+import { hasStringFields, isRecord, parseList } from "@/lib/list-response";
+import { isSyncRun, mergeSyncRun, useSyncRunPolling, type SyncRun } from "@/lib/sync-run";
 
 export const Route = createFileRoute("/_hub/analytics")({
   head: () => ({ meta: [{ title: "Performance & Revenue — Scaleezy" }] }),
@@ -47,19 +49,19 @@ export const Route = createFileRoute("/_hub/analytics")({
 
 interface DailyMetric {
   date: string;
-  reach: number;
-  engagement: number;
-  posts_published: number;
-  conversions: number;
+  reach: number | null;
+  engagement: number | null;
+  posts_published: number | null;
+  conversions: number | null;
 }
 interface PlatformMetric {
   id: string;
   platform: string;
-  reach: number;
-  engagement: number;
-  clicks: number;
-  conversions: number;
-  roi_multiplier: number;
+  reach: number | null;
+  engagement: number | null;
+  clicks: number | null;
+  conversions: number | null;
+  roi_multiplier: number | null;
 }
 interface Observation {
   id: string;
@@ -68,18 +70,9 @@ interface Observation {
   content_headline: string;
   ai_provider: string;
   layout_plugin: string;
-  reach: number;
-  engagement: number;
+  reach: number | null;
+  engagement: number | null;
   observed_at: string;
-}
-interface SyncRun {
-  id: string;
-  account_name: string;
-  platform: string;
-  status: string;
-  observed_count: number;
-  error: string;
-  created_at: string;
 }
 interface Lead {
   id: string;
@@ -111,7 +104,16 @@ interface Dashboard {
     observation_count: number;
     lead_count: number;
     converted_leads: number;
-    revenue: string;
+    revenue: string | null;
+    revenue_currency: string | null;
+    revenue_by_currency: { currency: string; amount: string }[];
+    measurements: {
+      reach: number | null;
+      engagement: number | null;
+      clicks: number | null;
+      conversions: number | null;
+      measurement_coverage: Record<string, { measured: number; total: number }>;
+    };
     latest_observed_at: string | null;
   };
 }
@@ -121,15 +123,98 @@ interface Connection {
   account_name: string;
   status: string;
 }
-interface ListEnvelope<T> {
-  results?: T[];
+const isMetric = (value: unknown) =>
+  value === null || (typeof value === "number" && Number.isFinite(value));
+const metricText = (value: number | null) =>
+  value === null ? "Unavailable" : value.toLocaleString();
+const money = (value: string | number, currency: string) => {
+  if (!Number.isFinite(Number(value))) return "Unavailable";
+  if (!/^[A-Z]{3}$/.test(currency))
+    return `${Number(value).toLocaleString()} (currency unavailable)`;
+  return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(value));
+};
+const compact = (value: number | null) =>
+  value === null
+    ? "—"
+    : new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(
+        value,
+      );
+
+function parseDashboard(value: unknown): Dashboard {
+  if (!isRecord(value) || !isRecord(value["summary"]))
+    throw new Error("Analytics returned an invalid dashboard.");
+  const summary = value["summary"];
+  const measurements = summary["measurements"];
+  if (
+    !["observation_count", "lead_count", "converted_leads"].every(
+      (key) => typeof summary[key] === "number",
+    ) ||
+    !isRecord(measurements) ||
+    !isRecord(measurements["measurement_coverage"]) ||
+    !["reach", "engagement", "clicks", "conversions"].every((key) => isMetric(measurements[key])) ||
+    !Array.isArray(summary["revenue_by_currency"]) ||
+    !summary["revenue_by_currency"].every((row) => hasStringFields(row, ["currency", "amount"]))
+  ) {
+    throw new Error("Analytics returned an invalid summary.");
+  }
+  for (const key of [
+    "trend",
+    "platform_perf",
+    "observations",
+    "leads",
+    "revenue_events",
+    "sync_runs",
+  ]) {
+    if (!Array.isArray(value[key])) throw new Error("Analytics returned an invalid list.");
+  }
+  if (
+    !(value["trend"] as unknown[]).every(
+      (row) =>
+        hasStringFields(row, ["date"]) &&
+        isRecord(row) &&
+        isMetric(row["reach"]) &&
+        isMetric(row["engagement"]),
+    ) ||
+    !(value["platform_perf"] as unknown[]).every(
+      (row) =>
+        hasStringFields(row, ["id", "platform"]) &&
+        isRecord(row) &&
+        ["reach", "engagement", "clicks", "conversions"].every((key) => isMetric(row[key])),
+    ) ||
+    !(value["observations"] as unknown[]).every(
+      (row) =>
+        hasStringFields(row, ["id", "source", "platform", "observed_at"]) &&
+        isRecord(row) &&
+        isMetric(row["reach"]),
+    ) ||
+    !(value["leads"] as unknown[]).every((row) =>
+      hasStringFields(row, [
+        "id",
+        "name",
+        "handle",
+        "status",
+        "source",
+        "estimated_value",
+        "currency",
+        "created_at",
+      ]),
+    ) ||
+    !(value["revenue_events"] as unknown[]).every((row) =>
+      hasStringFields(row, [
+        "id",
+        "source",
+        "external_event_id",
+        "campaign_name",
+        "amount",
+        "currency",
+        "occurred_at",
+      ]),
+    ) ||
+    !(value["sync_runs"] as unknown[]).every(isSyncRun)
+  )
+    throw new Error("Analytics returned invalid records.");
+  return value as unknown as Dashboard;
 }
-const list = <T,>(value: T[] | ListEnvelope<T>) =>
-  Array.isArray(value) ? value : (value.results ?? []);
-const money = (value: string | number, currency = "USD") =>
-  new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(value || 0));
-const compact = (value: number) =>
-  new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
 
 function AnalyticsPage() {
   const [data, setData] = useState<Dashboard | null>(null);
@@ -137,6 +222,8 @@ function AnalyticsPage() {
   const [connection, setConnection] = useState("");
   const [working, setWorking] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [syncRuns, setSyncRuns] = useState<SyncRun[]>([]);
   const [metric, setMetric] = useState({
     platform: "",
     reach: "",
@@ -144,6 +231,7 @@ function AnalyticsPage() {
     clicks: "",
     conversions: "",
     spend: "",
+    currency: "USD",
   });
   const [revenue, setRevenue] = useState({
     source: "",
@@ -156,53 +244,80 @@ function AnalyticsPage() {
 
   // Mirrors the backend gate exactly (apps/analytics/views.py GrowthLeadView
   // via GovernedAnalyticsView: POST needs EDITOR or above). An unknown role —
-  // the fallback membership path reports none — stays enabled rather than
-  // locking a real editor out: the server re-checks every request either way.
+  // the fallback membership path reports none — is not mutation authority.
+  // The server re-checks every request as the final authority.
   const { workspaces, selectedId } = useWorkspaces();
   const memberRole = workspaces.find((w) => w.id === selectedId)?.role ?? null;
   const canWriteLeads =
-    memberRole === null || ["EDITOR", "MANAGER", "ADMIN", "OWNER"].includes(memberRole);
+    memberRole !== null && ["EDITOR", "MANAGER", "ADMIN", "OWNER"].includes(memberRole);
 
   const load = useCallback(async () => {
     const [dashboard, accounts] = await Promise.all([
-      apiGet<Dashboard>("/api/marketing/analytics/dashboard/"),
-      apiGet<Connection[] | ListEnvelope<Connection>>("/api/marketing/social-accounts/"),
+      apiGet<unknown>("/api/marketing/analytics/dashboard/"),
+      apiGet<unknown>("/api/marketing/social-accounts/"),
     ]);
-    const supported = list(accounts).filter(
-      (row) => row.status === "CONNECTED" && ["X", "YOUTUBE"].includes(row.platform),
-    );
-    setData(dashboard);
+    const supported = parseList(
+      accounts,
+      (row): row is Connection =>
+        hasStringFields(row, ["id", "platform", "account_name", "status"]),
+      "Accounts",
+    ).filter((row) => row.status === "CONNECTED" && ["X", "YOUTUBE"].includes(row.platform));
+    const parsed = parseDashboard(dashboard);
+    setData(parsed);
+    setSyncRuns((current) => [
+      ...parsed.sync_runs,
+      ...current.filter(
+        (run) => !run.execution.terminal && !parsed.sync_runs.some((next) => next.id === run.id),
+      ),
+    ]);
     setConnections(supported);
-    setConnection((current) => current || supported[0]?.id || "");
+    setConnection((current) =>
+      supported.some((row) => row.id === current) ? current : supported[0]?.id || "",
+    );
+    setError("");
   }, []);
 
-  useEffect(() => {
-    load().catch((reason: unknown) =>
+  const handleLoadError = useCallback(
+    (reason: unknown) =>
       setError(reason instanceof Error ? reason.message : "Analytics could not load."),
-    );
-  }, [load]);
-  const totals = useMemo(
-    () =>
-      (data?.platform_perf ?? []).reduce(
-        (all, row) => ({
-          reach: all.reach + row.reach,
-          engagement: all.engagement + row.engagement,
-          clicks: all.clicks + row.clicks,
-          conversions: all.conversions + row.conversions,
-        }),
-        { reach: 0, engagement: 0, clicks: 0, conversions: 0 },
-      ),
-    [data],
+    [],
   );
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      await load();
+    } catch (reason) {
+      handleLoadError(reason);
+    } finally {
+      setLoading(false);
+    }
+  }, [load, handleLoadError]);
+  const updateSyncRun = useCallback(
+    (run: SyncRun) => setSyncRuns((current) => mergeSyncRun(current, run)),
+    [],
+  );
+  useSyncRunPolling(
+    syncRuns,
+    "/api/marketing/analytics/performance/sync/",
+    updateSyncRun,
+    load,
+    handleLoadError,
+  );
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
   const sync = async () => {
     setWorking("sync");
     try {
-      await apiPost("/api/marketing/analytics/performance/sync/", {
+      const queued = await apiPost<unknown>("/api/marketing/analytics/performance/sync/", {
         social_connection: connection,
       });
+      if (!isSyncRun(queued))
+        throw new Error("The sync response was invalid. Refresh before starting another sync.");
+      updateSyncRun(queued);
       toast.success("Performance sync queued");
-      await load();
+      await load().catch(handleLoadError);
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : "Sync failed");
     } finally {
@@ -216,12 +331,13 @@ function AnalyticsPage() {
         source_record_id: `operator-${crypto.randomUUID()}`,
         platform: metric.platform,
         observed_at: new Date().toISOString(),
-        reach: Number(metric.reach || 0),
-        engagement: Number(metric.engagement || 0),
-        clicks: Number(metric.clicks || 0),
-        conversions: Number(metric.conversions || 0),
+        ...Object.fromEntries(
+          (["reach", "engagement", "clicks", "conversions"] as const)
+            .filter((key) => metric[key].trim() !== "")
+            .map((key) => [key, Number(metric[key])]),
+        ),
         spend: metric.spend || "0",
-        currency: "USD",
+        currency: metric.currency.trim().toUpperCase(),
         source_payload: { entered_from: "analytics_console" },
       });
       setMetric({
@@ -231,9 +347,10 @@ function AnalyticsPage() {
         clicks: "",
         conversions: "",
         spend: "",
+        currency: "USD",
       });
       toast.success("Metrics imported with source lineage");
-      await load();
+      await load().catch(handleLoadError);
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : "Import failed");
     } finally {
@@ -255,7 +372,7 @@ function AnalyticsPage() {
         currency: "USD",
       });
       toast.success("Revenue attributed");
-      await load();
+      await load().catch(handleLoadError);
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : "Revenue could not be recorded");
     } finally {
@@ -275,7 +392,7 @@ function AnalyticsPage() {
       });
       setLeadForm({ name: "", email: "", estimated_value: "", notes: "" });
       toast.success("Lead captured");
-      await load();
+      await load().catch(handleLoadError);
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : "Lead could not be added");
     } finally {
@@ -283,15 +400,30 @@ function AnalyticsPage() {
     }
   };
 
-  if (error)
+  if (error && !data)
     return (
-      <p className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
-        {error}
-      </p>
+      <div
+        role="alert"
+        className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+      >
+        <p>{error}</p>
+        <Button
+          className="mt-3"
+          variant="outline"
+          disabled={loading}
+          onClick={() => void refresh()}
+        >
+          Try again
+        </Button>
+      </div>
     );
   if (!data)
     return (
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div
+        role="status"
+        aria-label="Loading analytics"
+        className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
+      >
         {Array.from({ length: 8 }).map((_, index) => (
           <Skeleton key={index} className="h-28 rounded-xl" />
         ))}
@@ -300,6 +432,14 @@ function AnalyticsPage() {
   const freshness = data.summary.latest_observed_at
     ? new Date(data.summary.latest_observed_at).toLocaleString()
     : "No observations yet";
+  const totals = data.summary.measurements;
+  const coverageHint = (field: string) => {
+    const coverage = totals.measurement_coverage[field];
+    return coverage && coverage.measured < coverage.total
+      ? `${coverage.measured} of ${coverage.total} source records measured; total unavailable`
+      : freshness;
+  };
+  const revenueTotals = data.summary.revenue_by_currency;
 
   return (
     <div>
@@ -309,15 +449,46 @@ function AnalyticsPage() {
         subtitle="Every number has a source. Follow content from generation through engagement, lead and revenue."
         backTo="/"
       />
+      {error ? (
+        <div
+          role="alert"
+          className="mb-5 rounded-xl border border-destructive/30 p-4 text-sm text-destructive"
+        >
+          <p>{error} The last loaded data is still shown.</p>
+          <Button
+            className="mt-3"
+            variant="outline"
+            disabled={loading}
+            onClick={() => void refresh()}
+          >
+            Try again
+          </Button>
+        </div>
+      ) : null}
+      {loading ? (
+        <p role="status" className="mb-4 text-sm text-muted-foreground">
+          Refreshing analytics…
+        </p>
+      ) : null}
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <StatCard
           label="Measured reach"
           value={compact(totals.reach)}
           icon={Eye}
-          hint={freshness}
+          hint={coverageHint("reach")}
         />
-        <StatCard label="Engagement" value={compact(totals.engagement)} icon={Activity} />
-        <StatCard label="Conversions" value={compact(totals.conversions)} icon={Target} />
+        <StatCard
+          label="Engagement"
+          value={compact(totals.engagement)}
+          icon={Activity}
+          hint={coverageHint("engagement")}
+        />
+        <StatCard
+          label="Conversions"
+          value={compact(totals.conversions)}
+          icon={Target}
+          hint={coverageHint("conversions")}
+        />
         <StatCard
           label="Leads"
           value={String(data.summary.lead_count)}
@@ -326,8 +497,21 @@ function AnalyticsPage() {
         />
         <StatCard
           label="Attributed revenue"
-          value={money(data.summary.revenue)}
+          value={
+            revenueTotals.length === 1
+              ? money(revenueTotals[0]!.amount, revenueTotals[0]!.currency)
+              : revenueTotals.length
+                ? "Multiple currencies"
+                : "—"
+          }
           icon={DollarSign}
+          hint={
+            revenueTotals.length > 1
+              ? revenueTotals.map((row) => money(row.amount, row.currency)).join(" · ")
+              : revenueTotals.length
+                ? "Recorded source currency; no conversion"
+                : "No revenue events recorded"
+          }
         />
       </section>
 
@@ -336,7 +520,7 @@ function AnalyticsPage() {
           <SectionTitle
             label="Measured trend"
             title="Reach and engagement"
-            description="Latest cumulative observation per published post — repeat syncs never double-count."
+            description="Latest cumulative observation per source post or record. Missing or partial totals stay unavailable."
           />
           {data.trend.length ? (
             <div className="mt-5 h-72">
@@ -391,7 +575,14 @@ function AnalyticsPage() {
           <Button
             className="mt-4 w-full"
             onClick={sync}
-            disabled={!connection || working === "sync"}
+            disabled={
+              !canWriteLeads ||
+              !connection ||
+              working === "sync" ||
+              syncRuns.some(
+                (run) => run.social_connection === connection && !run.execution.terminal,
+              )
+            }
           >
             {working === "sync" ? (
               <Loader2 className="size-4 animate-spin" />
@@ -403,24 +594,24 @@ function AnalyticsPage() {
           <p className="mt-3 text-xs text-muted-foreground">
             For any other network, import its export below. Scaleezy does not restrict the platform.
           </p>
-          {data.sync_runs.length > 0 && (
-            <div className="mt-5 border-t pt-4">
+          {syncRuns.length > 0 && (
+            <div aria-live="polite" className="mt-5 border-t pt-4">
               <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
                 Recent syncs
               </p>
               <div className="mt-3 space-y-2">
-                {data.sync_runs.map((run) => (
+                {syncRuns.map((run) => (
                   <div key={run.id} className="rounded-lg border p-3 text-xs">
                     <div className="flex items-center justify-between gap-3">
                       <span className="truncate font-semibold">
                         {run.platform} · {run.account_name}
                       </span>
                       <StatusBadge
-                        status={run.status}
+                        status={run.execution.state.replaceAll("_", " ")}
                         tone={
-                          run.status === "FAILED"
+                          run.execution.terminal && run.execution.state === "FAILED"
                             ? "danger"
-                            : run.status === "COMPLETED"
+                            : run.execution.terminal && run.execution.state === "COMPLETED"
                               ? "success"
                               : "neutral"
                         }
@@ -428,9 +619,18 @@ function AnalyticsPage() {
                     </div>
                     <p className="mt-1 text-muted-foreground">
                       {new Date(run.created_at).toLocaleString()}
-                      {run.status === "COMPLETED" && ` · ${run.observed_count} observed`}
+                      {run.execution.terminal &&
+                        run.execution.state === "COMPLETED" &&
+                        ` · ${run.observed_count} observed`}
                     </p>
-                    {run.error && <p className="mt-1 break-words text-destructive">{run.error}</p>}
+                    {run.error && (
+                      <p className="mt-1 break-words text-destructive">
+                        {run.error}
+                        {!run.execution.terminal
+                          ? " The background task still owns this attempt."
+                          : ""}
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>
@@ -451,7 +651,7 @@ function AnalyticsPage() {
             <SectionTitle
               label="Channel comparison"
               title="Performance by platform"
-              description="Unavailable clicks or conversions remain zero and are never estimated."
+              description="Unavailable and partially measured totals are shown as unavailable. A recorded zero remains zero."
             />
             {data.platform_perf.length ? (
               <>
@@ -639,10 +839,10 @@ function PlatformTable({ rows }: { rows: PlatformMetric[] }) {
           {rows.map((row) => (
             <tr key={row.id} className="border-b last:border-0">
               <td className="px-3 py-3 font-semibold">{row.platform}</td>
-              <td className="px-3 py-3">{row.reach.toLocaleString()}</td>
-              <td className="px-3 py-3">{row.engagement.toLocaleString()}</td>
-              <td className="px-3 py-3">{row.clicks.toLocaleString()}</td>
-              <td className="px-3 py-3">{row.conversions.toLocaleString()}</td>
+              <td className="px-3 py-3">{metricText(row.reach)}</td>
+              <td className="px-3 py-3">{metricText(row.engagement)}</td>
+              <td className="px-3 py-3">{metricText(row.clicks)}</td>
+              <td className="px-3 py-3">{metricText(row.conversions)}</td>
             </tr>
           ))}
         </tbody>
@@ -669,7 +869,7 @@ function SourceLedger({ rows }: { rows: Observation[] }) {
             </div>
             <p className="mt-2 text-sm">{row.content_headline || "Unlinked observation"}</p>
             <p className="mt-2 text-xs text-muted-foreground">
-              Reach {row.reach.toLocaleString()} · {new Date(row.observed_at).toLocaleString()}
+              Reach {metricText(row.reach)} · {new Date(row.observed_at).toLocaleString()}
             </p>
           </article>
         ))}
@@ -698,7 +898,7 @@ function SourceLedger({ rows }: { rows: Observation[] }) {
                 <td className="max-w-64 truncate px-4 py-3">{row.content_headline || "—"}</td>
                 <td className="px-4 py-3">{row.ai_provider || "—"}</td>
                 <td className="px-4 py-3">{row.layout_plugin || "—"}</td>
-                <td className="px-4 py-3">{row.reach.toLocaleString()}</td>
+                <td className="px-4 py-3">{metricText(row.reach)}</td>
               </tr>
             ))}
           </tbody>
@@ -718,6 +918,7 @@ type MetricValue = {
   clicks: string;
   conversions: string;
   spend: string;
+  currency: string;
 };
 function MetricForm({
   value,
@@ -735,7 +936,7 @@ function MetricForm({
       <SectionTitle
         label="Any platform"
         title="Import auditable metrics"
-        description="Use a platform export; Scaleezy stores an intake source rather than pretending it came from a live API."
+        description="Use a platform export. Leave unmeasured fields blank; enter zero only when the source reports zero."
       />
       <div className="mt-5 grid gap-4 sm:grid-cols-2">
         <Field
@@ -755,6 +956,12 @@ function MetricForm({
             number
           />
         ))}
+        <Field
+          id="metric-currency"
+          label="Spend currency (3-letter code)"
+          value={value.currency}
+          onChange={(currency) => onChange({ ...value, currency: currency.toUpperCase() })}
+        />
       </div>
       <Button className="mt-5" onClick={onSubmit} disabled={!value.platform.trim() || busy}>
         {busy ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />} Import
@@ -813,6 +1020,12 @@ function RevenueForm({
           value={value.amount}
           onChange={(amount) => onChange({ ...value, amount })}
           number
+        />
+        <Field
+          id="revenue-currency"
+          label="Currency (3-letter code)"
+          value={value.currency}
+          onChange={(currency) => onChange({ ...value, currency: currency.toUpperCase() })}
         />
       </div>
       <Button

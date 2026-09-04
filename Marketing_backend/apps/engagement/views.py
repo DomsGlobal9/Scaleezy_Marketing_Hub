@@ -5,6 +5,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import APIException
 from rest_framework.permissions import IsAuthenticated
 
 from apps.common.mixins import WorkspaceScopedMixin
@@ -290,26 +291,54 @@ class EngagementSyncRunViewSet(GovernedWorkspaceViewSet):
     serializer_class = EngagementSyncRunSerializer
     http_method_names = ['get', 'head', 'options', 'post']
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        brand_id = self.request.query_params.get('brand_id')
+        return queryset.filter(brand_id=brand_id) if brand_id else queryset
+
     def perform_create(self, serializer):
         from .tasks import sync_engagement_task
 
         run = serializer.save(workspace=self.workspace(), initiated_by=self.request.user)
-        task_result = sync_engagement_task.enqueue(str(run.pk))
+        try:
+            task_result = sync_engagement_task.enqueue(str(run.pk))
+        except Exception:
+            run.status = EngagementSyncRun.Status.FAILED
+            run.error = 'Inbox sync could not be queued. Please try again.'
+            run.completed_at = timezone.now()
+            run.save(update_fields=['status', 'error', 'completed_at', 'updated_at'])
+            error = APIException(run.error)
+            error.status_code = 503
+            raise error from None
         run.task_id = str(task_result.id)
         run.save(update_fields=['task_id', 'updated_at'])
 
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def retry(self, request, pk=None):
         from .tasks import sync_engagement_task
 
         run = self.get_object()
-        if run.status != EngagementSyncRun.Status.FAILED:
-            return APIResponse(success=False, message='Only a failed sync can be retried.', status=409)
+        run = EngagementSyncRun.objects.select_for_update().get(pk=run.pk)
+        if not EngagementSyncRunSerializer.get_execution(run)['retry_allowed']:
+            return APIResponse(success=False, message='Wait for the owned sync task to finish before retrying.', status=409)
         run.status = EngagementSyncRun.Status.QUEUED
         run.error = ''
-        result = sync_engagement_task.enqueue(str(run.pk))
+        run.completed_at = None
+        # Persist the queued transition before publishing work to the runner.
+        # The final task-id save must not overwrite a fast worker's state.
+        run.save(update_fields=['status', 'error', 'completed_at', 'updated_at'])
+        try:
+            result = sync_engagement_task.enqueue(str(run.pk))
+        except Exception:
+            run.status = EngagementSyncRun.Status.FAILED
+            run.error = 'Inbox sync could not be queued. Please try again.'
+            run.completed_at = timezone.now()
+            run.save(update_fields=['status', 'error', 'completed_at', 'updated_at'])
+            return APIResponse(success=False, message=run.error, status=503)
         run.task_id = str(result.id)
-        run.save(update_fields=['status', 'error', 'task_id', 'updated_at'])
+        run.save(update_fields=['task_id', 'updated_at'])
+        run.refresh_from_db()
         return APIResponse(success=True, data=self.get_serializer(run).data, status=202)
 
 

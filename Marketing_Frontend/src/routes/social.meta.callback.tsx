@@ -87,7 +87,8 @@ function MetaCallbackPage() {
               Syncing your Meta accounts…
             </h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Please wait while we verify your authorization and sync your Facebook Pages and Instagram accounts.
+              Please wait while we verify your authorization and sync your Facebook Pages and
+              Instagram accounts.
             </p>
           </>
         )}
@@ -95,9 +96,7 @@ function MetaCallbackPage() {
         {status === "success" && (
           <>
             <CheckCircle2 className="mx-auto size-10 text-emerald-500" />
-            <h2 className="mt-4 text-lg font-semibold text-foreground">
-              Meta Connected!
-            </h2>
+            <h2 className="mt-4 text-lg font-semibold text-foreground">Meta Connected!</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Redirecting you back to Social Accounts…
             </p>
@@ -107,9 +106,7 @@ function MetaCallbackPage() {
         {status === "error" && (
           <>
             <AlertTriangle className="mx-auto size-10 text-amber-500" />
-            <h2 className="mt-4 text-lg font-semibold text-foreground">
-              Connection Failed
-            </h2>
+            <h2 className="mt-4 text-lg font-semibold text-foreground">Connection Failed</h2>
             <p className="mt-2 text-sm text-muted-foreground">{errorMessage}</p>
             <p className="mt-3 text-xs text-muted-foreground">
               Redirecting you back to Social Accounts…

@@ -590,7 +590,7 @@ class LinkedInAdapter(SocialPlatformAdapter):
         """
         Disconnect / revoke the LinkedIn token.
         LinkedIn does not provide a standard token revocation endpoint,
-        so we just return True and let the caller clear the stored credentials.
+        so remote revocation cannot be confirmed. The caller still clears local credentials.
         """
         logger.info("LinkedIn disconnect — credentials will be cleared from database")
-        return True
+        return False

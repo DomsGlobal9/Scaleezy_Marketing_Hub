@@ -9,7 +9,8 @@
  * commit point. `description` becomes brain.identity.description and
  * `audience` becomes brain.audiences.stated, sitting beside the pains and
  * objections that were derived from evidence rather than replacing them.
- * Everything on this page moves brain_version the moment it saves.
+ * Creative identity changes update the compiled brain; administrative contact
+ * fields are saved on the brand without becoming generation instructions.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 

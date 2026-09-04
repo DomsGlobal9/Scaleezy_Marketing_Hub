@@ -8,6 +8,7 @@ from rest_framework import status
 from django.contrib.auth import get_user_model
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 from apps.social_accounts.integrations.meta.exceptions import MetaConfigurationError
+from apps.social_accounts.oauth_authority import bind_authority
 
 User = get_user_model()
 
@@ -71,6 +72,7 @@ class MetaViewsTests(TestCase):
             'code': 'testcode123',
             'state': f'{self.workspace.id}:somestate'
         }
+        bind_authority(authorization_url=f"https://example.test/oauth?state={data['state']}", workspace=self.workspace, user=self.user, platform='FACEBOOK')
 
         response = self.client.post(url, data, format='json', HTTP_X_WORKSPACE_ID=str(self.workspace.id))
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

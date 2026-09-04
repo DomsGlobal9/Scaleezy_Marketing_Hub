@@ -119,7 +119,9 @@ function AdminsPage() {
                 ))}
               </div>
             ) : active.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No active platform admins were returned.</p>
+              <p className="text-sm text-muted-foreground">
+                No active platform admins were returned.
+              </p>
             ) : (
               <AdminTable rows={active} onRevoke={revoke} />
             )}
@@ -132,7 +134,10 @@ function AdminsPage() {
           ) : null}
         </div>
 
-        <Panel title="Grant access" description="By username. A note says why, for whoever reads the audit log later.">
+        <Panel
+          title="Grant access"
+          description="By username. A note says why, for whoever reads the audit log later."
+        >
           <form
             className="space-y-3"
             onSubmit={(e) => {

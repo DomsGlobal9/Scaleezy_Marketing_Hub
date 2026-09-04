@@ -29,9 +29,9 @@ export interface BrandSettings {
 
   // Wider brand identity, editable in Brand Master.
   name: string;
-  /** Registered company name behind the brand; `name` is what posts speak as. */
+  /** Registered company name; `name` remains the public brand name. */
   legalName: string;
-  /** The human Scaleezy talks to; their email is the account itself. */
+  /** Administrative contact, not automatically included in generated content. */
   contactPerson: string;
   industry: string;
   website: string;

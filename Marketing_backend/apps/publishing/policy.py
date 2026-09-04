@@ -37,6 +37,12 @@ def _inside_window(value: time, start: time | None, end: time | None) -> bool:
 
 def enforce_connection_policy(connection, *, at=None, check_daily_limit=True):
     """Raise with a stable code when this account may not publish at ``at``."""
+    if not connection.workspace.is_active:
+        raise PublishingPolicyError('WORKSPACE_INACTIVE', 'This client is inactive.')
+    if not connection.publishing_enabled:
+        raise PublishingPolicyError('PUBLISHING_DISABLED', 'Publishing is disabled for this account.')
+    if connection.status != 'CONNECTED' or connection.reauthorization_required:
+        raise PublishingPolicyError('SOCIAL_ACCOUNT_NOT_READY', 'Reconnect this account before publishing.')
     settings = _settings_for(connection)
     if settings is None:
         return

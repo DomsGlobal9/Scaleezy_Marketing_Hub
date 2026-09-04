@@ -144,7 +144,11 @@ function fromMemberships(rows: MeMembership[]): Workspace[] {
   for (const row of rows) {
     const id = asText(row?.workspace_id);
     if (!id) continue;
-    out.push({ id, name: asText(row?.workspace_name) ?? "Untitled client", role: asText(row?.role) });
+    out.push({
+      id,
+      name: asText(row?.workspace_name) ?? "Untitled client",
+      role: asText(row?.role),
+    });
   }
   return out;
 }

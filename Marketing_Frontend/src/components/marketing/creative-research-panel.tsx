@@ -254,7 +254,9 @@ export function CreativeResearchPanel({
                   </SelectContent>
                 </Select>
               ) : null}
-              {selectedRun ? <StatusBadge status={selectedRun.status.replaceAll("_", " ")} /> : null}
+              {selectedRun ? (
+                <StatusBadge status={selectedRun.status.replaceAll("_", " ")} />
+              ) : null}
             </div>
           </div>
           {loading ? (

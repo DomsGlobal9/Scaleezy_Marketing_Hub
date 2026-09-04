@@ -100,7 +100,7 @@ def derive_onboarding_state(
     return current, status
 
 
-def refresh_stage(onboarding):
+def refresh_stage(onboarding, *, persist=True):
     """Derive stage and status from what actually exists.
 
     A user who uploaded knowledge from the Knowledge tab has done the
@@ -151,7 +151,7 @@ def refresh_stage(onboarding):
     if status == BrandOnboarding.Status.COMPLETED and onboarding.completed_at is None:
         onboarding.completed_at = timezone.now()
         changed = True
-    if changed:
+    if changed and persist:
         onboarding.save()
     return onboarding
 
@@ -411,7 +411,12 @@ def record_calibration_verdict(direction, verdict, *, user=None, note=''):
 
 def onboarding_summary(brand):
     """Everything the onboarding screen needs in one payload."""
-    onboarding = refresh_stage(ensure_onboarding(brand))
+    # Reads derive the same progress without creating/updating orchestration
+    # rows for VIEWERs or suspended clients. Mutating actions still own saves.
+    onboarding = BrandOnboarding.objects.filter(brand=brand).first()
+    if onboarding is None:
+        onboarding = BrandOnboarding(brand=brand, workspace=brand.workspace)
+    onboarding = refresh_stage(onboarding, persist=False)
     readiness = brand_readiness(brand)
     latest_round = (
         CalibrationDirection.objects.filter(brand=brand)
@@ -434,7 +439,7 @@ def onboarding_summary(brand):
             'current_stage': onboarding.current_stage,
             'status': onboarding.status,
             'skipped_steps': onboarding.skipped_steps,
-            'started_at': onboarding.started_at.isoformat(),
+            'started_at': onboarding.started_at.isoformat() if onboarding.started_at else None,
             'completed_at': (
                 onboarding.completed_at.isoformat() if onboarding.completed_at else None
             ),

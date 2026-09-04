@@ -8,11 +8,14 @@ from rest_framework.test import APIClient
 
 from apps.brands.models import Brand
 from apps.content.models import ContentItem
+from apps.marketing.models import MarketingAsset
+from apps.publishing.models import PublishingJob, PublishingJobItem
 from apps.social_accounts.models import SocialConnection
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
 from .models import PerformanceObservation, PlatformPerformance, RevenueEvent
 from .services import rebuild_workspace_projections
+from .views import workspace_kpis
 
 User = get_user_model()
 
@@ -40,20 +43,30 @@ class KPITests(TestCase):
         ContentItem.objects.create(
             workspace=self.other, brand=other_brand, status=ContentItem.Status.PENDING_REVIEW
         )
-        SocialConnection.objects.create(
+        self.connection = SocialConnection.objects.create(
             workspace=self.workspace, platform=SocialConnection.Platform.INSTAGRAM,
             external_account_id='x1', account_name='Acme',
             status=SocialConnection.Status.CONNECTED,
         )
-        SocialConnection.objects.create(
+        self.attention_connection = SocialConnection.objects.create(
             workspace=self.workspace, platform=SocialConnection.Platform.LINKEDIN,
             external_account_id='x2', account_name='Acme LI',
             status=SocialConnection.Status.TOKEN_EXPIRED,
         )
-        SocialConnection.objects.create(
+        self.other_connection = SocialConnection.objects.create(
             workspace=self.other, platform=SocialConnection.Platform.INSTAGRAM,
             external_account_id='x3', account_name='Other',
             status=SocialConnection.Status.CONNECTED,
+        )
+        self.asset = MarketingAsset.objects.create(
+            workspace=self.workspace,
+            file_name='asset.png',
+            source=MarketingAsset.Source.MANUAL_UPLOAD,
+        )
+        self.other_asset = MarketingAsset.objects.create(
+            workspace=self.other,
+            file_name='other.png',
+            source=MarketingAsset.Source.MANUAL_UPLOAD,
         )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
@@ -73,6 +86,75 @@ class KPITests(TestCase):
         self.assertEqual(kpis['connected_accounts']['hint'], '1 needs attention')
         self.assertEqual(kpis['published']['value'], 0)
         self.assertEqual(kpis['scheduled']['value'], 0)
+
+    def test_scheduled_counts_only_jobs_still_in_scheduled_state(self):
+        PublishingJob.objects.create(
+            workspace=self.workspace,
+            asset=self.asset,
+            status=PublishingJob.Status.SCHEDULED,
+            publish_mode=PublishingJob.PublishMode.SCHEDULED,
+        )
+        PublishingJob.objects.create(
+            workspace=self.workspace,
+            asset=self.asset,
+            status=PublishingJob.Status.QUEUED,
+            publish_mode=PublishingJob.PublishMode.SCHEDULED,
+        )
+        PublishingJob.objects.create(
+            workspace=self.other,
+            asset=self.other_asset,
+            status=PublishingJob.Status.SCHEDULED,
+            publish_mode=PublishingJob.PublishMode.SCHEDULED,
+        )
+
+        self.assertEqual(self._kpis()['scheduled']['value'], 1)
+
+    def test_failed_counts_actionable_items_including_partial_failures(self):
+        partial_job = PublishingJob.objects.create(
+            workspace=self.workspace,
+            asset=self.asset,
+            status=PublishingJob.Status.PARTIALLY_PUBLISHED,
+        )
+        PublishingJobItem.objects.create(
+            publishing_job=partial_job,
+            social_connection=self.connection,
+            status=PublishingJobItem.Status.PUBLISHED,
+        )
+        PublishingJobItem.objects.create(
+            publishing_job=partial_job,
+            social_connection=self.attention_connection,
+            status=PublishingJobItem.Status.FAILED,
+        )
+        failed_without_actionable_item = PublishingJob.objects.create(
+            workspace=self.workspace,
+            asset=self.asset,
+            status=PublishingJob.Status.FAILED,
+        )
+        PublishingJobItem.objects.create(
+            publishing_job=failed_without_actionable_item,
+            social_connection=self.connection,
+            status=PublishingJobItem.Status.RETRYING,
+        )
+        other_failed_job = PublishingJob.objects.create(
+            workspace=self.other,
+            asset=self.other_asset,
+            status=PublishingJob.Status.FAILED,
+        )
+        PublishingJobItem.objects.create(
+            publishing_job=other_failed_job,
+            social_connection=self.other_connection,
+            status=PublishingJobItem.Status.FAILED,
+        )
+
+        kpis = self._kpis()
+        self.assertEqual(kpis['published']['value'], 1)
+        self.assertEqual(kpis['failed']['value'], 1)
+
+    def test_workspace_kpis_use_one_aggregate_per_owning_table(self):
+        with self.assertNumQueries(4):
+            kpis = workspace_kpis(self.workspace)
+
+        self.assertEqual(len(kpis), 6)
 
     def test_no_invented_metrics(self):
         keys = set(self._kpis())

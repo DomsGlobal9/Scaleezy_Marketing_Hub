@@ -1,35 +1,28 @@
-from rest_framework import viewsets, status
+from rest_framework import mixins, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser
-from rest_framework.permissions import AllowAny
 from .models import MarketingAsset
 from apps.workspaces.models import MarketingWorkspace
 from .serializers import MarketingAssetSerializer, UploadAssetSerializer
 from .services.storage import StorageError, SupabaseStorageService
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.exceptions import PermissionDenied
 from apps.common.permissions import (
     IsWorkspaceMember,
     authorize_workspace,
-    get_request_workspace,
 )
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.responses import APIResponse
 
-class MarketingAssetViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
+class MarketingAssetViewSet(
+    WorkspaceScopedMixin, mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewSet
+):
+    # URLs and storage metadata come only from the upload action or trusted
+    # generation/layout services, never generic client create/update payloads.
+    # Preserve the existing workspace-scoped read/delete operations.
     queryset = MarketingAsset.objects.all()
     serializer_class = MarketingAssetSerializer
     permission_classes = [IsAuthenticated, IsWorkspaceMember]
     requires_workspace = False
-
-
-    def perform_create(self, serializer):
-        # workspace is read-only on the serializer, so it is assigned here from
-        # the caller's authorised workspace rather than the request payload.
-        workspace, error = get_request_workspace(self.request)
-        if error:
-            raise PermissionDenied("No accessible workspace for this request.")
-        serializer.save(workspace=workspace, created_by=self.request.user)
 
     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser])
     def upload(self, request):
