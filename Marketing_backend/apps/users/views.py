@@ -15,6 +15,7 @@ from apps.common.responses import APIResponse
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
 from .models import AuthAuditLog, SignupWebsiteClaim, record_auth_event
+from .tasks import send_signup_alerts_task
 from .serializers import (
     CurrentUserSerializer,
     ScaleezyTokenObtainPairSerializer,
@@ -44,7 +45,8 @@ class SignupRateThrottle(AnonRateThrottle):
 class SignupView(APIView):
     """
     POST /api/auth/signup/
-        {email, password, brand_name, website?, industry?, first_name?, last_name?}
+        {email, password, brand_name, legal_name?, website?, industry?,
+         location?, contact_person?, contact_phone?, first_name?, last_name?}
         -> {access, refresh, workspace_id, brand_id, brand_status}
 
     One transaction creates the user, their workspace, an OWNER membership, a
@@ -99,8 +101,12 @@ class SignupView(APIView):
                 brand = Brand.objects.create(
                     workspace=workspace,
                     name=data['brand_name'],
+                    legal_name=data.get('legal_name', ''),
                     website=data.get('website', ''),
                     industry=data.get('industry', ''),
+                    location=data.get('location', ''),
+                    contact_person=data.get('contact_person', ''),
+                    contact_phone=data.get('contact_phone', ''),
                     is_default=True,
                     status=Brand.Status.PENDING,
                     created_by=user,
@@ -144,6 +150,14 @@ class SignupView(APIView):
             "Signup: user=%s workspace=%s brand=%s (pending approval)",
             user.pk, workspace.pk, brand.pk,
         )
+
+        # Announce the signup to Scaleezy (email / WhatsApp, whichever is
+        # configured) from the worker. Best effort: the client's signup must
+        # not fail because an alert channel is down.
+        try:
+            send_signup_alerts_task.enqueue(str(brand.pk))
+        except Exception as exc:
+            logger.error("Signup alert could not be enqueued: %s", exc)
 
         # Sign the new user straight in: the same token shape as /login/, with
         # the membership claim populated by the same serializer.

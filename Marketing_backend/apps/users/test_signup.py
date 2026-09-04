@@ -9,7 +9,9 @@ every attempt, successful or not, is audited.
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core import mail
 from django.core.cache import cache
+from django.test import override_settings
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -17,6 +19,8 @@ from rest_framework.test import APITestCase
 from apps.ai.adapters.base import AIProviderAdapter
 from apps.ai.models import AIProvider, Capability, WorkspaceAIRoute
 from apps.brands.models import Brand
+from apps.jobs.models import TaskRun
+from apps.users.alerts import send_signup_alerts
 from apps.users.models import AuthAuditLog
 from apps.users.views import SignupRateThrottle
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
@@ -39,8 +43,12 @@ VALID = {
     'email': 'founder@acme.test',
     'password': 'orbit-lantern-42-quartz',
     'brand_name': 'Acme Coffee',
+    'legal_name': 'Acme Beverages Pvt Ltd',
     'website': 'https://acme.test',
     'industry': 'Coffee',
+    'location': 'Bengaluru, India',
+    'contact_person': 'Priya Sharma',
+    'contact_phone': '+91 98765 43210',
 }
 
 
@@ -108,6 +116,12 @@ class SignupTests(SignupTestBase):
         self.assertEqual(brand.industry, 'Coffee')
         self.assertEqual(brand.created_by, user)
         self.assertIsNone(brand.reviewed_at)
+
+        # Intake details land on the brand, where Brand Master edits them.
+        self.assertEqual(brand.legal_name, 'Acme Beverages Pvt Ltd')
+        self.assertEqual(brand.location, 'Bengaluru, India')
+        self.assertEqual(brand.contact_person, 'Priya Sharma')
+        self.assertEqual(brand.contact_phone, '+91 98765 43210')
 
         # The same bootstrap the add-client path performs: a routable workspace.
         self.assertEqual(
@@ -244,3 +258,53 @@ class DuplicateEnrolmentTests(SignupTestBase):
         workspace = MarketingWorkspace.objects.get(pk=data['workspace_id'])
         self.assertEqual(data['client_code'], workspace.client_code)
         self.assertTrue(data['client_code'].startswith('SCZ-'))
+
+
+class SignupAlertTests(SignupTestBase):
+    """The alert fan-out: enqueued by the signup, delivered by the worker."""
+
+    def test_signup_enqueues_the_alert_task(self):
+        brand_id = self.signup().json()['data']['brand_id']
+        run = TaskRun.objects.get(task_path='apps.users.tasks.send_signup_alerts_task')
+        self.assertEqual(run.args, [brand_id])
+
+    @override_settings(
+        SIGNUP_ALERT_EMAILS=['ops@scaleezy.test'],
+        EMAIL_HOST='smtp.test',
+        DEFAULT_FROM_EMAIL='alerts@scaleezy.test',
+        PLATFORM_URL='https://app.scaleezy.test',
+    )
+    def test_alert_email_carries_the_intake_details(self):
+        brand_id = self.signup().json()['data']['brand_id']
+        result = send_signup_alerts(brand_id)
+        self.assertEqual(result['email'], 'sent to ops@scaleezy.test')
+        self.assertEqual(len(mail.outbox), 1)
+        message = mail.outbox[0]
+        self.assertIn('Acme Coffee', message.subject)
+        for expected in (
+            'Acme Beverages Pvt Ltd', 'Priya Sharma', '+91 98765 43210',
+            'founder@acme.test', 'https://app.scaleezy.test/platform/signups',
+        ):
+            self.assertIn(expected, message.body)
+
+    @override_settings(
+        WHATSAPP_ACCESS_TOKEN='token',
+        WHATSAPP_PHONE_NUMBER_ID='12345',
+        SIGNUP_ALERT_WHATSAPP_TO=['919876543210'],
+    )
+    def test_alert_whatsapp_posts_to_the_cloud_api(self):
+        brand_id = self.signup().json()['data']['brand_id']
+        with patch('apps.users.alerts.httpx.post') as post:
+            post.return_value.is_success = True
+            result = send_signup_alerts(brand_id)
+        self.assertEqual(result['whatsapp'], ['919876543210: sent'])
+        self.assertIn('/12345/messages', post.call_args.args[0])
+        payload = post.call_args.kwargs['json']
+        self.assertEqual(payload['to'], '919876543210')
+        self.assertIn('Acme Coffee', payload['text']['body'])
+
+    def test_unconfigured_channels_are_skipped_not_failed(self):
+        brand_id = self.signup().json()['data']['brand_id']
+        result = send_signup_alerts(brand_id)
+        self.assertTrue(result['email'].startswith('skipped'))
+        self.assertTrue(result['whatsapp'][0].startswith('skipped'))

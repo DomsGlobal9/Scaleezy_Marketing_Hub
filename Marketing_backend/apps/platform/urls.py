@@ -9,6 +9,7 @@ from .views import (
     AttachUserView,
     PlatformHealthView,
     SignupDecisionView,
+    SignupPendingCountView,
     SignupQueueView,
 )
 
@@ -17,6 +18,10 @@ app_name = 'platform'
 urlpatterns = [
     path('health/', PlatformHealthView.as_view(), name='health'),
     path('signups/', SignupQueueView.as_view(), name='signups'),
+    path(
+        'signups/pending-count/',
+        SignupPendingCountView.as_view(), name='signup_pending_count',
+    ),
     path(
         'signups/<uuid:brand_id>/<str:decision>/',
         SignupDecisionView.as_view(), name='signup_decision',

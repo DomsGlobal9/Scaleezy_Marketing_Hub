@@ -415,6 +415,9 @@ function SignupsPage() {
                     <p className="font-mono text-[0.6875rem] text-muted-foreground">
                       {row.client_code}
                     </p>
+                    {row.legal_name && row.legal_name !== row.name ? (
+                      <p className="text-xs text-muted-foreground">{row.legal_name}</p>
+                    ) : null}
                   </td>
                   <td className="px-3 py-3 text-xs">
                     {row.website ? (
@@ -429,11 +432,18 @@ function SignupsPage() {
                     ) : (
                       <span className="text-muted-foreground">No website</span>
                     )}
-                    <p className="text-muted-foreground">{row.industry || "No industry"}</p>
+                    <p className="text-muted-foreground">
+                      {[row.industry || "No industry", row.location].filter(Boolean).join(" · ")}
+                    </p>
                   </td>
                   <td className="px-3 py-3 text-xs">
                     <p>{formatDateTime(row.signed_up_at)}</p>
                     <p className="text-muted-foreground">by {row.signed_up_by || "—"}</p>
+                    {row.contact_person || row.contact_phone ? (
+                      <p className="text-muted-foreground">
+                        {[row.contact_person, row.contact_phone].filter(Boolean).join(" · ")}
+                      </p>
+                    ) : null}
                   </td>
                   <td className="px-3 py-3 text-xs text-muted-foreground">
                     <p>

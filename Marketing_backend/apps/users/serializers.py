@@ -53,6 +53,14 @@ class SignupSerializer(serializers.Serializer):
     industry = serializers.CharField(max_length=100, required=False, allow_blank=True)
     workspace_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
 
+    # Intake details stored on the brand. Optional at the API so older callers
+    # keep working; the signup page itself requires them. The signup email is
+    # the account; contact_person is the human name that goes with it.
+    legal_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    contact_person = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    contact_phone = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    location = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
     def validate_email(self, value):
         email = value.strip().lower()
         if User.objects.filter(Q(username__iexact=email) | Q(email__iexact=email)).exists():

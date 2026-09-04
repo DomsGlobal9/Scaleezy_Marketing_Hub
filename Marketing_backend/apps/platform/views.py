@@ -116,8 +116,12 @@ def _signup_row(brand, stats):
         'workspace_id': str(workspace.pk),
         'client_code': workspace.client_code,
         'name': brand.name,
+        'legal_name': brand.legal_name,
         'website': brand.website,
         'industry': brand.industry,
+        'location': brand.location,
+        'contact_person': brand.contact_person,
+        'contact_phone': brand.contact_phone,
         'status': brand.status,
         'signed_up_at': brand.created_at.isoformat(),
         'signed_up_by': stats.owner.get(workspace.pk, ''),
@@ -129,6 +133,20 @@ def _signup_row(brand, stats):
         'reviewed_at': brand.reviewed_at.isoformat() if brand.reviewed_at else None,
         'reviewed_by': brand.reviewed_by.get_username() if brand.reviewed_by_id else '',
     }
+
+
+class SignupPendingCountView(PlatformView):
+    """GET .../signups/pending-count/ -> {pending_total}
+
+    Backs the console nav badge, which polls. Deliberately not audited: one
+    number, no client data, and a per-minute poll would bury the real audit
+    trail. Opening the queue itself is still audited as before.
+    """
+
+    def get(self, request):
+        return APIResponse(success=True, data={
+            'pending_total': Brand.objects.filter(status=Brand.Status.PENDING).count(),
+        })
 
 
 class SignupQueueView(PlatformView):
