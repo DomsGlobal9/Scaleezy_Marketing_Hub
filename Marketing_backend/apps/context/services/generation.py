@@ -49,6 +49,36 @@ CAPABILITY_FOR_TASK = {
 }
 
 
+def _ambassador_image(brand) -> str:
+    """The brand's model/ambassador photo as a data URL, or ''.
+
+    The newest active BRAND_AMBASSADOR upload wins — one face, consistently,
+    which is the whole point of an ambassador. Best effort, exactly like the
+    template: no row or unreachable storage means the generation simply runs
+    without the photo.
+    """
+    from apps.inspirations.analysis import _stored_media_data
+    from apps.inspirations.models import BrandInspiration
+
+    try:
+        row = (
+            BrandInspiration.objects.filter(
+                brand=brand,
+                inspiration_type=BrandInspiration.InspirationType.BRAND_AMBASSADOR,
+                lifecycle_status=BrandInspiration.LifecycleStatus.ACTIVE,
+            )
+            .exclude(file_url='')
+            .order_by('-created_at')
+            .first()
+        )
+        if row is None:
+            return ''
+        return _stored_media_data(row)
+    except Exception as exc:
+        logger.warning('Ambassador photo unavailable for generation: %s', exc)
+        return ''
+
+
 def _template_image(direction) -> str:
     """The chosen BRAND_TEMPLATE's pixels, as the data URL the image step
     attaches, or '' when this generation has no usable template.
@@ -588,6 +618,15 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction='',
     if template_data_url:
         text_brief = {**text_brief, 'template_image_base64': template_data_url}
         image_brief = {**image_brief, 'template_image_base64': template_data_url}
+
+    # The brand's model fronts every creative unless this generation said
+    # otherwise. Same shape as the template: pixels in the brief, attached at
+    # the image step, best effort.
+    if brief_extra.get('feature_ambassador', True):
+        ambassador_data_url = _ambassador_image(brand)
+        if ambassador_data_url:
+            text_brief = {**text_brief, 'ambassador_image_base64': ambassador_data_url}
+            image_brief = {**image_brief, 'ambassador_image_base64': ambassador_data_url}
 
     trace = {
         'brain_version': text_context['brain_version'],

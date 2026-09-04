@@ -19,6 +19,7 @@ import {
   Images,
   Plus,
   Trash2,
+  UserRound,
   Video,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -54,10 +55,12 @@ import { useBrandSettings } from "@/lib/brand-settings";
 import {
   asList,
   createInspiration,
+  fetchBrandAmbassadors,
   fetchBrandTemplates,
   fetchCurrentBrand,
   type Inspiration,
   type InspirationInput,
+  uploadBrandAmbassador,
   uploadInspiration,
 } from "@/lib/brand-master";
 import { api, apiFetch, apiPost, ApiError } from "@/lib/api";
@@ -398,6 +401,12 @@ function PublishingPage() {
   const [brandTemplatesError, setBrandTemplatesError] = useState("");
   const [creativeTemplateId, setCreativeTemplateId] = useState("");
   const [templatesAttempt, setTemplatesAttempt] = useState(0);
+  // The brand's model/ambassador photos. null = loading; the toggle defaults
+  // ON — the founder's rule is that the model fronts every creative.
+  const [ambassadors, setAmbassadors] = useState<Inspiration[] | null>(null);
+  const [featureModel, setFeatureModel] = useState(true);
+  const [ambassadorUploading, setAmbassadorUploading] = useState(false);
+  const ambassadorInputRef = useRef<HTMLInputElement>(null);
   const [inspirationFlowError, setInspirationFlowError] = useState<string | null>(null);
   const [activeInspirationGeneration, setActiveInspirationGeneration] =
     useState<InspirationGenerationOptions | null>(null);
@@ -411,13 +420,21 @@ function PublishingPage() {
   const [videoScript, setVideoScript] = useState("");
   const [slides, setSlides] = useState<CarouselSlide[]>([newSlide(), newSlide(), newSlide()]);
 
-  const { brandId } = useBrandSettings();
+  // Also the brand's logo + poster defaults, so the studio's logo chip is a
+  // live control over the same setting Brand Master edits, not a copy.
+  const {
+    brandId,
+    settings: brandKit,
+    update: updateBrandKit,
+    loading: brandKitLoading,
+  } = useBrandSettings();
   // The built-in layout catalogue no longer feeds creation; it survives only
   // for the manual Poster Studio on an already generated item.
   const layoutCatalogue = useLayoutCatalogue(Boolean(asset?.contentItemId));
   const creativeBrand = useRef<string | null>(null);
 
-  // Load the brand's uploaded templates for the "Your templates" direction.
+  // Load the brand's uploaded templates for the "Your templates" direction,
+  // and the ambassador photos for the "Feature your model" toggle.
   useEffect(() => {
     if (!brandId) return;
     let cancelled = false;
@@ -434,6 +451,14 @@ function PublishingPage() {
             reason instanceof Error ? reason.message : "Your templates could not load.",
           );
         }
+      });
+    fetchBrandAmbassadors(brandId)
+      .then((rows) => {
+        if (!cancelled) setAmbassadors(rows);
+      })
+      .catch(() => {
+        // The toggle simply stays hidden; generation runs without the photo.
+        if (!cancelled) setAmbassadors([]);
       });
     return () => {
       cancelled = true;
@@ -1141,6 +1166,7 @@ function PublishingPage() {
             offer,
             brandTone,
             instruction: creativeBrief,
+            featureAmbassador: featureModel && (ambassadors?.length ?? 0) > 0,
             referenceImageBase64: requestedMode === "REFERENCE" ? referenceImageBase64 : "",
             inspirationSelections:
               requestedMode === "REFERENCE"
@@ -1861,8 +1887,11 @@ function PublishingPage() {
                         disabled={disabled}
                         aria-pressed={active}
                         onClick={() => chooseCreativeMode(source.id)}
+                        // One horizontal row per card: comfortable to thumb
+                        // through on a phone, still a tidy 3-up grid on
+                        // desktop.
                         className={cn(
-                          "rounded-xl border p-4 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+                          "flex items-center gap-3 rounded-xl border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45 md:p-4",
                           active
                             ? "border-primary bg-black text-white ring-1 ring-primary"
                             : "border-border bg-background hover:border-primary",
@@ -1870,20 +1899,22 @@ function PublishingPage() {
                       >
                         <span
                           className={cn(
-                            "mb-3 grid size-10 place-items-center rounded-lg",
+                            "grid size-10 shrink-0 place-items-center rounded-lg",
                             active ? "bg-primary text-black" : "bg-secondary text-foreground",
                           )}
                         >
                           <source.icon className="size-5" />
                         </span>
-                        <span className="block text-sm font-semibold">{source.label}</span>
-                        <span
-                          className={cn(
-                            "mt-1 block text-xs",
-                            active ? "text-white/65" : "text-muted-foreground",
-                          )}
-                        >
-                          {disabled ? disabledHint : source.hint}
+                        <span className="min-w-0">
+                          <span className="block text-sm font-semibold">{source.label}</span>
+                          <span
+                            className={cn(
+                              "mt-0.5 block text-xs",
+                              active ? "text-white/65" : "text-muted-foreground",
+                            )}
+                          >
+                            {disabled ? disabledHint : source.hint}
+                          </span>
                         </span>
                       </button>
                     );
@@ -1901,41 +1932,250 @@ function PublishingPage() {
                 </button>
               </div>
 
-              <details className="rounded-xl border border-border bg-secondary/20 p-4">
-                <summary className="cursor-pointer text-sm font-semibold text-foreground">
-                  Fine-tune campaign details
-                </summary>
-                <div className="mt-5 grid gap-5 sm:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label>Campaign / promotion name</Label>
-                    <Input value={campaignName} onChange={(e) => setCampaignName(e.target.value)} />
+              {/* MODEL & LOGO — the two brand assets that ride every poster,
+                  as live controls rather than settings buried elsewhere. */}
+              <div className="mb-8 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-border p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <UserRound className="size-4 shrink-0 text-primary" />
+                      <h3 className="truncate text-sm font-semibold text-foreground">
+                        Your model
+                      </h3>
+                    </div>
+                    {(ambassadors?.length ?? 0) > 0 ? (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={featureModel}
+                        onClick={() => setFeatureModel((v) => !v)}
+                        className={cn(
+                          "shrink-0 rounded-full border px-3 py-1 text-xs font-semibold transition-colors",
+                          featureModel
+                            ? "border-primary bg-primary text-black"
+                            : "border-border text-muted-foreground",
+                        )}
+                      >
+                        {featureModel ? "In this creative" : "Off"}
+                      </button>
+                    ) : null}
                   </div>
-                  <div className="space-y-2">
-                    <Label>Product or collection</Label>
-                    <Input value={product} onChange={(e) => setProduct(e.target.value)} />
+                  <div className="mt-3 flex items-center gap-2 overflow-x-auto pb-1">
+                    {(ambassadors ?? []).map((row) => (
+                      <img
+                        key={row.id}
+                        src={row.file_url ?? ""}
+                        alt={row.title}
+                        title={row.title}
+                        className={cn(
+                          "size-12 shrink-0 rounded-full border-2 object-cover",
+                          featureModel ? "border-primary" : "border-border opacity-50",
+                        )}
+                      />
+                    ))}
+                    <button
+                      type="button"
+                      disabled={ambassadorUploading || !brandId}
+                      onClick={() => ambassadorInputRef.current?.click()}
+                      className="grid size-12 shrink-0 place-items-center rounded-full border-2 border-dashed border-border text-muted-foreground transition-colors hover:border-primary hover:text-foreground disabled:opacity-50"
+                      aria-label="Add a model photo"
+                    >
+                      {ambassadorUploading ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <Plus className="size-4" />
+                      )}
+                    </button>
+                    <input
+                      ref={ambassadorInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (!file || !brandId) return;
+                        setAmbassadorUploading(true);
+                        uploadBrandAmbassador(brandId, file)
+                          .then((row) => {
+                            setAmbassadors((prev) => [row as Inspiration, ...(prev ?? [])]);
+                            setFeatureModel(true);
+                            toast.success("Model photo added — they'll front your creatives.");
+                          })
+                          .catch((err: unknown) =>
+                            toast.error(
+                              err instanceof Error ? err.message : "The photo could not be saved.",
+                            ),
+                          )
+                          .finally(() => setAmbassadorUploading(false));
+                      }}
+                    />
                   </div>
-                  <div className="space-y-2">
-                    <Label>Target audience</Label>
-                    <Input value={audience} onChange={(e) => setAudience(e.target.value)} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Location</Label>
-                    <Input value={location} onChange={(e) => setLocation(e.target.value)} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Occasion / festival</Label>
-                    <Input value={occasion} onChange={(e) => setOccasion(e.target.value)} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Offer</Label>
-                    <Input value={offer} onChange={(e) => setOffer(e.target.value)} />
-                  </div>
-                  <div className="space-y-2 sm:col-span-2">
-                    <Label>Brand tone</Label>
-                    <Input value={brandTone} onChange={(e) => setBrandTone(e.target.value)} />
-                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {(ambassadors?.length ?? 0) > 0
+                      ? "The same face fronts every creative. The newest photo is the one used."
+                      : "Add your model or brand ambassador once — every poster features them."}
+                  </p>
                 </div>
-              </details>
+
+                <div className="rounded-xl border border-border p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      {brandKit.logoUrl ? (
+                        <img
+                          src={brandKit.logoUrl}
+                          alt="Brand logo"
+                          className="size-6 shrink-0 rounded object-contain"
+                        />
+                      ) : (
+                        <ImageIcon className="size-4 shrink-0 text-primary" />
+                      )}
+                      <h3 className="truncate text-sm font-semibold text-foreground">Logo</h3>
+                    </div>
+                    {brandKit.logoUrl ? (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={brandKit.showLogoOnPosters}
+                        disabled={brandKitLoading}
+                        onClick={() =>
+                          updateBrandKit(
+                            { showLogoOnPosters: !brandKit.showLogoOnPosters },
+                            { immediate: true },
+                          )
+                        }
+                        className={cn(
+                          "shrink-0 rounded-full border px-3 py-1 text-xs font-semibold transition-colors",
+                          brandKit.showLogoOnPosters
+                            ? "border-primary bg-primary text-black"
+                            : "border-border text-muted-foreground",
+                        )}
+                      >
+                        {brandKit.showLogoOnPosters ? "On posters" : "Off"}
+                      </button>
+                    ) : null}
+                  </div>
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    {brandKit.logoUrl ? (
+                      "Saved with your brand kit — this switch is the same one Brand Master uses. Templates keep their own logo placement."
+                    ) : (
+                      <>
+                        No logo uploaded yet.{" "}
+                        <Link
+                          to="/brand-master"
+                          className="font-medium text-foreground underline underline-offset-2"
+                        >
+                          Add it in Brand Master
+                        </Link>{" "}
+                        and it appears here.
+                      </>
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              {/* CAMPAIGN DETAILS — tap-first: the common occasions and offers
+                  are chips, the long tail stays typable. */}
+              <div className="mb-2 rounded-xl border border-border bg-secondary/20 p-4">
+                <h3 className="text-sm font-semibold text-foreground">Campaign details</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Optional — tap what fits, type what doesn't. Anything left blank is filled
+                  from Brand Master.
+                </p>
+                <div className="mt-4 space-y-4">
+                  <div className="space-y-2">
+                    <Label className="text-xs tracking-wide uppercase">Occasion</Label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        "Diwali",
+                        "Wedding season",
+                        "New arrival",
+                        "Weekend sale",
+                        "Festive offer",
+                        "Anniversary",
+                      ].map((chip) => (
+                        <button
+                          key={chip}
+                          type="button"
+                          aria-pressed={occasion === chip}
+                          onClick={() => setOccasion(occasion === chip ? "" : chip)}
+                          className={cn(
+                            "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                            occasion === chip
+                              ? "border-primary bg-primary text-black"
+                              : "border-border bg-background text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          {chip}
+                        </button>
+                      ))}
+                    </div>
+                    <Input
+                      value={occasion}
+                      onChange={(e) => setOccasion(e.target.value)}
+                      placeholder="…or type your own occasion"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-xs tracking-wide uppercase">Offer</Label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {["10% off", "20% off", "Buy 1 Get 1", "Free styling session"].map(
+                        (chip) => (
+                          <button
+                            key={chip}
+                            type="button"
+                            aria-pressed={offer === chip}
+                            onClick={() => setOffer(offer === chip ? "" : chip)}
+                            className={cn(
+                              "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                              offer === chip
+                                ? "border-primary bg-primary text-black"
+                                : "border-border bg-background text-muted-foreground hover:text-foreground",
+                            )}
+                          >
+                            {chip}
+                          </button>
+                        ),
+                      )}
+                    </div>
+                    <Input
+                      value={offer}
+                      onChange={(e) => setOffer(e.target.value)}
+                      placeholder="…or type the exact offer"
+                    />
+                  </div>
+                  <details>
+                    <summary className="cursor-pointer text-xs font-semibold text-muted-foreground hover:text-foreground">
+                      More details — campaign name, product, audience, location, tone
+                    </summary>
+                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>Campaign / promotion name</Label>
+                        <Input
+                          value={campaignName}
+                          onChange={(e) => setCampaignName(e.target.value)}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Product or collection</Label>
+                        <Input value={product} onChange={(e) => setProduct(e.target.value)} />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Target audience</Label>
+                        <Input value={audience} onChange={(e) => setAudience(e.target.value)} />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Location</Label>
+                        <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+                      </div>
+                      <div className="space-y-2 sm:col-span-2">
+                        <Label>Brand tone</Label>
+                        <Input value={brandTone} onChange={(e) => setBrandTone(e.target.value)} />
+                      </div>
+                    </div>
+                  </details>
+                </div>
+              </div>
 
               {/* VIDEO-ONLY FIELDS */}
               {contentType === "video" && (
@@ -2209,7 +2449,9 @@ function PublishingPage() {
                 </div>
               ) : null}
 
-              <div className="mt-8 flex items-center gap-4">
+              {/* On a phone the button rides above the thumb instead of
+                  scrolling away below a long form. */}
+              <div className="mt-8 flex items-center gap-4 max-sm:sticky max-sm:bottom-3 max-sm:z-20 max-sm:rounded-xl max-sm:border max-sm:border-border max-sm:bg-background/95 max-sm:p-3 max-sm:shadow-lg max-sm:backdrop-blur">
                 <Button
                   onClick={() => void handleGenerate()}
                   disabled={
@@ -2227,7 +2469,7 @@ function PublishingPage() {
                       ? "Generation unlocks once Scaleezy approves this client."
                       : undefined
                   }
-                  className="gap-2"
+                  className="gap-2 max-sm:flex-1"
                 >
                   <Sparkles className="size-4" />{" "}
                   {generationPending ? "Resume generation" : "Create now"}

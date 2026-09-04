@@ -12,7 +12,8 @@ from django.test import TestCase
 
 from apps.brands.models import Brand
 from apps.common.testing import TenantFixtureMixin
-from apps.context.services.generation import _template_image
+from apps.context.services.generation import _ambassador_image, _template_image
+from apps.inspirations.models import BrandInspiration
 from apps.gemini.services.generator import GeminiGeneratorService
 
 from .test_template_defaulting import make_template
@@ -66,6 +67,33 @@ class PosterImageTemplateTests(TestCase):
         self.assertEqual(len(contents), 1)
         self.assertIsInstance(contents[0], str)
 
+    def test_the_ambassador_photo_rides_along_with_an_identity_directive(self):
+        fake = SimpleNamespace(models=FakeModels())
+        with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
+            GeminiGeneratorService.generate_poster_image(
+                'A serene product scene.', api_key='k',
+                template_image_base64=DATA_URL,
+                ambassador_image_base64=DATA_URL,
+            )
+        contents = fake.models.calls[0]['contents']
+        # Two image parts, then one directive that labels them by number.
+        self.assertEqual(len(contents), 3)
+        directive = contents[2]
+        self.assertIn('ATTACHED IMAGE 1 IS THIS BRAND', directive)
+        self.assertIn("ATTACHED IMAGE 2 IS THE BRAND'S MODEL/AMBASSADOR", directive)
+        self.assertIn('THIS EXACT person', directive)
+
+    def test_the_ambassador_works_without_a_template_too(self):
+        fake = SimpleNamespace(models=FakeModels())
+        with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
+            GeminiGeneratorService.generate_poster_image(
+                'A serene product scene.', api_key='k',
+                ambassador_image_base64=DATA_URL,
+            )
+        contents = fake.models.calls[0]['contents']
+        self.assertEqual(len(contents), 2)
+        self.assertIn("ATTACHED IMAGE 1 IS THE BRAND'S MODEL/AMBASSADOR", contents[1])
+
     def test_a_garbage_template_payload_degrades_to_text_only(self):
         fake = SimpleNamespace(models=FakeModels())
         with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
@@ -118,3 +146,27 @@ class TemplateImageResolutionTests(TenantFixtureMixin, TestCase):
             self.assertEqual(_template_image(self._direction()), '')
         self.assertEqual(_template_image(None), '')
         self.assertEqual(_template_image({'selections': []}), '')
+
+    def test_the_newest_active_ambassador_photo_is_the_one_attached(self):
+        for title in ('First shoot', 'Latest shoot'):
+            BrandInspiration.objects.create(
+                workspace=self.workspace, brand=self.brand, title=title,
+                inspiration_type=BrandInspiration.InspirationType.BRAND_AMBASSADOR,
+                file_url=f'https://storage.test/amb/{title}.jpg',
+                mime_type='image/jpeg',
+            )
+        with patch(
+            'apps.inspirations.analysis._stored_media_data', return_value=DATA_URL,
+        ) as loader:
+            self.assertEqual(_ambassador_image(self.brand), DATA_URL)
+        self.assertEqual(loader.call_args.args[0].title, 'Latest shoot')
+
+    def test_no_ambassador_or_archived_only_means_no_photo(self):
+        self.assertEqual(_ambassador_image(self.brand), '')
+        BrandInspiration.objects.create(
+            workspace=self.workspace, brand=self.brand, title='Old face',
+            inspiration_type=BrandInspiration.InspirationType.BRAND_AMBASSADOR,
+            file_url='https://storage.test/amb/old.jpg', mime_type='image/jpeg',
+            lifecycle_status=BrandInspiration.LifecycleStatus.ARCHIVED,
+        )
+        self.assertEqual(_ambassador_image(self.brand), '')

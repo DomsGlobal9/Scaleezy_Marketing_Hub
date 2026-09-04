@@ -456,6 +456,19 @@ Return ONLY a valid JSON object with these exact keys:
                 "to 2-3 sentences. The template's layout, palette, typography and "
                 "decorative elements are fixed and not yours to restate.\n"
             )
+        # Ambassador mode: the image step receives the brand's model as an
+        # attached photo, so Step 1 must write the scene around that person
+        # rather than describing an invented model's appearance.
+        ambassador_block = ''
+        if request_data.get('ambassador_image_base64'):
+            ambassador_block = (
+                "\n\nBRAND AMBASSADOR: the poster features the brand's own "
+                "model/ambassador, whose photo the image model receives as an "
+                "attached image. The `imagePrompt` must describe the scene, "
+                "styling, wardrobe and mood AROUND this person - never invent "
+                "or describe a different person's face, age, build or "
+                "complexion.\n"
+            )
         creative_direction = request_data.get('creative_direction') or {}
         creative_lines = creative_direction.get('instructions') or []
         creative_block = ''
@@ -497,7 +510,7 @@ For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just 
 
 {cls._rules_block(brand_rules)}{guardrail_block}
 {variety_block}
-{creative_block}{template_block}
+{creative_block}{template_block}{ambassador_block}
 Respond ONLY with a valid JSON object (no markdown, no code fences, no extra text):
 {{
   "postTitle": "A catchy, short title (max 10 words)",
@@ -551,7 +564,8 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
     @classmethod
     def generate_poster_image(cls, image_prompt: str, reference_image_base64: str = "",
                               api_key: str = '', text_lines=None,
-                              template_image_base64: str = "") -> str:
+                              template_image_base64: str = "",
+                              ambassador_image_base64: str = "") -> str:
         """
         Step 2: Send the AI-generated image prompt to the image model.
         Also send the original reference image if provided.
@@ -580,21 +594,43 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         # paraphrases the headline into the imagePrompt, so this is the only
         # copy of the wording the image model sees - verbatim.
         directive = image_prompt.rstrip() + "\n\n" + "\n".join(text_lines or [NO_TEXT_LINE])
-        contents = [directive]
 
+        image_parts = []
+        preamble = []
         template_mime, template_bytes = cls._parse_base64_image(template_image_base64)
         if template_mime and template_bytes:
-            contents = [
-                types.Part.from_bytes(data=template_bytes, mime_type=template_mime),
-                "THE ATTACHED IMAGE IS THIS BRAND'S OWN POSTER TEMPLATE. "
-                "Recreate THIS EXACT design: the same layout and composition, "
-                "the same colour palette, the same typographic hierarchy and "
-                "text placement, the same logo position, panels, dividers and "
-                "decorative elements. Change ONLY the campaign-specific "
-                "content — the headline wording, the photo/subject inside the "
-                "photo area, and the offer — to match the brief below. Do NOT "
-                "invent a new composition, style or palette.\n\n" + directive,
-            ]
+            image_parts.append(
+                types.Part.from_bytes(data=template_bytes, mime_type=template_mime)
+            )
+            preamble.append(
+                f"ATTACHED IMAGE {len(image_parts)} IS THIS BRAND'S OWN POSTER "
+                "TEMPLATE. Recreate THIS EXACT design: the same layout and "
+                "composition, the same colour palette, the same typographic "
+                "hierarchy and text placement, the same logo position, panels, "
+                "dividers and decorative elements. Change ONLY the "
+                "campaign-specific content — the headline wording, the "
+                "photo/subject inside the photo area, and the offer — to match "
+                "the brief below. Do NOT invent a new composition, style or "
+                "palette."
+            )
+        ambassador_mime, ambassador_bytes = cls._parse_base64_image(ambassador_image_base64)
+        if ambassador_mime and ambassador_bytes:
+            image_parts.append(
+                types.Part.from_bytes(data=ambassador_bytes, mime_type=ambassador_mime)
+            )
+            preamble.append(
+                f"ATTACHED IMAGE {len(image_parts)} IS THE BRAND'S "
+                "MODEL/AMBASSADOR. Any person featured in the creative must be "
+                "THIS EXACT person: the same face, the same features, the same "
+                "skin tone and hair, recognisably the same individual, "
+                "photorealistic and flattering. Never substitute a different "
+                "model, and never render more than the people the composition "
+                "needs."
+            )
+        if image_parts:
+            contents = [*image_parts, "\n\n".join([*preamble, directive])]
+        else:
+            contents = [directive]
 
         response = client.models.generate_content(
             model=cls.IMAGE_MODEL,
@@ -692,6 +728,7 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                         request_data, text_result.get('postTitle', '')
                     ),
                     template_image_base64=request_data.get('template_image_base64', ''),
+                    ambassador_image_base64=request_data.get('ambassador_image_base64', ''),
                 )
         except Exception as e:
             print(f"[Gemini] Step 2 failed: {e}")

@@ -888,6 +888,11 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             ),
             'creative_direction': queued_creative_direction,
             'layout': creative_direction['layout'],
+            # The brand's model fronts every creative by default; the studio's
+            # toggle sends false to leave them out of this one generation.
+            'feature_ambassador': bool(
+                data.get('featureAmbassador', data.get('feature_ambassador', True))
+            ),
         }
 
         # The whole point of written guardrails: refuse BEFORE a request row

@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   fetchInspirations,
+  isBrandAmbassador,
   isBrandTemplate,
   type Inspiration,
   SIGNAL_CATEGORIES,
@@ -195,11 +196,15 @@ export function CreativeCommand({
         if (cancelled) return;
         setLibrary(platformPage.items);
         setNextOffset(platformPage.nextOffset);
-        // Templates have their own "Your templates" direction; here they
-        // would double as references and confuse the two flows.
+        // Templates have their own "Your templates" direction, and the
+        // ambassador photo its own toggle; here either would double as a
+        // reference and confuse the flows.
         setBrandRows(
           ownRows.filter(
-            (row) => row.retrieval_eligibility?.eligible !== false && !isBrandTemplate(row),
+            (row) =>
+              row.retrieval_eligibility?.eligible !== false &&
+              !isBrandTemplate(row) &&
+              !isBrandAmbassador(row),
           ),
         );
       })
