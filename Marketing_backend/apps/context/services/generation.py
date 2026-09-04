@@ -540,7 +540,15 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
             # there is no generation to be partial about.
             raise NoProviderConfigured(failure.get('error', 'No provider routed.'))
 
-    return {'text': text, 'image': image, 'trace': trace}
+    return {
+        'text': text,
+        'image': image,
+        'trace': trace,
+        # What the copy generator was actually told, verbatim, so the
+        # self-critique judge grades against the very rules the model saw —
+        # never a re-built context that may have recompiled in between.
+        'copy_brief_context': text_brief.get('brand_context') or [],
+    }
 
 
 def _compact_text_result(result):
@@ -836,6 +844,10 @@ def generate_marketing_payload(
     3. Deterministic fixes run last: banned hashtags stripped, required lines
        appended, a missing CTA keyword added. Silent, and recorded in the
        trace so the scorecard can count what the gate caught.
+
+    Then a fourth, judgement-shaped touch: the LLM self-critique gate
+    (``trace['critique']``) grades the finished copy against the rules the
+    generator saw and retries the words at most once. See ``critique.py``.
     """
     from apps.brands.models import Brand
     from apps.brands.services import guardrails as guardrail_law
@@ -893,6 +905,32 @@ def generate_marketing_payload(
                 'unresolved': unresolved,
                 'fixed': fixed,
             }
+
+    # 4. LLM self-critique: the finished copy judged against the very rules
+    #    the generator was told, plus this brand's standing reviewer
+    #    complaints. Spend: +1 internal TEXT dispatch to judge each
+    #    generation (spend-metered, never a customer TEXT unit); a failing
+    #    verdict adds one copy-only regeneration (a normal customer unit —
+    #    it replaces the copy the customer receives) and one in-memory
+    #    internal re-judge — never a second image. Best-effort by
+    #    construction: every judge failure records 'skipped' and ships the
+    #    paid output.
+    from .critique import critique_copy
+
+    copy_brief_context = routed.pop('copy_brief_context', None) or []
+    trace = routed.get('trace')
+    if isinstance(trace, dict):
+        trace['critique'] = critique_copy(
+            workspace, resolved, payload,
+            context_lines=copy_brief_context,
+            guardrail_lines=list(brief.get('guardrail_rules') or []),
+            content_format=str(brief.get('contentType') or ''),
+            rewrite=lambda feedback: generate_copy_only(
+                workspace, resolved,
+                {**brief, 'guardrail_feedback': feedback},
+                instruction=instruction,
+            ),
+        )
     return routed
 
 
@@ -1007,6 +1045,7 @@ def _route_marketing_payload(
         'provider_name': text.get('provider_name', ''),
         'brain_version': outcome['trace'].get('brain_version', ''),
         'trace': outcome['trace'],
+        'copy_brief_context': outcome.get('copy_brief_context') or [],
         'payload': {
             'postTitle': text.get('headline') or raw.get('postTitle', ''),
             'postDescription': text.get('caption') or raw.get('postDescription', ''),

@@ -183,6 +183,28 @@ class RouterTests(APITestCase):
         self.assertEqual(logs.filter(selected=True).count(), 1)
         self.assertEqual(logs.get(selected=True).provider.key, 'better')
 
+    def test_internal_dispatch_under_best_of_calls_exactly_one_provider(self):
+        """QA overhead never multiplies: BEST_OF is for buying the customer a
+        better asset, so an internal (judge/focus) dispatch takes the single
+        first candidate and its log row is marked is_internal."""
+        self.enable('fake', priority=1, strategy=Strategy.BEST_OF)
+        self.enable('better', priority=2, strategy=Strategy.BEST_OF)
+
+        with _install(self.adapters):
+            result = AIRouter(self.ws).dispatch(Capability.TEXT, {}, internal=True)
+
+        self.assertEqual(result['provider'], 'fake')
+        logs = AIUsageLog.objects.filter(workspace=self.ws)
+        self.assertEqual(logs.count(), 1)
+        self.assertTrue(logs.get().is_internal)
+
+        # A normal dispatch on the same routes still races both providers,
+        # and its rows stay customer-billable.
+        self.assertEqual(self.route()['provider'], 'better')
+        self.assertEqual(
+            AIUsageLog.objects.filter(workspace=self.ws, is_internal=False).count(), 2
+        )
+
     def test_one_router_reads_the_route_policy_once_for_many_capabilities(self):
         self.enable('fake', capability=Capability.TEXT)
         self.enable('better', capability=Capability.IMAGE)

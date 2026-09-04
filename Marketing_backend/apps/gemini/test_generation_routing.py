@@ -424,7 +424,7 @@ class ConcurrentGenerationTests(GenerationRoutingTests):
         calls = []
 
         def counting(self_router, capability, brief, content_item_id=None):
-            calls.append(capability)
+            calls.append((capability, str(brief.get('task') or '').upper()))
             return {
                 **FAKE_TEXT_RESULT,
                 'raw': {'posterImageUrl': 'https://cdn.example.com/one-call.png'},
@@ -443,7 +443,18 @@ class ConcurrentGenerationTests(GenerationRoutingTests):
             )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(calls, [Capability.TEXT], "expected exactly one dispatch")
+        # Exactly one GENERATION dispatch — the duplicate-spend this test
+        # exists to forbid. The self-critique judge's schema'd EXTRACT call
+        # is separate, intentional spend and never buys a second poster.
+        generation_calls = [c for c, task in calls if task != 'EXTRACT']
+        self.assertEqual(
+            generation_calls, [Capability.TEXT],
+            "expected exactly one generation dispatch",
+        )
+        self.assertTrue(
+            all(c == Capability.TEXT for c, task in calls if task == 'EXTRACT'),
+            calls,
+        )
         data = response.json()['data']
         # One dispatch, then auto-compose bakes the copy onto that one image.
         self.assertTrue(

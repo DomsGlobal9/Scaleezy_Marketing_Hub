@@ -10,6 +10,7 @@ from .views_controls import (
     ClientLifecycleView,
     ClientLimitsView,
     ClientPlanView,
+    ClientQualityView,
     ClientRecompileBrainView,
     ClientSpendCapView,
     ClientUniversalView,
@@ -39,6 +40,10 @@ urlpatterns = [
     path(
         'clients/<uuid:workspace_id>/universal/',
         ClientUniversalView.as_view(), name='client_universal',
+    ),
+    path(
+        'clients/<uuid:workspace_id>/quality/',
+        ClientQualityView.as_view(), name='client_quality',
     ),
     path(
         'clients/<uuid:workspace_id>/plan/',

@@ -36,6 +36,11 @@ class GeminiAdapter(AIProviderAdapter):
     default_model = 'gemini-2.5-flash'
     unit_cost = 0.02
 
+    #: analyze_image briefs whose response_schema must be honoured via the
+    #: structured JSON path. Every other task keeps the legacy
+    #: analyze_reference_image behaviour, unchanged.
+    STRUCTURED_IMAGE_TASKS = ('INSPIRATION_ANALYSIS', 'SUBJECT_FOCUS')
+
     @staticmethod
     def _structured_config(brief):
         schema = brief.get('response_schema')
@@ -144,7 +149,7 @@ class GeminiAdapter(AIProviderAdapter):
         b64 = brief.get('reference_image_base64') or brief.get('referenceImageBase64', '')
         if not b64:
             raise AIProviderError("No image supplied for analysis.")
-        if str(brief.get('task') or '').upper() == 'INSPIRATION_ANALYSIS':
+        if str(brief.get('task') or '').upper() in self.STRUCTURED_IMAGE_TASKS:
             mime_type, img_bytes = self._service()._parse_base64_image(b64)
             if not mime_type or not img_bytes:
                 raise AIProviderError('The inspiration image could not be decoded.')

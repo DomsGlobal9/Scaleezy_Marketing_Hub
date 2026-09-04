@@ -445,14 +445,25 @@ class OpenAIAdapter(AIProviderAdapter):
             raise AIProviderError('Supplied image type is not supported.')
         return self._validate_data_image(f'data:{mime_type};base64,{encoded}')
 
+    #: analyze_image briefs whose response_schema must be honoured via the
+    #: structured JSON path, and the schema name each is registered under.
+    #: SUBJECT_FOCUS matters doubly: routed to the generic campaign-analysis
+    #: branch it would be a paid call returning a guaranteed-useless shape
+    #: that the caller then caches as a permanent MALFORMED skip.
+    _STRUCTURED_IMAGE_TASKS = {
+        'INSPIRATION_ANALYSIS': 'scaleezy_inspiration_signals',
+        'SUBJECT_FOCUS': 'scaleezy_subject_focus',
+    }
+
     def analyze_image(self, brief: Dict[str, Any]) -> Dict[str, Any]:
-        if str(brief.get('task') or '').upper() == 'INSPIRATION_ANALYSIS':
+        task = str(brief.get('task') or '').upper()
+        if task in self._STRUCTURED_IMAGE_TASKS:
             schema = brief.get('response_schema')
             if not isinstance(schema, dict):
-                raise AIProviderError('Inspiration analysis needs a response schema.')
+                raise AIProviderError('Structured image analysis needs a response schema.')
             analysis, response = self._responses_json(
                 prompt=str(brief.get('instruction') or 'Analyze this creative reference.'),
-                schema_name='scaleezy_inspiration_signals',
+                schema_name=self._STRUCTURED_IMAGE_TASKS[task],
                 schema=schema,
                 image_url=self._image_reference(brief),
                 model=str(self.config.get('vision_model') or self.model),

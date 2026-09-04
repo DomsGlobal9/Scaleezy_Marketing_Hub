@@ -113,7 +113,8 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
         def line(key):
             return str(data[key]) if key in data else saved.get(key, '')
 
-        return render_engine.spec_from(
+        config = data.get('config') or (item.layout_config if item else {})
+        spec = render_engine.spec_from(
             brand,
             headline=data.get('headline') or (item.headline if item else ''),
             subheadline=line('subheadline'),
@@ -136,8 +137,20 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
                 else saved.get('include_phone')
             ),
             phone=line('phone'),
-            config=data.get('config') or (item.layout_config if item else {}),
-        ), brand
+            config=config,
+        )
+        # The paid focal point steers studio renders and exports too, not
+        # just the automatic compose — otherwise every manual re-render and
+        # multi-size export silently reverts to the centred crop. Same
+        # dict-with-'x' gate the compose path uses; cover() re-clamps every
+        # value, so client-writable JSON degrades to centred, never fails.
+        for source in (config, item.layout_config if item else None):
+            if isinstance(source, dict):
+                focus_info = source.get('photo_focus')
+                if isinstance(focus_info, dict) and 'x' in focus_info:
+                    spec.photo_focus = focus_info
+                    break
+        return spec, brand
 
     def _layout_key(self, data, brand, item=None):
         return (
@@ -265,6 +278,15 @@ class LayoutViewSet(WorkspaceScopedMixin, viewsets.ViewSet):
             )
 
         config = dict(data['config']) if data.get('config') else dict(item.layout_config or {})
+        # The paid focal point (or its cached skip marker) survives a client
+        # config replacing the rest of layout_config, exactly the way the
+        # saved 'copy' does below — losing it would re-buy the vision call
+        # on the next compose, or permanently recentre the crop.
+        stored_config = item.layout_config if isinstance(item.layout_config, dict) else {}
+        if 'photo_focus' not in config and isinstance(
+            stored_config.get('photo_focus'), dict
+        ):
+            config['photo_focus'] = stored_config['photo_focus']
         # Remember which photograph this composition was built from — but only
         # the first time, and never a composed poster itself.
         if (

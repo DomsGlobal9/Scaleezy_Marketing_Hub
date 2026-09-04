@@ -74,6 +74,29 @@ const TABS = [
   { key: "REJECTED", label: "Rejected", statuses: ["REJECTED"] },
 ] as const;
 
+/**
+ * The self-critique verdict the quality engine stored in
+ * layout_config.generation_trace.critique, as a one-line note — or
+ * undefined for items generated before the gate, skipped checks, or
+ * anything malformed.
+ */
+function selfCheckNote(item: ContentItem): string | undefined {
+  const trace = item.layout_config?.["generation_trace"];
+  if (typeof trace !== "object" || trace === null || Array.isArray(trace)) return undefined;
+  const critique = (trace as Record<string, unknown>)["critique"];
+  if (typeof critique !== "object" || critique === null || Array.isArray(critique)) {
+    return undefined;
+  }
+  const verdict = (critique as Record<string, unknown>)["verdict"];
+  if (verdict === "passed") return "Self-check: passed";
+  if (verdict === "regenerated") {
+    const violations = (critique as Record<string, unknown>)["violations"];
+    const count = Array.isArray(violations) && violations.length > 0 ? violations.length : 1;
+    return `Self-check: fixed ${count} issue${count === 1 ? "" : "s"} before review`;
+  }
+  return undefined;
+}
+
 /** A string the studio saved in layout_config.copy, or undefined. */
 function savedCopyField(item: ContentItem, field: string): string | undefined {
   const copy = item.layout_config?.["copy"];
@@ -526,6 +549,10 @@ function ReviewPage() {
                   {item.parent ? " · revision" : ""} ·{" "}
                   {new Date(item.created_at).toLocaleDateString()}
                 </p>
+
+                {selfCheckNote(item) ? (
+                  <p className="mt-1 text-xs text-muted-foreground">{selfCheckNote(item)}</p>
+                ) : null}
 
                 {item.caption && item.status !== "DRAFT" ? (
                   <p className="mt-3 line-clamp-3 text-sm text-muted-foreground">{item.caption}</p>
