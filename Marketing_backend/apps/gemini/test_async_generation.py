@@ -681,7 +681,7 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
 
     def test_style_only_feedback_re_dresses_without_any_provider_spend(self):
         from apps.layouts import variants
-        from apps.layouts.services import generated_layout
+        from apps.layouts.registry import catalogue
 
         photo = self.with_inherited_look()
         self.scoped_feedback(['logo_placement', 'composition_balance'], 'Layout feels off.')
@@ -693,10 +693,18 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         image_call.assert_not_called()
         self.revision.refresh_from_db()
         config = self.revision.layout_config
-        # Words untouched, same photograph, but a freshly picked dress.
+        # Words untouched, same photograph, but a freshly picked dress. The
+        # pick is no longer reproducible by calling generated_layout() again:
+        # the variety engine consults brand history, which now includes the
+        # restyle's own just-persisted layout — so assert the intent (a valid
+        # photo pattern was chosen) rather than the stateless equality the
+        # old rotation allowed.
         self.assertEqual(self.revision.headline, 'Drape yourself in teal')
         self.assertEqual(config.get('source_asset'), str(photo.pk))
-        self.assertEqual(self.revision.layout_plugin, generated_layout(self.revision))
+        photo_patterns = {
+            entry['key'] for entry in catalogue() if entry.get('uses_photo', True)
+        }
+        self.assertIn(self.revision.layout_plugin, photo_patterns)
         self.assertEqual(
             config.get('style_variant'),
             variants.different_variant_for(self.revision, self.PLANTED_VARIANT),
