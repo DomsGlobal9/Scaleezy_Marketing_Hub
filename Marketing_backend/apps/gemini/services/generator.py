@@ -440,6 +440,22 @@ Return ONLY a valid JSON object with these exact keys:
             request_data.get('guardrail_rules'),
             request_data.get('guardrail_feedback'),
         )
+        # Template mode: the image step will receive the brand's own poster
+        # design as an attached image and recreate it. Step 1's usual job —
+        # inventing a wildly creative composition — would fight that, so it
+        # is told the composition is already decided.
+        template_block = ''
+        if request_data.get('template_image_base64'):
+            template_block = (
+                "\n\nBRAND TEMPLATE MODE: this poster will be generated FROM the "
+                "brand's own fixed template design, which the image model receives "
+                "as an attached image. The `imagePrompt` must NOT invent a "
+                "composition, layout, setting or visual style. Describe ONLY the "
+                "subject content to place in the template's photo area (the "
+                "product, scene or person, with its mood and lighting) and keep it "
+                "to 2-3 sentences. The template's layout, palette, typography and "
+                "decorative elements are fixed and not yours to restate.\n"
+            )
         creative_direction = request_data.get('creative_direction') or {}
         creative_lines = creative_direction.get('instructions') or []
         creative_block = ''
@@ -481,7 +497,7 @@ For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just 
 
 {cls._rules_block(brand_rules)}{guardrail_block}
 {variety_block}
-{creative_block}
+{creative_block}{template_block}
 Respond ONLY with a valid JSON object (no markdown, no code fences, no extra text):
 {{
   "postTitle": "A catchy, short title (max 10 words)",
@@ -534,7 +550,8 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
 
     @classmethod
     def generate_poster_image(cls, image_prompt: str, reference_image_base64: str = "",
-                              api_key: str = '', text_lines=None) -> str:
+                              api_key: str = '', text_lines=None,
+                              template_image_base64: str = "") -> str:
         """
         Step 2: Send the AI-generated image prompt to the image model.
         Also send the original reference image if provided.
@@ -544,19 +561,40 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         delegated poster, or the no-text line where the compose engine still
         owns the words. Absent, the no-text line applies - never invented
         words.
+
+        `template_image_base64` is the brand's OWN poster template, when this
+        generation is meant to match one. It is the one image deliberately
+        attached to the image call: for a template, "just editing the
+        original" is precisely the job.
         """
         client = cls._get_client(api_key)
 
-        # We ONLY pass the text prompt to the image model.
-        # The reference image was already analyzed in Step 1 to create this highly detailed prompt.
-        # Passing it here again restricts the AI to just editing the original image instead of generating a brand new creative one.
+        # We ONLY pass the text prompt to the image model for ordinary
+        # generations. A reference image was already analyzed in Step 1 to
+        # create this highly detailed prompt, and passing it here again
+        # restricts the AI to just editing the original instead of creating
+        # new work. The single exception is a brand template (below), where
+        # faithful recreation is the requirement, not the risk.
         #
         # The directive is appended after Step 1's composition. Step 1 never
         # paraphrases the headline into the imagePrompt, so this is the only
         # copy of the wording the image model sees - verbatim.
-        contents = [
-            image_prompt.rstrip() + "\n\n" + "\n".join(text_lines or [NO_TEXT_LINE])
-        ]
+        directive = image_prompt.rstrip() + "\n\n" + "\n".join(text_lines or [NO_TEXT_LINE])
+        contents = [directive]
+
+        template_mime, template_bytes = cls._parse_base64_image(template_image_base64)
+        if template_mime and template_bytes:
+            contents = [
+                types.Part.from_bytes(data=template_bytes, mime_type=template_mime),
+                "THE ATTACHED IMAGE IS THIS BRAND'S OWN POSTER TEMPLATE. "
+                "Recreate THIS EXACT design: the same layout and composition, "
+                "the same colour palette, the same typographic hierarchy and "
+                "text placement, the same logo position, panels, dividers and "
+                "decorative elements. Change ONLY the campaign-specific "
+                "content — the headline wording, the photo/subject inside the "
+                "photo area, and the offer — to match the brief below. Do NOT "
+                "invent a new composition, style or palette.\n\n" + directive,
+            ]
 
         response = client.models.generate_content(
             model=cls.IMAGE_MODEL,
@@ -653,6 +691,7 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                     text_lines=on_image_text_lines(
                         request_data, text_result.get('postTitle', '')
                     ),
+                    template_image_base64=request_data.get('template_image_base64', ''),
                 )
         except Exception as e:
             print(f"[Gemini] Step 2 failed: {e}")
