@@ -133,12 +133,12 @@ class CapabilityLimitTests(TestCase):
             quota.capability_usage(self.workspace).get(Capability.IMAGE, 0), 0
         )
 
-    def test_internal_qa_calls_are_spend_but_never_customer_units(self):
+    def test_internal_qa_calls_count_as_units_and_spend(self):
         # One real poster, plus a platform QA dispatch (the copy judge / the
-        # focus vision call). The QA row is money — it counts toward the
-        # spend cap — but it must not consume one of the customer's two
-        # provisioned IMAGE units. The unit/spend split is surfaced for
-        # founder review.
+        # focus vision call). Founder decision 2026-09-03 ("option b"): the
+        # QA row is both money AND one of the customer's provisioned units —
+        # every call a generation causes is part of that generation's price.
+        # The is_internal flag stays for reporting only.
         self.log(Capability.IMAGE, 1)
         AIUsageLog.objects.create(
             workspace=self.workspace, provider=self.provider,
@@ -147,9 +147,9 @@ class CapabilityLimitTests(TestCase):
         )
 
         self.assertEqual(
-            quota.capability_usage(self.workspace).get(Capability.IMAGE, 0), 1
+            quota.capability_usage(self.workspace).get(Capability.IMAGE, 0), 2
         )
-        self.assertTrue(quota.check(self.workspace, Capability.IMAGE).allowed)
+        self.assertFalse(quota.check(self.workspace, Capability.IMAGE).allowed)
         _generations, spend = quota.usage(self.workspace)
         self.assertEqual(spend, Decimal('0.05'))
 

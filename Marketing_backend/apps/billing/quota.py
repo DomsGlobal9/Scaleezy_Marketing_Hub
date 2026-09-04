@@ -126,15 +126,14 @@ def capability_usage(workspace, subscription=None, capability=None):
     Counted from AIUsageLog, like spend — never accumulated in a column, for
     the reason at the top of this module.
 
-    `success=True, selected=True, is_internal=False` is the definition of a
-    billable unit: a provider that failed produced nothing to charge for, a
-    BEST_OF loser was paid for but is counted as spend, not as one of the
-    customer's posters, and a platform QA dispatch (the copy judge, the focus
-    vision call) is overhead the customer never asked for — silently halving
-    a 100-poster allowance with it would make "100 TEXT units" a lie. All
-    three still count toward the spend cap in `usage()`: money always counts;
-    product units stay what clients bought. This unit/spend split is surfaced
-    for founder review.
+    `success=True, selected=True` is the definition of a billable unit: a
+    provider that failed produced nothing to charge for, and a BEST_OF loser
+    is spend, not a unit. Platform QA dispatches (the copy judge, the focus
+    vision call — rows flagged is_internal) DO count as customer units:
+    founder decision, 2026-09-03 ("option b") — every call a generation
+    causes is part of that generation's price in units as well as money.
+    The is_internal flag stays on the rows purely for reporting, so "how
+    much of a client's usage is QA" remains answerable.
     """
     from apps.ai.models import AIUsageLog
     from django.db.models import Count
@@ -146,7 +145,7 @@ def capability_usage(workspace, subscription=None, capability=None):
     start, end = subscription.current_period()
     rows = AIUsageLog.objects.filter(
         workspace=workspace, created_at__gte=start, created_at__lt=end,
-        success=True, selected=True, is_internal=False,
+        success=True, selected=True,
     )
     if capability is not None:
         rows = rows.filter(capability=capability)
