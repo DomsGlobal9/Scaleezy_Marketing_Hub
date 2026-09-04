@@ -549,6 +549,29 @@ export const uploadBrandTemplate = (brandId: string, file: File, title: string) 
     focus_areas: [],
   });
 
+/** The brand's model / ambassador: the person who fronts every creative.
+ * Rides the inspiration machinery like templates do, with its own type so
+ * neither list shows the other's rows. */
+export const BRAND_AMBASSADOR_TYPE = "BRAND_AMBASSADOR";
+
+export const isBrandAmbassador = (row: Inspiration) =>
+  row.inspiration_type === BRAND_AMBASSADOR_TYPE;
+
+export const fetchBrandAmbassadors = async (brandId: string) =>
+  (await fetchInspirations(brandId)).filter(
+    (row) => isBrandAmbassador(row) && row.lifecycle_status !== "ARCHIVED",
+  );
+
+export const uploadBrandAmbassador = (brandId: string, file: File) =>
+  uploadInspiration(brandId, file, {
+    inspiration_type: BRAND_AMBASSADOR_TYPE,
+    title: file.name,
+    annotation: "Brand model / ambassador photo",
+    external_platform: "",
+    usage_scope: "FULL_REFERENCE",
+    focus_areas: [],
+  });
+
 export const analyzeInspiration = (inspirationId: string) =>
   api(`/api/marketing/inspirations/${inspirationId}/analyze/`, { method: "POST" });
 

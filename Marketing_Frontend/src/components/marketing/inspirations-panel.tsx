@@ -53,6 +53,7 @@ import {
   fetchInspirations,
   fetchSignals,
   humanize,
+  isBrandAmbassador,
   isBrandTemplate,
   rejectSignal,
   uploadInspiration,
@@ -116,9 +117,11 @@ export function InspirationsPanel({
   if (signals.loading && !signals.data) return <Loading />;
   if (signals.error) return <Failed message={signals.error} onRetry={signals.reload} />;
 
-  // Brand templates ride the same API but live on their own Templates tab;
-  // showing them here would list every upload twice.
-  const rows = (inspirations.data ?? []).filter((i) => !isBrandTemplate(i));
+  // Brand templates and ambassador photos ride the same API but live on
+  // their own surfaces; showing them here would list every upload twice.
+  const rows = (inspirations.data ?? []).filter(
+    (i) => !isBrandTemplate(i) && !isBrandAmbassador(i),
+  );
   const active = rows.filter((i) => i.lifecycle_status !== "ARCHIVED");
   const archived = rows.filter((i) => i.lifecycle_status === "ARCHIVED");
 

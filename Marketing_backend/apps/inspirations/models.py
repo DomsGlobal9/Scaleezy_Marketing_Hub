@@ -112,6 +112,10 @@ class BrandInspiration(models.Model):
         # catalogue: when a brand has templates and the user states no creative
         # choice, generation runs REFERENCE mode against one of these rows.
         BRAND_TEMPLATE = 'BRAND_TEMPLATE', 'Brand template'
+        # The brand's model / brand ambassador: the person who fronts every
+        # creative. Uploaded once, then generation attaches the photo so the
+        # image model features THIS person rather than inventing a face.
+        BRAND_AMBASSADOR = 'BRAND_AMBASSADOR', 'Brand ambassador'
         OTHER = 'OTHER', 'Other'
 
     class UsageScope(models.TextChoices):
