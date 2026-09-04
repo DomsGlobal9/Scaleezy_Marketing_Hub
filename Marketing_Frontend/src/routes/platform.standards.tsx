@@ -9,7 +9,7 @@
  */
 import { createFileRoute } from "@tanstack/react-router";
 import { Archive, CopyPlus, Eye, Loader2, Pencil, Plus, RefreshCw, Send } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { startTransition, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -462,7 +462,9 @@ function StandardsPage() {
           <button
             key={value}
             type="button"
-            onClick={() => setFilter(value)}
+            // Transition: the click re-renders every standard card; sliced,
+            // it cannot blow the 200ms INP budget on a long list.
+            onClick={() => startTransition(() => setFilter(value))}
             className={cn(
               "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
               filter === value

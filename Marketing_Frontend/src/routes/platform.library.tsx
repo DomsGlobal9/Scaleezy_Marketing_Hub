@@ -8,7 +8,7 @@
  */
 import { createFileRoute } from "@tanstack/react-router";
 import { Archive, Pencil, Plus, RefreshCw, Send, Upload } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -522,20 +522,34 @@ function LibraryPage() {
         }
       />
 
+      {/* Transitions: a chip click re-renders the whole entry grid, which can
+          blow the 200ms INP budget on a full library. Sliced, the click paints
+          immediately. */}
       <div className="mb-2 flex flex-wrap gap-2">
         {(["ALL", "DRAFT", "PUBLISHED", "RETIRED"] as StatusFilter[]).map((value) => (
-          <FilterChip key={value} active={filter === value} onClick={() => setFilter(value)}>
+          <FilterChip
+            key={value}
+            active={filter === value}
+            onClick={() => startTransition(() => setFilter(value))}
+          >
             {value === "ALL" ? "All" : value.charAt(0) + value.slice(1).toLowerCase()} ·{" "}
             {counts[value]}
           </FilterChip>
         ))}
       </div>
       <div className="mb-4 flex flex-wrap gap-2">
-        <FilterChip active={kindFilter === "ALL"} onClick={() => setKindFilter("ALL")}>
+        <FilterChip
+          active={kindFilter === "ALL"}
+          onClick={() => startTransition(() => setKindFilter("ALL"))}
+        >
           Every kind · {byStatus.length}
         </FilterChip>
         {LIBRARY_KINDS.map((k) => (
-          <FilterChip key={k} active={kindFilter === k} onClick={() => setKindFilter(k)}>
+          <FilterChip
+            key={k}
+            active={kindFilter === k}
+            onClick={() => startTransition(() => setKindFilter(k))}
+          >
             {k === "TEXT" ? "Text" : `${KIND_LABEL[k]}s`} · {kindCounts[k]}
           </FilterChip>
         ))}
