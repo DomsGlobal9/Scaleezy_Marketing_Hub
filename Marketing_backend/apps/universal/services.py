@@ -380,12 +380,41 @@ def publish_inspiration(inspiration, *, by=None):
 
 
 def gallery_for(workspace, *, industry='', kind='', limit=50, offset=0):
-    """What a client may browse. Empty when they opted out."""
+    """What a client may browse. Empty when they opted out.
+
+    `industry` semantics: '' (the default) scopes the gallery to the client's
+    own industry plus general entries — enough to show what Scaleezy can do
+    without burying a salon in jewellery posters; 'ALL' lifts the scope;
+    anything else filters to that one industry.
+    """
     if not settings_for(workspace).inspirations_enabled:
         return []
     rows = PlatformInspiration.objects.filter(status=LifecycleStatus.PUBLISHED)
-    if industry:
-        rows = rows.filter(industry__iexact=industry)
+    wanted = str(industry or '').strip()
+    if wanted.upper() == 'ALL':
+        pass
+    elif wanted:
+        rows = rows.filter(industry__iexact=wanted)
+    else:
+        own = (
+            workspace.brands.filter(is_default=True)
+            .values_list('industry', flat=True)
+            .first()
+            or ''
+        ).strip()
+        # Industry is free text on both sides ("Coffee" vs "Specialty
+        # coffee"), so match on containment in either direction rather than
+        # equality. Entries with no industry are for everyone, and a brand
+        # with no industry set scopes to nothing — it sees everything.
+        if own:
+            from django.db.models import Q, Value
+            from django.db.models.functions import Lower, StrIndex
+
+            rows = rows.annotate(
+                own_pos=StrIndex(Value(own.lower()), Lower('industry')),
+            ).filter(
+                Q(industry='') | Q(industry__icontains=own) | Q(own_pos__gt=0)
+            )
     if kind:
         rows = rows.filter(kind=str(kind).upper())
     safe_offset = max(0, int(offset or 0))
