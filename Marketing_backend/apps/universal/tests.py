@@ -224,6 +224,40 @@ class PlatformInspirationTests(UniversalBase):
         with self.assertRaises(UniversalError):
             adopt_inspiration(self.reference, self.brand, user=self.user)
 
+    def test_the_gallery_defaults_to_the_clients_industry_plus_general(self):
+        publish_inspiration(self.reference, by=self.user)  # blank industry = general
+        jewellery = PlatformInspiration.objects.create(
+            title='Gold on navy', reference_url='https://example.test/gold',
+            annotation='Premium serif.', industry='Jewellery',
+        )
+        publish_inspiration(jewellery, by=self.user)
+        coffee = PlatformInspiration.objects.create(
+            title='Latte art reel', reference_url='https://example.test/latte',
+            annotation='Process sells.', industry='Specialty Coffee',
+        )
+        publish_inspiration(coffee, by=self.user)
+
+        # Default scope: general entries plus anything matching this brand's
+        # free-text industry ('Coffee' ⊂ 'Specialty Coffee'). Jewellery is
+        # not hidden policy-wise — it is just not the default view.
+        titles = {row.title for row in gallery_for(self.workspace)}
+        self.assertEqual(titles, {'Great minimal poster', 'Latte art reel'})
+
+        # Containment matches the other way round too: a 'Specialty coffee'
+        # brand still sees an entry tagged plain 'Coffee'.
+        coffee.industry = 'Coffee'
+        coffee.save(update_fields=['industry'])
+        self.brand.industry = 'Specialty coffee'
+        self.brand.save(update_fields=['industry'])
+        self.assertIn('Latte art reel', {r.title for r in gallery_for(self.workspace)})
+
+        # 'ALL' lifts the scope; an explicit industry narrows to exactly it.
+        self.assertEqual(len(gallery_for(self.workspace, industry='ALL')), 3)
+        self.assertEqual(
+            [r.title for r in gallery_for(self.workspace, industry='jewellery')],
+            ['Gold on navy'],
+        )
+
     def test_adoption_copies_into_the_brands_own_inspirations(self):
         publish_inspiration(self.reference, by=self.user)
         self.assertEqual(len(gallery_for(self.workspace)), 1)

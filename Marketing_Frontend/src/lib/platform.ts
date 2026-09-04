@@ -644,8 +644,17 @@ export interface LibraryGalleryPage {
   nextOffset: number | null;
 }
 
-export const fetchLibraryGalleryPage = async (offset = 0): Promise<LibraryGalleryPage> => {
-  const payload = await apiGet<unknown>(`${LIBRARY_PATH}?limit=50&offset=${offset}`);
+/**
+ * `scope` mirrors the server's industry semantics: "mine" (default) is the
+ * client's own industry plus general entries; "all" lifts the scope.
+ */
+export const fetchLibraryGalleryPage = async (
+  offset = 0,
+  scope: "mine" | "all" = "mine",
+): Promise<LibraryGalleryPage> => {
+  const payload = await apiGet<unknown>(
+    `${LIBRARY_PATH}?limit=50&offset=${offset}${scope === "all" ? "&industry=ALL" : ""}`,
+  );
   const object = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
   return {
     items: rows<LibraryItem>(payload, "inspirations"),

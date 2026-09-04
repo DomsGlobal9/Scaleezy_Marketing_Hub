@@ -38,12 +38,16 @@ export function LibraryGallery({
   const [adopted, setAdopted] = useState<Record<string, string>>({});
   const [loadingMore, setLoadingMore] = useState(false);
   const [nextOffset, setNextOffset] = useState<number | null>(null);
+  // "mine" = this client's industry plus general entries — the curated
+  // default, so a salon is not buried in jewellery posters. "all" shows the
+  // whole library.
+  const [scope, setScope] = useState<"mine" | "all">("mine");
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const page = await fetchLibraryGalleryPage();
+      const page = await fetchLibraryGalleryPage(0, scope);
       setItems(page.items);
       setNextOffset(page.nextOffset);
     } catch (e: unknown) {
@@ -51,13 +55,13 @@ export function LibraryGallery({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [scope]);
 
   const loadMore = async () => {
     if (nextOffset === null || loadingMore) return;
     setLoadingMore(true);
     try {
-      const page = await fetchLibraryGalleryPage(nextOffset);
+      const page = await fetchLibraryGalleryPage(nextOffset, scope);
       setItems((current) => {
         const known = new Set((current ?? []).map((row) => row.id));
         return [...(current ?? []), ...page.items.filter((row) => !known.has(row.id))];
@@ -106,14 +110,46 @@ export function LibraryGallery({
         }
       />
 
+      <div className="mb-4 flex gap-2" role="radiogroup" aria-label="Library scope">
+        {(
+          [
+            ["mine", "For your industry"],
+            ["all", "Everything"],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            role="radio"
+            aria-checked={scope === value}
+            onClick={() => setScope(value)}
+            className={
+              scope === value
+                ? "rounded-full border border-primary bg-primary px-3 py-1 text-xs font-medium text-primary-foreground"
+                : "rounded-full border border-border bg-background px-3 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+            }
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       <InlineError message={error} />
 
       {loading && !items ? (
         <Loading rows={3} />
       ) : items && items.length === 0 ? (
         <Empty
-          title="Nothing in the library for you yet"
-          hint="Scaleezy has not published references this client can see. Your own inspirations above are what generation reads."
+          title={
+            scope === "mine"
+              ? "Nothing for your industry yet"
+              : "Nothing in the library for you yet"
+          }
+          hint={
+            scope === "mine"
+              ? 'Try "Everything" — general references work across industries, and Scaleezy adds more all the time.'
+              : "Scaleezy has not published references this client can see. Your own inspirations above are what generation reads."
+          }
         />
       ) : items ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
