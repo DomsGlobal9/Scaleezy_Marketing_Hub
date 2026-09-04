@@ -34,9 +34,11 @@ from apps.ai.router import AIRouter, NoProviderAvailable
 from .context_gateway import (
     CONTEXT_SCHEMA_VERSION,
     TaskType,
+    _has_brand_template,
     build_generation_context,
     context_as_brief,
     on_image_text_lines,
+    poster_renders_its_own_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,6 +113,38 @@ def _template_image(direction) -> str:
     except Exception as exc:
         logger.warning('Template image unavailable for generation: %s', exc)
         return ''
+
+
+def _variety_seed(workspace, brand, brief) -> dict:
+    """The per-brand variety keys this poster generation rides on:
+    `composition_archetype` (delegated designs that are not a brand
+    template - a template owns its own layout) and `scene_variant` (every
+    delegated poster, template or not). Each is least-recently-used over the
+    brand's last 8 posters - read ONCE for both - and tie-broken
+    deterministically on the request id; a key the caller already fixed in
+    the brief is kept, and with every key fixed the history is not read at
+    all. `brief` is the image brief: where it carries the brand ambassador's
+    photo no seed that would crop the face is drawn. Recorded in the trace
+    by the caller, so it lands in `layout_config['generation_trace']` and
+    steers the next pick. Empty wherever the words are composed later
+    (catalogue templates, carousels, video) or with no brand to remember.
+    """
+    from .creative_direction import pick_variety
+
+    if brand is None or not poster_renders_its_own_text(brief):
+        return {}
+    direction = brief.get('creative_direction')
+    wanted = ('composition_archetype', 'scene_variant')
+    if _has_brand_template(direction if isinstance(direction, dict) else {}):
+        wanted = ('scene_variant',)
+    seed = {key: brief[key] for key in wanted if brief.get(key)}
+    if len(seed) < len(wanted):
+        picked = pick_variety(
+            workspace, brand, brief.get('request_id') or uuid.uuid4(),
+            face_safe=bool(brief.get('ambassador_image_base64')),
+        )
+        seed = {key: seed.get(key) or picked[key] for key in wanted}
+    return seed
 
 
 class NoProviderConfigured(Exception):
@@ -628,12 +662,24 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction='',
             text_brief = {**text_brief, 'ambassador_image_base64': ambassador_data_url}
             image_brief = {**image_brief, 'ambassador_image_base64': ambassador_data_url}
 
+    # Variety: which composition archetype and which scene seed this poster
+    # gets, least-recently-used per brand. Both briefs carry them (Step 1
+    # describes the composition, the image call composes it) and the trace
+    # records them, so they land in the item's layout_config and steer the
+    # next pick. Read off the image brief, which by now knows whether the
+    # ambassador rides along. See `_variety_seed`.
+    variety = _variety_seed(workspace, brand, image_brief)
+    if variety:
+        text_brief = {**text_brief, **variety}
+        image_brief = {**image_brief, **variety}
+
     trace = {
         'brain_version': text_context['brain_version'],
         'context_schema_version': CONTEXT_SCHEMA_VERSION,
         'universal_version': text_context.get('universal_version', ''),
         'learned_pattern_version': text_context.get('learned_pattern_version', ''),
         'capabilities': {},
+        **variety,
     }
 
     def run(capability, brief, context):
@@ -1322,8 +1368,14 @@ def _with_guardrail_lines(brand, brief_extra):
     return brief_extra
 
 
-def retry_image(workspace, brand, brief_extra, *, instruction=''):
-    """Retry ONLY the image capability. The copy that succeeded stays won."""
+def retry_image(workspace, brand, brief_extra, *, instruction='', trace=None):
+    """Retry ONLY the image capability. The copy that succeeded stays won.
+
+    When `trace` is a dict, the variety keys this retry rode on
+    (`composition_archetype`, `scene_variant`) are recorded into it, so a
+    caller that persists the re-bought picture can record which composition
+    and scene the picture actually carries.
+    """
     _require_spend_approved(workspace)
     brief_extra = _with_guardrail_lines(brand, brief_extra)
     context = build_generation_context(
@@ -1331,8 +1383,13 @@ def retry_image(workspace, brand, brief_extra, *, instruction=''):
     )
     # The copy stays won, so the headline the poster must carry is whatever
     # the caller saved: the draft's own, or the revision's kept headline.
+    # The re-bought picture is a new poster, so it draws its own composition
+    # and scene from the brand's rotation unless the caller fixed them.
+    variety = _variety_seed(workspace, brand, brief_extra)
+    if trace is not None:
+        trace.update(variety)
     brief = _with_on_image_text(
-        {**context_as_brief(context), **brief_extra},
+        {**context_as_brief(context), **brief_extra, **variety},
         brief_extra.get('headline') or brief_extra.get('previous_headline') or '',
     )
     try:

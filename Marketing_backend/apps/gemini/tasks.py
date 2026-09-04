@@ -293,6 +293,10 @@ def generate_content(request_id: str):
             )
             brief['creative_direction'] = creative
             brief['layout'] = creative['layout']
+        # The variety picks (composition archetype, scene seed) tie-break on
+        # the request id, so a re-run of the same job - a repair included -
+        # lands on the same pick.
+        brief.setdefault('request_id', str(request.pk))
         if brief.get('retry_image_only'):
             return _repair_missing_image(request, brief, brand)
         routed = generate_marketing_payload(
@@ -540,9 +544,19 @@ def _repair_missing_image(request, brief, brand):
     should_compose = item.asset_id is None or result.asset_id == item.asset_id
     if item.asset_id is None:
         # The saved draft's own headline: the poster being repaired must
-        # carry the words the copy already won.
+        # carry the words the copy already won. And its own composition and
+        # scene: the record already says which archetype and seed this
+        # poster is, so the repaired picture matches the record instead of
+        # drawing a fresh pair the trace would then misreport.
+        stored = (item.layout_config or {}).get('generation_trace') or {}
+        fixed = {
+            key: stored[key]
+            for key in ('composition_archetype', 'scene_variant')
+            if isinstance(stored.get(key), str) and stored[key]
+        }
         image = retry_image(
-            request.workspace, item.brand, {**brief, 'headline': item.headline},
+            request.workspace, item.brand,
+            {**brief, **fixed, 'headline': item.headline},
             instruction=brief.get('instruction', ''),
         )
         with transaction.atomic():
@@ -981,6 +995,7 @@ def regenerate_revision(revision_id: str):
     else:
         # Surgical: only what the reviewer flagged changes. Elements they
         # liked keep their photograph, their words and their look.
+        variety = {}
         if scope['copy']:
             try:
                 payload = generate_copy_only(
@@ -1000,9 +1015,11 @@ def regenerate_revision(revision_id: str):
             revision.hashtags = payload.get('postHashtags') or revision.hashtags or ''
         if scope['image']:
             try:
+                # A new photograph is a new poster: it draws its own
+                # composition and scene, and the trace below must say so.
                 image = retry_image(
                     revision.workspace, revision.brand, brief,
-                    instruction=instruction,
+                    instruction=instruction, trace=variety,
                 )
             except Exception:
                 logger.exception(
@@ -1025,6 +1042,7 @@ def regenerate_revision(revision_id: str):
         if scope['copy'] or scope['image']:
             config['generation_trace'] = {
                 'brain_version': brain_version,
+                **variety,
                 **intelligence_in_force(revision.brand, brain_version),
             }
         if scope['restyle']:

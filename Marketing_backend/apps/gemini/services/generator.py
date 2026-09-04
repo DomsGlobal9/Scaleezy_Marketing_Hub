@@ -10,8 +10,11 @@ from google.genai import types
 
 from apps.context.services.context_gateway import (
     NO_TEXT_LINE,
+    _has_brand_template,
+    composition_archetype,
     on_image_text_lines,
     poster_renders_its_own_text,
+    scene_directive,
 )
 
 
@@ -394,18 +397,43 @@ Return ONLY a valid JSON object with these exact keys:
                 "\"No text, no lettering, no words, no logos, no watermarks anywhere in "
                 "the image.\""
             )
+        # The same reading the image call gets (`scene_directive`), so Step 1
+        # never describes a scene the image model is told not to shoot -
+        # including the ambassador's face-safe framing.
+        directive = scene_directive(request_data)
+        scene_sentence = (
+            f" Photograph the subject as {directive} - a fresh scene "
+            "for this poster, not a repeat of an earlier one." if directive else ''
+        )
+        if request_data.get('template_image_base64') or _has_brand_template(
+            request_data.get('creative_direction') or {}
+        ):
+            # The template owns the composition (see BRAND TEMPLATE MODE);
+            # this block only keeps the words out of the imagePrompt and
+            # seeds a new photograph.
+            return (
+                "ON-IMAGE TEXT: this poster's headline is typography the image "
+                "model paints into the template's own text slots. Do NOT write "
+                "the headline's wording into the `imagePrompt` - the exact "
+                "`postTitle`, CTA and offer are appended to the image call verbatim "
+                "afterwards - and do not describe any other words, captions, "
+                "watermarks or logos on the image. Keep the `postTitle` short and "
+                "punchy so it stays legible as display type." + scene_sentence
+            )
+        # A rotating composition archetype, picked per brand by the
+        # generation layer: every delegated poster used to be described as
+        # the same framed panel, so a brand's drafts all looked alike.
+        archetype = composition_archetype(request_data.get('composition_archetype'))
         return (
             "ON-IMAGE TEXT: this poster's headline is typography the image model "
-            "paints itself, in the style of a classic social-sale template. The "
-            "`imagePrompt` must therefore describe a poster composition, not a bare "
-            "photograph: a framed border, a centred photo panel, and a big, bold, "
-            "uppercase headline overlaid on the photo with high contrast and generous "
-            "margins, plus room for a small call-to-action pill and an offer line set "
-            "vertically along one edge. Do NOT write the headline's wording into the "
-            "`imagePrompt` - the exact `postTitle`, CTA and offer are appended to the "
-            "image call verbatim afterwards - and do not describe any other words, "
-            "captions, watermarks or logos on the image. Keep the `postTitle` short "
-            "and punchy so it stays legible as display type."
+            "paints itself. The `imagePrompt` must therefore describe a poster "
+            "composition, not a bare photograph - specifically "
+            f"({archetype['label']}): {archetype['step1']}. Do NOT write the "
+            "headline's wording into the `imagePrompt` - the exact `postTitle`, "
+            "CTA and offer are appended to the image call verbatim afterwards - "
+            "and do not describe any other words, captions, watermarks or logos "
+            "on the image. Keep the `postTitle` short and punchy so it stays "
+            "legible as display type." + scene_sentence
         )
 
     @classmethod
@@ -449,12 +477,15 @@ Return ONLY a valid JSON object with these exact keys:
             template_block = (
                 "\n\nBRAND TEMPLATE MODE: this poster will be generated FROM the "
                 "brand's own fixed template design, which the image model receives "
-                "as an attached image. The `imagePrompt` must NOT invent a "
-                "composition, layout, setting or visual style. Describe ONLY the "
-                "subject content to place in the template's photo area (the "
-                "product, scene or person, with its mood and lighting) and keep it "
-                "to 2-3 sentences. The template's layout, palette, typography and "
-                "decorative elements are fixed and not yours to restate.\n"
+                "as an attached image - a LAYOUT reference, not a scene to copy. "
+                "The `imagePrompt` must NOT invent a composition, layout or visual "
+                "style. Describe ONLY the subject content to place in the "
+                "template's photo area (the product, scene or person, with its "
+                "mood and lighting) and keep it to 2-3 sentences - and make it a "
+                "NEW photograph: a different pose, framing, setting and styling "
+                "from the template's own photo, never its model, scene or props. "
+                "The template's layout, palette, typography and decorative "
+                "elements are fixed and not yours to restate.\n"
             )
         # Ambassador mode: the image step receives the brand's model as an
         # attached photo, so Step 1 must write the scene around that person
@@ -604,14 +635,16 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
             )
             preamble.append(
                 f"ATTACHED IMAGE {len(image_parts)} IS THIS BRAND'S OWN POSTER "
-                "TEMPLATE. Recreate THIS EXACT design: the same layout and "
-                "composition, the same colour palette, the same typographic "
-                "hierarchy and text placement, the same logo position, panels, "
-                "dividers and decorative elements. Change ONLY the "
-                "campaign-specific content — the headline wording, the "
-                "photo/subject inside the photo area, and the offer — to match "
-                "the brief below. Do NOT invent a new composition, style or "
-                "palette."
+                "TEMPLATE - a LAYOUT REFERENCE, not a scene to copy. Recreate its "
+                "design STRUCTURE exactly: the same layout and composition, the "
+                "same colour palette, the same typographic hierarchy and text "
+                "placement, the same logo position, panels, dividers and "
+                "decorative elements. Replace the campaign-specific content to "
+                "match the brief below: the headline wording, the offer, and a "
+                "NEW photograph inside the photo area - a different subject pose, "
+                "framing, setting and styling; never reproduce the template's "
+                "photo, model, scene or props. Do NOT invent a new composition, "
+                "style or palette."
             )
         ambassador_mime, ambassador_bytes = cls._parse_base64_image(ambassador_image_base64)
         if ambassador_mime and ambassador_bytes:

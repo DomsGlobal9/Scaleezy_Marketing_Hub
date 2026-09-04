@@ -201,6 +201,73 @@ class AsyncGenerationTaskTests(TenantFixtureMixin, TestCase):
         dispatched.assert_not_called()
         self.assertEqual(ContentItem.objects.filter(workspace=self.workspace).count(), 1)
 
+    def test_the_variety_picks_land_in_the_persisted_trace(self):
+        # What the next generation's least-recently-used pick reads back:
+        # the archetype and scene the router reported, under the trace key
+        # _persist writes - the same key the sync view and request-edits use.
+        routed = {
+            **ROUTED,
+            'trace': {
+                'composition_archetype': 'polaroid_card',
+                'scene_variant': 'street_golden_hour',
+                'capabilities': {},
+            },
+        }
+        self.run_task(self.a_request(), routed)
+
+        item = ContentItem.objects.get(workspace=self.workspace)
+        trace = item.layout_config['generation_trace']
+        self.assertEqual(
+            trace['composition_archetype'], routed['trace']['composition_archetype'],
+        )
+        self.assertEqual(trace['scene_variant'], routed['trace']['scene_variant'])
+
+    def test_a_repair_reuses_the_drafts_own_composition_and_scene(self):
+        # A saved partial poster already says which archetype and seed it
+        # is. Repairing its missing image must shoot THAT poster, not draw a
+        # fresh pair the record would then misreport.
+        draft = ContentItem.objects.create(
+            workspace=self.workspace, brand=self.brand,
+            status=ContentItem.Status.DRAFT, content_format=ContentItem.Format.POSTER,
+            headline='Roasted this week',
+            layout_config={'generation_trace': {
+                'composition_archetype': 'diagonal_cut',
+                'scene_variant': 'interior_lounge_seated',
+                'capabilities': {'IMAGE': {'status': 'FAILED'}},
+            }},
+        )
+        request = GeminiGenerationRequest.objects.create(
+            workspace=self.workspace, user=self.user,
+            prompt_data=json.dumps({
+                'campaign_name': 'Launch', 'contentType': 'poster',
+                'retry_image_only': True, 'retry_brand_id': str(self.brand.pk),
+            }),
+            status=GeminiGenerationRequest.Status.PENDING,
+        )
+        GeminiGenerationResult.objects.create(
+            generation_request=request, metadata={'contentItemId': str(draft.pk)},
+        )
+        with patch(
+            'apps.context.services.generation.retry_image',
+            return_value={
+                'image_url': 'https://storage.test/generated/repaired.png',
+                'file_name': 'repaired.png',
+            },
+        ) as retried, patch('apps.layouts.services.compose_generated_poster'):
+            generate_content.func(str(request.pk))
+
+        brief = retried.call_args.args[2]
+        self.assertEqual(brief['composition_archetype'], 'diagonal_cut')
+        self.assertEqual(brief['scene_variant'], 'interior_lounge_seated')
+        self.assertEqual(brief['headline'], 'Roasted this week')
+        # And the repair is as deterministic as the job: seeded on its id.
+        self.assertEqual(brief['request_id'], str(request.pk))
+        draft.refresh_from_db()
+        trace = draft.layout_config['generation_trace']
+        self.assertEqual(trace['composition_archetype'], 'diagonal_cut')
+        self.assertEqual(trace['scene_variant'], 'interior_lounge_seated')
+        self.assertEqual(trace['capabilities']['IMAGE']['status'], 'OK')
+
 
 class StuckGenerationSweepTests(TenantFixtureMixin, TestCase):
     """A killed worker's generation is rescued once, then failed honestly.
@@ -735,6 +802,41 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         self.run_scoped(copy_payload={'postTitle': 'Sharper words'})
         kept.refresh_from_db()
         self.assertEqual(kept.layout_config.get('photo_focus'), focus_dict)
+
+    def test_image_only_edits_record_the_new_pictures_composition_and_scene(self):
+        from apps.gemini.tasks import regenerate_revision
+
+        self.with_inherited_look()
+        self.scoped_feedback(['imagery_subject'], 'Wrong product entirely.')
+
+        def rebought(workspace, brand, brief, *, instruction='', trace=None):
+            # What retry_image does for real: the picks it rode on, handed
+            # back to whoever persists the picture.
+            trace.update({
+                'composition_archetype': 'polaroid_card',
+                'scene_variant': 'street_golden_hour',
+            })
+            return {
+                'image_url': 'https://storage.test/generated/new-photo.png',
+                'file_name': 'new-photo.png',
+            }
+
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload'
+        ) as full, patch(
+            'apps.context.services.generation.generate_copy_only',
+        ) as copy_call, patch(
+            'apps.context.services.generation.retry_image', side_effect=rebought,
+        ) as image_call:
+            regenerate_revision.func(str(self.revision.pk))
+
+        full.assert_not_called()
+        copy_call.assert_not_called()
+        image_call.assert_called_once()
+        self.revision.refresh_from_db()
+        trace = self.revision.layout_config['generation_trace']
+        self.assertEqual(trace['composition_archetype'], 'polaroid_card')
+        self.assertEqual(trace['scene_variant'], 'street_golden_hour')
 
     def test_style_only_feedback_on_a_delegated_design_ships_the_raw_image(self):
         photo = self.with_inherited_look()
