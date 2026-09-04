@@ -11,12 +11,12 @@ import {
   Archive,
   ExternalLink,
   FileText,
-  Image as ImageIcon,
   Link2,
   Loader2,
   Plus,
   Quote,
   Upload,
+  X,
 } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -44,8 +44,6 @@ import {
   useSlice,
 } from "@/components/marketing/brand-master-primitives";
 import {
-  INSPIRATION_LINK_TYPES,
-  INSPIRATION_UPLOAD_TYPES,
   SIGNAL_CATEGORIES,
   analyzeInspiration,
   archiveInspiration,
@@ -64,17 +62,6 @@ import {
   type SignalSentiment,
 } from "@/lib/brand-master";
 import { cn } from "@/lib/utils";
-
-const PLATFORMS = [
-  "instagram",
-  "pinterest",
-  "linkedin",
-  "tiktok",
-  "youtube",
-  "facebook",
-  "website",
-  "other",
-];
 
 const SENTIMENT_COPY: Record<SignalSentiment, { label: string; tone: "user" | "warn" | "soft" }> = {
   LIKED: { label: "Like", tone: "user" },
@@ -211,6 +198,70 @@ export function InspirationsPanel({
 
 /* ------------------------------------------------------------- add card */
 
+const isHttp = (value: string) => /^https?:\/\//i.test(value.trim());
+
+/** Platform guessed from the pasted URL — nobody should have to say where an Instagram link came from. */
+const platformFromUrl = (url: string): string => {
+  try {
+    const host = new URL(url.trim()).hostname.toLowerCase();
+    if (host.includes("instagram")) return "instagram";
+    if (host.includes("pinterest") || host.includes("pin.it")) return "pinterest";
+    if (host.includes("linkedin")) return "linkedin";
+    if (host.includes("tiktok")) return "tiktok";
+    if (host.includes("youtube") || host.includes("youtu.be")) return "youtube";
+    if (host.includes("facebook") || host.includes("fb.watch")) return "facebook";
+    return "website";
+  } catch {
+    return "website";
+  }
+};
+
+const typeFromUrl = (url: string): string => {
+  const lower = url.toLowerCase();
+  if (lower.includes("/reel")) return "REEL";
+  if (lower.includes("pinterest") || lower.includes("pin.it")) return "PIN";
+  if (lower.includes("youtube") || lower.includes("youtu.be")) return "VIDEO";
+  return "POST";
+};
+
+/** The title comes from the note — nobody should have to invent one. */
+const titleFromNote = (note: string) => {
+  const firstLine = note.trim().split(/[\n.!?]/, 1)[0]?.trim() ?? "";
+  if (firstLine.length <= 64) return firstLine || "Inspiration";
+  const cut = firstLine.slice(0, 64);
+  return cut.slice(0, Math.max(cut.lastIndexOf(" "), 40)) + "…";
+};
+
+function InspirationThumb({ file, onRemove }: { file: File; onRemove: () => void }) {
+  const url = useMemo(() => URL.createObjectURL(file), [file]);
+  useEffect(() => () => URL.revokeObjectURL(url), [url]);
+  return (
+    <div className="relative">
+      <img
+        src={url}
+        alt={file.name}
+        className="aspect-square w-full rounded-lg border border-border object-cover"
+      />
+      <button
+        type="button"
+        aria-label={`Remove ${file.name}`}
+        onClick={onRemove}
+        className="absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full border border-border bg-background text-muted-foreground shadow-sm hover:text-foreground"
+      >
+        <X className="size-3" />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Same model as the platform library's quick add: drop images (as many as
+ * you like) or paste a link, say what you like in plain language, done.
+ * Type, platform and title are derived — from the URL and the note — and
+ * the focus chips stay behind an optional reveal, defaulting to "use the
+ * whole reference". The note is the training signal: it is stored as a
+ * USER-origin statement, which outranks anything inferred.
+ */
 function AddInspirationCard({
   brandId,
   onCancel,
@@ -220,214 +271,166 @@ function AddInspirationCard({
   onCancel: () => void;
   onAdded: () => void;
 }) {
-  const [mode, setMode] = useState<"link" | "upload">("link");
+  const [files, setFiles] = useState<File[]>([]);
   const [url, setUrl] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  const [type, setType] = useState("POST");
-  const [platform, setPlatform] = useState("instagram");
-  const [title, setTitle] = useState("");
-  const [annotation, setAnnotation] = useState("");
-  const [scope, setScope] = useState<"FULL_REFERENCE" | "SPECIFIC_ELEMENTS">("FULL_REFERENCE");
+  const [note, setNote] = useState("");
   const [focus, setFocus] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [showFocus, setShowFocus] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const fieldId = useId();
   const urlId = `${fieldId}-url`;
-  const fileId = `${fieldId}-file`;
-  const typeId = `${fieldId}-type`;
-  const platformId = `${fieldId}-platform`;
-  const titleId = `${fieldId}-title`;
-  const annotationId = `${fieldId}-annotation`;
-  const scopeLabelId = `${fieldId}-scope-label`;
+  const noteId = `${fieldId}-note`;
 
-  const switchMode = (next: "link" | "upload") => {
-    setMode(next);
-    setType(next === "link" ? "POST" : "SCREENSHOT");
-    setError(null);
+  const addFiles = (incoming: FileList | File[]) => {
+    const images = Array.from(incoming).filter((f) => f.type.startsWith("image/"));
+    if (images.length) setFiles((prev) => [...prev, ...images]);
   };
 
   const toggleFocus = (key: string) =>
     setFocus((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
 
-  const canSubmit =
-    !busy &&
-    (mode === "link" ? url.trim().length > 0 : file !== null) &&
-    (scope === "FULL_REFERENCE" || focus.length > 0);
+  const canSubmit = !busy && (files.length > 0 || isHttp(url)) && !!note.trim();
 
   const submit = async () => {
-    setBusy(true);
+    setBusy("Saving…");
     setError(null);
-    const input: InspirationInput = {
-      title: title.trim() || (mode === "link" ? url.trim() : (file?.name ?? "")),
-      inspiration_type: type,
-      annotation: annotation.trim(),
-      external_platform: platform === "other" ? "" : platform,
-      usage_scope: scope,
-      focus_areas: scope === "SPECIFIC_ELEMENTS" ? focus : [],
+    const shared: Omit<InspirationInput, "title" | "inspiration_type"> = {
+      annotation: note.trim(),
+      external_platform: "",
+      usage_scope: focus.length ? "SPECIFIC_ELEMENTS" : "FULL_REFERENCE",
+      focus_areas: focus,
     };
+    const title = titleFromNote(note);
+    const total = files.length + (isHttp(url) ? 1 : 0);
+    let added = 0;
     try {
-      if (mode === "link") {
-        await createInspiration(brandId, { ...input, reference_url: url.trim() });
-      } else if (file) {
-        await uploadInspiration(brandId, file, input);
+      for (const [i, file] of [...files].entries()) {
+        setBusy(`Saving ${added + 1} of ${total}…`);
+        await uploadInspiration(brandId, file, {
+          ...shared,
+          title: files.length > 1 ? `${title} (${i + 1})` : title,
+          inspiration_type: "SCREENSHOT",
+        });
+        added += 1;
+        // Saved ones leave the tray, so a failure partway keeps only what
+        // still needs sending.
+        setFiles((prev) => prev.filter((f) => f !== file));
       }
-      toast.success("Inspiration saved.");
+      if (isHttp(url)) {
+        setBusy(`Saving ${added + 1} of ${total}…`);
+        await createInspiration(brandId, {
+          ...shared,
+          title,
+          inspiration_type: typeFromUrl(url),
+          external_platform: platformFromUrl(url),
+          reference_url: url.trim(),
+        });
+        added += 1;
+        setUrl("");
+      }
+      toast.success(`${added} inspiration${added === 1 ? "" : "s"} saved.`);
       onAdded();
     } catch (e) {
-      setError(errorMessage(e, "Could not save the inspiration."));
+      setError(
+        `${errorMessage(e, "Could not save the inspiration.")}${added ? ` ${added} of ${total} saved; the rest are still here — try again.` : ""}`,
+      );
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
-
-  const types = mode === "link" ? INSPIRATION_LINK_TYPES : INSPIRATION_UPLOAD_TYPES;
 
   return (
     <Card>
       <CardContent className="space-y-4 pt-6">
-        <div className="flex flex-wrap gap-2" role="group" aria-label="Inspiration source">
-          <Button
-            size="sm"
-            variant={mode === "link" ? "default" : "outline"}
-            onClick={() => switchMode("link")}
-            aria-pressed={mode === "link"}
-          >
-            <Link2 className="size-3.5" /> Link or post
-          </Button>
-          <Button
-            size="sm"
-            variant={mode === "upload" ? "default" : "outline"}
-            onClick={() => switchMode("upload")}
-            aria-pressed={mode === "upload"}
-          >
-            <Upload className="size-3.5" /> Upload image
-          </Button>
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label="Add images"
+          onClick={() => fileRef.current?.click()}
+          onKeyDown={(e) => (e.key === "Enter" ? fileRef.current?.click() : null)}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            addFiles(e.dataTransfer.files);
+          }}
+          className="cursor-pointer rounded-xl border-2 border-dashed border-border bg-secondary/30 px-4 py-6 text-center transition-colors hover:border-primary/50"
+        >
+          <Upload className="mx-auto size-5 text-muted-foreground" />
+          <p className="mt-2 text-sm font-medium text-foreground">
+            Drop images here, or click to choose
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Screenshots, photos, moodboards — as many as you like
+          </p>
+          <input
+            ref={fileRef}
+            type="file"
+            multiple
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files) addFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
         </div>
-
-        {mode === "link" ? (
-          <div>
-            <Label htmlFor={urlId} className="text-xs tracking-wide uppercase">
-              Link
-            </Label>
-            <Input
-              id={urlId}
-              className="mt-1.5"
-              type="url"
-              placeholder="https://www.instagram.com/reel/…"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-            />
-          </div>
-        ) : (
-          <div>
-            <Label htmlFor={fileId} className="text-xs tracking-wide uppercase">
-              Image
-            </Label>
-            <div className="mt-1.5 flex flex-wrap items-center gap-3">
-              <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()}>
-                <ImageIcon className="size-4" /> {file ? "Choose another" : "Choose image"}
-              </Button>
-              <span className="text-sm text-muted-foreground">
-                {file ? file.name : "Screenshot, photo, moodboard…"}
-              </span>
-              <input
-                id={fileId}
-                ref={fileRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+        {files.length ? (
+          <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
+            {files.map((file, i) => (
+              <InspirationThumb
+                key={`${file.name}-${file.size}-${i}`}
+                file={file}
+                onRemove={() => setFiles((prev) => prev.filter((f) => f !== file))}
               />
-            </div>
+            ))}
           </div>
-        )}
-
-        <div className="grid gap-4 sm:grid-cols-3">
-          <div>
-            <Label htmlFor={typeId} className="text-xs tracking-wide uppercase">
-              Type
-            </Label>
-            <Select value={type} onValueChange={setType}>
-              <SelectTrigger id={typeId} className="mt-1.5 w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {types.map((t) => (
-                  <SelectItem key={t.value} value={t.value}>
-                    {t.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label htmlFor={platformId} className="text-xs tracking-wide uppercase">
-              Platform
-            </Label>
-            <Select value={platform} onValueChange={setPlatform}>
-              <SelectTrigger id={platformId} className="mt-1.5 w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PLATFORMS.map((p) => (
-                  <SelectItem key={p} value={p}>
-                    {p}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label htmlFor={titleId} className="text-xs tracking-wide uppercase">
-              Title (optional)
-            </Label>
-            <Input
-              id={titleId}
-              className="mt-1.5"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-            />
-          </div>
-        </div>
+        ) : null}
 
         <div>
-          <Label htmlFor={annotationId} className="text-xs tracking-wide uppercase">
-            What do you like about it?
+          <Label htmlFor={urlId} className="text-xs tracking-wide uppercase">
+            …or paste a link
           </Label>
-          <Textarea
-            id={annotationId}
+          <Input
+            id={urlId}
             className="mt-1.5"
-            rows={2}
-            placeholder="e.g. The restraint — one image, four words, lots of air."
-            value={annotation}
-            onChange={(e) => setAnnotation(e.target.value)}
+            type="url"
+            placeholder="https://www.instagram.com/reel/…"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
           />
         </div>
 
         <div>
-          <Label id={scopeLabelId} className="text-xs tracking-wide uppercase">
-            Use
+          <Label htmlFor={noteId} className="text-xs tracking-wide uppercase">
+            What do you like about it?
           </Label>
-          <div className="mt-1.5 flex flex-wrap gap-2" role="group" aria-labelledby={scopeLabelId}>
-            <Button
-              size="sm"
-              variant={scope === "FULL_REFERENCE" ? "default" : "outline"}
-              onClick={() => setScope("FULL_REFERENCE")}
-              aria-pressed={scope === "FULL_REFERENCE"}
-            >
-              The whole reference
-            </Button>
-            <Button
-              size="sm"
-              variant={scope === "SPECIFIC_ELEMENTS" ? "default" : "outline"}
-              onClick={() => setScope("SPECIFIC_ELEMENTS")}
-              aria-pressed={scope === "SPECIFIC_ELEMENTS"}
-            >
-              Only specific elements
-            </Button>
-          </div>
-          {scope === "SPECIFIC_ELEMENTS" ? (
+          <Textarea
+            id={noteId}
+            className="mt-1.5"
+            rows={2}
+            placeholder="e.g. The restraint — one image, four words, lots of air."
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </div>
+
+        <div>
+          <button
+            type="button"
+            onClick={() => {
+              setShowFocus((v) => !v);
+              if (showFocus) setFocus([]);
+            }}
+            aria-expanded={showFocus}
+            className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          >
+            {showFocus
+              ? "Never mind — use the whole reference"
+              : "Only like part of it? Point at the elements (optional)"}
+          </button>
+          {showFocus ? (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {SIGNAL_CATEGORIES.map((c) => (
                 <button
@@ -452,11 +455,11 @@ function AddInspirationCard({
         <InlineError message={error} />
 
         <div className="flex flex-wrap gap-2">
-          <Button disabled={!canSubmit} onClick={submit}>
+          <Button disabled={!canSubmit} onClick={() => void submit()}>
             {busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
-            {busy ? "Saving…" : "Save inspiration"}
+            {busy ?? "Save inspiration"}
           </Button>
-          <Button variant="ghost" onClick={onCancel} disabled={busy}>
+          <Button variant="ghost" onClick={onCancel} disabled={!!busy}>
             Cancel
           </Button>
         </div>
