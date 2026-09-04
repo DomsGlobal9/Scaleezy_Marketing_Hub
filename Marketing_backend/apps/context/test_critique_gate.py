@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from apps.ai.models import Capability
 from apps.ai.router import NoProviderAvailable
 from apps.billing.quota import QuotaExceeded
 from apps.brands.models import Brand
@@ -207,6 +208,245 @@ class CritiqueGateTests(TenantFixtureMixin, TestCase):
         self.assertEqual(critique['verdict'], 'skipped')
         self.assertEqual(critique['skipped_reason'], 'malformed_judge_output')
         self.assertEqual(result['payload'], PAYLOAD)
+
+
+DISPATCH = 'apps.ai.router.AIRouter.dispatch'
+PRIMARY = 'apps.ai.router.AIRouter.primary_adapter'
+
+FIRST_TEXT = {
+    'headline': PAYLOAD['postTitle'], 'caption': PAYLOAD['postDescription'],
+    'hashtags': PAYLOAD['postHashtags'], 'raw': {}, 'provider': 'OPENAI',
+    'provider_name': 'OpenAI', 'latency_ms': 10,
+}
+CLEAN_TEXT = {
+    **FIRST_TEXT, 'headline': CLEAN['postTitle'],
+    'caption': CLEAN['postDescription'], 'hashtags': CLEAN['postHashtags'],
+}
+FAKE_IMAGE = {
+    'image_url': 'https://cdn.example.com/poster.png',
+    'provider': 'STABILITY', 'provider_name': 'Stability', 'latency_ms': 20,
+}
+ONE_CALL_POSTER = 'https://cdn.example.com/one-call.png'
+
+
+def kind_of(call):
+    """What a dispatch was for: the copy, a judge verdict, the copy-only
+    rewrite (guardrail or critique), or the image."""
+    brief = call['brief']
+    if str(brief.get('task') or '').upper() == 'EXTRACT':
+        return 'JUDGE'
+    if brief.get('copy_only'):
+        return 'REWRITE'
+    return call['capability']
+
+
+def conversation_router(calls, verdicts, combined=False):
+    """A stand-in router playing the whole exchange: the first copy, the
+    judge's verdicts in order (an Exception instance is raised instead), the
+    copy-only rewrite, and the image. With `combined`, the TEXT call behaves
+    like a provider that paints the poster inside its own call: it invokes
+    the brief's `pre_image_hook` between its text and image steps and paints
+    whatever the hook returned."""
+
+    def dispatch(self_router, capability, brief, content_item_id=None, *,
+                 internal=False):
+        call = {'capability': capability, 'brief': brief, 'internal': internal}
+        calls.append(call)
+        kind = kind_of(call)
+        if kind == 'JUDGE':
+            verdict = verdicts.pop(0)
+            if isinstance(verdict, Exception):
+                raise verdict
+            return {'raw': dict(verdict)}
+        if kind == 'REWRITE':
+            return dict(CLEAN_TEXT)
+        if capability == Capability.TEXT:
+            if not combined:
+                return dict(FIRST_TEXT)
+            settled = brief['pre_image_hook'](dict(PAYLOAD))
+            call['painted'] = settled['postTitle']
+            return {
+                **FIRST_TEXT, 'provider': 'gemini',
+                'headline': settled['postTitle'],
+                'caption': settled['postDescription'],
+                'hashtags': settled['postHashtags'],
+                'raw': {**settled, 'posterImageUrl': ONE_CALL_POSTER},
+            }
+        if capability == Capability.IMAGE:
+            return dict(FAKE_IMAGE)
+        raise NoProviderAvailable(f'no {capability}')
+
+    return dispatch
+
+
+class CombinedAdapter:
+    key = 'combined'
+    yields_poster_with_text = True
+
+
+class CritiqueBeforeImageTests(TenantFixtureMixin, TestCase):
+    """The copy is settled — guardrails, judge, their one rewrite — BEFORE
+    the image is bought, so the headline the image model paints is the
+    headline that ships.
+
+    Production evidence (2026-09-04): a poster rendered the first headline
+    while the item shipped with the judge's rewrite, because the image had
+    already been bought on the first draft. Every dispatch is recorded so
+    the order, the words the image call carries, and the at-most-one-image
+    rule are all pinned."""
+
+    def setUp(self):
+        self.workspace = self.make_workspace('Rajvi', 'rajvi-order')
+        self.brand = Brand.objects.create(
+            workspace=self.workspace, name='Rajvi Packaging', is_default=True,
+            status=Brand.Status.ACTIVE,
+        )
+
+    def generate(self):
+        return generate_marketing_payload(self.workspace, {
+            'campaign_name': 'Launch', 'contentType': 'poster', 'offer': '20% off',
+            'creative_direction': {'mode': 'AI_ORIGINAL', 'selections': []},
+        })
+
+    @staticmethod
+    def image_lines(calls):
+        return [
+            c['brief']['brand_context'] for c in calls
+            if c['capability'] == Capability.IMAGE
+        ]
+
+    def test_the_rewritten_headline_is_what_the_image_is_asked_to_paint(self):
+        calls = []
+        with patch(DISPATCH, conversation_router(
+            calls, [dict(JUDGE_FAIL), dict(JUDGE_PASS)],
+        )):
+            result = self.generate()
+
+        # Judge, rewrite and re-judge all precede the one IMAGE dispatch.
+        self.assertEqual(
+            [kind_of(c) for c in calls],
+            [Capability.TEXT, 'JUDGE', 'REWRITE', 'JUDGE', Capability.IMAGE],
+        )
+        (lines,) = self.image_lines(calls)
+        self.assertTrue(any('"Precision packaging"' in line for line in lines), lines)
+        self.assertFalse(any('Delivered by Friday' in line for line in lines), lines)
+        self.assertEqual(result['payload']['postTitle'], 'Precision packaging')
+        self.assertEqual(result['payload']['posterImageUrl'], FAKE_IMAGE['image_url'])
+        critique = result['trace']['critique']
+        self.assertEqual(critique['verdict'], 'regenerated')
+        self.assertTrue(critique['retried'])
+        self.assertNotIn('copy_brief_context', result)
+        # Judged against the very lines the copy generator saw, as internal
+        # spend — the ordering moved, the semantics did not.
+        judge = calls[1]
+        self.assertTrue(judge['internal'])
+        self.assertIn('Brand: Rajvi Packaging', calls[0]['brief']['brand_context'])
+        self.assertIn(
+            'Brand: Rajvi Packaging', judge['brief']['structured']['brand_rules'],
+        )
+
+    def test_the_guardrail_retry_also_precedes_the_image(self):
+        """Guardrail check → critique → image: the written law's own rewrite
+        is settled before the poster too, and the judge grades the result."""
+        self.brand.guardrails = {'forbidden_words': ['friday']}
+        self.brand.save(update_fields=['guardrails'])
+        calls = []
+        with patch(DISPATCH, conversation_router(calls, [dict(JUDGE_PASS)])):
+            result = self.generate()
+
+        self.assertEqual(
+            [kind_of(c) for c in calls],
+            [Capability.TEXT, 'REWRITE', 'JUDGE', Capability.IMAGE],
+        )
+        # The one rewrite was the guardrail's, naming the refusal.
+        feedback = calls[1]['brief']['guardrail_feedback']
+        self.assertTrue(any('friday' in line.lower() for line in feedback), feedback)
+        (lines,) = self.image_lines(calls)
+        self.assertTrue(any('"Precision packaging"' in line for line in lines), lines)
+        self.assertEqual(result['payload']['postTitle'], 'Precision packaging')
+        self.assertTrue(result['trace']['guardrails']['caught'])
+        self.assertEqual(result['trace']['guardrails']['unresolved'], [])
+        self.assertEqual(result['trace']['critique']['verdict'], 'passed')
+
+    def test_a_judge_failure_still_buys_exactly_one_image_with_the_first_headline(self):
+        """Fail-open holds ahead of the image spend: the judge's outage costs
+        nothing and changes nothing — one image, first headline."""
+        calls = []
+        outage = QuotaExceeded(SimpleNamespace(message='TEXT allowance exhausted'))
+        with patch(DISPATCH, conversation_router(calls, [outage])):
+            result = self.generate()
+
+        self.assertEqual(
+            [kind_of(c) for c in calls],
+            [Capability.TEXT, 'JUDGE', Capability.IMAGE],
+        )
+        (lines,) = self.image_lines(calls)
+        self.assertTrue(any('"Delivered by Friday"' in line for line in lines), lines)
+        critique = result['trace']['critique']
+        self.assertEqual(critique['verdict'], 'skipped')
+        self.assertIn('QuotaExceeded', critique['skipped_reason'])
+        self.assertEqual(result['payload']['postTitle'], 'Delivered by Friday')
+        self.assertEqual(result['payload']['posterImageUrl'], FAKE_IMAGE['image_url'])
+
+    def test_a_guardrail_gate_crash_costs_neither_the_image_nor_the_judge(self):
+        """The gate now runs before the image and, on a combined provider,
+        inside its call — so it must never raise: a crash ships the copy
+        unchecked, the judge still runs, and one image is still bought."""
+        calls = []
+        with patch(DISPATCH, conversation_router(calls, [dict(JUDGE_PASS)])), \
+                patch(
+                    'apps.brands.services.guardrails.copy_violations',
+                    side_effect=RuntimeError('law unavailable'),
+                ):
+            result = self.generate()
+
+        self.assertEqual(
+            [kind_of(c) for c in calls],
+            [Capability.TEXT, 'JUDGE', Capability.IMAGE],
+        )
+        self.assertEqual(result['trace']['critique']['verdict'], 'passed')
+        self.assertNotIn('guardrails', result['trace'])
+        self.assertEqual(result['payload']['postTitle'], 'Delivered by Friday')
+
+    def test_a_combined_provider_runs_the_gate_inside_its_call(self):
+        """One provider paints the poster inside its TEXT call, so the gate
+        rides in as `pre_image_hook`: judge, rewrite and re-judge happen
+        between its text and image steps, the poster is painted with the
+        final headline, and no IMAGE dispatch is ever made."""
+        calls = []
+        with patch(DISPATCH, conversation_router(
+            calls, [dict(JUDGE_FAIL), dict(JUDGE_PASS)], combined=True,
+        )), patch(PRIMARY, lambda self_router, capability: CombinedAdapter()):
+            result = self.generate()
+
+        # The TEXT call is recorded on entry; everything else happens inside it.
+        self.assertEqual(
+            [kind_of(c) for c in calls],
+            [Capability.TEXT, 'JUDGE', 'REWRITE', 'JUDGE'],
+        )
+        self.assertEqual(calls[0]['painted'], 'Precision packaging')
+        self.assertEqual(result['payload']['postTitle'], 'Precision packaging')
+        self.assertEqual(result['payload']['posterImageUrl'], ONE_CALL_POSTER)
+        critique = result['trace']['critique']
+        self.assertEqual(critique['verdict'], 'regenerated')
+        self.assertTrue(critique['retried'])
+        self.assertTrue(
+            result['trace']['capabilities'][Capability.IMAGE]['combined_with_text']
+        )
+
+    def test_a_combined_provider_that_ignores_the_hook_is_still_judged_once(self):
+        """A provider pipeline that never invokes the hook leaves the copy
+        unsettled; the gate then runs after the fact — as it always did —
+        exactly once, never twice."""
+        calls = []
+        with patch(DISPATCH, conversation_router(calls, [dict(JUDGE_PASS)])), \
+                patch(PRIMARY, lambda self_router, capability: CombinedAdapter()):
+            result = self.generate()
+
+        self.assertEqual([kind_of(c) for c in calls], [Capability.TEXT, 'JUDGE'])
+        self.assertTrue(callable(calls[0]['brief'].get('pre_image_hook')))
+        self.assertEqual(result['trace']['critique']['verdict'], 'passed')
+        self.assertEqual(result['payload']['postTitle'], 'Delivered by Friday')
 
 
 class StandingComplaintsTests(TenantFixtureMixin, TestCase):

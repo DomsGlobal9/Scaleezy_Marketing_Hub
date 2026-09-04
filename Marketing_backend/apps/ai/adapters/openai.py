@@ -184,8 +184,11 @@ class OpenAIAdapter(AIProviderAdapter):
 
     @staticmethod
     def _brief_json(brief: Mapping[str, Any]) -> str:
+        # A brief may carry a caller hook (`pre_image_hook`, for providers
+        # that paint the poster inside their TEXT call); the prompt gets the
+        # brief's data, never an object repr.
         return json.dumps(
-            brief,
+            {key: value for key, value in brief.items() if not callable(value)},
             ensure_ascii=False,
             sort_keys=True,
             separators=(',', ':'),

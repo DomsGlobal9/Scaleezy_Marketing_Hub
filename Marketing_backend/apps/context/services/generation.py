@@ -399,6 +399,61 @@ def _with_on_image_text(brief, headline):
     }
 
 
+#: (TEXT result key, payload key) — the two shapes one copy travels in.
+COPY_KEYS = (
+    ('headline', 'postTitle'),
+    ('caption', 'postDescription'),
+    ('hashtags', 'postHashtags'),
+)
+
+
+def _copy_of(text):
+    """A TEXT result's words in the payload shape the copy gates speak."""
+    raw = text.get('raw') or {}
+    return {
+        payload_key: text.get(key) or raw.get(payload_key, '')
+        for key, payload_key in COPY_KEYS
+    }
+
+
+def _adopt_copy(text, settled):
+    """Write the gate's final words back into a TEXT result — into both
+    shapes it carries, so no `or raw.get(...)` fallback downstream can
+    resurrect the first draft (a hashtag the law stripped, say)."""
+    if not isinstance(settled, dict):
+        return
+    raw = text.get('raw')
+    for key, payload_key in COPY_KEYS:
+        if payload_key not in settled:
+            continue
+        text[key] = settled[payload_key]
+        if isinstance(raw, dict) and payload_key in raw:
+            raw[payload_key] = settled[payload_key]
+
+
+class _CopyGate:
+    """The caller's copy gate, bound to one generation.
+
+    `settle(copy, trace=…, context_lines=…)` is everything that may change
+    the words after the copy model wrote them (the guardrail check and its
+    retry, the self-critique judge and its retry). Bound here to the trace
+    it reports into and the brand-context lines the copy generator actually
+    saw, it becomes the plain `hook(copy) -> copy` a provider pipeline can
+    invoke between its text and image steps without knowing any of that.
+    `ran` says whether anyone did, so the words are never gated twice.
+    """
+
+    def __init__(self, settle, *, trace, context_lines):
+        self.settle = settle
+        self.trace = trace
+        self.context_lines = context_lines
+        self.ran = False
+
+    def __call__(self, copy):
+        self.ran = True
+        return self.settle(copy, trace=self.trace, context_lines=self.context_lines)
+
+
 def generate_with_context(workspace, brand, task_type=TaskType.COPY, *, instruction='',
                           channel='', content_format='', objective='',
                           content_item_id=None):
@@ -445,7 +500,8 @@ def generate_with_context(workspace, brand, task_type=TaskType.COPY, *, instruct
     }
 
 
-def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
+def generate_copy_and_image(workspace, brand, brief_extra, *, instruction='',
+                            settle_copy=None):
     """Copy, then imagery carrying the copy's headline, each surviving the
     other's failure.
 
@@ -453,6 +509,17 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
     None with its error recorded in the trace. The caller keeps whatever
     succeeded and retries only what failed — `retry_image()` exists for
     exactly that, so a poster retry can never regenerate the copy.
+
+    `settle_copy(copy, *, trace, context_lines) -> copy` is the caller's copy
+    gate (see `generate_marketing_payload`). The poster's headline is
+    typography the image model paints, so every gate that may change the
+    words runs on the finished copy BEFORE any image is bought: on the
+    two-call path between the TEXT and IMAGE dispatches, and where the TEXT
+    provider paints the poster inside its own call, inside that call — it
+    rides in the brief as `pre_image_hook`, a plain `hook(copy) -> copy` the
+    provider pipeline invokes between its text and image steps. The
+    generation still buys at most one image; the gate's copy-only rewrite is
+    the only retry.
 
     Task-specific contexts are cut per capability (copy does not carry the
     layout grid; the image does not carry the objection list); both come from
@@ -510,12 +577,28 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
     # resolution, never from a provider name.
     text_primary = router.primary_adapter(Capability.TEXT)
     image_primary = router.primary_adapter(Capability.IMAGE)
+    text_paints = getattr(text_primary, 'yields_poster_with_text', False)
     combined = (
         text_primary is not None
         and image_primary is not None
         and text_primary.key == image_primary.key
-        and getattr(text_primary, 'yields_poster_with_text', False)
+        and text_paints
     )
+
+    gate = None
+    if settle_copy is not None:
+        gate = _CopyGate(
+            settle_copy, trace=trace,
+            context_lines=text_brief.get('brand_context') or [],
+        )
+    if gate is not None and text_paints:
+        # This TEXT provider buys the poster inside its own call, so the only
+        # place the words can be settled before that image is inside the
+        # call: the gate rides in the brief and the provider's pipeline
+        # invokes it between its text and image steps (see
+        # GeminiGeneratorService.generate_marketing_content). A provider that
+        # does not honour it leaves `gate.ran` False.
+        text_brief = {**text_brief, 'pre_image_hook': gate}
 
     if combined:
         text = run(Capability.TEXT, text_brief, text_context)
@@ -536,6 +619,11 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
         # the other's failure: a failed TEXT leaves the IMAGE brief with no
         # headline, and the no-text line rather than invented words.
         text = run(Capability.TEXT, text_brief, text_context)
+        if text is not None and gate is not None and not gate.ran:
+            # The words, settled — guardrails, judge, their one copy-only
+            # retry — before the image brief is even built, so the headline
+            # the image model paints is the headline that ships.
+            _adopt_copy(text, gate(_copy_of(text)))
         image = run(
             Capability.IMAGE,
             _with_on_image_text(image_brief, _headline_of(text)),
@@ -878,16 +966,32 @@ def generate_marketing_payload(
        avoids violations in the first place — prevention is the cheap path.
     2. The finished copy is checked. A violation earns exactly ONE text-only
        retry with the refusal named; images and video are never re-bought.
-    3. Deterministic fixes run last: banned hashtags stripped, required lines
+    3. Deterministic fixes run next: banned hashtags stripped, required lines
        appended, a missing CTA keyword added. Silent, and recorded in the
        trace so the scorecard can count what the gate caught.
 
     Then a fourth, judgement-shaped touch: the LLM self-critique gate
     (``trace['critique']``) grades the finished copy against the rules the
     generator saw and retries the words at most once. See ``critique.py``.
+
+    ORDER: guardrail check → critique → image. Touches 2–4 are one gate
+    (``settle_copy``) that runs on the finished copy BEFORE any image is
+    bought — a poster's headline is typography the image model paints, and
+    a poster bought on the first draft whose headline the judge then
+    rewrote contradicts its own caption (seen in production). For a poster
+    the gate is handed to `generate_copy_and_image`, which runs it between
+    the TEXT and IMAGE dispatches or, where the TEXT provider paints the
+    poster inside its own call, inside that call as ``pre_image_hook``. It
+    runs after the fact only where nothing precedes an image: video and
+    carousel copy (the judge skips those formats anyway) and a route whose
+    provider did not honour the hook. Either way it runs exactly once —
+    ``trace['critique']`` is the marker — and the generation buys at most
+    one image; the copy-only rewrite stays the only retry.
     """
     from apps.brands.models import Brand
     from apps.brands.services import guardrails as guardrail_law
+
+    from .critique import critique_copy
 
     resolved = brand
     if resolved is None:
@@ -898,87 +1002,108 @@ def generate_marketing_payload(
     if lines and 'guardrail_rules' not in brief:
         brief = {**brief, 'guardrail_rules': lines}
 
+    def rewrite_copy(feedback):
+        return generate_copy_only(
+            workspace, resolved,
+            {**brief, 'guardrail_feedback': feedback},
+            instruction=instruction,
+        )
+
+    def settle_copy(payload, *, trace, context_lines):
+        """Touches 2–4 on one copy, in place where possible; returns the
+        final copy and records into `trace`. Never raises: it now precedes
+        the image spend and, inside a combined provider's call, an exception
+        would read as provider failure and fail over into a second paid
+        generation — the exact double-buy this ordering exists to prevent."""
+        try:
+            caught = guardrail_law.copy_violations(resolved, payload)
+            unresolved = caught
+            if caught:
+                # One free retry, words only. The photograph/video that
+                # already succeeded (or is about to be bought) stays won —
+                # re-buying media over a caption is the exact waste the
+                # guardrails exist to prevent.
+                try:
+                    rewritten = rewrite_copy(caught)
+                    for key in ('postTitle', 'postDescription', 'postHashtags'):
+                        if rewritten.get(key):
+                            payload[key] = rewritten[key]
+                except Exception:
+                    logger.warning(
+                        "Guardrail copy retry failed for workspace %s; keeping first copy",
+                        workspace.pk,
+                    )
+            payload, fixed = guardrail_law.enforce(resolved, payload)
+            if caught:
+                # Recomputed AFTER enforce: a hashtag the strip removed or a
+                # CTA the append supplied is resolved, and must not be
+                # reported otherwise.
+                unresolved = guardrail_law.copy_violations(resolved, payload)
+            if caught or fixed:
+                # Caught-then-fixed still counts: the scorecard's whole job
+                # is to show how often the gate had to step in.
+                trace['guardrails'] = {
+                    'caught': caught,
+                    'unresolved': unresolved,
+                    'fixed': fixed,
+                }
+        except Exception:
+            logger.exception(
+                "Guardrail gate crashed for workspace %s; copy ships unchecked",
+                workspace.pk,
+            )
+
+        # 4. LLM self-critique: the finished copy judged against the very
+        #    rules the generator was told, plus this brand's standing
+        #    reviewer complaints. Spend: +1 internal TEXT dispatch to judge
+        #    each generation (spend-metered, never a customer TEXT unit); a
+        #    failing verdict adds one copy-only regeneration (a normal
+        #    customer unit — it replaces the copy the customer receives) and
+        #    one in-memory internal re-judge — never a second image.
+        #    Best-effort by construction: every judge failure records
+        #    'skipped' and ships the paid output.
+        trace['critique'] = critique_copy(
+            workspace, resolved, payload,
+            context_lines=context_lines,
+            guardrail_lines=list(brief.get('guardrail_rules') or []),
+            content_format=str(brief.get('contentType') or ''),
+            rewrite=rewrite_copy,
+        )
+        return payload
+
     routed = _route_marketing_payload(
-        workspace, brief, instruction=instruction, progress=progress, brand=resolved
+        workspace, brief, instruction=instruction, progress=progress,
+        brand=resolved, settle_copy=settle_copy,
     )
 
     payload = routed.get('payload')
+    copy_brief_context = routed.pop('copy_brief_context', None) or []
     if resolved is None or not isinstance(payload, dict):
         return routed
 
-    caught = guardrail_law.copy_violations(resolved, payload)
-    unresolved = caught
-    if caught:
-        # One free retry, words only. The photograph/video that already
-        # succeeded stays won — re-buying media over a caption is the exact
-        # waste the guardrails exist to prevent.
-        try:
-            rewritten = generate_copy_only(
-                workspace, resolved,
-                {**brief, 'guardrail_feedback': caught},
-                instruction=instruction,
-            )
-            for key in ('postTitle', 'postDescription', 'postHashtags'):
-                if rewritten.get(key):
-                    payload[key] = rewritten[key]
-        except Exception:
-            logger.warning(
-                "Guardrail copy retry failed for workspace %s; keeping first copy",
-                workspace.pk,
-            )
-    payload, fixed = guardrail_law.enforce(resolved, payload)
-    routed['payload'] = payload
-    if caught:
-        # Recomputed AFTER enforce: a hashtag the strip removed or a CTA the
-        # append supplied is resolved, and must not be reported otherwise.
-        unresolved = guardrail_law.copy_violations(resolved, payload)
-    if caught or fixed:
-        # Caught-then-fixed still counts: the scorecard's whole job is to
-        # show how often the gate had to step in.
-        trace = routed.get('trace')
-        if isinstance(trace, dict):
-            trace['guardrails'] = {
-                'caught': caught,
-                'unresolved': unresolved,
-                'fixed': fixed,
-            }
-
-    # 4. LLM self-critique: the finished copy judged against the very rules
-    #    the generator was told, plus this brand's standing reviewer
-    #    complaints. Spend: +1 internal TEXT dispatch to judge each
-    #    generation (spend-metered, never a customer TEXT unit); a failing
-    #    verdict adds one copy-only regeneration (a normal customer unit —
-    #    it replaces the copy the customer receives) and one in-memory
-    #    internal re-judge — never a second image. Best-effort by
-    #    construction: every judge failure records 'skipped' and ships the
-    #    paid output.
-    from .critique import critique_copy
-
-    copy_brief_context = routed.pop('copy_brief_context', None) or []
     trace = routed.get('trace')
-    if isinstance(trace, dict):
-        trace['critique'] = critique_copy(
-            workspace, resolved, payload,
-            context_lines=copy_brief_context,
-            guardrail_lines=list(brief.get('guardrail_rules') or []),
-            content_format=str(brief.get('contentType') or ''),
-            rewrite=lambda feedback: generate_copy_only(
-                workspace, resolved,
-                {**brief, 'guardrail_feedback': feedback},
-                instruction=instruction,
-            ),
+    if isinstance(trace, dict) and 'critique' not in trace:
+        # Not settled before an image: video/carousel, or a poster route
+        # whose provider did not honour the hook. The same gate, after the
+        # fact — as it always ran — grading against the very brand-context
+        # lines the copy generator saw.
+        routed['payload'] = settle_copy(
+            payload, trace=trace, context_lines=copy_brief_context,
         )
     return routed
 
 
 def _route_marketing_payload(
-    workspace, brief, *, instruction='', progress=None, brand=None
+    workspace, brief, *, instruction='', progress=None, brand=None,
+    settle_copy=None,
 ):
     """Return the legacy marketing payload without choosing a vendor.
 
     This is the shared boundary used by both foreground and queued generation.
     Product code asks for TEXT and IMAGE; only AIRouter and adapters know which
-    provider supplies them.
+    provider supplies them. `settle_copy` is the poster path's pre-image copy
+    gate (see `generate_copy_and_image`); the other formats settle their copy
+    after the fact in `generate_marketing_payload`.
     """
     from apps.brands.models import Brand
 
@@ -1069,6 +1194,7 @@ def _route_marketing_payload(
 
     outcome = generate_copy_and_image(
         workspace, brand, brief, instruction=effective_instruction,
+        settle_copy=settle_copy,
     )
     text = outcome['text'] or {}
     image = outcome['image'] or {}
