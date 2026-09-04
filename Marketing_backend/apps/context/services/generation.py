@@ -49,6 +49,40 @@ CAPABILITY_FOR_TASK = {
 }
 
 
+def _template_image(direction) -> str:
+    """The chosen BRAND_TEMPLATE's pixels, as the data URL the image step
+    attaches, or '' when this generation has no usable template.
+
+    Best effort by design: the template is an enhancement to a generation
+    already paid for, so a missing row or unreachable file logs and returns
+    '' — the prompt-only template lines still apply — rather than failing
+    the dispatch.
+    """
+    if not isinstance(direction, dict):
+        return ''
+    row = next(
+        (
+            r for r in (direction.get('selections') or [])
+            if isinstance(r, dict) and r.get('kind') == 'BRAND_TEMPLATE'
+            and str(r.get('direction') or 'USE').upper() != 'AVOID'
+        ),
+        None,
+    )
+    if row is None:
+        return ''
+    from apps.inspirations.analysis import _stored_media_data
+    from apps.inspirations.models import BrandInspiration
+
+    try:
+        inspiration = BrandInspiration.objects.filter(pk=str(row.get('id') or '')).first()
+        if inspiration is None or not inspiration.file_url:
+            return ''
+        return _stored_media_data(inspiration)
+    except Exception as exc:
+        logger.warning('Template image unavailable for generation: %s', exc)
+        return ''
+
+
 class NoProviderConfigured(Exception):
     """The workspace has not routed a provider to this capability."""
 
@@ -543,6 +577,17 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction='',
     # brief_extra, so they survive.
     text_brief = {**brief_extra, **context_as_brief(text_context)}
     image_brief = {**brief_extra, **context_as_brief(image_context)}
+
+    # A BRAND_TEMPLATE selection means "make it match this poster design" —
+    # words alone cannot do that, so the template's own pixels ride in the
+    # brief: Step 1 stops inventing compositions and the image model
+    # recreates the attached design with new content. Best effort — a
+    # template whose file cannot be fetched must not fail the paid
+    # generation it decorates.
+    template_data_url = _template_image(brief_extra.get('creative_direction'))
+    if template_data_url:
+        text_brief = {**text_brief, 'template_image_base64': template_data_url}
+        image_brief = {**image_brief, 'template_image_base64': template_data_url}
 
     trace = {
         'brain_version': text_context['brain_version'],
