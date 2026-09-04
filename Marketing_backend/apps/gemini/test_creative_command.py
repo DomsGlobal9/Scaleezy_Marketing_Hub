@@ -195,7 +195,9 @@ class CreativeCommandTests(TenantFixtureMixin, TestCase):
         self.assertTrue(any('AVOID' in line for line in direction['instructions']))
 
         item = ContentItem.objects.get(pk=response.json()['data']['contentItemId'])
-        self.assertTrue(item.layout_plugin)
+        # A REFERENCE design is the provider's composition: no built-in
+        # pattern is stamped on it, so no layout plugin is recorded.
+        self.assertEqual(item.layout_plugin, '')
         self.assertEqual(item.layout_config['creative_direction']['selection_count'], 2)
         self.brand.refresh_from_db()
         self.assertEqual(self.brand.creative_brain, brain_before)

@@ -453,19 +453,22 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         self.assertEqual(self.revision.headline, 'Sharper teal drop')
         self.assertEqual(self.revision.caption, 'Rewritten after your notes.')
         self.assertNotIn('regenerating', self.revision.layout_config)
-        # The new photograph was made durable, then composed over: the card
-        # shows a poster with the copy on it, and the photo is the source.
-        self.assertEqual(self.revision.asset.source, MarketingAsset.Source.COMPOSED)
-        self.assertTrue(
-            self.revision.preview_url.startswith('https://storage.test/composed/'),
-            self.revision.preview_url,
-        )
-        source = MarketingAsset.objects.get(
-            pk=self.revision.layout_config['source_asset']
+        # The new photograph was made durable and — this parent being an
+        # AI_ORIGINAL delegation — ships raw: the provider's poster IS the
+        # draft, with no built-in template composed over it.
+        self.assertEqual(
+            self.revision.asset.source, MarketingAsset.Source.AI_GENERATED
         )
         self.assertEqual(
-            source.file_url, 'https://storage.test/generated/take-two.png'
+            self.revision.asset.file_url,
+            'https://storage.test/generated/take-two.png',
         )
+        self.assertEqual(
+            self.revision.preview_url,
+            'https://storage.test/generated/take-two.png',
+        )
+        self.assertEqual(self.revision.layout_plugin, '')
+        self.assertNotIn('source_asset', self.revision.layout_config)
 
     def test_the_regenerated_revision_is_attributable_like_a_fresh_one(self):
         from apps.brands.services.brand_brain import rebuild_brand_brain
@@ -493,8 +496,9 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
             'learning-usage report undercounts every request-edits pass',
         )
         # Stamping the trace did not clobber the rest of the config: the
-        # composer's source record is still alongside it.
-        self.assertIn('source_asset', self.revision.layout_config)
+        # inherited creative direction is still alongside it. (No composer
+        # source record exists any more — an AI_ORIGINAL revision ships raw.)
+        self.assertIn('creative_direction', self.revision.layout_config)
 
     def test_a_failed_regeneration_leaves_the_editable_copy(self):
         self.regenerate(side_effect=RuntimeError('provider down'))
@@ -681,8 +685,8 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
 
     def test_a_full_regeneration_drops_the_old_photographs_focus(self):
         """A new photograph replaces the parent's, so the old focal point is
-        popped alongside source_asset — the compose re-detects for the new
-        pixels instead of steering crops with stale coordinates."""
+        popped alongside source_asset — neither may go on describing pixels
+        that no longer exist."""
         self.revision.layout_config = {
             'regenerating': True,
             'source_asset': '00000000-0000-0000-0000-000000000001',
@@ -696,11 +700,9 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         self.revision.refresh_from_db()
         config = self.revision.layout_config
         self.assertNotIn('photo_focus', config)
-        # The new photograph became the source (set by the compose), never
-        # the planted old id.
-        self.assertNotEqual(
-            config.get('source_asset'), '00000000-0000-0000-0000-000000000001'
-        )
+        # The stale source record is gone too — and since an AI_ORIGINAL
+        # revision ships raw, no compose writes a new one.
+        self.assertNotIn('source_asset', config)
 
     def test_image_only_feedback_drops_the_focus_and_copy_only_keeps_it(self):
         focus_dict = {'x': 0.3, 'y': 0.4, 'bbox': None,
@@ -734,10 +736,7 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         kept.refresh_from_db()
         self.assertEqual(kept.layout_config.get('photo_focus'), focus_dict)
 
-    def test_style_only_feedback_re_dresses_without_any_provider_spend(self):
-        from apps.layouts import variants
-        from apps.layouts.registry import catalogue
-
+    def test_style_only_feedback_on_a_delegated_design_ships_the_raw_image(self):
         photo = self.with_inherited_look()
         self.scoped_feedback(['logo_placement', 'composition_balance'], 'Layout feels off.')
 
@@ -748,23 +747,15 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         image_call.assert_not_called()
         self.revision.refresh_from_db()
         config = self.revision.layout_config
-        # Words untouched, same photograph, but a freshly picked dress. The
-        # pick is no longer reproducible by calling generated_layout() again:
-        # the variety engine consults brand history, which now includes the
-        # restyle's own just-persisted layout — so assert the intent (a valid
-        # photo pattern was chosen) rather than the stateless equality the
-        # old rotation allowed.
+        # An AI_ORIGINAL design has no built-in dress to change any more:
+        # the restyle clears the inherited legacy plugin and the provider's
+        # raw photograph stands as the draft. Words and photograph untouched,
+        # no provider spend, and no fresh dress is recorded for a poster
+        # that will never wear one.
         self.assertEqual(self.revision.headline, 'Drape yourself in teal')
-        self.assertEqual(config.get('source_asset'), str(photo.pk))
-        photo_patterns = {
-            entry['key'] for entry in catalogue() if entry.get('uses_photo', True)
-        }
-        self.assertIn(self.revision.layout_plugin, photo_patterns)
-        self.assertEqual(
-            config.get('style_variant'),
-            variants.different_variant_for(self.revision, self.PLANTED_VARIANT),
-        )
-        self.assertNotEqual(config.get('style_variant'), self.PLANTED_VARIANT)
+        self.assertEqual(self.revision.asset_id, photo.pk)
+        self.assertEqual(self.revision.layout_plugin, '')
+        self.assertEqual(config.get('style_variant'), self.PLANTED_VARIANT)
 
     def test_style_feedback_preserves_an_explicit_catalogue_template(self):
         photo = self.with_inherited_look()
@@ -811,7 +802,7 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         self.assertEqual(self.revision.layout_plugin, 'agency_column')
         self.assertNotIn('creative_direction', self.revision.layout_config)
 
-    def test_colour_feedback_changes_photo_and_look_but_not_words(self):
+    def test_colour_feedback_changes_the_photo_but_not_the_words(self):
         self.with_inherited_look()
         self.scoped_feedback(['brand_colours'], 'Colours are off palette.')
 
@@ -827,9 +818,14 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         image_call.assert_called_once()
         self.revision.refresh_from_db()
         self.assertEqual(self.revision.headline, 'Drape yourself in teal')
-        self.assertNotEqual(
-            self.revision.layout_config.get('style_variant'), self.PLANTED_VARIANT
+        # On a delegated design the provider owns the look: the colour
+        # complaint bought a fresh photograph, and it ships raw — no
+        # built-in dress is re-picked over it.
+        self.assertEqual(
+            self.revision.asset.file_url,
+            'https://storage.test/generated/recoloured.png',
         )
+        self.assertEqual(self.revision.layout_plugin, '')
 
     def test_the_revision_inherits_the_parents_style_variant(self):
         from apps.common.testing import workspace_header

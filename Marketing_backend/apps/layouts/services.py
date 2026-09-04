@@ -8,6 +8,11 @@ gap: the same engine behind the studio's "Use this poster" runs automatically
 after a generation persists, so the draft arrives with the brand's palette,
 fonts, headline and offer already baked in.
 
+Only, though, when the user picked a template deliberately (CATALOG_TEMPLATE
+mode, or a layout a studio render already persisted). Delegated designs —
+AI_ORIGINAL and REFERENCE — ship the provider's poster untouched: the founder
+rejected the built-in patterns being auto-stamped on AI compositions.
+
 Best-effort by design: a compose failure leaves the raw generated image in
 place, because losing a paid generation to a font hiccup is worse than
 showing the photo bare.
@@ -113,10 +118,21 @@ def generated_layout(item):
     """
     The pattern an automatic compose uses when nobody named one.
 
-    Falling through to the registry default meant every generated poster in a
-    brand shared a single skeleton — reviewers saw "the same poster" over and
-    over. The pick rotates across the photo-using patterns instead, keyed on
-    the item's id: stable for the item, different across items.
+    For a delegated design — creative_direction mode AI_ORIGINAL or
+    REFERENCE — the answer is None (founder decision, 2026-09): the provider
+    composed that poster, and stamping a built-in pattern on top of it is
+    exactly what was rejected. A None layout drops every automatic caller
+    into the existing "keep the raw image" branch, so the paid generation
+    ships untouched. Built-in patterns now apply only when a template was
+    picked deliberately: CATALOG_TEMPLATE mode, or a manual studio render.
+
+    For everything else — no recorded creative direction, and the coming
+    user-uploaded-template flows that will repurpose this pipeline — the
+    rotation below still answers. Falling through to the registry default
+    meant every generated poster in a brand shared a single skeleton —
+    reviewers saw "the same poster" over and over. The pick rotates across
+    the photo-using patterns instead, keyed on the item's id: stable for the
+    item, different across items.
 
     When the workspace's variety toggle is on, the pick also weighs the
     brand's last 8 composed items and takes the pattern with the fewest —
@@ -135,6 +151,12 @@ def generated_layout(item):
     Type-only patterns (`uses_photo=False`) are excluded — they would throw
     away the photograph the generation just paid for.
     """
+    config = getattr(item, 'layout_config', None)
+    direction = config.get('creative_direction') if isinstance(config, dict) else None
+    mode = str(direction.get('mode') or '') if isinstance(direction, dict) else ''
+    if mode in {'AI_ORIGINAL', 'REFERENCE'}:
+        return None
+
     options = [
         key for key in registry.keys()
         if getattr(registry.get(key), 'uses_photo', True)
@@ -216,6 +238,12 @@ def compose_generated_poster(item, *, user=None):
     composed MarketingAsset, or None when there was nothing to compose or
     the composition failed — in which case the item is left exactly as the
     generation made it.
+
+    Composes ONLY when a template was named deliberately: an explicit
+    CATALOG_TEMPLATE choice, or a layout a studio render already persisted.
+    AI_ORIGINAL and REFERENCE generations ship the provider's raw poster —
+    the no-op is total: no dress, no style variant, no focus dispatch, no
+    layout_plugin written.
     """
     from apps.content.models import ContentItem
 
@@ -243,6 +271,18 @@ def compose_generated_poster(item, *, user=None):
         return None
 
     try:
+        if not layout and mode in {'AI_ORIGINAL', 'REFERENCE'}:
+            # The user explicitly delegated the composition decision for this
+            # one content item — which now means the provider's own
+            # composition stands: generated_layout answers None here.
+            layout = generated_layout(item)
+        if not layout:
+            # A delegated design, or an old/malformed request that made no
+            # creative-source choice. Keeping the paid raw image is honest;
+            # silently stamping a template on it is not. Resolved before the
+            # photo fetch and focus block so the no-op costs nothing.
+            return None
+
         from apps.universal.services import quality_settings_for
 
         quality = quality_settings_for(item.workspace)
@@ -272,15 +312,6 @@ def compose_generated_poster(item, *, user=None):
                 item.layout_config = config
                 item.save(update_fields=['layout_config', 'updated_at'])
 
-        if not layout and mode in {'AI_ORIGINAL', 'REFERENCE'}:
-            # The user explicitly delegated the composition decision for this
-            # one content item. No brand-level template preference participates.
-            layout = generated_layout(item)
-        if not layout:
-            # Old or malformed requests did not make a creative-source choice.
-            # Keeping the paid raw image is honest; silently choosing a
-            # template is not.
-            return None
         _label, width, height, _platform = export_engine.SIZES['instagram_portrait']
         # The copy a studio render saved on this item travels into automatic
         # composes too, so a regenerated revision carries the same words the
