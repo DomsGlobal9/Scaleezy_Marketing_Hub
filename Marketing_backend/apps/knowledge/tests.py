@@ -68,6 +68,26 @@ class KnowledgeAPITests(TestCase):
         self.source1.refresh_from_db()
         self.assertEqual(self.source1.status, BrandSource.SourceStatus.QUEUED)
 
+    @patch('apps.knowledge.tasks.process_source_task')
+    def test_process_source_enqueue_failure_is_recorded_honestly(self, task):
+        task.enqueue.side_effect = RuntimeError('queue unavailable')
+        url = f'/api/marketing/knowledge/sources/{self.source1.id}/process/'
+
+        response = self.client1.post(url, HTTP_X_WORKSPACE_ID=str(self.workspace1.id))
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertFalse(response.json()['success'])
+        self.assertEqual(response.json()['error']['code'], 'QUEUE_ENQUEUE_FAILED')
+        self.source1.refresh_from_db()
+        self.assertEqual(self.source1.status, BrandSource.SourceStatus.FAILED)
+        processing = self.source1.metadata['processing']
+        self.assertTrue(processing['failed_at'])
+        self.assertEqual(
+            processing['error'],
+            'Source processing could not enter the task queue. Try again.',
+        )
+        task.enqueue.assert_called_once_with(str(self.source1.pk))
+
     @patch('apps.knowledge.processing.AIRouter.dispatch')
     def test_processing_creates_grounded_review_candidates(self, dispatch):
         dispatch.return_value = {

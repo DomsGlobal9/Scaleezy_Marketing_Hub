@@ -24,7 +24,13 @@ import {
   type LibraryItem,
 } from "@/lib/platform";
 
-export function LibraryGallery({ brandId, onChanged }: { brandId: string; onChanged?: () => void }) {
+export function LibraryGallery({
+  brandId,
+  onChanged,
+}: {
+  brandId: string;
+  onChanged?: () => void;
+}) {
   const [items, setItems] = useState<LibraryItem[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -74,7 +80,9 @@ export function LibraryGallery({ brandId, onChanged }: { brandId: string; onChan
     setError(null);
     try {
       const result = await adoptLibraryItem(item.id, brandId);
-      const message = result.created ? "Added to your inspirations." : "Already in your inspirations.";
+      const message = result.created
+        ? "Added to your inspirations."
+        : "Already in your inspirations.";
       setAdopted((prev) => ({ ...prev, [item.id]: message }));
       toast.success(message);
       if (result.created) onChanged?.();
@@ -112,7 +120,10 @@ export function LibraryGallery({ brandId, onChanged }: { brandId: string; onChan
           {items.map((item) => {
             const done = adopted[item.id];
             return (
-              <article key={item.id} className="flex flex-col rounded-xl border border-border bg-card p-4">
+              <article
+                key={item.id}
+                className="flex flex-col rounded-xl border border-border bg-card p-4"
+              >
                 <div className="flex items-start gap-2">
                   <BookMarked className="mt-0.5 size-4 shrink-0 text-gold" strokeWidth={1.75} />
                   <h3 className="min-w-0 flex-1 font-medium text-foreground">{item.title}</h3>
@@ -162,7 +173,12 @@ export function LibraryGallery({ brandId, onChanged }: { brandId: string; onChan
 
       {!loading && items && nextOffset !== null ? (
         <div className="mt-4 flex justify-center">
-          <Button size="sm" variant="outline" disabled={loadingMore} onClick={() => void loadMore()}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={loadingMore}
+            onClick={() => void loadMore()}
+          >
             {loadingMore ? <Loader2 className="size-3.5 animate-spin" /> : null}
             {loadingMore ? "Loading more…" : "Load more references"}
           </Button>

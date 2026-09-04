@@ -312,6 +312,22 @@ export const setClientUniversal = (
   body: { standards?: boolean; inspirations?: boolean },
 ) => apiPost<unknown>(`/api/platform/clients/${workspaceId}/universal/`, body);
 
+/** The three quality-engine switches; the server answers defaults (all on)
+ *  when the client never changed anything. */
+export interface ClientQualitySettings {
+  critique_enabled: boolean;
+  focus_crop_enabled: boolean;
+  variety_enabled: boolean;
+}
+
+export const fetchClientQuality = (workspaceId: string) =>
+  apiGet<ClientQualitySettings>(`/api/platform/clients/${workspaceId}/quality/`);
+
+export const setClientQuality = (
+  workspaceId: string,
+  body: { critique?: boolean; focus_crop?: boolean; variety?: boolean },
+) => apiPost<ClientQualitySettings>(`/api/platform/clients/${workspaceId}/quality/`, body);
+
 export const setClientPlan = (workspaceId: string, plan: string) =>
   apiPost<unknown>(`/api/platform/clients/${workspaceId}/plan/`, { plan });
 
@@ -441,6 +457,20 @@ export const compileLearnedPatterns = () =>
     "/api/platform/patterns/compile/",
     {},
   );
+
+/** One queued compile as the worker's queue sees it. Polled after enqueueing. */
+export interface CompileTaskStatus {
+  task_id: string;
+  status: "READY" | "RUNNING" | "SUCCESSFUL" | "FAILED" | string;
+  enqueued_at: string;
+  finished_at: string | null;
+  attempts: number;
+  /** Short tail of the last traceback; non-empty only when status is FAILED. */
+  error: string;
+}
+
+export const fetchCompileStatus = (taskId: string) =>
+  apiGet<CompileTaskStatus>(`/api/platform/patterns/compile/${encodeURIComponent(taskId)}/`);
 
 export const publishLearnedPattern = (id: string) =>
   apiPost<unknown>(`/api/platform/patterns/${id}/publish/`, {});

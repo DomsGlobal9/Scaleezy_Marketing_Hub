@@ -66,8 +66,8 @@ class ContentItem(models.Model):
     # parent, so a join would buy nothing.
     slides = models.JSONField(default=list, blank=True)
 
-    # How it is composed. Empty until a poster has been rendered by the
-    # layout engine; the brand's layout_preference is the fallback.
+    # How this individual item is composed. Brand-wide template defaults are
+    # deliberately not consulted.
     layout_plugin = models.CharField(max_length=64, blank=True)
     layout_config = models.JSONField(default=dict, blank=True)
 

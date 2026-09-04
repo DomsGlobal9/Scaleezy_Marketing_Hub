@@ -137,7 +137,9 @@ interface Paginated<T> {
 const CUSTOM_PROVIDER_VALUE = "__custom_openai_compatible__";
 
 function asRows<T>(value: T[] | Paginated<T>): T[] {
-  return Array.isArray(value) ? value : (value.results ?? []);
+  if (Array.isArray(value)) return value;
+  if (value && Array.isArray(value.results)) return value.results;
+  throw new Error("The server returned an invalid list. Please retry.");
 }
 
 function money(value: number): string {
@@ -213,8 +215,11 @@ export function AIProvidersPanel({
   const [usageSummary, setUsageSummary] = useState<UsageSummaryRow[]>([]);
   const [usage, setUsage] = useState<UsageRow[]>([]);
   const [usageLoading, setUsageLoading] = useState(true);
-  const [usageError, setUsageError] = useState<string | null>(null);
+  const [usageSummaryError, setUsageSummaryError] = useState<string | null>(null);
+  const [usageRecentError, setUsageRecentError] = useState<string | null>(null);
+  const usageError = [usageSummaryError, usageRecentError].filter(Boolean).join(" ");
   const [routeDrafts, setRouteDrafts] = useState<Record<string, RouteDraft>>({});
+  const [inactiveRoutes, setInactiveRoutes] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -238,10 +243,12 @@ export function AIProvidersPanel({
 
   const buildDrafts = useCallback((caps: Vocab[], rows: RouteRow[]) => {
     const next: Record<string, RouteDraft> = {};
+    const inactive: Record<string, string[]> = {};
     for (const capability of caps) {
       const members = rows
         .filter((row) => row.capability === capability.value)
         .sort((a, b) => a.priority - b.priority);
+      inactive[capability.value] = members.filter((row) => !row.enabled).map((row) => row.provider);
       next[capability.value] = {
         providerIds: members.map((row) => row.provider),
         strategy: members[0]?.strategy ?? "ROUND_ROBIN",
@@ -249,27 +256,27 @@ export function AIProvidersPanel({
       };
     }
     setRouteDrafts(next);
+    setInactiveRoutes(inactive);
   }, []);
 
   const loadUsage = useCallback(async (version: number) => {
     setUsageLoading(true);
-    setUsageError(null);
+    setUsageSummaryError(null);
+    setUsageRecentError(null);
     setUsageSummary([]);
     setUsage([]);
-    try {
-      const [summary, recent] = await Promise.all([
-        api<UsageSummaryRow[]>("/api/marketing/ai/usage/summary/"),
-        api<UsageRow[] | Paginated<UsageRow>>("/api/marketing/ai/usage/"),
-      ]);
-      if (version !== loadVersion.current) return;
-      setUsageSummary(Array.isArray(summary) ? summary : []);
-      setUsage(asRows(recent));
-    } catch (error) {
-      if (version !== loadVersion.current) return;
-      setUsageError(error instanceof Error ? error.message : "Could not load provider activity.");
-    } finally {
-      if (version === loadVersion.current) setUsageLoading(false);
-    }
+    const [summary, recent] = await Promise.allSettled([
+      api<UsageSummaryRow[]>("/api/marketing/ai/usage/summary/").then(asRows<UsageSummaryRow>),
+      api<UsageRow[] | Paginated<UsageRow>>("/api/marketing/ai/usage/?page_size=25").then(
+        asRows<UsageRow>,
+      ),
+    ]);
+    if (version !== loadVersion.current) return;
+    if (summary.status === "fulfilled") setUsageSummary(summary.value);
+    else setUsageSummaryError("Usage totals are unavailable. Please retry.");
+    if (recent.status === "fulfilled") setUsage(recent.value);
+    else setUsageRecentError("Recent provider attempts are unavailable. Please retry.");
+    setUsageLoading(false);
   }, []);
 
   const load = useCallback(async () => {
@@ -679,7 +686,7 @@ export function AIProvidersPanel({
             icon={<ServerCog className="size-4" />}
           />
           <MetricCard
-            title="Healthy now"
+            title="Last check passed"
             value={`${healthyProviders.length}/${enabledProviders.length}`}
             hint="Based on the latest authenticated connection check"
             icon={<ShieldCheck className="size-4" />}
@@ -692,8 +699,12 @@ export function AIProvidersPanel({
           />
           <MetricCard
             title="Recorded calls"
-            value={String(totalCalls)}
-            hint={`${money(totalSpend)} attributed spend`}
+            value={usageLoading || usageSummaryError ? "—" : String(totalCalls)}
+            hint={
+              usageLoading
+                ? "Loading activity…"
+                : usageSummaryError || `${money(totalSpend)} attributed spend`
+            }
             icon={<Activity className="size-4" />}
           />
         </div>
@@ -1020,11 +1031,11 @@ export function AIProvidersPanel({
                           <span>{provider.display_name}</span>
                           {workspaceProvider?.last_health_ok === true ? (
                             <Badge variant="secondary" className="gap-1 text-success">
-                              <CheckCircle2 className="size-3" /> Connected
+                              <CheckCircle2 className="size-3" /> Last check passed
                             </Badge>
                           ) : workspaceProvider?.last_health_ok === false ? (
                             <Badge variant="destructive" className="gap-1">
-                              <XCircle className="size-3" /> Connection failed
+                              <XCircle className="size-3" /> Last check failed
                             </Badge>
                           ) : null}
                         </CardTitle>
@@ -1260,6 +1271,10 @@ export function AIProvidersPanel({
                 return left.display_name.localeCompare(right.display_name);
               });
             const routeBusy = busy === `route:${capability.value}`;
+            const inactiveSelected = draft.providerIds.filter((id) =>
+              inactiveRoutes[capability.value]?.includes(id),
+            );
+            const hasDisabledProvider = draft.providerIds.some((id) => !connectedFor(id)?.enabled);
 
             return (
               <Card key={capability.value}>
@@ -1297,6 +1312,15 @@ export function AIProvidersPanel({
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
+                  {inactiveSelected.length ? (
+                    <p
+                      role="status"
+                      className="rounded-lg border border-gold/30 bg-gold/8 p-3 text-sm"
+                    >
+                      {inactiveSelected.length} selected route member(s) are inactive. Enable their
+                      providers, then explicitly save this route to activate them.
+                    </p>
+                  ) : null}
                   {!capable.length ? (
                     <p className="rounded-lg border border-dashed border-border p-5 text-sm text-muted-foreground">
                       No configured model is assigned this task yet. Choose it in the Providers tab
@@ -1327,7 +1351,7 @@ export function AIProvidersPanel({
                             <span className="block truncate">{provider.display_name}</span>
                             <span className="block text-xs text-muted-foreground">
                               {selected
-                                ? `Priority ${selectedIndex + 1}${enabled ? "" : " · provider disabled"}`
+                                ? `Priority ${selectedIndex + 1}${inactiveRoutes[capability.value]?.includes(provider.id) ? " · route inactive" : ""}${enabled ? "" : " · provider disabled"}`
                                 : enabled
                                   ? "Available to add"
                                   : "Enable this provider in the Providers tab first"}
@@ -1376,11 +1400,15 @@ export function AIProvidersPanel({
                     </p>
                     <Button
                       size="sm"
-                      disabled={routeBusy || !draft.dirty}
+                      disabled={
+                        routeBusy ||
+                        hasDisabledProvider ||
+                        (!draft.dirty && !inactiveSelected.length)
+                      }
                       onClick={() => void saveRoute(capability.value)}
                     >
                       {routeBusy ? <Loader2 className="size-4 animate-spin" /> : null}
-                      Save route
+                      {inactiveSelected.length ? "Save and activate route" : "Save route"}
                     </Button>
                   </div>
                 </CardContent>
@@ -1410,26 +1438,43 @@ export function AIProvidersPanel({
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard
             title="Total calls"
-            value={usageLoading ? "—" : String(totalCalls)}
-            hint={usageLoading ? "Loading activity…" : "All recorded provider attempts"}
+            value={usageLoading || usageSummaryError ? "—" : String(totalCalls)}
+            hint={
+              usageLoading
+                ? "Loading activity…"
+                : usageSummaryError || "All recorded provider attempts"
+            }
             icon={<Activity className="size-4" />}
           />
           <MetricCard
             title="Attributed spend"
-            value={usageLoading ? "—" : money(totalSpend)}
-            hint={usageLoading ? "Loading activity…" : "Across every provider and capability"}
+            value={usageLoading || usageSummaryError ? "—" : money(totalSpend)}
+            hint={
+              usageLoading
+                ? "Loading activity…"
+                : usageSummaryError || "Across every provider and capability"
+            }
             icon={<Gauge className="size-4" />}
           />
           <MetricCard
             title="Recent failures"
-            value={usageLoading ? "—" : String(recentFailures)}
-            hint={usageLoading ? "Loading activity…" : `Across ${usage.length} recent attempts`}
+            value={usageLoading || usageRecentError ? "—" : String(recentFailures)}
+            hint={
+              usageLoading
+                ? "Loading activity…"
+                : usageRecentError || `Across ${usage.length} recent attempts`
+            }
             icon={<XCircle className="size-4" />}
           />
           <MetricCard
             title="Recent latency"
-            value={usageLoading ? "—" : `${averageLatency} ms`}
-            hint={usageLoading ? "Loading activity…" : "Average of the visible activity"}
+            value={usageLoading || usageRecentError || !usage.length ? "—" : `${averageLatency} ms`}
+            hint={
+              usageLoading
+                ? "Loading activity…"
+                : usageRecentError ||
+                  (usage.length ? "Average of the visible activity" : "No recorded attempts yet")
+            }
             icon={<Network className="size-4" />}
           />
         </div>
@@ -1443,6 +1488,10 @@ export function AIProvidersPanel({
             {usageLoading ? (
               <p className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border p-8 text-sm text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" /> Loading usage summary…
+              </p>
+            ) : usageSummaryError ? (
+              <p role="alert" className="text-sm text-destructive">
+                {usageSummaryError}
               </p>
             ) : !usageSummary.length ? (
               <p className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
@@ -1482,13 +1531,17 @@ export function AIProvidersPanel({
               <p className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border p-8 text-sm text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" /> Loading recent activity…
               </p>
+            ) : usageRecentError ? (
+              <p role="alert" className="text-sm text-destructive">
+                {usageRecentError}
+              </p>
             ) : !usage.length ? (
               <p className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
                 Activity will appear after the first AI-backed task.
               </p>
             ) : (
               <div className="space-y-2">
-                {usage.slice(0, 25).map((row) => (
+                {usage.map((row) => (
                   <div
                     key={row.id}
                     className="grid gap-2 rounded-lg border border-border p-3 lg:grid-cols-[auto_minmax(0,1fr)_auto_auto] lg:items-center"

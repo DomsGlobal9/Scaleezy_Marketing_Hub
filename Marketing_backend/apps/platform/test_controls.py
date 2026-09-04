@@ -23,7 +23,7 @@ from apps.brands.models import Brand
 from apps.common.testing import TenantFixtureMixin
 from apps.marketing.models import MarketingAsset
 from apps.publishing.models import PublishingJob
-from apps.universal.models import ClientUniversalSettings
+from apps.universal.models import ClientQualitySettings, ClientUniversalSettings
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
 User = get_user_model()
@@ -95,7 +95,7 @@ class PlatformControlsTests(TenantFixtureMixin, TestCase):
 
     def test_unknown_client_is_404(self):
         for action in ('limits', 'suspend', 'reactivate', 'archive', 'universal',
-                       'plan', 'spend-cap', 'recompile-brain'):
+                       'quality', 'plan', 'spend-cap', 'recompile-brain'):
             response = self.staff_api.post(
                 f'/api/platform/clients/{uuid.uuid4()}/{action}/', {}, format='json'
             )
@@ -233,6 +233,75 @@ class PlatformControlsTests(TenantFixtureMixin, TestCase):
         )
         row.refresh_from_db()
         self.assertTrue(row.standards_enabled)
+
+    # ───────────────────────────────────────────── quality engine
+
+    def test_quality_defaults_are_on_and_a_read_never_creates_a_row(self):
+        response = self.staff_api.get(client_url(self.workspace, 'quality'))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['data'], {
+            'critique_enabled': True,
+            'focus_crop_enabled': True,
+            'variety_enabled': True,
+        })
+        self.assertFalse(
+            ClientQualitySettings.objects.filter(workspace=self.workspace).exists()
+        )
+        response = self.staff_api.get(f'/api/platform/clients/{uuid.uuid4()}/quality/')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_quality_toggle_persists(self):
+        response = self.post('quality', {'focus_crop': False})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['data'], {
+            'critique_enabled': True,
+            'focus_crop_enabled': False,
+            'variety_enabled': True,
+        })
+        row = ClientQualitySettings.objects.get(workspace=self.workspace)
+        self.assertTrue(row.critique_enabled)
+        self.assertFalse(row.focus_crop_enabled)
+        self.assertTrue(row.variety_enabled)
+        entry = PlatformAuditLog.objects.get(action='CLIENT_QUALITY_TOGGLED')
+        self.assertEqual(entry.actor, self.staff)
+        self.assertEqual(entry.workspace, self.workspace)
+        self.assertEqual(
+            entry.detail['after'],
+            {'critique': True, 'focus_crop': False, 'variety': True},
+        )
+
+        response = self.post('quality', {'critique': 'false', 'variety': 'true'})
+        self.assertEqual(response.status_code, 200, response.content)
+        row.refresh_from_db()
+        self.assertFalse(row.critique_enabled)
+        self.assertFalse(row.focus_crop_enabled)
+        self.assertTrue(row.variety_enabled)
+
+        # Nothing to change, or garbage, is a 400 — never a silent flip.
+        self.assertEqual(self.post('quality', {}).status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            self.post('quality', {'critique': 'maybe'}).status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+        row.refresh_from_db()
+        self.assertFalse(row.critique_enabled)
+
+    def test_quality_is_gated_to_platform_admins(self):
+        self.assertEqual(
+            self.owner_api.get(client_url(self.workspace, 'quality')).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        response = self.owner_api.post(
+            client_url(self.workspace, 'quality'), {'critique': False}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        # Nothing moved, and nothing was audited.
+        self.assertFalse(
+            ClientQualitySettings.objects.filter(workspace=self.workspace).exists()
+        )
+        self.assertFalse(
+            PlatformAuditLog.objects.filter(action='CLIENT_QUALITY_TOGGLED').exists()
+        )
 
     # ───────────────────────────────────────────── plan
 

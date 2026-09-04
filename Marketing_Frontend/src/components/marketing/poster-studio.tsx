@@ -36,26 +36,68 @@ interface Catalogue {
   sizes: SizeOption[];
 }
 
+let cachedCatalogue: Catalogue | null = null;
+let catalogueRequest: Promise<Catalogue> | null = null;
+
+function loadLayoutCatalogue(): Promise<Catalogue> {
+  if (cachedCatalogue) return Promise.resolve(cachedCatalogue);
+  if (!catalogueRequest) {
+    catalogueRequest = api<Catalogue>("/api/marketing/layouts/")
+      .then((data) => {
+        cachedCatalogue = { layouts: data.layouts ?? [], sizes: data.sizes ?? [] };
+        return cachedCatalogue;
+      })
+      .finally(() => {
+        catalogueRequest = null;
+      });
+  }
+  return catalogueRequest;
+}
+
 /**
  * The layout catalogue is global and small, so it is fetched once and shared
  * rather than re-requested per card.
  */
-export function useLayoutCatalogue() {
+export function useLayoutCatalogue(enabled = true) {
   const [catalogue, setCatalogue] = useState<Catalogue>({ layouts: [], sizes: [] });
+  const [loading, setLoading] = useState(enabled && cachedCatalogue === null);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
-    void api<Catalogue>("/api/marketing/layouts/")
+    setLoading(cachedCatalogue === null);
+    setError(null);
+    void loadLayoutCatalogue()
       .then((data) => {
-        if (!cancelled) setCatalogue({ layouts: data.layouts ?? [], sizes: data.sizes ?? [] });
+        if (!cancelled) setCatalogue(data);
       })
-      .catch(() => undefined);
+      .catch((reason) => {
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : "Templates could not load.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt, enabled]);
 
-  return catalogue;
+  return {
+    ...catalogue,
+    loading,
+    error,
+    reload: () => {
+      cachedCatalogue = null;
+      setAttempt((current) => current + 1);
+    },
+  };
 }
 
 /**
@@ -207,8 +249,7 @@ export function PosterStudio({
     <div className="mt-4 rounded-xl border border-border bg-secondary/20 p-4">
       <p className="text-xs font-medium text-foreground">Compose on-brand</p>
       <p className="mt-0.5 text-[0.6875rem] text-muted-foreground">
-        Built server-side from your palette, fonts and photo — identical every time, at any
-        size.
+        Built server-side from your palette, fonts and photo — identical every time, at any size.
       </p>
 
       <div className="mt-3 flex flex-wrap gap-1.5">
@@ -299,8 +340,8 @@ export function PosterStudio({
         </div>
       </div>
       <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
-        The preview follows as you type. A blank headline or offer falls back to the
-        generated copy; a blank subheadline or call to action removes that line.
+        The preview follows as you type. A blank headline or offer falls back to the generated copy;
+        a blank subheadline or call to action removes that line.
       </p>
 
       <div className="relative mt-3 overflow-hidden rounded-lg border border-border bg-background">
@@ -352,7 +393,7 @@ export function PosterStudio({
         <Button
           size="sm"
           variant="outline"
-          disabled={busy !== null || chosen.length === 0}
+          disabled={busy !== null || chosen.length === 0 || !layout}
           onClick={() => void runExport()}
         >
           {busy === "export" ? (

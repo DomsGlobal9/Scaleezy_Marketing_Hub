@@ -124,7 +124,7 @@ export function ClientBasicsSection({ editor }: { editor: BrandEditor }) {
     <section>
       <SectionTitle
         title="Client basics"
-        description="Who this brand is and where it trades. Saved as you type."
+        description="Who this brand is and where it trades. Changes save automatically; Save changes commits them immediately."
         action={<SavingHint saving={saving} />}
       />
       <div className="mt-4 grid gap-5 sm:grid-cols-2">
@@ -136,16 +136,23 @@ export function ClientBasicsSection({ editor }: { editor: BrandEditor }) {
             onChange={(e) => update({ name: e.target.value })}
           />
         </Field>
-        <Field label="Legal business name" hint="The registered company behind the brand.">
+        <Field
+          label="Legal business name"
+          hint="The registered company behind the brand. Optional."
+        >
           <Input
+            aria-label="Legal business name"
+            maxLength={255}
             placeholder="Acme Beverages Pvt Ltd"
             value={settings.legalName}
             disabled={loading}
             onChange={(e) => update({ legalName: e.target.value })}
           />
         </Field>
-        <Field label="Contact person" hint="Who Scaleezy talks to at this client.">
+        <Field label="Contact person" hint="Who Scaleezy talks to at this client. Optional.">
           <Input
+            aria-label="Contact person"
+            maxLength={150}
             placeholder="Priya Sharma"
             value={settings.contactPerson}
             disabled={loading}

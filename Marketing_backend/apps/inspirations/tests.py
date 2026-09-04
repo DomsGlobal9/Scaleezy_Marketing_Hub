@@ -909,6 +909,31 @@ class InspirationLifecycleTests(InspirationTestBase):
             inspiration.analysis_status, BrandInspiration.AnalysisStatus.QUEUED
         )
 
+    @patch('apps.inspirations.tasks.analyze_inspiration_task')
+    def test_analyze_enqueue_failure_is_persisted_and_reported(self, task):
+        task.enqueue.side_effect = RuntimeError('broker credentials were rejected')
+        inspiration = self.make_inspiration()
+
+        response = self.client1.post(
+            f'{INSPIRATIONS_URL}{inspiration.id}/analyze/', format='json', **self.ws1()
+        )
+
+        self.assertEqual(
+            response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, response.content
+        )
+        body = response.json()
+        self.assertFalse(body['success'])
+        self.assertEqual(body['error']['code'], 'QUEUE_ENQUEUE_FAILED')
+        self.assertNotIn('credentials', str(body))
+        inspiration.refresh_from_db()
+        self.assertEqual(
+            inspiration.analysis_status, BrandInspiration.AnalysisStatus.FAILED
+        )
+        self.assertEqual(
+            inspiration.metadata['analysis']['error'], body['error']['message']
+        )
+        self.assertTrue(inspiration.metadata['analysis']['failed_at'])
+
     @patch('apps.inspirations.analysis._dispatch')
     def test_analysis_creates_reviewable_ai_signals(self, dispatch):
         dispatch.return_value = {
@@ -940,6 +965,52 @@ class InspirationLifecycleTests(InspirationTestBase):
             signal.user_confirmation, InspirationSignal.UserConfirmation.PENDING
         )
         self.assertEqual(signal.extracted_by_provider, 'test-provider')
+
+    @patch('apps.inspirations.analysis._dispatch', return_value={'provider': 'gemini', 'raw': {'signals': []}})
+    def test_empty_analysis_is_failed_not_marked_ready(self, _dispatch):
+        inspiration = self.make_inspiration()
+
+        from .analysis import analyze_inspiration
+        result = analyze_inspiration(str(inspiration.pk))
+
+        inspiration.refresh_from_db()
+        self.assertEqual(result['signals'], 0)
+        self.assertEqual(
+            inspiration.analysis_status, BrandInspiration.AnalysisStatus.FAILED
+        )
+        self.assertIn(
+            'no usable creative observations',
+            inspiration.metadata['analysis']['error'],
+        )
+
+    @patch('apps.inspirations.analysis._dispatch')
+    def test_legacy_ready_row_without_signals_can_be_reanalysed(self, dispatch):
+        dispatch.return_value = {
+            'provider': 'gemini',
+            'raw': {
+                'signals': [{
+                    'category': 'LAYOUT',
+                    'attribute': 'hierarchy',
+                    'value': 'One dominant headline above a compact body',
+                    'sentiment': 'LIKED',
+                    'weight': 0.8,
+                    'confidence': 0.9,
+                }],
+            },
+        }
+        inspiration = self.make_inspiration(
+            analysis_status=BrandInspiration.AnalysisStatus.READY
+        )
+
+        from .analysis import analyze_inspiration
+        result = analyze_inspiration(str(inspiration.pk))
+
+        inspiration.refresh_from_db()
+        self.assertEqual(result['signals'], 1)
+        self.assertEqual(
+            inspiration.analysis_status,
+            BrandInspiration.AnalysisStatus.NEEDS_REVIEW,
+        )
 
     @patch('apps.inspirations.analysis._dispatch')
     def test_fresh_processing_analysis_is_not_dispatched_twice(self, dispatch):

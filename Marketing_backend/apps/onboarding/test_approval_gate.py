@@ -249,11 +249,13 @@ class SpendGateAPITests(TenantFixtureMixin, TestCase):
 
         with patch.object(GateTestAdapter, 'run') as run:
             self.assert_blocked(self.api.post(
-                GENERATE_URL, {'campaignName': 'Launch', 'product': 'Beans'},
+                GENERATE_URL,
+                {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Launch', 'product': 'Beans'},
                 format='json', **self.headers(),
             ))
             self.assert_blocked(self.api.post(
-                GENERATE_ASYNC_URL, {'campaignName': 'Launch'},
+                GENERATE_ASYNC_URL,
+                {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Launch'},
                 format='json', **self.headers(),
             ))
             self.assert_blocked(self.api.post(
@@ -298,7 +300,8 @@ class SpendGateAPITests(TenantFixtureMixin, TestCase):
         approve_brand(self.brand, by=self.user)
         with patch('apps.ai.router.AIRouter.dispatch', fake_router):
             response = self.api.post(
-                GENERATE_URL, {'campaignName': 'Launch', 'product': 'Beans'},
+                GENERATE_URL,
+                {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Launch', 'product': 'Beans'},
                 format='json', **self.headers(),
             )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)

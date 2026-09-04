@@ -117,14 +117,19 @@ export function LibraryEntryPreview({
         >
           <FileText className="size-4 shrink-0 text-muted-foreground" strokeWidth={1.75} />
           <span className="min-w-0 flex-1 truncate">{entry.file_name || "Open file"}</span>
-          <span className="shrink-0 text-[0.625rem] text-muted-foreground uppercase">{extension}</span>
+          <span className="shrink-0 text-[0.625rem] text-muted-foreground uppercase">
+            {extension}
+          </span>
         </a>
       ) : null}
 
       {kind === "TEXT" ? (
         <div className="rounded-lg border-l-2 border-gold/70 bg-secondary/50 px-3 py-2">
           <blockquote
-            className={cn("text-sm whitespace-pre-wrap text-foreground", !expanded && "line-clamp-6")}
+            className={cn(
+              "text-sm whitespace-pre-wrap text-foreground",
+              !expanded && "line-clamp-6",
+            )}
           >
             {entry.body}
           </blockquote>

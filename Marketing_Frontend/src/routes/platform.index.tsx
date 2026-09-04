@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorNote, PlatformPageHeader } from "@/components/platform/shared";
+import { ProviderAvailabilityPanel } from "@/components/platform/provider-availability";
 import {
   errorText,
   fetchPendingSignupTotal,
@@ -188,6 +189,7 @@ function OverviewPage() {
         ) : null}
       </section>
 
+      <ProviderAvailabilityPanel />
       {unmonitored.length ? (
         <section className="mt-8">
           <h2 className="mb-1 text-sm font-semibold tracking-tight text-foreground">

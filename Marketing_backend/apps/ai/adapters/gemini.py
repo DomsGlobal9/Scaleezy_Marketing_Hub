@@ -33,8 +33,41 @@ class GeminiAdapter(AIProviderAdapter):
         Capability.EMBEDDING,
         Capability.ENGAGEMENT_RESPONSE,
     )
-    default_model = 'gemini-1.5-pro'
+    default_model = 'gemini-2.5-flash'
     unit_cost = 0.02
+
+    #: analyze_image briefs whose response_schema must be honoured via the
+    #: structured JSON path. Every other task keeps the legacy
+    #: analyze_reference_image behaviour, unchanged.
+    STRUCTURED_IMAGE_TASKS = ('INSPIRATION_ANALYSIS', 'SUBJECT_FOCUS')
+
+    @staticmethod
+    def _structured_config(brief):
+        schema = brief.get('response_schema')
+        if not isinstance(schema, dict):
+            return None
+        from google.genai import types
+
+        return types.GenerateContentConfig(
+            response_mime_type='application/json',
+            response_json_schema=schema,
+        )
+
+    @staticmethod
+    def _validate_structured_output(value, brief):
+        schema = brief.get('response_schema')
+        if not isinstance(schema, dict):
+            return
+        properties = schema.get('properties') or {}
+        for field in schema.get('required') or []:
+            if field not in value:
+                raise AIProviderError('Gemini returned incomplete structured output.')
+            definition = properties.get(field) or {}
+            if definition.get('type') == 'array':
+                rows = value.get(field)
+                minimum = int(definition.get('minItems') or 0)
+                if not isinstance(rows, list) or len(rows) < minimum:
+                    raise AIProviderError('Gemini returned incomplete structured output.')
 
     def _service(self):
         from apps.gemini.services.generator import GeminiGeneratorService
@@ -52,15 +85,33 @@ class GeminiAdapter(AIProviderAdapter):
                 )
             )
             try:
-                # Keep a strong reference for the full request. google.genai.Client
-                # closes its HTTP transport in __del__; chaining from a temporary
-                # client can destroy it after `.models` is resolved but before
-                # generate_content sends the request.
-                client = self._service()._get_client(self.credentials)
-                response = client.models.generate_content(
-                    model=self.model or self._service().TEXT_MODEL,
-                    contents=[prompt],
-                )
+                # The client is process-cached (GeminiGeneratorService) so it
+                # cannot be garbage-collected mid-flight. If its transport was
+                # still closed underneath it (seen in production as "Cannot
+                # send a request, as the client has been closed", deterministic
+                # until a worker restart), discard the cache and retry once
+                # with a fresh client before failing.
+                service = self._service()
+                kwargs = {
+                    'model': self.model or service.TEXT_MODEL,
+                    'contents': [prompt],
+                }
+                config = self._structured_config(brief)
+                if config is not None:
+                    kwargs['config'] = config
+                # The local binding stays load-bearing even with the cache:
+                # google.genai.Client closes its transport in __del__, so the
+                # client must be referenced for the whole request, never
+                # chained from a temporary.
+                client = service._get_client(self.credentials)
+                try:
+                    response = client.models.generate_content(**kwargs)
+                except Exception as exc:
+                    if 'client has been closed' not in str(exc).lower():
+                        raise
+                    service._discard_client(self.credentials)
+                    client = service._get_client(self.credentials)
+                    response = client.models.generate_content(**kwargs)
                 value = (response.text or '').strip()
                 if value.startswith('```') and value.endswith('```'):
                     value = value[3:-3].strip()
@@ -71,6 +122,7 @@ class GeminiAdapter(AIProviderAdapter):
                 raise AIProviderError(f'Gemini structured extraction failed: {exc}') from exc
             if not isinstance(parsed, dict):
                 raise AIProviderError('Gemini returned invalid structured extraction output.')
+            self._validate_structured_output(parsed, brief)
             return {'raw': parsed}
 
         # self.credentials is this workspace's own key when it saved one, and
@@ -97,7 +149,7 @@ class GeminiAdapter(AIProviderAdapter):
         b64 = brief.get('reference_image_base64') or brief.get('referenceImageBase64', '')
         if not b64:
             raise AIProviderError("No image supplied for analysis.")
-        if str(brief.get('task') or '').upper() == 'INSPIRATION_ANALYSIS':
+        if str(brief.get('task') or '').upper() in self.STRUCTURED_IMAGE_TASKS:
             mime_type, img_bytes = self._service()._parse_base64_image(b64)
             if not mime_type or not img_bytes:
                 raise AIProviderError('The inspiration image could not be decoded.')
@@ -105,13 +157,17 @@ class GeminiAdapter(AIProviderAdapter):
                 from google.genai import types
 
                 client = self._service()._get_client(self.credentials)
-                response = client.models.generate_content(
-                    model=self.model or self._service().TEXT_MODEL,
-                    contents=[
+                kwargs = {
+                    'model': self.model or self._service().TEXT_MODEL,
+                    'contents': [
                         str(brief.get('instruction') or 'Analyze this creative reference as JSON.'),
                         types.Part.from_bytes(data=img_bytes, mime_type=mime_type),
                     ],
-                )
+                }
+                config = self._structured_config(brief)
+                if config is not None:
+                    kwargs['config'] = config
+                response = client.models.generate_content(**kwargs)
                 value = (response.text or '').strip()
                 if value.startswith('```') and value.endswith('```'):
                     value = value[3:-3].strip()
@@ -122,6 +178,7 @@ class GeminiAdapter(AIProviderAdapter):
                 raise AIProviderError(f'Gemini inspiration analysis failed: {exc}') from exc
             if not isinstance(parsed, dict):
                 raise AIProviderError('Gemini returned invalid inspiration analysis output.')
+            self._validate_structured_output(parsed, brief)
             return {'analysis': parsed, 'raw': parsed}
         return {'analysis': self._service().analyze_reference_image(
             b64, api_key=self.credentials)}
@@ -206,9 +263,9 @@ class GeminiAdapter(AIProviderAdapter):
         if not key:
             return {'ok': False, 'detail': 'No Gemini API key configured.'}
 
-        # Model discovery is an authenticated, read-only request. Unlike a
-        # prompt it consumes no generation tokens, so the Admin Test control
-        # can distinguish a saved key from a key that actually authenticates.
+        # Exact-model discovery is an authenticated, read-only request. Unlike
+        # a prompt it consumes no generation tokens, and it catches a retired
+        # or mistyped model before the first real generation fails.
         try:
             base_url = str(
                 getattr(
@@ -219,10 +276,11 @@ class GeminiAdapter(AIProviderAdapter):
                 or 'https://generativelanguage.googleapis.com/v1beta'
             ).rstrip('/')
             timeout = float(getattr(settings, 'AI_PROVIDER_HEALTH_TIMEOUT', 10.0))
+            model = str(self.model or self.default_model).strip()
+            model_path = model if model.startswith('models/') else f'models/{model}'
             response = httpx.get(
-                f'{base_url}/models',
+                f'{base_url}/{model_path}',
                 headers={'x-goog-api-key': key},
-                params={'pageSize': 1},
                 timeout=timeout,
             )
         except httpx.TimeoutException:
@@ -234,10 +292,22 @@ class GeminiAdapter(AIProviderAdapter):
 
         if response.status_code in (400, 401, 403):
             return {'ok': False, 'detail': 'Gemini authentication failed.'}
+        if response.status_code == 404:
+            return {'ok': False, 'detail': f'Gemini model {model} is not available.'}
         if response.status_code == 429:
             return {'ok': False, 'detail': 'Gemini health check was rate limited.'}
         if response.status_code >= 500:
             return {'ok': False, 'detail': 'Gemini is temporarily unavailable.'}
         if response.status_code >= 300:
             return {'ok': False, 'detail': 'Gemini health check failed.'}
-        return {'ok': True, 'detail': f'Connected (model {self.model}).'}
+        try:
+            payload = response.json()
+        except (TypeError, ValueError):
+            payload = {}
+        methods = payload.get('supportedGenerationMethods') if isinstance(payload, dict) else None
+        if isinstance(methods, list) and 'generateContent' not in methods:
+            return {
+                'ok': False,
+                'detail': f'Gemini model {model} cannot generate content.',
+            }
+        return {'ok': True, 'detail': f'Connected (model {model}).'}

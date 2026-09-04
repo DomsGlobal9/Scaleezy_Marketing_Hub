@@ -92,7 +92,10 @@ function PrivacyPage() {
           ]}
         />
         <p>
-          We do not sell your data. We use content and activity within client workspaces to improve Scaleezy's shared creative intelligence. Scaleezy does not reproduce another client's brand names, customer data, product names, taglines, or literal creative content in your generated output.
+          We do not sell your data. We use content and activity within client workspaces to improve
+          Scaleezy's shared creative intelligence. Scaleezy does not reproduce another client's
+          brand names, customer data, product names, taglines, or literal creative content in your
+          generated output.
         </p>
       </LegalSection>
 
@@ -109,10 +112,9 @@ function PrivacyPage() {
               content you choose to publish, via their official APIs.
             </>,
             <>
-              <strong className="text-foreground">Configured AI providers</strong> — campaign
-              briefs and reference images are sent to the AI providers your workspace administrator
-              enables and routes (currently including Google Gemini and OpenAI) to produce copy and
-              imagery.
+              <strong className="text-foreground">Configured AI providers</strong> — campaign briefs
+              and reference images are sent to the AI providers your workspace administrator enables
+              and routes (currently including Google Gemini and OpenAI) to produce copy and imagery.
             </>,
             <>
               <strong className="text-foreground">Supabase</strong> — provides our database hosting

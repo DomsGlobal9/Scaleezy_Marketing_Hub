@@ -32,13 +32,14 @@ import {
   type NoteResult,
 } from "@/lib/platform";
 
-const KIND_COPY: Record<string, { label: string; tone: "user" | "ai" | "soft" | "warn" | "hard" }> = {
-  FACT: { label: "Fact", tone: "user" },
-  AUDIENCE: { label: "Audience", tone: "user" },
-  PREFERENCE: { label: "Preference", tone: "ai" },
-  TONE: { label: "Tone", tone: "ai" },
-  SOFT_RULE: { label: "Soft rule", tone: "warn" },
-};
+const KIND_COPY: Record<string, { label: string; tone: "user" | "ai" | "soft" | "warn" | "hard" }> =
+  {
+    FACT: { label: "Fact", tone: "user" },
+    AUDIENCE: { label: "Audience", tone: "user" },
+    PREFERENCE: { label: "Preference", tone: "ai" },
+    TONE: { label: "Tone", tone: "ai" },
+    SOFT_RULE: { label: "Soft rule", tone: "warn" },
+  };
 
 function ProposalCard({
   proposal,
@@ -51,7 +52,10 @@ function ProposalCard({
   busy: boolean;
   onAccept: () => void;
 }) {
-  const kind = KIND_COPY[proposal.kind] ?? { label: proposal.kind || "Proposal", tone: "soft" as const };
+  const kind = KIND_COPY[proposal.kind] ?? {
+    label: proposal.kind || "Proposal",
+    tone: "soft" as const,
+  };
   const claim = [proposal.category, proposal.attribute].filter(Boolean).join(" / ");
   return (
     <li className="rounded-xl border border-border bg-card p-4">
@@ -228,7 +232,13 @@ function countOf(value: unknown): number {
   return Array.isArray(value) ? value.length : 0;
 }
 
-export function EnrichFromWebsite({ brandId, onChanged }: { brandId: string; onChanged?: () => void }) {
+export function EnrichFromWebsite({
+  brandId,
+  onChanged,
+}: {
+  brandId: string;
+  onChanged?: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<EnrichReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -272,9 +282,7 @@ export function EnrichFromWebsite({ brandId, onChanged }: { brandId: string; onC
       {report ? (
         <div className="mt-3 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
           {report.skipped ? (
-            <p className="text-foreground">
-              Skipped{report.reason ? `: ${report.reason}` : "."}
-            </p>
+            <p className="text-foreground">Skipped{report.reason ? `: ${report.reason}` : "."}</p>
           ) : (
             <>
               <p className="text-foreground">
@@ -284,9 +292,12 @@ export function EnrichFromWebsite({ brandId, onChanged }: { brandId: string; onC
                   </>
                 ) : null}
                 {report.pages_fetched} page{report.pages_fetched === 1 ? "" : "s"} fetched ·{" "}
-                {report.pages_unchanged ?? 0} unchanged · {countOf(report.sources_created)} new source
+                {report.pages_unchanged ?? 0} unchanged · {countOf(report.sources_created)} new
+                source
                 {countOf(report.sources_created) === 1 ? "" : "s"}
-                {countOf(report.errors) ? ` · ${countOf(report.errors)} error${countOf(report.errors) === 1 ? "" : "s"}` : ""}
+                {countOf(report.errors)
+                  ? ` · ${countOf(report.errors)} error${countOf(report.errors) === 1 ? "" : "s"}`
+                  : ""}
               </p>
               {countOf(report.errors) ? (
                 <ul className="mt-1 space-y-0.5 text-muted-foreground">

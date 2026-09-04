@@ -1,4 +1,6 @@
 from rest_framework import serializers
+from django.tasks import TaskResultStatus
+from apps.jobs.models import TaskRun
 
 from apps.brands.models import Brand
 from apps.common.permissions import get_request_workspace
@@ -47,13 +49,29 @@ class EngagementItemSerializer(serializers.ModelSerializer):
 
 class EngagementSyncRunSerializer(serializers.ModelSerializer):
     workspace = serializers.UUIDField(source='workspace_id', read_only=True)
+    execution = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_execution(obj):
+        tasks = TaskRun.objects.filter(task_path='apps.engagement.tasks.sync_engagement_task', args__0=str(obj.pk))
+        active = tasks.filter(status__in=[TaskResultStatus.READY, TaskResultStatus.RUNNING]).first()
+        if active:
+            state = 'RUNNING' if active.status == TaskResultStatus.RUNNING else ('RETRY_PENDING' if active.attempts else 'QUEUED')
+            return {'state': state, 'terminal': False, 'retry_allowed': False}
+        latest = tasks.first()
+        state = obj.status
+        if latest and latest.status == TaskResultStatus.FAILED:
+            state = 'FAILED'
+        elif state not in ('COMPLETED', 'FAILED'):
+            state = 'UNKNOWN'
+        return {'state': state, 'terminal': state in ('COMPLETED', 'FAILED'), 'retry_allowed': state == 'FAILED'}
 
     class Meta:
         model = EngagementSyncRun
         fields = [
             'id', 'workspace', 'brand', 'social_connection', 'status', 'task_id',
             'cursor', 'imported_count', 'seen_count', 'error', 'started_at',
-            'completed_at', 'created_at',
+            'completed_at', 'created_at', 'execution',
         ]
         read_only_fields = [
             'id', 'workspace', 'status', 'task_id', 'cursor', 'imported_count',

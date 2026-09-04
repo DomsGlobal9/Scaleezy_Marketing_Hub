@@ -5,6 +5,7 @@ Same shape as `apps.knowledge` and `apps.inspirations`: workspace-scoped
 queryset, role-gated writes, lifecycle through named actions, and nothing that
 carries provenance can be edited or deleted.
 """
+from django.db.models import Prefetch
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
@@ -21,7 +22,7 @@ from apps.common.permissions import (
 from apps.common.responses import APIResponse
 from apps.workspaces.models import WorkspaceMember
 
-from .models import BrandPreference, BrandRule, LearningEvent
+from .models import BrandPreference, BrandRule, LearningEvent, PreferenceEvidence
 from .serializers import (
     BrandPreferenceSerializer,
     BrandRuleSerializer,
@@ -59,12 +60,11 @@ class LearningBaseViewSet(viewsets.GenericViewSet):
 
 class LearningEventViewSet(
     WorkspaceScopedMixin,
-    mixins.CreateModelMixin,
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
     LearningBaseViewSet,
 ):
-    """Evidence. Append-only.
+    """Evidence. Read-only here; trusted domain actions append through services.
 
     No update and no delete, deliberately: a rule cites the events it was
     learned from, and evidence that can be rewritten afterwards cannot support
@@ -86,12 +86,6 @@ class LearningEventViewSet(
             queryset = queryset.eligible_for_aggregate()
         return queryset
 
-    def perform_create(self, serializer):
-        serializer.save(
-            workspace=self._authorised_workspace(), created_by=self.request.user
-        )
-
-
 class BrandPreferenceViewSet(
     WorkspaceScopedMixin,
     mixins.ListModelMixin,
@@ -106,7 +100,10 @@ class BrandPreferenceViewSet(
     a human decides they no longer apply.
     """
 
-    queryset = BrandPreference.objects.all()
+    queryset = BrandPreference.objects.prefetch_related(Prefetch(
+        'evidence', queryset=PreferenceEvidence.objects.order_by('created_at', 'pk'),
+        to_attr='ordered_evidence',
+    ))
     serializer_class = BrandPreferenceSerializer
 
     def get_queryset(self):

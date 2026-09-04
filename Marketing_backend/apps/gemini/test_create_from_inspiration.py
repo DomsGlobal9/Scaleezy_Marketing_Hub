@@ -4,7 +4,9 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.db import connection, transaction
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 
@@ -13,6 +15,7 @@ from apps.common.testing import TenantFixtureMixin, workspace_header
 from apps.content.models import ContentItem
 from apps.gemini.models import GeminiGenerationRequest, GeminiGenerationResult
 from apps.inspirations.models import BrandInspiration, InspirationSignal
+from apps.knowledge.models import BrandSource
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
 
@@ -72,6 +75,7 @@ class CreateFromInspirationTests(TenantFixtureMixin, TestCase):
 
     def payload(self, reference, **overrides):
         values = {
+            'creativeMode': 'REFERENCE',
             'campaignName': 'New season',
             'contentType': 'poster',
             'instruction': 'Create a similar poster using our brand identity.',
@@ -247,6 +251,41 @@ class CreateFromInspirationTests(TenantFixtureMixin, TestCase):
         generated.assert_not_called()
         generation.refresh_from_db()
         self.assertEqual(generation.status, GeminiGenerationRequest.Status.FAILED)
+
+    def test_legacy_ready_reference_without_observations_is_reanalysed(self):
+        reference = self.reference(
+            analysis_status=BrandInspiration.AnalysisStatus.READY
+        )
+        response = self.queue(reference)
+        generation = GeminiGenerationRequest.objects.get(
+            pk=response.json()['data']['generationId']
+        )
+
+        def analyze(reference_id):
+            InspirationSignal.objects.create(
+                inspiration=reference,
+                category='LAYOUT',
+                attribute='hierarchy',
+                value='One dominant headline above a compact body',
+                sentiment=InspirationSignal.Sentiment.LIKED,
+                origin=InspirationSignal.Origin.AI,
+                user_confirmation=InspirationSignal.UserConfirmation.PENDING,
+            )
+            return {'inspiration': reference_id, 'signals': 1}
+
+        from apps.gemini.tasks import generate_content
+
+        with patch(
+            'apps.inspirations.analysis.analyze_inspiration', side_effect=analyze
+        ) as analyzed, patch(
+            'apps.context.services.generation.generate_marketing_payload',
+            return_value=self.routed_payload(),
+        ):
+            generate_content.call(str(generation.pk))
+
+        analyzed.assert_called_once_with(str(reference.pk))
+        generation.refresh_from_db()
+        self.assertEqual(generation.status, GeminiGenerationRequest.Status.COMPLETED)
 
     def test_stale_processing_inspiration_is_recovered_on_worker_rescue(self):
         reference = self.reference(
@@ -514,7 +553,7 @@ class CreateFromInspirationTests(TenantFixtureMixin, TestCase):
             )
         self.assertFalse(GeminiGenerationRequest.objects.exists())
 
-    def test_image_failure_cannot_persist_copy_only_similarity_claim(self):
+    def test_image_failure_preserves_copy_without_claiming_a_ready_poster(self):
         reference = self.reference(
             analysis_status=BrandInspiration.AnalysisStatus.READY
         )
@@ -545,11 +584,17 @@ class CreateFromInspirationTests(TenantFixtureMixin, TestCase):
         with patch(
             'apps.context.services.generation.generate_marketing_payload',
             return_value=failed_image,
-        ), self.assertRaisesRegex(RuntimeError, 'did not produce an image'):
+        ):
             generate_content.call(str(generation.pk))
         generation.refresh_from_db()
-        self.assertEqual(generation.status, GeminiGenerationRequest.Status.FAILED)
-        self.assertFalse(ContentItem.objects.exists())
+        self.assertEqual(generation.status, GeminiGenerationRequest.Status.COMPLETED)
+        item = ContentItem.objects.get()
+        self.assertEqual(item.status, ContentItem.Status.DRAFT)
+        self.assertIsNone(item.asset_id)
+        self.assertEqual(item.preview_url, '')
+        self.assertEqual(generation.result.metadata['media']['status'], 'FAILED')
+        self.assertEqual(generation.result.metadata['media']['error'], 'image provider unavailable')
+        self.assertIsNone(generation.result.metadata['assetId'])
 
     def test_compose_failure_keeps_one_completed_draft(self):
         reference = self.reference(
@@ -655,6 +700,54 @@ class CreateFromInspirationTests(TenantFixtureMixin, TestCase):
         generation.refresh_from_db()
         self.assertEqual(generation.status, GeminiGenerationRequest.Status.FAILED)
         self.assertFalse(ContentItem.objects.exists())
+
+    def test_final_reference_lock_has_no_nullable_outer_join(self):
+        source = BrandSource.objects.create(
+            workspace=self.workspace,
+            brand=self.brand,
+            title='Reference provenance',
+            status=BrandSource.SourceStatus.READY,
+        )
+        reference = self.reference(source=source)
+
+        from apps.gemini.tasks import _lock_generation_references
+
+        with CaptureQueriesContext(connection) as captured, transaction.atomic():
+            locked = _lock_generation_references(
+                reference_ids=[str(reference.pk)],
+                workspace=self.workspace,
+                brand=self.brand,
+            )
+
+        self.assertEqual([row.pk for row in locked], [reference.pk])
+        inspiration_selects = [
+            query['sql']
+            for query in captured.captured_queries
+            if 'SELECT' in query['sql'].upper()
+            and 'inspirations_brandinspiration' in query['sql']
+        ]
+        self.assertEqual(len(inspiration_selects), 1)
+        self.assertNotIn(' JOIN ', inspiration_selects[0].upper())
+
+    def test_final_reference_lock_rejects_archived_source(self):
+        source = BrandSource.objects.create(
+            workspace=self.workspace,
+            brand=self.brand,
+            title='Revoked provenance',
+            status=BrandSource.SourceStatus.ARCHIVED,
+        )
+        reference = self.reference(source=source)
+
+        from apps.gemini.tasks import _lock_generation_references
+
+        with transaction.atomic():
+            locked = _lock_generation_references(
+                reference_ids=[str(reference.pk)],
+                workspace=self.workspace,
+                brand=self.brand,
+            )
+
+        self.assertEqual(locked, [])
 
     def test_default_brand_switch_cannot_reassign_inspiration_output(self):
         reference = self.reference(

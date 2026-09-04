@@ -10,12 +10,14 @@ from .views_controls import (
     ClientLifecycleView,
     ClientLimitsView,
     ClientPlanView,
+    ClientQualityView,
     ClientRecompileBrainView,
     ClientSpendCapView,
     ClientUniversalView,
     PlatformAdminRevokeView,
     PlatformAdminsView,
     ProviderAvailabilityView,
+    PlatformProviderListView,
 )
 
 urlpatterns = [
@@ -41,6 +43,10 @@ urlpatterns = [
         ClientUniversalView.as_view(), name='client_universal',
     ),
     path(
+        'clients/<uuid:workspace_id>/quality/',
+        ClientQualityView.as_view(), name='client_quality',
+    ),
+    path(
         'clients/<uuid:workspace_id>/plan/',
         ClientPlanView.as_view(), name='client_plan',
     ),
@@ -53,6 +59,7 @@ urlpatterns = [
         ClientRecompileBrainView.as_view(), name='client_recompile_brain',
     ),
     # ── P4 platform-wide kill switch
+    path('providers/', PlatformProviderListView.as_view(), name='provider_list'),
     path(
         'providers/<uuid:provider_id>/availability/',
         ProviderAvailabilityView.as_view(), name='provider_availability',

@@ -215,8 +215,7 @@ function SignupPage() {
             </div>
             <div>
               <Label htmlFor="brand_name" className="text-xs tracking-wide uppercase">
-                Brand name{" "}
-                <span className="normal-case text-muted-foreground">(if different)</span>
+                Brand name <span className="normal-case text-muted-foreground">(if different)</span>
               </Label>
               <Input
                 id="brand_name"

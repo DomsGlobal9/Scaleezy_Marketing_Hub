@@ -83,36 +83,57 @@ function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [identityError, setIdentityError] = useState<string | null>(null);
+  const [workspaceAttempt, setWorkspaceAttempt] = useState(0);
+  const [identityAttempt, setIdentityAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    apiFetch("/api/marketing/settings/")
-      .then((res) => res.json())
+    setLoading(true);
+    setWorkspaceError(null);
+    api<{ workspace: WorkspaceDto }>("/api/marketing/settings/")
       .then((data) => {
         if (cancelled) return;
-        if (data.workspace) {
-          setWorkspace(data.workspace);
-          setName(data.workspace.workspace_name ?? "");
+        if (!data.workspace?.id || typeof data.workspace.workspace_name !== "string") {
+          throw new Error("The server returned invalid workspace settings.");
         }
+        setWorkspace(data.workspace);
+        setName(data.workspace.workspace_name);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Could not load settings.");
+        if (!cancelled)
+          setWorkspaceError(e instanceof Error ? e.message : "Could not load settings.");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceAttempt]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMeLoaded(false);
+    setIdentityError(null);
     api<Me>("/api/auth/me/")
       .then((data) => {
+        if (!Array.isArray(data.memberships))
+          throw new Error("The server returned invalid access details.");
         if (!cancelled) setMe(data);
       })
-      .catch(() => undefined)
+      .catch((e: unknown) => {
+        if (!cancelled)
+          setIdentityError(e instanceof Error ? e.message : "Could not load your access.");
+      })
       .finally(() => {
         if (!cancelled) setMeLoaded(true);
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [identityAttempt]);
 
   const myRole = me?.memberships.find(
     (m) => (m.workspace_id ?? m.workspace) === workspace?.id,
@@ -157,15 +178,34 @@ function SettingsPage() {
 
       <div className="grid gap-6 xl:grid-cols-2">
         <Panel label="General" title="Workspace">
-          {loading || !meLoaded ? (
+          {workspaceError ? (
+            <div className="space-y-3">
+              <p role="alert" className="text-sm text-destructive">
+                {workspaceError}
+              </p>
+              <Button variant="outline" onClick={() => setWorkspaceAttempt((n) => n + 1)}>
+                Retry workspace
+              </Button>
+            </div>
+          ) : identityError ? (
+            <p role="alert" className="text-sm text-destructive">
+              Your access could not be verified. Retry in Your access before editing.
+            </p>
+          ) : loading || !meLoaded ? (
             <p className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" /> Loading…
             </p>
           ) : canEditWorkspace ? (
             <div className="grid gap-4">
               <div>
-                <Label className="text-xs tracking-wide uppercase">Workspace name</Label>
+                <Label
+                  htmlFor="settings-workspace-name"
+                  className="text-xs tracking-wide uppercase"
+                >
+                  Workspace name
+                </Label>
                 <Input
+                  id="settings-workspace-name"
                   className="mt-1.5"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -174,7 +214,11 @@ function SettingsPage() {
                   Shown across the hub and used as the default brand name.
                 </p>
               </div>
-              {error ? <p className="text-sm text-destructive">{error}</p> : null}
+              {error ? (
+                <p role="alert" className="text-sm text-destructive">
+                  {error}
+                </p>
+              ) : null}
               <div>
                 <Button onClick={save} disabled={!dirty || saving || !name.trim()}>
                   {saving ? <Loader2 className="size-4 animate-spin" /> : null} Save changes
@@ -184,9 +228,7 @@ function SettingsPage() {
           ) : (
             <div>
               <Label className="text-xs tracking-wide uppercase">Workspace name</Label>
-              <p className="mt-1.5 text-sm text-foreground">
-                {workspace?.workspace_name ?? "—"}
-              </p>
+              <p className="mt-1.5 text-sm text-foreground">{workspace?.workspace_name ?? "—"}</p>
               <p className="mt-1.5 text-xs text-muted-foreground">
                 Only a workspace admin can rename the workspace.
               </p>
@@ -195,7 +237,16 @@ function SettingsPage() {
         </Panel>
 
         <Panel label="Access" title="Your access">
-          {me ? (
+          {identityError ? (
+            <div className="space-y-3">
+              <p role="alert" className="text-sm text-destructive">
+                {identityError}
+              </p>
+              <Button variant="outline" onClick={() => setIdentityAttempt((n) => n + 1)}>
+                Retry access
+              </Button>
+            </div>
+          ) : meLoaded && me ? (
             <div className="space-y-3 text-sm">
               <p className="text-foreground">
                 Signed in as <span className="font-medium">{me.username}</span>
@@ -227,7 +278,6 @@ function SettingsPage() {
         <Panel label="Plan" title="Usage this period">
           <UsagePanel />
         </Panel>
-
       </div>
 
       <div className="mt-6">
@@ -236,8 +286,8 @@ function SettingsPage() {
             <ShieldCheck className="mt-0.5 size-4 shrink-0 text-gold" />
             <p>
               OAuth tokens are encrypted at rest on the server, never exposed to the browser and
-              masked in logs. Manage connected accounts — and the full publishing audit log —
-              under Social Media Accounts.
+              masked in logs. Manage connected accounts — and the full publishing audit log — under
+              Social Media Accounts.
             </p>
           </div>
         </Panel>

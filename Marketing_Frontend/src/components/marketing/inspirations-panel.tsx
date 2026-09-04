@@ -18,7 +18,7 @@ import {
   Quote,
   Upload,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -93,7 +93,12 @@ export function InspirationsPanel({
   const [adding, setAdding] = useState(false);
 
   useEffect(() => {
-    if (!(inspirations.data ?? []).some((item) => ["QUEUED", "PROCESSING"].includes(item.analysis_status))) return;
+    if (
+      !(inspirations.data ?? []).some((item) =>
+        ["QUEUED", "PROCESSING"].includes(item.analysis_status),
+      )
+    )
+      return;
     const timer = window.setInterval(() => {
       inspirations.reload();
       signals.reload();
@@ -120,6 +125,8 @@ export function InspirationsPanel({
   if (inspirations.loading && !inspirations.data) return <Loading />;
   if (inspirations.error)
     return <Failed message={inspirations.error} onRetry={inspirations.reload} />;
+  if (signals.loading && !signals.data) return <Loading />;
+  if (signals.error) return <Failed message={signals.error} onRetry={signals.reload} />;
 
   const rows = inspirations.data ?? [];
   const active = rows.filter((i) => i.lifecycle_status !== "ARCHIVED");
@@ -222,6 +229,14 @@ function AddInspirationCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const fieldId = useId();
+  const urlId = `${fieldId}-url`;
+  const fileId = `${fieldId}-file`;
+  const typeId = `${fieldId}-type`;
+  const platformId = `${fieldId}-platform`;
+  const titleId = `${fieldId}-title`;
+  const annotationId = `${fieldId}-annotation`;
+  const scopeLabelId = `${fieldId}-scope-label`;
 
   const switchMode = (next: "link" | "upload") => {
     setMode(next);
@@ -268,11 +283,12 @@ function AddInspirationCard({
   return (
     <Card>
       <CardContent className="space-y-4 pt-6">
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Inspiration source">
           <Button
             size="sm"
             variant={mode === "link" ? "default" : "outline"}
             onClick={() => switchMode("link")}
+            aria-pressed={mode === "link"}
           >
             <Link2 className="size-3.5" /> Link or post
           </Button>
@@ -280,6 +296,7 @@ function AddInspirationCard({
             size="sm"
             variant={mode === "upload" ? "default" : "outline"}
             onClick={() => switchMode("upload")}
+            aria-pressed={mode === "upload"}
           >
             <Upload className="size-3.5" /> Upload image
           </Button>
@@ -287,8 +304,11 @@ function AddInspirationCard({
 
         {mode === "link" ? (
           <div>
-            <Label className="text-xs tracking-wide uppercase">Link</Label>
+            <Label htmlFor={urlId} className="text-xs tracking-wide uppercase">
+              Link
+            </Label>
             <Input
+              id={urlId}
               className="mt-1.5"
               type="url"
               placeholder="https://www.instagram.com/reel/…"
@@ -298,7 +318,9 @@ function AddInspirationCard({
           </div>
         ) : (
           <div>
-            <Label className="text-xs tracking-wide uppercase">Image</Label>
+            <Label htmlFor={fileId} className="text-xs tracking-wide uppercase">
+              Image
+            </Label>
             <div className="mt-1.5 flex flex-wrap items-center gap-3">
               <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()}>
                 <ImageIcon className="size-4" /> {file ? "Choose another" : "Choose image"}
@@ -307,6 +329,7 @@ function AddInspirationCard({
                 {file ? file.name : "Screenshot, photo, moodboard…"}
               </span>
               <input
+                id={fileId}
                 ref={fileRef}
                 type="file"
                 accept="image/*"
@@ -319,9 +342,11 @@ function AddInspirationCard({
 
         <div className="grid gap-4 sm:grid-cols-3">
           <div>
-            <Label className="text-xs tracking-wide uppercase">Type</Label>
+            <Label htmlFor={typeId} className="text-xs tracking-wide uppercase">
+              Type
+            </Label>
             <Select value={type} onValueChange={setType}>
-              <SelectTrigger className="mt-1.5 w-full">
+              <SelectTrigger id={typeId} className="mt-1.5 w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -334,9 +359,11 @@ function AddInspirationCard({
             </Select>
           </div>
           <div>
-            <Label className="text-xs tracking-wide uppercase">Platform</Label>
+            <Label htmlFor={platformId} className="text-xs tracking-wide uppercase">
+              Platform
+            </Label>
             <Select value={platform} onValueChange={setPlatform}>
-              <SelectTrigger className="mt-1.5 w-full">
+              <SelectTrigger id={platformId} className="mt-1.5 w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -349,14 +376,24 @@ function AddInspirationCard({
             </Select>
           </div>
           <div>
-            <Label className="text-xs tracking-wide uppercase">Title (optional)</Label>
-            <Input className="mt-1.5" value={title} onChange={(e) => setTitle(e.target.value)} />
+            <Label htmlFor={titleId} className="text-xs tracking-wide uppercase">
+              Title (optional)
+            </Label>
+            <Input
+              id={titleId}
+              className="mt-1.5"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+            />
           </div>
         </div>
 
         <div>
-          <Label className="text-xs tracking-wide uppercase">What do you like about it?</Label>
+          <Label htmlFor={annotationId} className="text-xs tracking-wide uppercase">
+            What do you like about it?
+          </Label>
           <Textarea
+            id={annotationId}
             className="mt-1.5"
             rows={2}
             placeholder="e.g. The restraint — one image, four words, lots of air."
@@ -366,12 +403,15 @@ function AddInspirationCard({
         </div>
 
         <div>
-          <Label className="text-xs tracking-wide uppercase">Use</Label>
-          <div className="mt-1.5 flex flex-wrap gap-2">
+          <Label id={scopeLabelId} className="text-xs tracking-wide uppercase">
+            Use
+          </Label>
+          <div className="mt-1.5 flex flex-wrap gap-2" role="group" aria-labelledby={scopeLabelId}>
             <Button
               size="sm"
               variant={scope === "FULL_REFERENCE" ? "default" : "outline"}
               onClick={() => setScope("FULL_REFERENCE")}
+              aria-pressed={scope === "FULL_REFERENCE"}
             >
               The whole reference
             </Button>
@@ -379,6 +419,7 @@ function AddInspirationCard({
               size="sm"
               variant={scope === "SPECIFIC_ELEMENTS" ? "default" : "outline"}
               onClick={() => setScope("SPECIFIC_ELEMENTS")}
+              aria-pressed={scope === "SPECIFIC_ELEMENTS"}
             >
               Only specific elements
             </Button>
@@ -390,6 +431,7 @@ function AddInspirationCard({
                   key={c.value}
                   type="button"
                   onClick={() => toggleFocus(c.value)}
+                  aria-pressed={focus.includes(c.value)}
                   className={cn(
                     "rounded-full border px-2.5 py-1 text-xs transition-colors",
                     focus.includes(c.value)
@@ -492,7 +534,9 @@ function InspirationCard({
               playsInline
               className="size-24 shrink-0 rounded-lg border bg-black object-contain"
             />
-          ) : inspiration.file_url && inspiration.mime_type && !inspiration.mime_type.startsWith("image/") ? (
+          ) : inspiration.file_url &&
+            inspiration.mime_type &&
+            !inspiration.mime_type.startsWith("image/") ? (
             <a
               href={inspiration.file_url}
               target="_blank"
@@ -571,7 +615,9 @@ function InspirationCard({
                     ["QUEUED", "PROCESSING"].includes(inspiration.analysis_status) ? (
                       <Loader2 className="size-3.5 animate-spin" />
                     ) : null}
-                    {inspiration.analysis_status === "FAILED" ? "Retry analysis" : "Analyze with AI"}
+                    {inspiration.analysis_status === "FAILED"
+                      ? "Retry analysis"
+                      : "Analyze with AI"}
                   </Button>
                   <Button size="sm" variant="ghost" onClick={() => setConfirmArchive(true)}>
                     <Archive className="size-3.5" /> Archive
@@ -711,6 +757,11 @@ function AddSignalForm({ inspirationId, onAdded }: { inspirationId: string; onAd
   const [sentiment, setSentiment] = useState<SignalSentiment>("LIKED");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fieldId = useId();
+  const categoryId = `${fieldId}-category`;
+  const attributeId = `${fieldId}-attribute`;
+  const valueId = `${fieldId}-value`;
+  const sentimentId = `${fieldId}-sentiment`;
 
   const submit = async () => {
     setBusy(true);
@@ -747,9 +798,11 @@ function AddSignalForm({ inspirationId, onAdded }: { inspirationId: string; onAd
     <div className="space-y-3 rounded-lg border border-dashed p-3">
       <div className="grid gap-3 sm:grid-cols-4">
         <div>
-          <Label className="text-xs tracking-wide uppercase">About</Label>
+          <Label htmlFor={categoryId} className="text-xs tracking-wide uppercase">
+            About
+          </Label>
           <Select value={category} onValueChange={setCategory}>
-            <SelectTrigger className="mt-1.5 w-full">
+            <SelectTrigger id={categoryId} className="mt-1.5 w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -762,8 +815,11 @@ function AddSignalForm({ inspirationId, onAdded }: { inspirationId: string; onAd
           </Select>
         </div>
         <div>
-          <Label className="text-xs tracking-wide uppercase">Which part (optional)</Label>
+          <Label htmlFor={attributeId} className="text-xs tracking-wide uppercase">
+            Which part (optional)
+          </Label>
           <Input
+            id={attributeId}
             className="mt-1.5"
             placeholder="headline length"
             value={attribute}
@@ -771,8 +827,11 @@ function AddSignalForm({ inspirationId, onAdded }: { inspirationId: string; onAd
           />
         </div>
         <div>
-          <Label className="text-xs tracking-wide uppercase">What it is</Label>
+          <Label htmlFor={valueId} className="text-xs tracking-wide uppercase">
+            What it is
+          </Label>
           <Input
+            id={valueId}
             className="mt-1.5"
             placeholder="short, four words"
             value={value}
@@ -780,9 +839,11 @@ function AddSignalForm({ inspirationId, onAdded }: { inspirationId: string; onAd
           />
         </div>
         <div>
-          <Label className="text-xs tracking-wide uppercase">Verdict</Label>
+          <Label htmlFor={sentimentId} className="text-xs tracking-wide uppercase">
+            Verdict
+          </Label>
           <Select value={sentiment} onValueChange={(v) => setSentiment(v as SignalSentiment)}>
-            <SelectTrigger className="mt-1.5 w-full">
+            <SelectTrigger id={sentimentId} className="mt-1.5 w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

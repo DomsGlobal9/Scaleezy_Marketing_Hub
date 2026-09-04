@@ -50,17 +50,20 @@ import {
   attachUserToClient,
   errorText,
   fetchClient,
+  fetchClientQuality,
   formatAgo,
   formatDateTime,
   reactivateClient,
   recompileClientBrain,
   setClientLimits,
   setClientPlan,
+  setClientQuality,
   setClientSpendCap,
   setClientUniversal,
   suspendClient,
   type AttachUserResult,
   type ClientDetail,
+  type ClientQualitySettings,
   type UsageSummary,
 } from "@/lib/platform";
 import { cn } from "@/lib/utils";
@@ -219,8 +222,8 @@ function LimitsEditor({
     >
       {!subscribed ? (
         <MutedNote>
-          No subscription is attached. The server decides whether limits can be set without one;
-          a refusal is shown here verbatim.
+          No subscription is attached. The server decides whether limits can be set without one; a
+          refusal is shown here verbatim.
         </MutedNote>
       ) : null}
       <div className="grid gap-3 sm:grid-cols-3">
@@ -268,77 +271,162 @@ function AttachUser({
   const [duplicates, setDuplicates] = useState<AttachUserResult["duplicate_candidates"]>([]);
   return (
     <>
-    <form
-      className="flex flex-wrap items-end gap-2"
-      onSubmit={(e) => {
-        e.preventDefault();
-        const name = username.trim();
-        if (!name) return;
-        onConfirm({
-          title: `Attach ${name} to ${clientName}?`,
-          description: `They join as ${role}. The server checks the user exists and the role is allowed.`,
-          confirmLabel: "Attach",
-          run: async () => {
-            const result = await attachUserToClient(workspaceId, name, role);
-            toast.success(`${name} attached as ${result.role}.`);
-            setUsername("");
-            setDuplicates(result.duplicate_candidates ?? []);
-          },
-        });
-      }}
-    >
-      <div className="min-w-[180px] flex-1">
-        <Label htmlFor="attach-username" className="text-[0.625rem] tracking-wide uppercase">
-          Username or email
-        </Label>
-        <Input
-          id="attach-username"
-          className="mt-1 h-8 text-xs"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-        />
-      </div>
-      <Select value={role} onValueChange={setRole}>
-        <SelectTrigger className="h-8 w-28 text-xs">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {ROLES.map((r) => (
-            <SelectItem key={r} value={r}>
-              {r}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <Button type="submit" size="sm" variant="outline" disabled={!username.trim()}>
-        <UserPlus className="size-3.5" /> Attach…
-      </Button>
-    </form>
-    {duplicates.length ? (
-      <div className="mt-2 rounded-lg border border-amber-400/60 bg-amber-50/60 px-3 py-2 text-xs">
-        <p className="font-medium text-foreground">
-          Possible duplicate signup{duplicates.length === 1 ? "" : "s"} — nothing was archived.
-          Review and archive deliberately:
-        </p>
-        <ul className="mt-1 space-y-0.5">
-          {duplicates.map((c) => (
-            <li key={c.workspace_id}>
-              <Link
-                to="/platform/clients/$workspaceId"
-                params={{ workspaceId: c.workspace_id }}
-                className="text-foreground underline-offset-2 hover:underline"
-              >
-                {c.name || "Unnamed client"}
-              </Link>
-              <span className="text-muted-foreground">
-                {" "}· {c.client_code} · {c.approval_status.replaceAll("_", " ")}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    ) : null}
+      <form
+        className="flex flex-wrap items-end gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const name = username.trim();
+          if (!name) return;
+          onConfirm({
+            title: `Attach ${name} to ${clientName}?`,
+            description: `They join as ${role}. The server checks the user exists and the role is allowed.`,
+            confirmLabel: "Attach",
+            run: async () => {
+              const result = await attachUserToClient(workspaceId, name, role);
+              toast.success(`${name} attached as ${result.role}.`);
+              setUsername("");
+              setDuplicates(result.duplicate_candidates ?? []);
+            },
+          });
+        }}
+      >
+        <div className="min-w-[180px] flex-1">
+          <Label htmlFor="attach-username" className="text-[0.625rem] tracking-wide uppercase">
+            Username or email
+          </Label>
+          <Input
+            id="attach-username"
+            className="mt-1 h-8 text-xs"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+          />
+        </div>
+        <Select value={role} onValueChange={setRole}>
+          <SelectTrigger className="h-8 w-28 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {ROLES.map((r) => (
+              <SelectItem key={r} value={r}>
+                {r}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button type="submit" size="sm" variant="outline" disabled={!username.trim()}>
+          <UserPlus className="size-3.5" /> Attach…
+        </Button>
+      </form>
+      {duplicates.length ? (
+        <div className="mt-2 rounded-lg border border-amber-400/60 bg-amber-50/60 px-3 py-2 text-xs">
+          <p className="font-medium text-foreground">
+            Possible duplicate signup{duplicates.length === 1 ? "" : "s"} — nothing was archived.
+            Review and archive deliberately:
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {duplicates.map((c) => (
+              <li key={c.workspace_id}>
+                <Link
+                  to="/platform/clients/$workspaceId"
+                  params={{ workspaceId: c.workspace_id }}
+                  className="text-foreground underline-offset-2 hover:underline"
+                >
+                  {c.name || "Unnamed client"}
+                </Link>
+                <span className="text-muted-foreground">
+                  {" "}
+                  · {c.client_code} · {c.approval_status.replaceAll("_", " ")}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </>
+  );
+}
+
+function QualityPanel({
+  workspaceId,
+  clientName,
+  onConfirm,
+}: {
+  workspaceId: string;
+  clientName: string;
+  onConfirm: (request: ConfirmRequest) => void;
+}) {
+  // The quality switches have their own endpoint rather than riding the
+  // detail payload, so this panel loads its own state and updates it from
+  // the server's answer to each toggle.
+  const [quality, setQuality] = useState<ClientQualitySettings | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      setQuality(await fetchClientQuality(workspaceId));
+    } catch (e: unknown) {
+      setError(errorText(e, "Could not load the quality-engine switches."));
+    }
+  }, [workspaceId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (error) return <ErrorNote message={error} />;
+  if (!quality) return <Skeleton className="h-24 rounded-lg" />;
+
+  const toggles: Array<{
+    label: string;
+    description: string;
+    checked: boolean;
+    apply: (next: boolean) => Promise<ClientQualitySettings>;
+  }> = [
+    {
+      label: "Self-critique",
+      description: "LLM self-critique gate on generated copy.",
+      checked: quality.critique_enabled,
+      apply: (next) => setClientQuality(workspaceId, { critique: next }),
+    },
+    {
+      label: "Focus crop",
+      description: "Vision focal-point-aware poster cropping.",
+      checked: quality.focus_crop_enabled,
+      apply: (next) => setClientQuality(workspaceId, { focus_crop: next }),
+    },
+    {
+      label: "Layout variety",
+      description: "Recency-weighted layout variety.",
+      checked: quality.variety_enabled,
+      apply: (next) => setClientQuality(workspaceId, { variety: next }),
+    },
+  ];
+
+  return (
+    <div className="space-y-3">
+      {toggles.map((toggle) => (
+        <label key={toggle.label} className="flex items-center justify-between gap-3 text-sm">
+          <span>
+            {toggle.label}
+            <span className="block text-xs text-muted-foreground">{toggle.description}</span>
+          </span>
+          <Switch
+            checked={toggle.checked}
+            onCheckedChange={(next) =>
+              onConfirm({
+                title: `${next ? "Enable" : "Disable"} ${toggle.label.toLowerCase()} for ${clientName}?`,
+                confirmLabel: next ? "Enable" : "Disable",
+                run: async () => {
+                  setQuality(await toggle.apply(next));
+                  toast.success(`${toggle.label} ${next ? "enabled" : "disabled"}.`);
+                },
+              })
+            }
+          />
+        </label>
+      ))}
+    </div>
   );
 }
 
@@ -423,11 +511,15 @@ function ClientDetailPage() {
           </h1>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <StatusPill value={status} />
-            {client.brand ? <StatusPill value={`brand ${client.brand.status}`.toUpperCase()} /> : null}
+            {client.brand ? (
+              <StatusPill value={`brand ${client.brand.status}`.toUpperCase()} />
+            ) : null}
             <FlagChips flags={client.flags} />
           </div>
           {client.status_reason ? (
-            <p className="mt-2 text-xs text-muted-foreground">Reason on record: {client.status_reason}</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Reason on record: {client.status_reason}
+            </p>
           ) : null}
         </div>
         <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
@@ -477,12 +569,17 @@ function ClientDetailPage() {
           <KeyValue label="Onboarding status" value={client.onboarding?.status ?? "—"} />
           <KeyValue
             label="Readiness"
-            value={client.readiness ? `${client.readiness.score}/100 · ${client.readiness.level}` : "—"}
+            value={
+              client.readiness ? `${client.readiness.score}/100 · ${client.readiness.level}` : "—"
+            }
           />
           <KeyValue label="Knowledge sources" value={client.counts.knowledge_sources} />
           <KeyValue label="Confirmed facts" value={client.counts.confirmed_facts} />
           <KeyValue label="Inspirations" value={client.counts.inspirations} />
-          <KeyValue label="Rules / preferences" value={`${client.counts.rules} / ${client.counts.preferences}`} />
+          <KeyValue
+            label="Rules / preferences"
+            value={`${client.counts.rules} / ${client.counts.preferences}`}
+          />
           <KeyValue label="Team" value={client.counts.team} />
         </Panel>
 
@@ -584,7 +681,10 @@ function ClientDetailPage() {
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
-          <Panel title="Lifecycle" description="Suspend stops writes and scheduled work; archive also tears down routing and billing. Reads stay open.">
+          <Panel
+            title="Lifecycle"
+            description="Suspend stops writes and scheduled work; archive also tears down routing and billing. Reads stay open."
+          >
             <div className="flex flex-wrap gap-2">
               {status === "ACTIVE" ? (
                 <Button
@@ -597,7 +697,11 @@ function ClientDetailPage() {
                         "The client can still sign in and read their data, but nothing can be created, edited, generated or published until reactivated.",
                       confirmLabel: "Suspend",
                       destructive: true,
-                      reason: { label: "Reason", required: true, placeholder: "Shown to the client" },
+                      reason: {
+                        label: "Reason",
+                        required: true,
+                        placeholder: "Shown to the client",
+                      },
                       run: async (reason) => {
                         await suspendClient(client.workspace_id, reason);
                         toast.success("Suspended.");
@@ -652,7 +756,10 @@ function ClientDetailPage() {
             </div>
           </Panel>
 
-          <Panel title="Universal layer" description="Scaleezy standards and the curated library. Off means this client's generations never see them.">
+          <Panel
+            title="Universal layer"
+            description="Scaleezy standards and the curated library. Off means this client's generations never see them."
+          >
             <div className="space-y-3">
               <label className="flex items-center justify-between gap-3 text-sm">
                 <span>
@@ -699,7 +806,21 @@ function ClientDetailPage() {
             </div>
           </Panel>
 
-          <Panel title="Capability limits" description="Overrides on top of the plan's limits for this billing period.">
+          <Panel
+            title="Quality engine"
+            description="The generation-time quality passes. Off means this client's generations skip that pass."
+          >
+            <QualityPanel
+              workspaceId={client.workspace_id}
+              clientName={client.name}
+              onConfirm={ask}
+            />
+          </Panel>
+
+          <Panel
+            title="Capability limits"
+            description="Overrides on top of the plan's limits for this billing period."
+          >
             <LimitsEditor detail={detail} onConfirm={ask} />
           </Panel>
 
@@ -733,7 +854,12 @@ function ClientDetailPage() {
                   placeholder="e.g. starter"
                 />
               </div>
-              <Button type="submit" size="sm" variant="outline" disabled={!planKey.trim() || planKey.trim() === (client.plan?.key ?? "")}>
+              <Button
+                type="submit"
+                size="sm"
+                variant="outline"
+                disabled={!planKey.trim() || planKey.trim() === (client.plan?.key ?? "")}
+              >
                 Change plan…
               </Button>
             </form>
@@ -774,7 +900,11 @@ function ClientDetailPage() {
                 type="submit"
                 size="sm"
                 variant="outline"
-                disabled={!spendCap.trim() || Number.isNaN(Number(spendCap)) || spendCap.trim() === (client.usage.spend_cap ?? "")}
+                disabled={
+                  !spendCap.trim() ||
+                  Number.isNaN(Number(spendCap)) ||
+                  spendCap.trim() === (client.usage.spend_cap ?? "")
+                }
               >
                 Set cap…
               </Button>
@@ -798,11 +928,21 @@ function ClientDetailPage() {
                 Revert to plan default…
               </Button>
             </form>
-            <MutedNote>Plan keys must exist on the server; an unknown key is refused, not guessed.</MutedNote>
+            <MutedNote>
+              Plan keys must exist on the server; an unknown key is refused, not guessed.
+            </MutedNote>
           </Panel>
 
-          <Panel title="Attach a user" description="The remedy for a colleague blocked by the duplicate-enrolment guard." className="lg:col-span-2">
-            <AttachUser workspaceId={client.workspace_id} clientName={client.name} onConfirm={ask} />
+          <Panel
+            title="Attach a user"
+            description="The remedy for a colleague blocked by the duplicate-enrolment guard."
+            className="lg:col-span-2"
+          >
+            <AttachUser
+              workspaceId={client.workspace_id}
+              clientName={client.name}
+              onConfirm={ask}
+            />
           </Panel>
         </div>
       </section>

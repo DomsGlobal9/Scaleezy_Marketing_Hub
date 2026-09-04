@@ -1,4 +1,5 @@
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -7,6 +8,7 @@ from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models.signals import m2m_changed
 from django.dispatch import receiver
+from django.utils import timezone
 
 
 class AutopilotPolicy(models.Model):
@@ -16,6 +18,15 @@ class AutopilotPolicy(models.Model):
 
     class Cadence(models.TextChoices):
         MANUAL = 'MANUAL', 'Manual only'
+        DAILY = 'DAILY', 'Daily'
+        WEEKLY = 'WEEKLY', 'Weekly'
+
+    #: Wall-clock spacing between scheduled runs. MANUAL has no entry on
+    #: purpose: it never schedules, so lookups for it fall through to None.
+    CADENCE_INTERVALS = {
+        Cadence.DAILY: timedelta(days=1),
+        Cadence.WEEKLY: timedelta(days=7),
+    }
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(
@@ -81,6 +92,35 @@ class AutopilotPolicy(models.Model):
             str(value).upper() for value in self.allowed_formats
             if str(value).upper() in {'POSTER', 'CAROUSEL', 'VIDEO'}
         ][:3]
+        # next_run_at lifecycle. A scheduled cadence always points one full
+        # interval into the future when it is (re)armed — creating or editing
+        # a policy never spends immediately — and MANUAL carries no schedule
+        # at all. This lives in save() rather than the serializer so ORM,
+        # admin and API writes all agree; the due-policy sweep advances
+        # next_run_at with a queryset .update() and deliberately bypasses it.
+        interval = self.CADENCE_INTERVALS.get(self.cadence)
+        rescheduled = False
+        now = timezone.now()
+        # A cadence CHANGE re-arms even a still-future slot: switching
+        # DAILY→WEEKLY must not leave tomorrow's daily slot armed to buy a
+        # generation on the schedule the user just slowed down (and
+        # WEEKLY→DAILY must not wait a week for its first daily run).
+        cadence_changed = False
+        if self.pk:
+            stored = type(self).objects.filter(pk=self.pk).values_list(
+                'cadence', flat=True
+            ).first()
+            cadence_changed = stored is not None and stored != self.cadence
+        if interval is None:
+            if self.next_run_at is not None:
+                self.next_run_at = None
+                rescheduled = True
+        elif self.next_run_at is None or self.next_run_at <= now or cadence_changed:
+            self.next_run_at = now + interval
+            rescheduled = True
+        update_fields = kwargs.get('update_fields')
+        if rescheduled and update_fields is not None and 'next_run_at' not in update_fields:
+            kwargs['update_fields'] = [*update_fields, 'next_run_at']
         return super().save(*args, **kwargs)
 
 

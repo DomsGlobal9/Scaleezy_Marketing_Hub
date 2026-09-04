@@ -126,10 +126,9 @@ class LearningTestBase(TenantFixtureMixin, TenantSecurityAssertions, TestCase):
 
 class LearningEventTests(LearningTestBase):
     def test_record_and_read_an_event(self):
-        response = self.client1.post(
-            EVENTS_URL, self.event_payload(), format='json', **self.ws1()
-        )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        event = self.make_event(created_by=self.user1)
+        response = self.client1.get(f'{EVENTS_URL}{event.pk}/', **self.ws1())
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
         body = response.json()
         self.assertEqual(body['workspace'], str(self.workspace1.id))
         self.assertEqual(body['created_by'], self.user1.id)
@@ -563,11 +562,13 @@ class RuleAuthorityTests(LearningTestBase):
 
 class LearningTenantIsolationTests(LearningTestBase):
     def test_cross_tenant_brand_injection_blocked_on_events(self):
-        self.assert_cross_tenant_fk_rejected(
-            client=self.client1, url=EVENTS_URL, workspace=self.workspace1,
-            model=LearningEvent, payload=self.event_payload(),
-            field='brand', foreign_id=self.brand2.id,
+        before = LearningEvent.objects.count()
+        response = self.client1.post(
+            EVENTS_URL, self.event_payload(brand=str(self.brand2.pk)),
+            format='json', **self.ws1(),
         )
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertEqual(LearningEvent.objects.count(), before)
 
     def test_cross_tenant_brand_injection_blocked_on_rules(self):
         self.assert_cross_tenant_fk_rejected(

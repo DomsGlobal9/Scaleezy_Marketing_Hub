@@ -44,8 +44,7 @@ class Brand(models.Model):
     )
 
     name = models.CharField(max_length=255)
-    # The registered company name behind the brand. Collected at signup for
-    # the approval decision and invoicing; `name` stays what posts speak as.
+    # Administrative company identity; `name` remains the public brand name.
     legal_name = models.CharField(max_length=255, blank=True)
     industry = models.CharField(max_length=100, blank=True)
     website = models.URLField(max_length=500, blank=True)
@@ -61,10 +60,10 @@ class Brand(models.Model):
     # Visual identity
     palette = models.JSONField(default=default_palette, blank=True)
     fonts = models.JSONField(default=default_fonts, blank=True)
-    # Blank means "no preference", and the compose engine rotates the brand
-    # through the whole template catalogue. This must not default to a named
-    # pattern: it did, and the phantom "preference" pinned every brand's
-    # posters to one skeleton nobody had actually chosen.
+    # Deprecated compatibility column. It is no longer writable, compiled
+    # into Brand Brain, or read by generation. Template choice belongs to the
+    # individual ContentItem. Keep the column for one compatibility window so
+    # old rows and revisions remain readable without a destructive migration.
     layout_preference = models.CharField(
         max_length=64, choices=Layout.choices, default='', blank=True
     )
@@ -90,8 +89,7 @@ class Brand(models.Model):
     logo_file_name = models.CharField(max_length=255, blank=True)
 
     contact_phone = models.CharField(max_length=50, blank=True)
-    # Who Scaleezy talks to at this client. The signup email lives on the
-    # owning user; this is the human name that goes with it.
+    # The named client contact, independent of any user's account profile.
     contact_person = models.CharField(max_length=150, blank=True)
 
     # Defaults for the poster generator; overridable per generation.
@@ -101,6 +99,15 @@ class Brand(models.Model):
     # Accumulated taste rules. Phase 6's training engine appends here, and the
     # generator feeds it back into each prompt.
     creative_brain = models.JSONField(default=dict, blank=True)
+
+    # Hard guardrails — brand law a human wrote, as opposed to the learned
+    # rules above. Empty by default, and an empty dict changes NOTHING about
+    # generation. Shape is owned by apps.brands.services.guardrails.clean():
+    # forbidden_words / banned_hashtags / forbidden_imagery /
+    # required_on_every_post / approved_ctas (lists of strings) and
+    # language_rule. These are the only rules allowed to BLOCK a generation
+    # before any provider is paid.
+    guardrails = models.JSONField(default=dict, blank=True)
 
     # Compile health. `creative_brain` alone cannot answer "did the last
     # rebuild work?" — a brain that failed to recompile looks identical to one

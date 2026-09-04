@@ -128,9 +128,12 @@ def capability_usage(workspace, subscription=None, capability=None):
 
     `success=True, selected=True` is the definition of a billable unit: a
     provider that failed produced nothing to charge for, and a BEST_OF loser
-    was paid for but is counted as spend, not as one of the customer's
-    posters. Counting either would let a run of provider failures exhaust a
-    customer's allowance without producing a single asset.
+    is spend, not a unit. Platform QA dispatches (the copy judge, the focus
+    vision call — rows flagged is_internal) DO count as customer units:
+    founder decision, 2026-09-03 ("option b") — every call a generation
+    causes is part of that generation's price in units as well as money.
+    The is_internal flag stays on the rows purely for reporting, so "how
+    much of a client's usage is QA" remains answerable.
     """
     from apps.ai.models import AIUsageLog
     from django.db.models import Count

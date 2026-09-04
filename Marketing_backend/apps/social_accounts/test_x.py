@@ -5,6 +5,35 @@ from django.test import SimpleTestCase
 from apps.social_accounts.integrations.x import XAdapter
 
 
+class XPublishingBoundaryTests(SimpleTestCase):
+    @patch('apps.social_accounts.integrations.x.requests.get')
+    @patch('apps.social_accounts.integrations.x.requests.post')
+    def test_url_fallback_publishes_without_fetching_any_media_url(self, post, get):
+        response = MagicMock(ok=True, status_code=201)
+        response.json.return_value = {'data': {'id': 'tweet-1'}}
+        post.return_value = response
+        adapter = XAdapter()
+
+        for url in (
+            'http://127.0.0.1/admin',
+            'http://[::1]/admin',
+            'http://169.254.169.254/latest/meta-data/',
+            'http://10.0.0.1/private',
+            'https://attacker.example/arbitrary.jpg',
+            'https://storage.test/owned.jpg',
+            'https://mock-storage.url/legacy.jpg',
+        ):
+            with self.subTest(url=url):
+                media_id = adapter.upload_media('token', url)
+                self.assertEqual(media_id, f'url:{url}')
+                result = adapter.publish_post('token', 'Caption', media_id)
+                self.assertEqual(result['id'], 'tweet-1')
+                self.assertEqual(post.call_args.args[0], f'{adapter.API_BASE}/tweets')
+                self.assertEqual(post.call_args.kwargs['json'], {'text': f'Caption\n\n{url}'})
+                self.assertEqual(post.call_args.kwargs['timeout'], 15)
+                get.assert_not_called()
+
+
 class XEngagementAdapterTests(SimpleTestCase):
     def setUp(self):
         self.adapter = XAdapter()

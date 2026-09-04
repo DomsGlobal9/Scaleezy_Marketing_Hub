@@ -31,6 +31,7 @@ from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 from apps.workspaces.services.team import TeamError, attach_user_to_workspace
 
 from .permissions import IsPlatformAdmin
+from .pagination import facet_counts, page_rows, wants_page
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -162,11 +163,21 @@ class SignupQueueView(PlatformView):
         wanted = str(request.query_params.get('status', Brand.Status.PENDING)).upper()
         if wanted not in Brand.Status.values:
             wanted = Brand.Status.PENDING
-        brands = list(
-            Brand.objects.filter(status=wanted)
-            .select_related('workspace', 'reviewed_by')
-            .order_by('-created_at')[:200]
+        queryset = Brand.objects.select_related('workspace', 'reviewed_by')
+        search = str(request.query_params.get('q', '')).strip()[:200]
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) | Q(website__icontains=search)
+                | Q(workspace__workspace_name__icontains=search)
+                | Q(workspace__client_code__icontains=search)
+            )
+        counts = facet_counts(queryset, 'status') if wants_page(request) else None
+        brands, pagination = page_rows(
+            request, queryset.filter(status=wanted).order_by('-created_at', '-pk'),
+            legacy_limit=200,
         )
+        if counts is not None:
+            pagination['status_counts'] = counts
         stats = QueueStats(brands)
         rows = [_signup_row(b, stats) for b in brands]
         self.audit('SIGNUP_QUEUE_VIEWED', detail={'status': wanted, 'count': len(rows)})
@@ -175,6 +186,7 @@ class SignupQueueView(PlatformView):
             'count': len(rows),
             'pending_total': pending_total,
             'signups': rows,
+            **pagination,
         })
 
 

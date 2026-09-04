@@ -1,6 +1,6 @@
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Max, Sum
+from django.db.models import Count, Max, Q, Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import status
@@ -18,23 +18,18 @@ from apps.social_accounts.models import SocialConnection
 from apps.workspaces.models import WorkspaceMember
 
 from .models import (
-    CampaignROI,
-    DailyMetric,
     GrowthLead,
     PerformanceObservation,
     PerformanceSyncRun,
-    PlatformPerformance,
     RevenueEvent,
 )
 from .serializers import (
-    CampaignROISerializer,
-    DailyMetricSerializer,
     GrowthLeadSerializer,
     PerformanceObservationSerializer,
     PerformanceSyncRunSerializer,
-    PlatformPerformanceSerializer,
     RevenueEventSerializer,
 )
+from .measurements import METRIC_FIELDS, campaign_returns, dashboard_measurements
 
 
 class AnalyticsDashboardView(APIView):
@@ -47,11 +42,6 @@ class AnalyticsDashboardView(APIView):
         if error:
             return error
 
-        metrics = DailyMetric.objects.filter(workspace=workspace).order_by('date')
-        performance = PlatformPerformance.objects.filter(workspace=workspace).order_by(
-            '-conversions'
-        )
-        roi = CampaignROI.objects.filter(workspace=workspace).order_by('-roi_multiplier')
         observation_query = PerformanceObservation.objects.select_related('content_item').filter(
             workspace=workspace
         )
@@ -62,7 +52,14 @@ class AnalyticsDashboardView(APIView):
         leads = GrowthLead.objects.filter(workspace=workspace)[:50]
         revenue_query = RevenueEvent.objects.filter(workspace=workspace)
         revenue_events = revenue_query[:50]
-        revenue_total = revenue_query.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        revenue_by_currency = [
+            {'currency': row['currency'], 'amount': str(row['total'])}
+            for row in revenue_query.values('currency').annotate(total=Sum('amount')).order_by('currency')
+        ]
+        revenue_total = revenue_by_currency[0]['amount'] if len(revenue_by_currency) == 1 else None
+        from .services import _latest_observations
+        latest_rows = _latest_observations(workspace)
+        measured = dashboard_measurements(latest_rows)
         latest_observed = observation_query.aggregate(latest=Max('observed_at'))['latest']
 
         # Deliberately NOT the APIResponse envelope: the frontend reads
@@ -70,9 +67,9 @@ class AnalyticsDashboardView(APIView):
         # Reshaping this is a separate change with matching frontend edits.
         return Response(
             {
-                "trend": DailyMetricSerializer(metrics, many=True).data,
-                "platform_perf": PlatformPerformanceSerializer(performance, many=True).data,
-                "roi": CampaignROISerializer(roi, many=True).data,
+                "trend": measured['trend'],
+                "platform_perf": measured['platform_perf'],
+                "roi": campaign_returns(latest_rows, revenue_query),
                 "observations": PerformanceObservationSerializer(observations, many=True).data,
                 "sync_runs": PerformanceSyncRunSerializer(sync_runs, many=True).data,
                 "leads": GrowthLeadSerializer(leads, many=True).data,
@@ -85,7 +82,10 @@ class AnalyticsDashboardView(APIView):
                     "converted_leads": GrowthLead.objects.filter(
                         workspace=workspace, status=GrowthLead.Status.CONVERTED
                     ).count(),
-                    "revenue": str(revenue_total),
+                    "revenue": revenue_total,
+                    "revenue_currency": revenue_by_currency[0]['currency'] if len(revenue_by_currency) == 1 else None,
+                    "revenue_by_currency": revenue_by_currency,
+                    "measurements": measured['totals'],
                     "latest_observed_at": latest_observed,
                 },
             }
@@ -110,12 +110,33 @@ def workspace_kpis(workspace):
     state of the pipeline - accounts, review queue, scheduled and published
     posts - and each tile names the screen that owns it.
     """
-    content = ContentItem.objects.filter(workspace=workspace)
-    jobs = PublishingJob.objects.filter(workspace=workspace)
-    items = PublishingJobItem.objects.filter(publishing_job__workspace=workspace)
-    connections = SocialConnection.objects.filter(workspace=workspace)
+    content_counts = ContentItem.objects.filter(workspace=workspace).aggregate(
+        awaiting_review=Count(
+            'id', filter=Q(status=ContentItem.Status.PENDING_REVIEW)
+        ),
+        approved=Count('id', filter=Q(status=ContentItem.Status.APPROVED)),
+    )
+    job_counts = PublishingJob.objects.filter(workspace=workspace).aggregate(
+        scheduled=Count(
+            'id', filter=Q(status=PublishingJob.Status.SCHEDULED)
+        ),
+    )
+    item_counts = PublishingJobItem.objects.filter(
+        publishing_job__workspace=workspace
+    ).aggregate(
+        published=Count(
+            'id', filter=Q(status=PublishingJobItem.Status.PUBLISHED)
+        ),
+        failed=Count('id', filter=Q(status=PublishingJobItem.Status.FAILED)),
+    )
+    connection_counts = SocialConnection.objects.filter(workspace=workspace).aggregate(
+        connected=Count(
+            'id', filter=Q(status=SocialConnection.Status.CONNECTED)
+        ),
+        attention=Count('id', filter=Q(status__in=ACCOUNT_ATTENTION_STATUSES)),
+    )
 
-    attention = connections.filter(status__in=ACCOUNT_ATTENTION_STATUSES).count()
+    attention = connection_counts['attention']
     attention_hint = None
     if attention:
         attention_hint = "%d need%s attention" % (attention, "s" if attention == 1 else "")
@@ -124,29 +145,27 @@ def workspace_kpis(workspace):
         {
             "key": "awaiting_review",
             "label": "Awaiting review",
-            "value": content.filter(status=ContentItem.Status.PENDING_REVIEW).count(),
+            "value": content_counts['awaiting_review'],
             "icon": "CheckCircle2",
             "hint": "Generated content waiting for a decision",
         },
         {
             "key": "approved",
             "label": "Approved, not yet published",
-            "value": content.filter(status=ContentItem.Status.APPROVED).count(),
+            "value": content_counts['approved'],
             "icon": "Send",
             "accent": "gold",
         },
         {
             "key": "scheduled",
             "label": "Scheduled posts",
-            "value": jobs.filter(status__in=[
-                PublishingJob.Status.SCHEDULED, PublishingJob.Status.QUEUED,
-            ]).count(),
+            "value": job_counts['scheduled'],
             "icon": "CalendarClock",
         },
         {
             "key": "published",
             "label": "Published posts",
-            "value": items.filter(status=PublishingJobItem.Status.PUBLISHED).count(),
+            "value": item_counts['published'],
             "icon": "Megaphone",
             "accent": "gold",
             "hint": "Per platform, all time",
@@ -154,13 +173,13 @@ def workspace_kpis(workspace):
         {
             "key": "failed",
             "label": "Failed publishes",
-            "value": jobs.filter(status=PublishingJob.Status.FAILED).count(),
+            "value": item_counts['failed'],
             "icon": "AlertTriangle",
         },
         {
             "key": "connected_accounts",
             "label": "Connected accounts",
-            "value": connections.filter(status=SocialConnection.Status.CONNECTED).count(),
+            "value": connection_counts['connected'],
             "icon": "Share2",
             "hint": attention_hint,
         },
@@ -188,7 +207,21 @@ class GovernedAnalyticsView(APIView):
 
 
 class PerformanceSyncView(GovernedAnalyticsView):
-    def post(self, request):
+    def get(self, request, run_id=None):
+        workspace, error = self.workspace(request)
+        if error:
+            return error
+        queryset = PerformanceSyncRun.objects.select_related('social_connection').filter(workspace=workspace)
+        if run_id is None:
+            return APIResponse(success=True, data=PerformanceSyncRunSerializer(queryset[:10], many=True).data)
+        run = queryset.filter(pk=run_id).first()
+        if run is None:
+            return APIResponse(success=False, message='Sync run not found.', status=404)
+        return APIResponse(success=True, data=PerformanceSyncRunSerializer(run).data)
+
+    def post(self, request, run_id=None):
+        if run_id is not None:
+            return APIResponse(success=False, message='Start a sync from the collection endpoint.', status=405)
         workspace, error = self.workspace(request)
         if error:
             return error
@@ -213,7 +246,14 @@ class PerformanceSyncView(GovernedAnalyticsView):
         )
         from .tasks import sync_performance_task
 
-        result = sync_performance_task.enqueue(str(run.pk))
+        try:
+            result = sync_performance_task.enqueue(str(run.pk))
+        except Exception:
+            run.status = PerformanceSyncRun.Status.FAILED
+            run.error = 'Metrics sync could not be queued. Please try again.'
+            run.completed_at = timezone.now()
+            run.save(update_fields=['status', 'error', 'completed_at', 'updated_at'])
+            return APIResponse(success=False, message=run.error, status=503)
         run.task_id = str(result.id)
         run.save(update_fields=['task_id', 'updated_at'])
         return APIResponse(
@@ -224,12 +264,22 @@ class PerformanceSyncView(GovernedAnalyticsView):
 
 def _nonnegative_int(value, name):
     try:
-        parsed = int(value or 0)
-    except (TypeError, ValueError):
+        number = Decimal(str(value if value not in (None, '') else 0))
+        if not number.is_finite() or number != number.to_integral_value():
+            raise ValueError
+        parsed = int(number)
+    except (InvalidOperation, TypeError, ValueError):
         raise ValueError(f'{name} must be a whole number.') from None
     if parsed < 0:
         raise ValueError(f'{name} cannot be negative.')
     return parsed
+
+
+def _currency(value):
+    currency = str(value or 'USD').strip().upper()
+    if len(currency) != 3 or not currency.isascii() or not currency.isalpha():
+        raise ValueError('Currency must be a three-letter currency code.')
+    return currency
 
 
 class PerformanceImportView(GovernedAnalyticsView):
@@ -258,7 +308,7 @@ class PerformanceImportView(GovernedAnalyticsView):
         try:
             spend = Decimal(str(request.data.get('spend') or '0'))
             revenue = Decimal(str(request.data.get('revenue') or '0'))
-            if spend < 0 or revenue < 0:
+            if not spend.is_finite() or not revenue.is_finite() or spend < 0 or revenue < 0:
                 raise ValueError('Spend and revenue cannot be negative.')
             defaults = {
                 'brand': content.brand if content else None,
@@ -273,12 +323,16 @@ class PerformanceImportView(GovernedAnalyticsView):
                 'conversions': _nonnegative_int(request.data.get('conversions'), 'conversions'),
                 'spend': spend,
                 'revenue': revenue,
-                'currency': str(request.data.get('currency') or 'USD')[:3].upper(),
+                'currency': _currency(request.data.get('currency')),
                 'observed_at': observed_at,
                 'source_payload': request.data.get('source_payload') if isinstance(
                     request.data.get('source_payload'), dict
                 ) else {},
                 'ingested_by': request.user,
+            }
+            defaults['source_payload'] = {
+                **defaults['source_payload'],
+                'measured_fields': [field for field in METRIC_FIELDS if request.data.get(field) not in (None, '')],
             }
         except (InvalidOperation, ValueError) as exc:
             return APIResponse(success=False, message=str(exc), status=400)
@@ -335,8 +389,9 @@ class GrowthLeadView(GovernedAnalyticsView):
                 return APIResponse(success=True, data=GrowthLeadSerializer(existing).data)
         try:
             estimated = Decimal(str(request.data.get('estimated_value') or '0'))
-            if estimated < 0:
+            if not estimated.is_finite() or estimated < 0:
                 raise ValueError('Estimated value cannot be negative.')
+            currency = _currency(request.data.get('currency'))
         except (InvalidOperation, ValueError) as exc:
             return APIResponse(success=False, message=str(exc), status=400)
         lead = GrowthLead.objects.create(
@@ -349,7 +404,7 @@ class GrowthLeadView(GovernedAnalyticsView):
             source=str(request.data.get('source') or ('ENGAGEMENT' if engagement else 'MANUAL'))[:80],
             external_reference=str(request.data.get('external_reference') or '')[:255],
             estimated_value=estimated,
-            currency=str(request.data.get('currency') or 'USD')[:3].upper(),
+            currency=currency,
             notes=str(request.data.get('notes') or ''),
             created_by=request.user,
         )
@@ -398,17 +453,18 @@ class RevenueEventView(GovernedAnalyticsView):
                 return APIResponse(success=False, message='Content item not found.', status=404)
         try:
             amount = Decimal(str(request.data.get('amount')))
-            if amount < 0:
+            if not amount.is_finite() or amount < 0:
                 raise ValueError('Amount cannot be negative.')
+            currency = _currency(request.data.get('currency'))
         except (InvalidOperation, TypeError, ValueError):
-            return APIResponse(success=False, message='amount must be non-negative.', status=400)
+            return APIResponse(success=False, message='amount must be finite and non-negative; currency must be a three-letter code.', status=400)
         event, created = RevenueEvent.objects.get_or_create(
             workspace=workspace, source=source, external_event_id=external_id,
             defaults={
                 'lead': lead, 'content_item': content,
                 'campaign_name': str(request.data.get('campaign_name') or '')[:255],
                 'amount': amount,
-                'currency': str(request.data.get('currency') or 'USD')[:3].upper(),
+                'currency': currency,
                 'occurred_at': occurred_at,
                 'metadata': request.data.get('metadata') if isinstance(
                     request.data.get('metadata'), dict
@@ -416,7 +472,7 @@ class RevenueEventView(GovernedAnalyticsView):
                 'recorded_by': request.user,
             },
         )
-        if not created and (event.amount != amount or event.currency != str(request.data.get('currency') or 'USD')[:3].upper()):
+        if not created and (event.amount != amount or event.currency != currency):
             return APIResponse(
                 success=False,
                 message='This external revenue id already exists with different values.',

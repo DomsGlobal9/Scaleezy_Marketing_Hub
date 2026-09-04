@@ -540,7 +540,15 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
             # there is no generation to be partial about.
             raise NoProviderConfigured(failure.get('error', 'No provider routed.'))
 
-    return {'text': text, 'image': image, 'trace': trace}
+    return {
+        'text': text,
+        'image': image,
+        'trace': trace,
+        # What the copy generator was actually told, verbatim, so the
+        # self-critique judge grades against the very rules the model saw —
+        # never a re-built context that may have recompiled in between.
+        'copy_brief_context': text_brief.get('brand_context') or [],
+    }
 
 
 def _compact_text_result(result):
@@ -824,6 +832,111 @@ def recent_headlines(workspace, limit=6):
 def generate_marketing_payload(
     workspace, brief, *, instruction='', progress=None, brand=None
 ):
+    """The shared boundary, now with the brand's written law around it.
+
+    Three guardrail touches, all of which are no-ops for a brand with no
+    written rules:
+
+    1. The law rides into the prompt (``guardrail_rules``), so the model
+       avoids violations in the first place — prevention is the cheap path.
+    2. The finished copy is checked. A violation earns exactly ONE text-only
+       retry with the refusal named; images and video are never re-bought.
+    3. Deterministic fixes run last: banned hashtags stripped, required lines
+       appended, a missing CTA keyword added. Silent, and recorded in the
+       trace so the scorecard can count what the gate caught.
+
+    Then a fourth, judgement-shaped touch: the LLM self-critique gate
+    (``trace['critique']``) grades the finished copy against the rules the
+    generator saw and retries the words at most once. See ``critique.py``.
+    """
+    from apps.brands.models import Brand
+    from apps.brands.services import guardrails as guardrail_law
+
+    resolved = brand
+    if resolved is None:
+        resolved = (
+            Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
+        )
+    lines = guardrail_law.prompt_lines(resolved)
+    if lines and 'guardrail_rules' not in brief:
+        brief = {**brief, 'guardrail_rules': lines}
+
+    routed = _route_marketing_payload(
+        workspace, brief, instruction=instruction, progress=progress, brand=resolved
+    )
+
+    payload = routed.get('payload')
+    if resolved is None or not isinstance(payload, dict):
+        return routed
+
+    caught = guardrail_law.copy_violations(resolved, payload)
+    unresolved = caught
+    if caught:
+        # One free retry, words only. The photograph/video that already
+        # succeeded stays won — re-buying media over a caption is the exact
+        # waste the guardrails exist to prevent.
+        try:
+            rewritten = generate_copy_only(
+                workspace, resolved,
+                {**brief, 'guardrail_feedback': caught},
+                instruction=instruction,
+            )
+            for key in ('postTitle', 'postDescription', 'postHashtags'):
+                if rewritten.get(key):
+                    payload[key] = rewritten[key]
+        except Exception:
+            logger.warning(
+                "Guardrail copy retry failed for workspace %s; keeping first copy",
+                workspace.pk,
+            )
+    payload, fixed = guardrail_law.enforce(resolved, payload)
+    routed['payload'] = payload
+    if caught:
+        # Recomputed AFTER enforce: a hashtag the strip removed or a CTA the
+        # append supplied is resolved, and must not be reported otherwise.
+        unresolved = guardrail_law.copy_violations(resolved, payload)
+    if caught or fixed:
+        # Caught-then-fixed still counts: the scorecard's whole job is to
+        # show how often the gate had to step in.
+        trace = routed.get('trace')
+        if isinstance(trace, dict):
+            trace['guardrails'] = {
+                'caught': caught,
+                'unresolved': unresolved,
+                'fixed': fixed,
+            }
+
+    # 4. LLM self-critique: the finished copy judged against the very rules
+    #    the generator was told, plus this brand's standing reviewer
+    #    complaints. Spend: +1 internal TEXT dispatch to judge each
+    #    generation (spend-metered, never a customer TEXT unit); a failing
+    #    verdict adds one copy-only regeneration (a normal customer unit —
+    #    it replaces the copy the customer receives) and one in-memory
+    #    internal re-judge — never a second image. Best-effort by
+    #    construction: every judge failure records 'skipped' and ships the
+    #    paid output.
+    from .critique import critique_copy
+
+    copy_brief_context = routed.pop('copy_brief_context', None) or []
+    trace = routed.get('trace')
+    if isinstance(trace, dict):
+        trace['critique'] = critique_copy(
+            workspace, resolved, payload,
+            context_lines=copy_brief_context,
+            guardrail_lines=list(brief.get('guardrail_rules') or []),
+            content_format=str(brief.get('contentType') or ''),
+            rewrite=lambda feedback: generate_copy_only(
+                workspace, resolved,
+                {**brief, 'guardrail_feedback': feedback},
+                instruction=instruction,
+            ),
+        )
+    return routed
+
+
+def _route_marketing_payload(
+    workspace, brief, *, instruction='', progress=None, brand=None
+):
     """Return the legacy marketing payload without choosing a vendor.
 
     This is the shared boundary used by both foreground and queued generation.
@@ -932,6 +1045,7 @@ def generate_marketing_payload(
         'provider_name': text.get('provider_name', ''),
         'brain_version': outcome['trace'].get('brain_version', ''),
         'trace': outcome['trace'],
+        'copy_brief_context': outcome.get('copy_brief_context') or [],
         'payload': {
             'postTitle': text.get('headline') or raw.get('postTitle', ''),
             'postDescription': text.get('caption') or raw.get('postDescription', ''),
@@ -951,9 +1065,20 @@ def generate_marketing_payload(
     }
 
 
+def _with_guardrail_lines(brand, brief_extra):
+    """The written law added to a direct capability call's brief, once."""
+    from apps.brands.services import guardrails as guardrail_law
+
+    lines = guardrail_law.prompt_lines(brand)
+    if lines and 'guardrail_rules' not in brief_extra:
+        return {**brief_extra, 'guardrail_rules': lines}
+    return brief_extra
+
+
 def retry_image(workspace, brand, brief_extra, *, instruction=''):
     """Retry ONLY the image capability. The copy that succeeded stays won."""
     _require_spend_approved(workspace)
+    brief_extra = _with_guardrail_lines(brand, brief_extra)
     context = build_generation_context(
         workspace, brand, TaskType.IMAGE, instruction=instruction,
     )
@@ -972,19 +1097,32 @@ def generate_copy_only(workspace, brand, brief_extra, *, instruction=''):
     The surgical half of request-edits: when every flagged element is about
     copy, spending an image generation — and changing a picture the reviewer
     did not complain about — would be worse than doing nothing."""
+    from apps.brands.services import guardrails as guardrail_law
+
     _require_spend_approved(workspace)
+    brief_extra = _with_guardrail_lines(brand, brief_extra)
     context = build_generation_context(
         workspace, brand, TaskType.COPY, instruction=instruction,
     )
-    brief = {**brief_extra, **context_as_brief(context)}
+    # copy_only tells a combined provider (Gemini serves TEXT and IMAGE from
+    # one pipeline) to skip its image step: nobody here will use a poster,
+    # and paying for one to discard it is the waste this path exists to avoid.
+    brief = {**brief_extra, **context_as_brief(context), 'copy_only': True}
     try:
         result = AIRouter(workspace).dispatch(Capability.TEXT, brief)
         validate_output(Capability.TEXT, result, context)
     except NoProviderAvailable as exc:
         raise NoProviderConfigured(str(exc)) from exc
     raw = result.get('raw') or {}
-    return {
+    payload = {
         'postTitle': result.get('headline') or raw.get('postTitle', ''),
         'postDescription': result.get('caption') or raw.get('postDescription', ''),
         'postHashtags': result.get('hashtags') or raw.get('postHashtags', ''),
     }
+    # Deterministic law only (no retry here — callers own their retry
+    # budget), and only onto real copy: appending required lines to an EMPTY
+    # caption would fabricate a truthy boilerplate caption that callers'
+    # keep-the-old-copy guards would then wrongly adopt.
+    if str(payload.get('postDescription') or '').strip():
+        payload, _fixed = guardrail_law.enforce(brand, payload)
+    return payload

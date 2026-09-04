@@ -213,7 +213,8 @@ class GenerationGateTests(Base):
         self.generations(30)
         self.as_(self.editor)
         res = self.client.post(
-            '/api/marketing/gemini/generate/', {'campaignName': 'Diwali'}, format='json'
+            '/api/marketing/gemini/generate/',
+            {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Diwali'}, format='json'
         )
         self.assertEqual(res.status_code, status.HTTP_402_PAYMENT_REQUIRED)
         self.assertEqual(res.data['error']['code'], 'GENERATION_QUOTA_EXCEEDED')
@@ -224,7 +225,7 @@ class GenerationGateTests(Base):
         self.as_(self.editor)
         res = self.client.post(
             '/api/marketing/gemini/generate-async/',
-            {'campaignName': 'Diwali', 'contentType': 'video'},
+            {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Diwali', 'contentType': 'video'},
             format='json',
         )
         self.assertEqual(res.status_code, status.HTTP_402_PAYMENT_REQUIRED)

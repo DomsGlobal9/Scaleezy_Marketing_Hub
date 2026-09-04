@@ -149,7 +149,7 @@ class BrandInspirationSerializer(serializers.ModelSerializer):
     #: would inflate a count every other tenant and the console can see.
     PLATFORM_METADATA_KEYS = frozenset({
         'adopted_from_platform', 'platform_inspiration_id', 'platform_kind',
-        'adopted_at', 'authority_note',
+        'adopted_at', 'authority_note', 'analysis',
     })
 
     def validate_metadata(self, value):
@@ -165,7 +165,8 @@ class BrandInspirationSerializer(serializers.ModelSerializer):
                 f"{', '.join(forged)}: set by the platform when a library "
                 "reference is adopted; not client-writable."
             )
-        return value
+        # A replacement metadata object must not erase server-owned lineage.
+        return {**value, **{key: current[key] for key in self.PLATFORM_METADATA_KEYS if key in current}}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -205,6 +206,11 @@ class BrandInspirationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"source": "Source cannot be changed once set; provenance is immutable."}
                 )
+            for field in ('reference_url', 'inspiration_type', 'external_platform'):
+                if field in data and data[field] != getattr(self.instance, field):
+                    raise serializers.ValidationError({
+                        field: "Reference evidence is immutable. Add the replacement reference and archive this one."
+                    })
 
         validate_reference_graph(workspace, brand, source, usage_scope, focus_areas)
 

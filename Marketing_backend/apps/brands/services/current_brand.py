@@ -34,6 +34,16 @@ def get_current_brand(workspace, user):
         )
     if brand is None:
         from .approval import initial_brand_status
+        from apps.common.permissions import get_membership
+        from apps.workspaces.models import WorkspaceMember
+        from rest_framework.exceptions import PermissionDenied
+
+        membership = get_membership(user, workspace.pk)
+        if not workspace.is_active or membership is None or membership.role not in (
+            WorkspaceMember.Role.EDITOR, WorkspaceMember.Role.MANAGER,
+            WorkspaceMember.Role.ADMIN, WorkspaceMember.Role.OWNER,
+        ):
+            raise PermissionDenied('This workspace has no available brand. An editor or administrator must initialize it.')
 
         name = workspace.workspace_name or 'My Brand'
         if Brand.objects.filter(workspace=workspace, name=name).exists():

@@ -79,12 +79,85 @@ class CreativeCommandTests(TenantFixtureMixin, TestCase):
 
     def payload(self, selections, **extra):
         return {
+            'creativeMode': 'REFERENCE' if selections else 'AI_ORIGINAL',
             'campaignName': 'Creative launch',
             'product': 'New collection',
             'contentType': 'poster',
             'inspirationSelections': selections,
             **extra,
         }
+
+    def test_creative_source_must_be_chosen_explicitly(self):
+        response = self.client.post(
+            GENERATE_URL,
+            {'campaignName': 'Creative launch', 'contentType': 'poster'},
+            format='json',
+            **workspace_header(self.workspace),
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.json()['error']['code'], 'CREATIVE_SOURCE_REQUIRED')
+        self.assertFalse(ContentItem.objects.exists())
+
+    def test_template_and_reference_modes_cannot_be_mixed(self):
+        own = self.brand_reference()
+        response = self.client.post(
+            GENERATE_URL,
+            self.payload(
+                [{
+                    'sourceType': 'BRAND', 'id': str(own.pk),
+                    'role': 'PRIMARY', 'direction': 'USE', 'focusAreas': [],
+                }],
+                creativeMode='CATALOG_TEMPLATE',
+                layout='cos_split',
+            ),
+            format='json',
+            **workspace_header(self.workspace),
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.json()['error']['code'], 'INVALID_CREATIVE_SOURCE')
+
+    def test_uploaded_reference_is_rejected_outside_reference_mode_on_every_entry_path(self):
+        calls = []
+        with patch('apps.ai.router.AIRouter.dispatch', self.dispatch(calls)):
+            for url in (GENERATE_URL, GENERATE_ASYNC_URL):
+                with self.subTest(url=url):
+                    response = self.client.post(
+                        url,
+                        self.payload([], referenceImageBase64='aW1hZ2U='),
+                        format='json',
+                        **workspace_header(self.workspace),
+                    )
+                    self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                    self.assertEqual(
+                        response.json()['error']['code'], 'INVALID_CREATIVE_SOURCE'
+                    )
+        self.assertFalse(calls)
+        self.assertFalse(ContentItem.objects.exists())
+        self.assertFalse(GeminiGenerationRequest.objects.exists())
+
+    def test_catalogue_template_is_rejected_for_non_poster_on_every_entry_path(self):
+        calls = []
+        with patch('apps.ai.router.AIRouter.dispatch', self.dispatch(calls)):
+            for url in (GENERATE_URL, GENERATE_ASYNC_URL):
+                with self.subTest(url=url):
+                    response = self.client.post(
+                        url,
+                        self.payload(
+                            [],
+                            creativeMode='CATALOG_TEMPLATE',
+                            layout='cos_split',
+                            contentType='video',
+                        ),
+                        format='json',
+                        **workspace_header(self.workspace),
+                    )
+                    self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                    self.assertEqual(
+                        response.json()['error']['code'], 'INVALID_CREATIVE_SOURCE'
+                    )
+        self.assertFalse(calls)
+        self.assertFalse(ContentItem.objects.exists())
+        self.assertFalse(GeminiGenerationRequest.objects.exists())
 
     def test_selected_platform_and_brand_references_reach_router_and_lineage(self):
         platform = self.platform_reference()
@@ -106,7 +179,7 @@ class CreativeCommandTests(TenantFixtureMixin, TestCase):
         with patch('apps.ai.router.AIRouter.dispatch', self.dispatch(calls)):
             response = self.client.post(
                 GENERATE_URL,
-                self.payload(selections, layout='ghost_word'),
+                self.payload(selections),
                 format='json',
                 **workspace_header(self.workspace),
             )
@@ -115,13 +188,16 @@ class CreativeCommandTests(TenantFixtureMixin, TestCase):
         brief = next(call['brief'] for call in calls if call['capability'] == Capability.TEXT)
         direction = brief['creative_direction']
         self.assertEqual(direction['selection_count'], 2)
-        self.assertEqual(direction['layout'], 'ghost_word')
+        self.assertEqual(direction['mode'], 'REFERENCE')
+        self.assertEqual(direction['layout'], '')
         self.assertEqual(direction['selections'][0]['provenance'], 'SCALEEZY_LIBRARY')
         self.assertEqual(direction['selections'][1]['direction'], 'AVOID')
         self.assertTrue(any('AVOID' in line for line in direction['instructions']))
 
         item = ContentItem.objects.get(pk=response.json()['data']['contentItemId'])
-        self.assertEqual(item.layout_plugin, 'ghost_word')
+        # A REFERENCE design is the provider's composition: no built-in
+        # pattern is stamped on it, so no layout plugin is recorded.
+        self.assertEqual(item.layout_plugin, '')
         self.assertEqual(item.layout_config['creative_direction']['selection_count'], 2)
         self.brand.refresh_from_db()
         self.assertEqual(self.brand.creative_brain, brain_before)
@@ -156,7 +232,9 @@ class CreativeCommandTests(TenantFixtureMixin, TestCase):
             **workspace_header(self.workspace),
         )
         bad_layout = self.client.post(
-            GENERATE_URL, self.payload([], layout='not-installed'), format='json',
+            GENERATE_URL,
+            self.payload([], creativeMode='CATALOG_TEMPLATE', layout='not-installed'),
+            format='json',
             **workspace_header(self.workspace),
         )
         malformed = self.client.post(
@@ -209,7 +287,6 @@ class CreativeCommandTests(TenantFixtureMixin, TestCase):
                 self.payload(
                     selection,
                     contentType='carousel',
-                    layout='data_hero',
                     slides=[{'position': 1, 'description': 'Opening slide'}],
                 ),
                 format='json',
@@ -223,7 +300,7 @@ class CreativeCommandTests(TenantFixtureMixin, TestCase):
         brief = json.loads(request.prompt_data)
         self.assertEqual(brief['creative_direction']['selection_count'], 1)
         self.assertEqual(brief['creative_direction']['selections'][0]['id'], str(own.pk))
-        self.assertEqual(brief['layout'], 'data_hero')
+        self.assertEqual(brief['layout'], '')
 
         from apps.gemini.tasks import generate_content
 
@@ -233,7 +310,7 @@ class CreativeCommandTests(TenantFixtureMixin, TestCase):
         request.refresh_from_db()
         self.assertEqual(request.status, GeminiGenerationRequest.Status.COMPLETED)
         generated = ContentItem.objects.get(pk=request.result.metadata['contentItemId'])
-        self.assertEqual(generated.layout_plugin, 'data_hero')
+        self.assertEqual(generated.layout_plugin, '')
         self.assertEqual(
             generated.layout_config['creative_direction']['selections'][0]['id'],
             str(own.pk),

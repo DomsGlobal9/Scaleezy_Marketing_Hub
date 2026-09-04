@@ -11,7 +11,7 @@
  * nothing becomes Brand Brain truth until a person confirms it.
  */
 import { Archive, FileText, Link2, Loader2, Plus, Upload } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -85,7 +85,8 @@ export function KnowledgePanel({ brandId, onChanged }: { brandId: string; onChan
   const [adding, setAdding] = useState(false);
 
   useEffect(() => {
-    if (!(sources.data ?? []).some((source) => ["QUEUED", "PROCESSING"].includes(source.status))) return;
+    if (!(sources.data ?? []).some((source) => ["QUEUED", "PROCESSING"].includes(source.status)))
+      return;
     const timer = window.setInterval(() => {
       sources.reload();
       memories.reload();
@@ -112,6 +113,8 @@ export function KnowledgePanel({ brandId, onChanged }: { brandId: string; onChan
 
   if (sources.loading && !sources.data) return <Loading />;
   if (sources.error) return <Failed message={sources.error} onRetry={sources.reload} />;
+  if (memories.loading && !memories.data) return <Loading />;
+  if (memories.error) return <Failed message={memories.error} onRetry={memories.reload} />;
 
   const active = (sources.data ?? []).filter((s) => s.status !== "ARCHIVED");
   const archived = (sources.data ?? []).filter((s) => s.status === "ARCHIVED");
@@ -228,6 +231,12 @@ function AddSourceCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const fieldId = useId();
+  const sourceTypeId = `${fieldId}-source-type`;
+  const titleId = `${fieldId}-title`;
+  const textId = `${fieldId}-text`;
+  const urlId = `${fieldId}-url`;
+  const fileId = `${fieldId}-file`;
 
   const types = SOURCE_TYPES.filter((t) => (mode === "file" ? t.kind !== "url" : t.kind === mode));
 
@@ -298,9 +307,11 @@ function AddSourceCard({
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <Label className="text-xs tracking-wide uppercase">What is it?</Label>
+            <Label htmlFor={sourceTypeId} className="text-xs tracking-wide uppercase">
+              What is it?
+            </Label>
             <Select value={sourceType} onValueChange={setSourceType}>
-              <SelectTrigger className="mt-1.5 w-full">
+              <SelectTrigger id={sourceTypeId} className="mt-1.5 w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -313,10 +324,11 @@ function AddSourceCard({
             </Select>
           </div>
           <div>
-            <Label className="text-xs tracking-wide uppercase">
+            <Label htmlFor={titleId} className="text-xs tracking-wide uppercase">
               Title{mode === "text" ? "" : " (optional)"}
             </Label>
             <Input
+              id={titleId}
               className="mt-1.5"
               placeholder={
                 mode === "text" ? "Founder call, 12 Aug" : "Defaults to the file or link"
@@ -329,8 +341,11 @@ function AddSourceCard({
 
         {mode === "text" ? (
           <div>
-            <Label className="text-xs tracking-wide uppercase">Text</Label>
+            <Label htmlFor={textId} className="text-xs tracking-wide uppercase">
+              Text
+            </Label>
             <Textarea
+              id={textId}
               className="mt-1.5"
               rows={8}
               placeholder="Paste the transcript, minutes or notes here…"
@@ -342,8 +357,11 @@ function AddSourceCard({
 
         {mode === "url" ? (
           <div>
-            <Label className="text-xs tracking-wide uppercase">Link</Label>
+            <Label htmlFor={urlId} className="text-xs tracking-wide uppercase">
+              Link
+            </Label>
             <Input
+              id={urlId}
               className="mt-1.5"
               type="url"
               placeholder="https://…"
@@ -359,7 +377,9 @@ function AddSourceCard({
 
         {mode === "file" ? (
           <div>
-            <Label className="text-xs tracking-wide uppercase">File</Label>
+            <Label htmlFor={fileId} className="text-xs tracking-wide uppercase">
+              File
+            </Label>
             <div className="mt-1.5 flex flex-wrap items-center gap-3">
               <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()}>
                 <Upload className="size-4" /> {file ? "Choose another" : "Choose file"}
@@ -370,6 +390,7 @@ function AddSourceCard({
                   : "PDF, document, deck, export…"}
               </span>
               <input
+                id={fileId}
                 ref={fileRef}
                 type="file"
                 className="hidden"
@@ -643,6 +664,9 @@ function AddFactForm({
   const [content, setContent] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fieldId = useId();
+  const typeId = `${fieldId}-type`;
+  const contentId = `${fieldId}-content`;
 
   const submit = async () => {
     setBusy(true);
@@ -682,9 +706,11 @@ function AddFactForm({
     <div className="space-y-3 rounded-lg border border-dashed p-3">
       <div className="grid gap-3 sm:grid-cols-[14rem_minmax(0,1fr)]">
         <div>
-          <Label className="text-xs tracking-wide uppercase">Kind</Label>
+          <Label htmlFor={typeId} className="text-xs tracking-wide uppercase">
+            Kind
+          </Label>
           <Select value={type} onValueChange={setType}>
-            <SelectTrigger className="mt-1.5 w-full">
+            <SelectTrigger id={typeId} className="mt-1.5 w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -697,8 +723,11 @@ function AddFactForm({
           </Select>
         </div>
         <div>
-          <Label className="text-xs tracking-wide uppercase">The fact, in one sentence</Label>
+          <Label htmlFor={contentId} className="text-xs tracking-wide uppercase">
+            The fact, in one sentence
+          </Label>
           <Textarea
+            id={contentId}
             className="mt-1.5"
             rows={2}
             placeholder="e.g. Every bag is roasted within 48 hours of shipping."

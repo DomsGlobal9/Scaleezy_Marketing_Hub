@@ -1,4 +1,5 @@
 """Publishing execution — retry safety and the move onto the worker."""
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -193,6 +194,10 @@ class PublishingRoleTests(APITestCase):
             content_item=self.content,
             caption='Newer job',
             status=PublishingJob.Status.PUBLISHED,
+        )
+        # Keep this ordering assertion independent of SQLite clock precision.
+        PublishingJob.objects.filter(pk=newer.pk).update(
+            created_at=self.job.created_at + timedelta(seconds=1)
         )
         self.authenticate_as(WorkspaceMember.Role.VIEWER)
 

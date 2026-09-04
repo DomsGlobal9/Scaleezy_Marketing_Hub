@@ -102,6 +102,11 @@ class ServiceCredentialTests(TestCase):
 class AdapterCredentialTests(TestCase):
     """The adapter must hand its workspace credential to the service."""
 
+    def test_adapter_default_matches_the_supported_generation_model(self):
+        from apps.ai.adapters.gemini import GeminiAdapter
+
+        self.assertEqual(GeminiAdapter.default_model, GeminiGeneratorService.TEXT_MODEL)
+
     @override_settings(GEMINI_API_KEY='', GEMINI_MOCK_MODE=False)
     def test_adapter_passes_its_credential_through(self):
         from apps.ai.adapters.gemini import GeminiAdapter
@@ -130,12 +135,20 @@ class AdapterCredentialTests(TestCase):
         """Regression: a temporary google.genai Client closes its own transport."""
         from apps.ai.adapters.gemini import GeminiAdapter
 
+        schema = {
+            'type': 'object',
+            'properties': {'signals': {'type': 'array', 'items': {'type': 'string'}}},
+            'required': ['signals'],
+        }
+        captured = {}
+
         class LifetimeModels:
             closed = False
 
-            def generate_content(self, **_kwargs):
+            def generate_content(self, **kwargs):
                 if self.closed:
                     raise RuntimeError('Cannot send a request, as the client has been closed.')
+                captured.update(kwargs)
                 return SimpleNamespace(text='{"signals": []}')
 
         class LifetimeClient:
@@ -151,10 +164,83 @@ class AdapterCredentialTests(TestCase):
             GeminiGeneratorService, '_get_client', side_effect=LifetimeClient
         ):
             result = adapter.generate_text(
-                {'task': 'EXTRACT', 'structured': {'reference': 'saved-id'}}
+                {
+                    'task': 'EXTRACT',
+                    'structured': {'reference': 'saved-id'},
+                    'response_schema': schema,
+                }
             )
 
         self.assertEqual(result, {'raw': {'signals': []}})
+        self.assertEqual(captured['config'].response_mime_type, 'application/json')
+        self.assertEqual(captured['config'].response_json_schema, schema)
+
+    def test_inspiration_image_analysis_enforces_the_supplied_schema(self):
+        from apps.ai.adapters.gemini import GeminiAdapter
+
+        schema = {
+            'type': 'object',
+            'properties': {'signals': {'type': 'array', 'items': {'type': 'string'}}},
+            'required': ['signals'],
+        }
+        captured = {}
+
+        class Models:
+            def generate_content(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(text='{"signals": ["visible grid"]}')
+
+        adapter = GeminiAdapter(credentials='tenant-key', model='m', config={})
+        with patch.object(
+            GeminiGeneratorService,
+            '_get_client',
+            return_value=SimpleNamespace(models=Models()),
+        ), patch.object(
+            GeminiGeneratorService,
+            '_parse_base64_image',
+            return_value=('image/png', b'image-bytes'),
+        ):
+            result = adapter.analyze_image({
+                'task': 'INSPIRATION_ANALYSIS',
+                'reference_image_base64': 'data:image/png;base64,eA==',
+                'response_schema': schema,
+            })
+
+        self.assertEqual(result['analysis']['signals'], ['visible grid'])
+        self.assertEqual(captured['config'].response_mime_type, 'application/json')
+        self.assertEqual(captured['config'].response_json_schema, schema)
+
+    def test_empty_required_observations_fail_over_instead_of_looking_successful(self):
+        from apps.ai.adapters.base import AIProviderError
+        from apps.ai.adapters.gemini import GeminiAdapter
+
+        schema = {
+            'type': 'object',
+            'properties': {
+                'signals': {
+                    'type': 'array',
+                    'minItems': 1,
+                    'items': {'type': 'string'},
+                },
+            },
+            'required': ['signals'],
+        }
+
+        class Models:
+            def generate_content(self, **_kwargs):
+                return SimpleNamespace(text='{"signals": []}')
+
+        adapter = GeminiAdapter(credentials='tenant-key', model='m', config={})
+        with patch.object(
+            GeminiGeneratorService,
+            '_get_client',
+            return_value=SimpleNamespace(models=Models()),
+        ), self.assertRaisesRegex(AIProviderError, 'incomplete structured output'):
+            adapter.generate_text({
+                'task': 'EXTRACT',
+                'structured': {'reference': 'saved-id'},
+                'response_schema': schema,
+            })
 
     @override_settings(
         GEMINI_API_KEY='',
@@ -165,15 +251,38 @@ class AdapterCredentialTests(TestCase):
     def test_health_check_authenticates_without_generation(self, get):
         from apps.ai.adapters.gemini import GeminiAdapter
 
-        get.return_value = Mock(status_code=200)
+        get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={'supportedGenerationMethods': ['generateContent']}),
+        )
         result = GeminiAdapter(credentials='tenant-key').health_check()
 
         self.assertTrue(result['ok'])
         url, kwargs = get.call_args
-        self.assertEqual(url[0], 'https://gemini.test/v1beta/models')
+        self.assertEqual(
+            url[0],
+            'https://gemini.test/v1beta/models/gemini-2.5-flash',
+        )
         self.assertEqual(kwargs['headers']['x-goog-api-key'], 'tenant-key')
         self.assertEqual(kwargs['timeout'], 4.0)
         self.assertNotIn('tenant-key', str(result))
+
+    @override_settings(GEMINI_API_KEY='')
+    @patch('apps.ai.adapters.gemini.httpx.get')
+    def test_health_check_rejects_a_retired_model_without_generation(self, get):
+        from apps.ai.adapters.gemini import GeminiAdapter
+
+        get.return_value = Mock(status_code=404, text='private upstream detail')
+        result = GeminiAdapter(
+            credentials='tenant-key', model='gemini-1.5-pro'
+        ).health_check()
+
+        self.assertEqual(
+            result,
+            {'ok': False, 'detail': 'Gemini model gemini-1.5-pro is not available.'},
+        )
+        self.assertNotIn('tenant-key', str(result))
+        self.assertNotIn('private upstream detail', str(result))
 
     @override_settings(GEMINI_API_KEY='')
     @patch('apps.ai.adapters.gemini.httpx.get')
@@ -231,7 +340,7 @@ class NothingIsPersistedFromAMissingKeyTests(TestCase):
     def test_create_is_refused_and_persists_no_content_item(self):
         response = self.client.post(
             '/api/marketing/gemini/generate/',
-            {'campaignName': 'Diwali', 'contentType': 'poster'},
+            {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Diwali', 'contentType': 'poster'},
             format='json', **self.hdr,
         )
 
@@ -243,7 +352,7 @@ class NothingIsPersistedFromAMissingKeyTests(TestCase):
     def test_the_usage_log_records_a_failure_not_a_success(self):
         self.client.post(
             '/api/marketing/gemini/generate/',
-            {'campaignName': 'Diwali', 'contentType': 'poster'},
+            {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Diwali', 'contentType': 'poster'},
             format='json', **self.hdr,
         )
 
@@ -274,7 +383,8 @@ class NothingIsPersistedFromAMissingKeyTests(TestCase):
     def test_the_brand_brain_is_not_credited_with_a_generation(self):
         """A refused generation must not look like a compile-worthy event."""
         self.client.post(
-            '/api/marketing/gemini/generate/', {'campaignName': 'Diwali'},
+            '/api/marketing/gemini/generate/',
+            {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Diwali'},
             format='json', **self.hdr,
         )
         self.brand.refresh_from_db()

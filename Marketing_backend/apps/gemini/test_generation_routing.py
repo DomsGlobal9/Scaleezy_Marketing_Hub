@@ -87,6 +87,7 @@ class GenerationRoutingTests(TenantFixtureMixin, TestCase):
 
     def payload(self, **overrides):
         data = {
+            'creativeMode': 'AI_ORIGINAL',
             'campaignName': 'Spring launch',
             'product': 'Single origin',
             'audience': 'Home brewers',
@@ -264,11 +265,11 @@ class GenerationRoutingTests(TenantFixtureMixin, TestCase):
         self.assertEqual(data['postTitle'], 'Roasted this week')
         self.assertEqual(data['postDescription'], 'Beans that were green on Monday.')
         self.assertEqual(data['postHashtags'], '#coffee #freshroast')
-        # The poster is now auto-composed — copy baked onto the image — so the
-        # preview points at the composed asset, not the provider's raw image.
-        self.assertTrue(
-            data['posterImageUrl'].startswith('https://storage.test/composed/'),
-            data['posterImageUrl'],
+        # An AI_ORIGINAL generation ships the provider's poster untouched —
+        # no built-in template is auto-stamped on it — so the preview points
+        # at the raw generated image.
+        self.assertEqual(
+            data['posterImageUrl'], 'https://cdn.example.com/poster.png'
         )
 
     def test_the_generated_content_item_is_still_persisted(self):
@@ -313,15 +314,14 @@ class GenerationRoutingTests(TenantFixtureMixin, TestCase):
         item = ContentItem.objects.select_related('asset').get(pk=data['contentItemId'])
         self.assertEqual(str(item.asset_id), data['assetId'])
         self.assertEqual(item.preview_url, data['posterImageUrl'])
-        # Auto-compose has since baked the copy onto the image, so the item's
-        # asset is the composed poster…
-        self.assertEqual(item.asset.source, MarketingAsset.Source.COMPOSED)
+        # An AI_ORIGINAL generation ships raw: the durable copy of the
+        # provider's image IS the poster — no composed derivative, no
+        # template stamped on the item.
+        self.assertEqual(item.asset.source, MarketingAsset.Source.AI_GENERATED)
         self.assertEqual(item.asset.file_url, data['posterImageUrl'])
-        # …while the provider's image was still made durable first, and is
-        # recorded as the photograph the composition was built from.
-        source = MarketingAsset.objects.get(pk=item.layout_config['source_asset'])
-        self.assertEqual(source.source, MarketingAsset.Source.AI_GENERATED)
-        self.assertTrue(source.file_url.startswith('https://storage.test/generated/'))
+        self.assertTrue(item.asset.file_url.startswith('https://storage.test/generated/'))
+        self.assertEqual(item.layout_plugin, '')
+        self.assertNotIn('source_asset', item.layout_config)
 
 
 class ConcurrentGenerationTests(GenerationRoutingTests):
@@ -357,10 +357,9 @@ class ConcurrentGenerationTests(GenerationRoutingTests):
         )
         data = response.json()['data']
         self.assertEqual(data['postTitle'], 'Roasted this week')
-        # Auto-composed: the raw provider image became the poster's photograph.
-        self.assertTrue(
-            data['posterImageUrl'].startswith('https://storage.test/composed/'),
-            data['posterImageUrl'],
+        # AI_ORIGINAL ships raw: the provider's image is the poster.
+        self.assertEqual(
+            data['posterImageUrl'], 'https://cdn.example.com/poster.png'
         )
 
     def test_partial_image_failure_keeps_the_copy(self):
@@ -402,15 +401,14 @@ class ConcurrentGenerationTests(GenerationRoutingTests):
             )
 
         data = response.json()['data']
-        # The rescued poster is then auto-composed like any other; the
-        # from-text image survives as the composition's source photograph.
-        self.assertTrue(
-            data['posterImageUrl'].startswith('https://storage.test/composed/'),
-            data['posterImageUrl'],
+        # The rescued poster ships raw like any other AI_ORIGINAL result:
+        # the from-text image IS the poster.
+        self.assertEqual(
+            data['posterImageUrl'], 'https://cdn.example.com/from-text.png'
         )
-        item = ContentItem.objects.get(id=data['contentItemId'])
-        source = MarketingAsset.objects.get(pk=item.layout_config['source_asset'])
-        self.assertEqual(source.file_url, 'https://cdn.example.com/from-text.png')
+        item = ContentItem.objects.select_related('asset').get(pk=data['contentItemId'])
+        self.assertEqual(item.asset.file_url, 'https://cdn.example.com/from-text.png')
+        self.assertNotIn('source_asset', item.layout_config)
 
     def test_a_combined_provider_is_not_asked_twice(self):
         """When one provider serves both capabilities and its text result
@@ -423,7 +421,7 @@ class ConcurrentGenerationTests(GenerationRoutingTests):
         calls = []
 
         def counting(self_router, capability, brief, content_item_id=None):
-            calls.append(capability)
+            calls.append((capability, str(brief.get('task') or '').upper()))
             return {
                 **FAKE_TEXT_RESULT,
                 'raw': {'posterImageUrl': 'https://cdn.example.com/one-call.png'},
@@ -442,13 +440,22 @@ class ConcurrentGenerationTests(GenerationRoutingTests):
             )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(calls, [Capability.TEXT], "expected exactly one dispatch")
-        data = response.json()['data']
-        # One dispatch, then auto-compose bakes the copy onto that one image.
-        self.assertTrue(
-            data['posterImageUrl'].startswith('https://storage.test/composed/'),
-            data['posterImageUrl'],
+        # Exactly one GENERATION dispatch — the duplicate-spend this test
+        # exists to forbid. The self-critique judge's schema'd EXTRACT call
+        # is separate, intentional spend and never buys a second poster.
+        generation_calls = [c for c, task in calls if task != 'EXTRACT']
+        self.assertEqual(
+            generation_calls, [Capability.TEXT],
+            "expected exactly one generation dispatch",
         )
-        item = ContentItem.objects.get(id=data['contentItemId'])
-        source = MarketingAsset.objects.get(pk=item.layout_config['source_asset'])
-        self.assertEqual(source.file_url, 'https://cdn.example.com/one-call.png')
+        self.assertTrue(
+            all(c == Capability.TEXT for c, task in calls if task == 'EXTRACT'),
+            calls,
+        )
+        data = response.json()['data']
+        # One dispatch, and that one image ships as the poster — raw.
+        self.assertEqual(
+            data['posterImageUrl'], 'https://cdn.example.com/one-call.png'
+        )
+        item = ContentItem.objects.select_related('asset').get(pk=data['contentItemId'])
+        self.assertEqual(item.asset.file_url, 'https://cdn.example.com/one-call.png')

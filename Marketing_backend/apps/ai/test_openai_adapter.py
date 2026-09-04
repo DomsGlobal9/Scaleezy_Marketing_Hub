@@ -163,6 +163,50 @@ class OpenAIAdapterTests(SimpleTestCase):
         )
 
     @patch('apps.ai.adapters.openai.httpx.post')
+    def test_subject_focus_goes_through_the_structured_schema_path(self, post):
+        """SUBJECT_FOCUS must honour the supplied response schema — routed to
+        the generic campaign-analysis branch it would be a paid call whose
+        shape the caller permanently caches as a MALFORMED skip."""
+        payload = {
+            'focal': {'x': 0.4, 'y': 0.3},
+            'subject_bbox': [0.1, 0.1, 0.8, 0.9],
+            'has_face': True,
+        }
+        post.return_value = responses_json(payload)
+        schema = {
+            'type': 'object',
+            'properties': {'focal': {'type': 'object'}},
+            'required': ['focal'],
+        }
+
+        result = OpenAIAdapter(credentials='workspace-test-key').analyze_image({
+            'task': 'SUBJECT_FOCUS',
+            'instruction': 'Locate the main subject.',
+            'response_schema': schema,
+            'reference_image_base64': 'aW1hZ2UtYnl0ZXM=',
+            'reference_image_mime_type': 'image/jpeg',
+        })
+
+        self.assertEqual(result['analysis'], payload)
+        _url, kwargs = post.call_args
+        fmt = kwargs['json']['text']['format']
+        self.assertEqual(fmt['type'], 'json_schema')
+        self.assertEqual(fmt['name'], 'scaleezy_subject_focus')
+        self.assertEqual(fmt['schema'], schema)
+        content = kwargs['json']['input'][0]['content']
+        self.assertEqual(content[0]['text'], 'Locate the main subject.')
+        self.assertEqual(content[1]['type'], 'input_image')
+
+        # Without a schema the call is refused BEFORE any spend.
+        post.reset_mock()
+        with self.assertRaises(AIProviderError):
+            OpenAIAdapter(credentials='workspace-test-key').analyze_image({
+                'task': 'SUBJECT_FOCUS',
+                'reference_image_base64': 'aW1hZ2UtYnl0ZXM=',
+            })
+        post.assert_not_called()
+
+    @patch('apps.ai.adapters.openai.httpx.post')
     def test_image_caption_uses_responses_and_returns_existing_shape(self, post):
         post.return_value = responses_json({
             'postTitle': 'Start Fresh',

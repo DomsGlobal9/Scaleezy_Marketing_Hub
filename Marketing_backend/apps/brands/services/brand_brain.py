@@ -188,6 +188,9 @@ def _memories(brand):
     A revoked source stops influencing the brain on the next compile (PR1-010),
     while the memory row itself stays for audit.
     """
+    from django.db.models import Q
+
+    now = timezone.now()
     return (
         BrandMemory.objects.filter(
             workspace_id=brand.workspace_id,
@@ -195,8 +198,33 @@ def _memories(brand):
             status=BrandMemory.MemoryStatus.CONFIRMED,
         )
         .exclude(source__status=BrandSource.SourceStatus.ARCHIVED)
+        .filter(Q(valid_from__isnull=True) | Q(valid_from__lte=now))
+        .filter(Q(valid_until__isnull=True) | Q(valid_until__gt=now))
         .order_by('id')
     )
+
+
+def brain_snapshot_needs_refresh(brand, brain):
+    """Check snapshot eligibility without reconstructing any raw claim.
+
+    Time passing is an intelligence change even when no row is edited. Compare
+    only scoped eligible IDs, including future facts that have now started and
+    withdrawn/expired facts that the saved snapshot still cites. The persisted
+    failure flag also covers failed rule/preference rebuilds and a caller whose
+    in-memory Brand predates that failure. These are two fixed queries, not a
+    source-by-source read or a full compile on every generation.
+    """
+    health = type(brand).objects.filter(
+        pk=brand.pk, workspace_id=brand.workspace_id,
+    ).values('brain_last_error').first()
+    if health is None or health['brain_last_error']:
+        return True
+    sources = brain.get('sources')
+    if not isinstance(sources, dict) or not isinstance(sources.get('memory_ids'), list):
+        return True
+    cited_ids = {str(pk) for pk in sources['memory_ids']}
+    eligible_ids = {str(pk) for pk in _memories(brand).values_list('pk', flat=True)}
+    return cited_ids != eligible_ids
 
 
 def _rules(brand):
@@ -369,7 +397,14 @@ def compile_brand_brain(brand):
 
 def compile_brand_brain_from_records(brand, *, memories, rules, preferences, signals):
     """Compile from an authoritative record snapshot already loaded by a caller."""
-    memories = list(memories)
+    # Bulk callers bypass _memories(). Enforce the same time window before
+    # computing claims, conflicts, narrative and lineage from their records.
+    now = timezone.now()
+    memories = [
+        memory for memory in memories
+        if (memory.valid_from is None or memory.valid_from <= now)
+        and (memory.valid_until is None or memory.valid_until > now)
+    ]
     rules = list(rules)
     preferences = list(preferences)
     signals = list(signals)
@@ -440,7 +475,6 @@ def compile_brand_brain_from_records(brand, *, memories, rules, preferences, sig
         'visual_language': {
             'palette': brand.palette or {},
             'fonts': brand.fonts or {},
-            'layout_preference': brand.layout_preference,
             'claims': visual,
         },
         'verified_product_truth': _memory_texts(

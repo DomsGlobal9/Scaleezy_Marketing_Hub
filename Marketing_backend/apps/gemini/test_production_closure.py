@@ -31,6 +31,7 @@ class ProductionClosureTests(TenantFixtureMixin, TestCase):
         )
 
     def queue(self, payload):
+        payload = {'creativeMode': 'AI_ORIGINAL', **payload}
         queued = SimpleNamespace(enqueue=lambda _request_id: SimpleNamespace(id='task-1'))
         with patch('apps.gemini.tasks.generate_content', new=queued):
             response = self.client.post(

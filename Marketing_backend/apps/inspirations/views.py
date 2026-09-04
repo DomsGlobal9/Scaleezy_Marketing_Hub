@@ -5,6 +5,8 @@ Follows the shape established by `apps.knowledge`: workspace-scoped queryset,
 role-gated writes, lifecycle changes through named actions rather than PATCH,
 and no hard delete on anything that carries provenance.
 """
+import logging
+
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -40,6 +42,22 @@ from .services import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+INSPIRATION_QUEUE_FAILURE = (
+    'Inspiration analysis could not enter the task queue. Try again.'
+)
+RESEARCH_QUEUE_FAILURE = 'Research could not enter the task queue. Try again.'
+
+
+class ResearchQueueUnavailable(Exception):
+    """Carries the persisted failed run back through DRF's create flow."""
+
+    def __init__(self, run):
+        self.run = run
+        super().__init__(RESEARCH_QUEUE_FAILURE)
+
+
 class WorkspaceResolvedViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsWorkspaceMember, HasWorkspaceRole]
     requires_workspace = False
@@ -72,6 +90,12 @@ class BrandInspirationViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
         serializer.save(
             workspace=self._authorised_workspace(), created_by=self.request.user
         )
+
+    def perform_update(self, serializer):
+        inspiration = serializer.save()
+        # Scope/focus and user annotations are editable direction, not source
+        # identity. Recompile immediately so the snapshot respects the change.
+        rebuild_brand_brain_safely(inspiration.brand)
 
     def destroy(self, request, *args, **kwargs):
         return APIResponse(
@@ -137,7 +161,46 @@ class BrandInspirationViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
         }
         inspiration.metadata = metadata
         inspiration.save(update_fields=['analysis_status', 'metadata', 'updated_at'])
-        task_result = analyze_inspiration_task.enqueue(str(inspiration.pk))
+        try:
+            task_result = analyze_inspiration_task.enqueue(str(inspiration.pk))
+        except Exception:
+            logger.exception(
+                'Inspiration analysis could not enter the durable task queue.',
+                extra={
+                    'inspiration_id': str(inspiration.pk),
+                    'workspace_id': str(inspiration.workspace_id),
+                },
+            )
+            failed_at = timezone.now()
+            metadata = dict(inspiration.metadata or {})
+            metadata['analysis'] = {
+                **dict(metadata.get('analysis') or {}),
+                'failed_at': failed_at.isoformat(),
+                'error': INSPIRATION_QUEUE_FAILURE,
+            }
+            BrandInspiration.objects.filter(
+                pk=inspiration.pk,
+                analysis_status=BrandInspiration.AnalysisStatus.QUEUED,
+            ).update(
+                analysis_status=BrandInspiration.AnalysisStatus.FAILED,
+                metadata=metadata,
+                updated_at=failed_at,
+            )
+            inspiration.refresh_from_db()
+            return APIResponse(
+                success=False,
+                message=INSPIRATION_QUEUE_FAILURE,
+                error={
+                    'code': 'QUEUE_ENQUEUE_FAILED',
+                    'message': INSPIRATION_QUEUE_FAILURE,
+                },
+                data={
+                    'inspiration': BrandInspirationSerializer(
+                        inspiration, context=self.get_serializer_context()
+                    ).data,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return APIResponse(
             success=True,
             message="Inspiration queued for analysis.",
@@ -240,6 +303,12 @@ class InspirationSignalViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
         # A stated preference is explicit intelligence: compile it in now.
         rebuild_brand_brain_safely(serializer.instance.inspiration.brand)
 
+    def perform_update(self, serializer):
+        signal = serializer.save()
+        # Weight/confidence are intentionally editable in PR2; the compiled
+        # snapshot must follow that edit without changing signal provenance.
+        rebuild_brand_brain_safely(signal.inspiration.brand)
+
     def destroy(self, request, *args, **kwargs):
         return APIResponse(
             success=False,
@@ -340,13 +409,53 @@ class ResearchRunViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
             queryset = queryset.filter(brand_id=brand_id)
         return queryset
 
+    @staticmethod
+    def _mark_queue_failed(run):
+        failed_at = timezone.now()
+        run.status = ResearchRun.Status.FAILED
+        run.task_id = ''
+        run.error = RESEARCH_QUEUE_FAILURE
+        run.completed_at = failed_at
+        run.save(
+            update_fields=['status', 'task_id', 'error', 'completed_at', 'updated_at']
+        )
+
+    def _queue_failure_response(self, run):
+        return APIResponse(
+            success=False,
+            message=RESEARCH_QUEUE_FAILURE,
+            error={
+                'code': 'QUEUE_ENQUEUE_FAILED',
+                'message': RESEARCH_QUEUE_FAILURE,
+            },
+            data=self.get_serializer(run).data,
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    def create(self, request, *args, **kwargs):
+        try:
+            return super().create(request, *args, **kwargs)
+        except ResearchQueueUnavailable as exc:
+            return self._queue_failure_response(exc.run)
+
     def perform_create(self, serializer):
         from .tasks import research_creative_task
 
         run = serializer.save(
             workspace=self._authorised_workspace(), initiated_by=self.request.user
         )
-        task_result = research_creative_task.enqueue(str(run.pk))
+        try:
+            task_result = research_creative_task.enqueue(str(run.pk))
+        except Exception:
+            logger.exception(
+                'Research run could not enter the durable task queue.',
+                extra={
+                    'research_run_id': str(run.pk),
+                    'workspace_id': str(run.workspace_id),
+                },
+            )
+            self._mark_queue_failed(run)
+            raise ResearchQueueUnavailable(run)
         run.task_id = str(task_result.id)
         run.save(update_fields=['task_id', 'updated_at'])
 
@@ -376,9 +485,26 @@ class ResearchRunViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
             )
         run.status = ResearchRun.Status.QUEUED
         run.error = ''
-        task_result = research_creative_task.enqueue(str(run.pk))
+        run.task_id = ''
+        run.completed_at = None
+        try:
+            task_result = research_creative_task.enqueue(str(run.pk))
+        except Exception:
+            logger.exception(
+                'Research retry could not enter the durable task queue.',
+                extra={
+                    'research_run_id': str(run.pk),
+                    'workspace_id': str(run.workspace_id),
+                },
+            )
+            self._mark_queue_failed(run)
+            return self._queue_failure_response(run)
         run.task_id = str(task_result.id)
-        run.save(update_fields=['status', 'error', 'task_id', 'updated_at'])
+        run.save(
+            update_fields=[
+                'status', 'error', 'task_id', 'completed_at', 'updated_at',
+            ]
+        )
         return APIResponse(
             success=True,
             message='Research queued again.',

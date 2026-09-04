@@ -5,10 +5,12 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
 from .models import GeminiGenerationRequest, GeminiGenerationResult
 from .serializers import GeminiGenerationRequestSerializer, GeminiGenerationResultSerializer
+from .execution import media_outcome
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 from apps.common.permissions import (
     IsWorkspaceMember,
+    HasWorkspaceRole,
     authorize_workspace,
     cached_membership_for_workspace,
     get_request_workspace,
@@ -32,20 +34,15 @@ MAX_GENERATION_INSTRUCTION_CHARS = 1000
 from apps.context.services.generation import intelligence_in_force as _intelligence_in_force  # noqa: E402
 
 
-class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
-    queryset = GeminiGenerationRequest.objects.all()
+class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSet):
+    queryset = GeminiGenerationRequest.objects.select_related('result').order_by('-created_at', '-id')
     serializer_class = GeminiGenerationRequestSerializer
-    permission_classes = [IsAuthenticated, IsWorkspaceMember]
+    permission_classes = [IsAuthenticated, IsWorkspaceMember, HasWorkspaceRole]
+    required_role = WorkspaceMember.Role.EDITOR
+    required_read_role = WorkspaceMember.Role.VIEWER
+    http_method_names = ['get', 'post', 'head', 'options']
     requires_workspace = False
 
-
-    def perform_create(self, serializer):
-        # workspace is read-only on the serializer, so it is assigned here from
-        # the caller's authorised workspace rather than the request payload.
-        workspace, error = get_request_workspace(self.request)
-        if error:
-            raise PermissionDenied("No accessible workspace for this request.")
-        serializer.save(workspace=workspace, user=self.request.user)
 
     def _quota_error(self, workspace):
         """
@@ -154,6 +151,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 }
             )
         return {
+            'mode': creative_direction.get('mode', ''),
             'selection_count': len(selections),
             'layout': creative_direction.get('layout', ''),
             'selections': selections,
@@ -232,6 +230,32 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         except Exception:
             logger.exception("Could not build brand context")
             return None
+
+    @staticmethod
+    def _guardrail_block(brand, brief):
+        """A 422 refusing this brief against the brand's written law, or None.
+
+        Runs before any provider is paid and before a request row exists.
+        Only human-written guardrails can block; a brand with none is a no-op.
+        """
+        from apps.brands.services import guardrails as guardrail_law
+
+        violations = guardrail_law.preflight_violations(
+            brand, guardrail_law.preflight_fields(brief)
+        )
+        if not violations:
+            return None
+        message = 'Blocked before any AI was paid: ' + ' '.join(violations)
+        return APIResponse(
+            success=False,
+            message=message,
+            error={
+                'code': 'GUARDRAIL_BLOCKED',
+                'message': message,
+                'violations': violations,
+            },
+            status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
 
     def _brand_rules(self, request):
         """The prompt-facing view of gateway context.
@@ -323,6 +347,9 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         offer = data.get('offer', '')
         brand_tone = data.get('brandTone', data.get('brand_tone', ''))
         reference_image_base64 = data.get('referenceImageBase64', '')
+        content_type = str(
+            data.get('contentType', data.get('content_type', ''))
+        ).strip()
 
         request_data = {
             'campaign_name': campaign_name,
@@ -333,7 +360,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'offer': offer,
             'brand_tone': brand_tone,
             'reference_image_base64': reference_image_base64,
-            'contentType': data.get('contentType', ''),
+            'contentType': content_type,
             'slides': data.get('slides') or [],
             'video_duration': data.get('videoDuration', data.get('video_duration', '')),
             'video_aspect': data.get('videoAspect', data.get('video_aspect', '')),
@@ -394,6 +421,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 workspace,
                 brand,
                 data.get('inspirationSelections', data.get('inspiration_selections', [])),
+                creative_mode=data.get('creativeMode', data.get('creative_mode', '')),
                 layout=data.get('layout', ''),
                 instruction=instruction,
             )
@@ -404,8 +432,54 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 error={'code': exc.code, 'message': str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if (
+            creative_direction['mode'] == 'REFERENCE'
+            and not creative_direction['selections']
+            and not reference_image_base64
+        ):
+            return APIResponse(
+                success=False,
+                message='Choose or upload a reference before generation.',
+                error={
+                    'code': 'REFERENCE_REQUIRED',
+                    'message': 'Choose or upload a reference before generation.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if creative_direction['mode'] != 'REFERENCE' and reference_image_base64:
+            return APIResponse(
+                success=False,
+                message='An uploaded reference can only be used in inspiration mode.',
+                error={
+                    'code': 'INVALID_CREATIVE_SOURCE',
+                    'message': (
+                        'An uploaded reference can only be used in inspiration mode.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if (
+            creative_direction['mode'] == 'CATALOG_TEMPLATE'
+            and content_type.casefold() not in {'', 'poster'}
+        ):
+            return APIResponse(
+                success=False,
+                message='Templates are available only for poster generation.',
+                error={
+                    'code': 'INVALID_CREATIVE_SOURCE',
+                    'message': 'Templates are available only for poster generation.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         request_data['creative_direction'] = creative_direction
         request_data['layout'] = creative_direction['layout']
+        # The typed instruction must face the gate too — the async endpoint
+        # carries it in its brief and refuses the identical wording.
+        request_data['instruction'] = instruction
+
+        blocked = self._guardrail_block(brand, request_data)
+        if blocked:
+            return blocked
 
         quota_error = self._quota_error(workspace)
         if quota_error:
@@ -478,12 +552,24 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             # Bake the copy onto the photo with the same engine the studio's
             # "Use this poster" uses. Best-effort — a compose failure leaves
             # the raw generated image in place.
-            from apps.layouts.services import compose_generated_poster
-
-            compose_generated_poster(
-                content_item,
-                user=request.user if request.user.is_authenticated else None,
+            from apps.layouts.services import (
+                PosterCompositionError,
+                compose_generated_poster,
             )
+
+            try:
+                compose_generated_poster(
+                    content_item,
+                    user=request.user if request.user.is_authenticated else None,
+                )
+            except PosterCompositionError as exc:
+                config = dict(content_item.layout_config or {})
+                config['composition'] = {
+                    'status': 'FAILED',
+                    'error': str(exc)[:300],
+                }
+                content_item.layout_config = config
+                content_item.save(update_fields=['layout_config', 'updated_at'])
 
         response_payload = {
             'postTitle': result_data.get('postTitle', ''),
@@ -499,17 +585,47 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'slideImageUrls': result_data.get('slideImageUrls') or [],
             'metadata': {
                 **(result_data.get('metadata') or {}),
+                'media': media_outcome(content_item, routed),
                 'provider': routed['provider'],
                 'provider_name': routed['provider_name'],
                 'brain_version': routed['brain_version'],
                 'creative_direction': {
+                    'mode': creative_direction['mode'],
                     'selection_count': creative_direction['selection_count'],
                     'layout': creative_direction['layout'],
                 },
+                **(
+                    {'composition': content_item.layout_config['composition']}
+                    if content_item
+                    and isinstance(content_item.layout_config, dict)
+                    and content_item.layout_config.get('composition')
+                    else {}
+                ),
             },
             'contentItemId': str(content_item.id) if content_item else None,
             'assetId': str(content_item.asset_id) if content_item and content_item.asset_id else None,
         }
+
+        if content_item and content_item.asset_id is None:
+            # The synchronous compatibility route needs the same image-only
+            # recovery handle as queued Studio; never force a full repurchase.
+            import json
+            from django.db import transaction
+            with transaction.atomic():
+                partial_request = GeminiGenerationRequest.objects.create(
+                    workspace=workspace, user=request.user,
+                    prompt_data=json.dumps(request_data), status='COMPLETED',
+                    provider=routed['provider'], completed_at=timezone.now(),
+                )
+                GeminiGenerationResult.objects.create(
+                    generation_request=partial_request,
+                    generated_text=content_item.caption,
+                    generated_asset_url=content_item.preview_url,
+                    metadata={**response_payload['metadata'],
+                        'postTitle': content_item.headline, 'postHashtags': content_item.hashtags,
+                        'contentItemId': str(content_item.pk), 'assetId': None},
+                )
+            response_payload['generationId'] = str(partial_request.pk)
 
         return APIResponse(
             success=True, data=response_payload, status=status.HTTP_201_CREATED
@@ -555,6 +671,25 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if error:
             return error
 
+        # Resolve an already accepted delivery before mutable quota, reference
+        # or approval checks: resuming a known request is a read, not new spend.
+        raw_id = request.data.get('requestId')
+        if raw_id:
+            from uuid import UUID
+            try:
+                requested_id = UUID(str(raw_id))
+            except (ValueError, TypeError, AttributeError):
+                return APIResponse(success=False, message='Invalid generation request id.', status=400)
+            existing = GeminiGenerationRequest.objects.filter(pk=requested_id).first()
+            if existing is not None:
+                if existing.workspace_id != workspace.pk:
+                    return APIResponse(success=False, message='Generation request unavailable.', status=409)
+                return APIResponse(success=True, data={
+                    'generationId': str(existing.pk), 'taskId': None,
+                    'status': existing.status,
+                    'pollUrl': f'/api/marketing/ai-generation/{existing.pk}/',
+                }, status=202)
+
         quota_error = self._quota_error(workspace)
         if quota_error:
             return quota_error
@@ -589,6 +724,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 workspace,
                 brand,
                 data.get('inspirationSelections', data.get('inspiration_selections', [])),
+                creative_mode=data.get('creativeMode', data.get('creative_mode', '')),
                 layout=data.get('layout', ''),
                 instruction=instruction,
             )
@@ -615,6 +751,46 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             )
 
         content_type = str(data.get('contentType', data.get('content_type', ''))).strip()
+        has_uploaded_reference = bool(data.get('referenceImageBase64'))
+        if (
+            creative_direction['mode'] == 'REFERENCE'
+            and not creative_direction['selections']
+            and not has_uploaded_reference
+        ):
+            return APIResponse(
+                success=False,
+                message='Choose or upload a reference before generation.',
+                error={
+                    'code': 'REFERENCE_REQUIRED',
+                    'message': 'Choose or upload a reference before generation.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if creative_direction['mode'] != 'REFERENCE' and has_uploaded_reference:
+            return APIResponse(
+                success=False,
+                message='An uploaded reference can only be used in inspiration mode.',
+                error={
+                    'code': 'INVALID_CREATIVE_SOURCE',
+                    'message': (
+                        'An uploaded reference can only be used in inspiration mode.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if (
+            creative_direction['mode'] == 'CATALOG_TEMPLATE'
+            and content_type.casefold() not in {'', 'poster'}
+        ):
+            return APIResponse(
+                success=False,
+                message='Templates are available only for poster generation.',
+                error={
+                    'code': 'INVALID_CREATIVE_SOURCE',
+                    'message': 'Templates are available only for poster generation.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if analyze_before_generation_ids and content_type.casefold() != 'poster':
             return APIResponse(
                 success=False,
@@ -667,7 +843,13 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'layout': creative_direction['layout'],
         }
 
-        generation = GeminiGenerationRequest.objects.create(
+        # The whole point of written guardrails: refuse BEFORE a request row
+        # exists or a provider is paid, with the reason in plain language.
+        blocked = self._guardrail_block(brand, brief)
+        if blocked:
+            return blocked
+
+        generation_defaults = dict(
             workspace=workspace,
             user=request.user if request.user.is_authenticated else None,
             prompt_data=json.dumps(brief),
@@ -683,14 +865,33 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         )
 
         from apps.gemini.tasks import generate_content
+        from django.db import transaction
+        from uuid import UUID, uuid4
 
         try:
-            task_result = generate_content.enqueue(str(generation.id))
+            generation_id = UUID(str(data.get('requestId'))) if data.get('requestId') else uuid4()
+        except (ValueError, TypeError, AttributeError):
+            return APIResponse(success=False, message='Invalid generation request id.', status=400)
+
+        try:
+            # Client retries after an uncertain HTTP response reuse this ID.
+            # Creation and enqueue commit together; a repeated delivery never
+            # queues another paid operation or rewrites its original brief.
+            with transaction.atomic():
+                generation, created = GeminiGenerationRequest.objects.get_or_create(
+                    pk=generation_id, defaults=generation_defaults,
+                )
+                if generation.workspace_id != workspace.pk:
+                    return APIResponse(success=False, message='Generation request unavailable.', status=409)
+                task_result = generate_content.enqueue(str(generation.id)) if created else None
         except Exception as exc:
-            logger.exception('Generation %s could not be queued', generation.pk)
-            generation.status = GeminiGenerationRequest.Status.FAILED
-            generation.error_message = 'Generation could not be queued. Please try again.'
-            generation.save(update_fields=['status', 'error_message', 'updated_at'])
+            logger.exception('Generation %s could not be queued', generation_id)
+            # Preserve a truthful failure record, outside the rolled-back
+            # enqueue transaction, for existing clients and diagnostics.
+            generation, _ = GeminiGenerationRequest.objects.get_or_create(
+                pk=generation_id, defaults={**generation_defaults, 'status': 'FAILED',
+                    'error_message': 'Generation could not be queued. Please try again.'},
+            )
             return APIResponse(
                 success=False,
                 message=generation.error_message,
@@ -709,7 +910,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             success=True,
             data={
                 'generationId': str(generation.id),
-                'taskId': task_result.id,
+                'taskId': task_result.id if task_result else None,
                 'status': generation.status,
                 'pollUrl': f"/api/marketing/ai-generation/{generation.id}/",
             },
@@ -802,6 +1003,48 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         except Exception as e:
             logger.exception("Video analysis failed")
             return APIResponse(success=False, message=str(e), status=500)
+
+    @action(detail=True, methods=['post'], url_path='retry-image')
+    def retry_image(self, request, pk=None):
+        """Queue only missing imagery for an existing, still-editable draft."""
+        import json
+        from django.db import transaction
+        from apps.content.models import ContentItem
+        from .execution import execution_state
+        from .tasks import generate_content
+
+        scoped = self.get_object()
+        quota_error = self._quota_error(scoped.workspace)
+        if quota_error:
+            return quota_error
+        approval_error = approval_gate_response(scoped.workspace)
+        if approval_error:
+            return approval_error
+        try:
+            with transaction.atomic():
+                generation = GeminiGenerationRequest.objects.select_for_update().get(pk=scoped.pk)
+                state = execution_state(generation)
+                result = getattr(generation, 'result', None)
+                metadata = (result.metadata or {}) if result else {}
+                content = ContentItem.objects.filter(
+                    pk=metadata.get('contentItemId'), workspace=generation.workspace,
+                    status=ContentItem.Status.DRAFT, content_format=ContentItem.Format.POSTER,
+                    asset__isnull=True,
+                ).first()
+                if not state['image_retry_allowed'] or content is None:
+                    return APIResponse(success=False, message='This draft is not ready for image retry.', status=409)
+                brief = json.loads(generation.prompt_data or '{}')
+                brief['retry_image_only'] = True
+                brief['retry_brand_id'] = str(content.brand_id) if content.brand_id else None
+                generation.prompt_data = json.dumps(brief)
+                generation.status = GeminiGenerationRequest.Status.PENDING
+                generation.error_message = ''
+                generation.save(update_fields=['prompt_data', 'status', 'error_message', 'updated_at'])
+                generate_content.enqueue(str(generation.pk))
+            return APIResponse(success=True, data={'generationId': str(generation.pk)}, status=202)
+        except Exception:
+            logger.exception('Could not queue missing image for %s', scoped.pk)
+            return APIResponse(success=False, message='Image retry could not be queued. Your copy is unchanged.', status=503)
 
     @action(detail=True, methods=['get'])
     def results(self, request, pk=None):

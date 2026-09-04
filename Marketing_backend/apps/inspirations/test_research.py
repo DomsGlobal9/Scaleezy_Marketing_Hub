@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework import status
 
 from apps.ai.models import Capability
@@ -50,6 +51,61 @@ class ResearchClosureTests(TenantFixtureMixin, TestCase):
         )
         self.assertEqual(leaked.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(ResearchRun.objects.filter(brand=self.brand2).count(), 0)
+
+    @patch('apps.inspirations.tasks.research_creative_task')
+    def test_create_enqueue_failure_is_persisted_and_reported(self, task):
+        task.enqueue.side_effect = RuntimeError('broker credentials were rejected')
+
+        response = self.client1.post(
+            '/api/marketing/research-runs/',
+            {'brand': str(self.brand1.pk), 'query': 'premium retail posters'},
+            format='json', **self.header(),
+        )
+
+        self.assertEqual(
+            response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, response.content
+        )
+        body = response.json()
+        self.assertFalse(body['success'])
+        self.assertEqual(body['error']['code'], 'QUEUE_ENQUEUE_FAILED')
+        self.assertNotIn('credentials', str(body))
+        run = ResearchRun.objects.get(brand=self.brand1)
+        self.assertEqual(run.status, ResearchRun.Status.FAILED)
+        self.assertEqual(run.error, body['error']['message'])
+        self.assertEqual(run.task_id, '')
+        self.assertIsNotNone(run.completed_at)
+
+    @patch('apps.inspirations.tasks.research_creative_task')
+    def test_retry_enqueue_failure_remains_failed_and_is_reported(self, task):
+        task.enqueue.side_effect = RuntimeError('broker credentials were rejected')
+        run = ResearchRun.objects.create(
+            workspace=self.ws1,
+            brand=self.brand1,
+            query='premium retail posters',
+            status=ResearchRun.Status.FAILED,
+            task_id='stale-task-id',
+            error='Previous provider failure',
+            completed_at=timezone.now(),
+            initiated_by=self.user1,
+        )
+
+        response = self.client1.post(
+            f'/api/marketing/research-runs/{run.pk}/retry/',
+            format='json', **self.header(),
+        )
+
+        self.assertEqual(
+            response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, response.content
+        )
+        body = response.json()
+        self.assertFalse(body['success'])
+        self.assertEqual(body['error']['code'], 'QUEUE_ENQUEUE_FAILED')
+        self.assertNotIn('credentials', str(body))
+        run.refresh_from_db()
+        self.assertEqual(run.status, ResearchRun.Status.FAILED)
+        self.assertEqual(run.error, body['error']['message'])
+        self.assertEqual(run.task_id, '')
+        self.assertIsNotNone(run.completed_at)
 
     def test_viewer_cannot_spend_on_research(self):
         response = self.viewer_client.post(

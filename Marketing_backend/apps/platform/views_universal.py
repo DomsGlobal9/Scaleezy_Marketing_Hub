@@ -16,6 +16,7 @@ import logging
 import os
 import re
 from urllib.parse import urlsplit
+from django.db.models import Q
 
 from rest_framework import status
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -41,6 +42,7 @@ from apps.universal.services import (
 )
 
 from .views import PlatformView
+from .pagination import facet_counts, page_rows, wants_page
 
 logger = logging.getLogger(__name__)
 
@@ -133,9 +135,15 @@ class StandardListView(PlatformView):
     def get(self, request):
         wanted = _status_filter(request)
         rows = UniversalStandard.objects.select_related('authored_by', 'supersedes')
+        search = str(request.query_params.get('q', '')).strip()[:200]
+        if search:
+            rows = rows.filter(Q(title__icontains=search) | Q(category__icontains=search) | Q(attribute__icontains=search))
+        counts = facet_counts(rows, 'status') if wants_page(request) else None
         if wanted:
             rows = rows.filter(status=wanted)
-        rows = list(rows.order_by('-created_at')[:500])
+        rows, pagination = page_rows(request, rows.order_by('-created_at', '-pk'))
+        if counts is not None:
+            pagination['status_counts'] = counts
         self.audit('UNIVERSAL_STANDARDS_VIEWED', detail={
             'status': wanted or 'ALL', 'count': len(rows),
         })
@@ -143,6 +151,7 @@ class StandardListView(PlatformView):
             'status': wanted or 'ALL',
             'count': len(rows),
             'standards': [standard_payload(s) for s in rows],
+            **pagination,
         })
 
     def post(self, request):
@@ -424,9 +433,20 @@ class InspirationListView(PlatformView):
     def get(self, request):
         wanted = _status_filter(request)
         rows = PlatformInspiration.objects.select_related('curated_by')
+        search = str(request.query_params.get('q', '')).strip()[:200]
+        if search:
+            rows = rows.filter(Q(title__icontains=search) | Q(annotation__icontains=search) | Q(industry__icontains=search))
+        kind = str(request.query_params.get('kind', '')).upper()
+        kind_base = rows.filter(status=wanted) if wanted else rows
+        kind_counts = facet_counts(kind_base, 'kind') if wants_page(request) else None
+        if kind in EntryKind.values:
+            rows = rows.filter(kind=kind)
+        counts = facet_counts(rows, 'status') if wants_page(request) else None
         if wanted:
             rows = rows.filter(status=wanted)
-        rows = list(rows[:500])
+        rows, pagination = page_rows(request, rows.order_by('-published_at', '-created_at', '-pk'))
+        if counts is not None:
+            pagination.update(status_counts=counts, kind_counts=kind_counts)
         self.audit('PLATFORM_INSPIRATIONS_VIEWED', detail={
             'status': wanted or 'ALL', 'count': len(rows),
         })
@@ -438,6 +458,7 @@ class InspirationListView(PlatformView):
             'inspirations': [
                 inspiration_payload(i, adoptions=adopted.get(str(i.pk), 0)) for i in rows
             ],
+            **pagination,
         })
 
     def post(self, request):

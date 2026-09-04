@@ -1,6 +1,6 @@
 import logging
 
-from rest_framework import viewsets, status
+from rest_framework import mixins, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.utils import timezone
@@ -27,29 +27,36 @@ from .integrations.meta.exceptions import MetaAPIError
 from .integrations.meta.exceptions import MetaOAuthError
 from .integrations.youtube.exceptions import YouTubeOAuthError
 from .utils.encryption import encrypt_token, decrypt_token
+from .oauth_authority import bind_authority, consume_authority, current_authority
 
 logger = logging.getLogger(__name__)
 
 
-class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
+class SocialConnectionViewSet(
+    WorkspaceScopedMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
     queryset = SocialConnection.objects.all()
     serializer_class = SocialConnectionSerializer
-    # Read by HasWorkspaceRole, which get_permissions attaches to `disconnect`
-    # only: disconnecting clears tokens and halts scheduled publishing until
-    # someone re-runs OAuth, which is account configuration — an ADMIN concern
-    # in the product's permission matrix. Every other action keeps its
-    # existing member-level gate.
+    # OAuth owns creation and disconnect preserves the publishing history.
+    # Ordinary resource writes are limited to the serializer's PATCH toggles;
+    # custom POST actions remain available, but raw POST/PUT/DELETE do not.
+    http_method_names = ['get', 'patch', 'post', 'head', 'options']
     required_role = WorkspaceMember.Role.ADMIN
+    required_read_role = WorkspaceMember.Role.VIEWER
 
     def get_permissions(self):
         # The OAuth callback is reached straight after an external redirect and
         # must not 401 — it carries a single-use authorization code that cannot
-        # be replayed. Everything else requires an authenticated member.
+        # be replayed. Its state originates in the ADMIN-gated connect action.
+        # Every other mutation is account configuration and requires ADMIN;
+        # safe reads remain available to every active workspace member.
         if self.action == 'oauth_callback':
             return [AllowAny()]
-        if self.action == 'disconnect':
-            return [IsAuthenticated(), IsWorkspaceMember(), HasWorkspaceRole()]
-        return [IsAuthenticated(), IsWorkspaceMember()]
+        return [IsAuthenticated(), IsWorkspaceMember(), HasWorkspaceRole()]
 
     def get_adapter(self, platform):
         adapters = {
@@ -82,6 +89,7 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
 
         try:
             auth_url = adapter.get_authorization_url(workspace_id=str(workspace_id))
+            bind_authority(authorization_url=auth_url, workspace=_m.workspace, user=request.user, platform=platform)
             logger.info(f"OAuth connect initiated for platform={platform}")
             return APIResponse(success=True, data={"authorization_url": auth_url})
         except LinkedInConfigurationError as e:
@@ -145,6 +153,7 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             return APIResponse(success=False, message="Platform not supported", status=400)
 
         try:
+            request.oauth_authority = consume_authority(state=state, platform=platform)
             # ── Platform-specific token exchange ──────────────────────────
             if platform == 'LINKEDIN':
                 return self._handle_linkedin_callback(adapter, code, state, request)
@@ -159,9 +168,13 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 workspace_id = request.data.get('workspace_id')
                 token_data = adapter.exchange_code_for_token(code, "http://localhost:8000")
 
+            if not token_data.get('access_token'):
+                raise SocialPlatformError('Missing OAuth access token')
             account_info = adapter.get_account_info(token_data['access_token'])
+            if not account_info.get('id'):
+                raise SocialPlatformError('Missing account identity')
 
-            workspace = MarketingWorkspace.objects.get(id=workspace_id)
+            workspace = current_authority(request.oauth_authority, workspace_id)
 
             # Create or update connection
             connection, created = SocialConnection.objects.update_or_create(
@@ -177,6 +190,13 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                     'refresh_token_encrypted': encrypt_token(token_data.get('refresh_token')),
                     'scopes': token_data.get('scopes', ''),
                     'last_verified_at': timezone.now(),
+                    'token_created_at': timezone.now(),
+                    'token_expires_at': (timezone.now() + timezone.timedelta(seconds=int(token_data['expires_in']))) if token_data.get('expires_in') else None,
+                    'reauthorization_required': False,
+                    'last_error': None,
+                    'disconnected_at': None,
+                    'publishing_enabled': True,
+                    'connected_by_id': request.oauth_authority.user_id,
                 }
             )
 
@@ -184,7 +204,7 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             SocialAccountAuditLog.objects.create(
                 workspace=workspace,
                 social_connection=connection,
-                user=request.user if request.user.is_authenticated else None,
+                user_id=request.oauth_authority.user_id,
                 action=SocialAccountAuditLog.Action.ACCOUNT_CONNECTION if created else SocialAccountAuditLog.Action.ACCOUNT_RECONNECTION
             )
 
@@ -248,7 +268,9 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         member_sub = account_info.get('id')
         destinations = adapter.get_publishable_destinations(access_token, member_sub)
 
-        workspace = MarketingWorkspace.objects.get(id=workspace_id)
+        if not member_sub:
+            raise LinkedInOAuthError('No account identity received from LinkedIn')
+        workspace = current_authority(request.oauth_authority, workspace_id)
 
         # Compute token expiration
         expires_in = token_data.get('expires_in')
@@ -288,6 +310,7 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 'reauthorization_required': False,
                 'last_error': None,
                 'disconnected_at': None,
+                'connected_by_id': request.oauth_authority.user_id,
             }
         )
 
@@ -295,7 +318,7 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         SocialAccountAuditLog.objects.create(
             workspace=workspace,
             social_connection=connection,
-            user=request.user if request.user.is_authenticated else None,
+            user_id=request.oauth_authority.user_id,
             action=(
                 SocialAccountAuditLog.Action.ACCOUNT_CONNECTION
                 if created
@@ -315,12 +338,13 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
 
         # Attempt platform-side disconnect
         adapter = self.get_adapter(connection.platform)
+        revoked = False
         if adapter and connection.access_token_encrypted:
             try:
                 access_token = decrypt_token(connection.access_token_encrypted)
-                adapter.disconnect(access_token)
+                revoked = adapter.disconnect(access_token) is True
             except Exception:
-                pass  # Best-effort — we still disconnect on our side
+                logger.warning('Remote social revocation was not confirmed for %s', connection.pk)
 
         # Clear credentials and mark disconnected
         connection.status = SocialConnection.Status.DISCONNECTED
@@ -334,15 +358,21 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             workspace=connection.workspace,
             social_connection=connection,
             user=request.user if request.user.is_authenticated else None,
-            action=SocialAccountAuditLog.Action.ACCOUNT_DISCONNECTION
+            action=SocialAccountAuditLog.Action.ACCOUNT_DISCONNECTION,
+            new_value='remote_revocation_confirmed' if revoked else 'local_disconnect_only',
         )
 
         logger.info(f"Social connection disconnected: platform={connection.platform}")
-        return APIResponse(success=True, message="Account disconnected")
+        return APIResponse(success=True, message=(
+            "Account disconnected and remote access revoked." if revoked else
+            "Disconnected from Scaleezy. Remote revocation was not confirmed; remove access in the social platform's settings if needed."
+        ), data={'remote_revocation_confirmed': revoked})
 
     @action(detail=True, methods=['post'])
     def verify(self, request, pk=None):
         connection = self.get_object()
+        if connection.status == SocialConnection.Status.DISCONNECTED or not connection.access_token_encrypted:
+            return APIResponse(success=False, message="Reconnect this account before verifying it.", status=400)
         adapter = self.get_adapter(connection.platform)
         if not adapter:
             return APIResponse(success=False, message="Adapter missing", status=400)
@@ -350,18 +380,36 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         try:
             access_token = decrypt_token(connection.access_token_encrypted)
             account_info = adapter.get_account_info(access_token)
+            if not account_info or (not account_info.get('id') and not account_info.get('accounts')):
+                raise SocialPlatformError('Provider returned no verifiable account')
             connection.status = SocialConnection.Status.CONNECTED
             connection.last_verified_at = timezone.now()
             connection.last_error = None
             connection.reauthorization_required = False
             connection.save()
+            SocialAccountAuditLog.objects.create(workspace=connection.workspace, social_connection=connection, user=request.user, action=SocialAccountAuditLog.Action.PERMISSION_UPDATE, new_value='VERIFIED')
             return APIResponse(success=True, message="Connection verified")
         except Exception as e:
-            connection.status = SocialConnection.Status.TOKEN_EXPIRED
-            connection.last_error = str(getattr(e, 'safe_message', str(e)))
-            connection.reauthorization_required = True
-            connection.save()
-            return APIResponse(success=False, message="Verification failed, reauthorization required", status=401)
+            code = str(getattr(e, 'error_code', ''))
+            expired = code.endswith('AUTH_FAILED') or getattr(e, 'status_code', None) == 401
+            denied = code.endswith('PERMISSION_DENIED') or getattr(e, 'status_code', None) == 403
+            if expired or denied:
+                connection.status = SocialConnection.Status.TOKEN_EXPIRED if expired else SocialConnection.Status.PERMISSION_MISSING
+                connection.reauthorization_required = True
+            connection.last_error = ('Reconnect this account to restore access.' if expired or denied else 'Verification is temporarily unavailable. Retry without reconnecting.')
+            connection.save(update_fields=['status', 'reauthorization_required', 'last_error', 'updated_at'])
+            SocialAccountAuditLog.objects.create(workspace=connection.workspace, social_connection=connection, user=request.user, action=SocialAccountAuditLog.Action.PERMISSION_UPDATE, new_value='VERIFICATION_FAILED', error_message=connection.last_error)
+            return APIResponse(success=False, message=connection.last_error, status=400 if expired or denied else 502)
+
+    def perform_update(self, serializer):
+        before = serializer.instance.publishing_enabled
+        connection = serializer.save()
+        if connection.publishing_enabled != before:
+            SocialAccountAuditLog.objects.create(
+                workspace=connection.workspace, social_connection=connection, user=self.request.user,
+                action=SocialAccountAuditLog.Action.PUBLISHING_ENABLED if connection.publishing_enabled else SocialAccountAuditLog.Action.PUBLISHING_DISABLED,
+                old_value=str(before), new_value=str(connection.publishing_enabled),
+            )
 
     @action(detail=False, methods=['get'])
     def linkedin_status(self, request):
@@ -416,12 +464,18 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         if not workspace_id:
             return APIResponse(success=False, message="workspace_id is required", status=400)
 
+        _membership, denied = authorize_workspace(request, workspace_id)
+        if denied:
+            return denied
+
         try:
-            connection = SocialConnection.objects.get(
+            connection = SocialConnection.objects.filter(
                 workspace_id=workspace_id,
                 platform=SocialConnection.Platform.LINKEDIN,
                 status=SocialConnection.Status.CONNECTED,
-            )
+            ).order_by('-connected_at').first()
+            if connection is None:
+                raise SocialConnection.DoesNotExist
         except SocialConnection.DoesNotExist:
             return APIResponse(
                 success=False,
@@ -456,9 +510,11 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         # Fetch all FB pages and IG accounts
         account_info = adapter.get_account_info(access_token)
         accounts = account_info.get('accounts', [])
+        if not accounts or any(not acc.get('id') or not acc.get('access_token') or acc.get('platform') not in ('FACEBOOK', 'INSTAGRAM') for acc in accounts):
+            raise MetaOAuthError('No usable Facebook or Instagram accounts were authorized. Check page permissions and reconnect.')
         logger.info(f"Meta returned {len(accounts)} accounts.")
 
-        workspace = MarketingWorkspace.objects.get(id=workspace_id)
+        workspace = current_authority(request.oauth_authority, workspace_id)
 
         # Compute token expiration
         expires_in = token_data.get('expires_in')
@@ -497,6 +553,7 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                     'reauthorization_required': False,
                     'last_error': None,
                     'disconnected_at': None,
+                    'connected_by_id': request.oauth_authority.user_id,
                 }
             )
 
@@ -504,7 +561,7 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             SocialAccountAuditLog.objects.create(
                 workspace=workspace,
                 social_connection=connection,
-                user=request.user if request.user.is_authenticated else None,
+                user_id=request.oauth_authority.user_id,
                 action=SocialAccountAuditLog.Action.ACCOUNT_CONNECTION if created else SocialAccountAuditLog.Action.ACCOUNT_RECONNECTION
             )
             created_connections.append(SocialConnectionSerializer(connection).data)
@@ -530,7 +587,9 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         account_info = adapter.get_account_info(access_token)
         logger.info("YouTube channel info retrieved")
 
-        workspace = MarketingWorkspace.objects.get(id=workspace_id)
+        if not account_info.get('id'):
+            raise YouTubeOAuthError('No YouTube channel identity was returned.')
+        workspace = current_authority(request.oauth_authority, workspace_id)
 
         # Compute token expiration
         expires_in = token_data.get('expires_in')
@@ -555,6 +614,7 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             'reauthorization_required': False,
             'last_error': None,
             'disconnected_at': None,
+            'connected_by_id': request.oauth_authority.user_id,
         }
 
         # Google returns a refresh token only on the first authorization. Only
@@ -576,7 +636,7 @@ class SocialConnectionViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         SocialAccountAuditLog.objects.create(
             workspace=workspace,
             social_connection=connection,
-            user=request.user if request.user.is_authenticated else None,
+            user_id=request.oauth_authority.user_id,
             action=SocialAccountAuditLog.Action.ACCOUNT_CONNECTION if created else SocialAccountAuditLog.Action.ACCOUNT_RECONNECTION
         )
 

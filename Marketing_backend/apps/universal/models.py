@@ -304,6 +304,34 @@ class ClientUniversalSettings(models.Model):
         return f"{self.workspace_id}: standards={self.standards_enabled}"
 
 
+class ClientQualitySettings(models.Model):
+    """One client's opt-out of the quality-engine passes.
+
+    A row only exists once somebody changes something, so the default — every
+    pass on — costs nothing and needs no backfill.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    workspace = models.OneToOneField(
+        'workspaces.MarketingWorkspace', on_delete=models.CASCADE,
+        related_name='quality_settings',
+    )
+    #: LLM self-critique gate on generated copy.
+    critique_enabled = models.BooleanField(default=True)
+    #: Vision focal-point-aware poster cropping.
+    focus_crop_enabled = models.BooleanField(default=True)
+    #: Recency-weighted layout variety.
+    variety_enabled = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'client_quality_settings'
+
+    def __str__(self):
+        return f"{self.workspace_id}: critique={self.critique_enabled}"
+
+
 def universal_version(standards) -> str:
     """A fingerprint of exactly which standards are live.
 

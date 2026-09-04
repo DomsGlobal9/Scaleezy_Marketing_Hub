@@ -25,6 +25,7 @@ from django.core.cache import cache
 
 from apps.brands.services.brand_brain import (
     SCHEMA_VERSION,
+    brain_snapshot_needs_refresh,
     compile_brand_brain,
 )
 
@@ -93,18 +94,22 @@ MAX_INSPIRATION_SIGNALS = 8
 
 
 def resolved_brain(brand, *, recompile_if_missing=True):
-    """The compiled brain, compiled now only if there is not one yet.
+    """Resolve a currently eligible compiled brain without database writes.
 
-    Normal generation reads the snapshot. Recompiling per request would re-run
-    the whole learning read path on the hot path for a result that only
-    changes when someone teaches the brand something.
+    Normal generation reuses the snapshot. Only a missing/unsafe snapshot is
+    recompiled by its existing owner; raw records never bypass precedence.
     """
     brain = brand.creative_brain or {}
-    if brain.get('schema_version') == SCHEMA_VERSION and brain.get('brain_version'):
-        return brain
-    if not recompile_if_missing:
-        return {}
-    return compile_brand_brain(brand)
+    try:
+        if brain.get('schema_version') == SCHEMA_VERSION and brain.get('brain_version'):
+            if not brain_snapshot_needs_refresh(brand, brain):
+                return brain
+        if not recompile_if_missing:
+            return {}
+        return compile_brand_brain(brand)
+    except Exception as exc:
+        # A warm cache is not permission to use withdrawn or expired evidence.
+        raise ContextError('Current brand context is unavailable. Refresh the brand context and retry.') from exc
 
 
 def _section(brain, profile, name, value, empty):
@@ -140,6 +145,10 @@ def build_generation_context(
     brain = resolved_brain(brand)
     if not brain:
         raise ContextError("This brand has no compiled Brand Brain.")
+    # Existing universal precedence and generation attribution read this same
+    # instance. Keep them aligned with the resolved snapshot, without saving a
+    # derived cache from a read endpoint or changing the persisted Brain shape.
+    brand.creative_brain = brain
 
     # The universal layer: Scaleezy's own craft standards, at rank 80+ and
     # already filtered so none of them touches an attribute this brand has a
@@ -244,10 +253,9 @@ def build_generation_context(
             {
                 'palette': visual.get('palette', {}),
                 'fonts': visual.get('fonts', {}),
-                'layout_preference': visual.get('layout_preference', ''),
                 'claims': visual.get('claims', [])[:MAX_ITEMS],
             },
-            {'palette': {}, 'fonts': {}, 'layout_preference': '', 'claims': []},
+            {'palette': {}, 'fonts': {}, 'claims': []},
         ),
 
         # Never trimmed and never task-filtered. A hard rule the model was not

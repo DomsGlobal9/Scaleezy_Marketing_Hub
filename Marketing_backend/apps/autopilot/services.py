@@ -4,7 +4,7 @@ import logging
 from datetime import timedelta
 from decimal import Decimal
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -66,6 +66,16 @@ def create_run(policy, *, initiated_by=None, scheduled_for=None, dedupe_key=None
 def queue_run(policy, *, initiated_by=None):
     """Create and enqueue a manual run while keeping queue failures truthful."""
     run = create_run(policy, initiated_by=initiated_by)
+    return _enqueue_execute(run)
+
+
+def _enqueue_execute(run):
+    """Enqueues the durable execute task for an already-created run.
+
+    A queue failure is recorded on the run itself (FAILED /
+    QUEUE_ENQUEUE_FAILED) before AutopilotQueueUnavailable is raised, so the
+    ledger never shows a run that silently went nowhere.
+    """
     try:
         from .tasks import execute_autopilot_run
 
@@ -164,7 +174,17 @@ def _queue_generation(run, policy):
         'contentType': content_type,
         'slides': [],
         'brand_rules': [],
-        'layout': policy.brand.layout_preference,
+        # Enabling an autopilot mission is an explicit delegation to create an
+        # original composition for each run. Template choice never comes from
+        # Brand Brain or a brand-wide default.
+        'creative_direction': {
+            'mode': 'AI_ORIGINAL',
+            'selection_count': 0,
+            'layout': '',
+            'selections': [],
+            'instructions': [],
+        },
+        'layout': '',
         'autopilot': {
             'run_id': str(run.pk),
             'policy_id': str(policy.pk),
@@ -189,14 +209,19 @@ def _queue_generation(run, policy):
     )
     from apps.gemini.tasks import generate_content
 
-    task_result = generate_content.enqueue(str(generation.pk))
+    # The run must already be WAITING_GENERATION with its FK saved when a
+    # worker picks the generation up: the finished generation queues its
+    # autopilot follow-up by reading that FK and that status, and enqueueing
+    # first let a fast completion (or fast failure) look for the link before
+    # it existed — a follow-up lost forever. An enqueue failure after this
+    # save falls through to the caller's failure handler.
     run.generation_request = generation
-    run.task_id = str(task_result.id)
     run.status = AutopilotRun.Status.WAITING_GENERATION
     run.next_check_at = timezone.now() + timedelta(seconds=20)
-    run.save(update_fields=[
-        'generation_request', 'task_id', 'status', 'next_check_at', 'updated_at'
-    ])
+    run.save(update_fields=['generation_request', 'status', 'next_check_at', 'updated_at'])
+    task_result = generate_content.enqueue(str(generation.pk))
+    run.task_id = str(task_result.id)
+    run.save(update_fields=['task_id', 'updated_at'])
     _step(run, 'generate', 'QUEUED', generation_id=str(generation.pk), format=chosen)
     return {'status': run.status, 'generation_id': str(generation.pk)}
 
@@ -211,7 +236,12 @@ def _content_from_generation(run):
 
 def execute_run(run_id):
     with transaction.atomic():
-        run = AutopilotRun.objects.select_for_update().select_related(
+        # of=('self',): created_by and generation_request are nullable FKs, so
+        # select_related LEFT-JOINs them, and PostgreSQL refuses FOR UPDATE on
+        # the nullable side of an outer join (NotSupportedError). Only the run
+        # row needs the lock. SQLite ignores select_for_update entirely, which
+        # is why no test caught this — verified against production Postgres.
+        run = AutopilotRun.objects.select_for_update(of=('self',)).select_related(
             'workspace', 'policy__brand', 'policy__created_by', 'generation_request'
         ).get(pk=run_id)
         if run.status in (
@@ -230,7 +260,11 @@ def execute_run(run_id):
     policy = run.policy
     policy.refresh_from_db()
     try:
-        _enforce_policy(policy, run)
+        # Policy caps gate NEW spend only, so they are enforced just before a
+        # generation is bought (below). A run resuming from
+        # WAITING_GENERATION has already paid for its answer; failing it on a
+        # cap crossed mid-wait would orphan the draft the money bought.
+        # Emergency stop still halts waiting runs directly (emergency_stop).
         if prior_status == AutopilotRun.Status.WAITING_GENERATION:
             generation = run.generation_request
             if generation is None:
@@ -267,11 +301,236 @@ def execute_run(run_id):
             ])
             _step(run, 'finish', 'COMPLETED', outcome='DRAFT_CREATED')
             return {'status': run.status, 'content_item_id': str(content.pk)}
+        _enforce_policy(policy, run)
         return _queue_generation(run, policy)
     except AutopilotBlocked as exc:
         return _fail(run, exc.code, str(exc))
     except Exception as exc:
         return _fail(run, type(exc).__name__.upper()[:80], str(exc))
+
+
+#: A run may wait on its generation this long before the wait itself fails.
+#: Generous on purpose: the generation queue has its own rescue-and-retry
+#: ladder, and this bound only catches paths no rescue covers (for example a
+#: generation row created but never enqueued because the worker died between
+#: the two).
+WAITING_GENERATION_DEADLINE = timedelta(hours=2)
+
+#: A run RUNNING longer than this was abandoned mid-execute by a dead worker.
+#: The execute body is synchronous seconds of work, and its re-entry guard
+#: would otherwise block the run forever.
+RUNNING_STALE_AFTER = timedelta(minutes=30)
+
+#: How far the sweep pushes next_check_at when it claims a run. Doubles as
+#: the retry interval if the enqueue it then attempts is lost.
+SWEEP_RECHECK_INTERVAL = timedelta(seconds=60)
+
+#: A run QUEUED longer than this has lost its durable task (crashed out of
+#: all its attempts, or never enqueued). QUEUED means the RUNNING claim never
+#: committed, so nothing was spent and re-enqueueing is free of double-spend:
+#: at most one execution proceeds past the select_for_update claim.
+QUEUED_STALE_AFTER = timedelta(minutes=10)
+
+
+def enqueue_due_autopilot_runs(now=None):
+    """Turns DAILY/WEEKLY policies whose time has come into queued runs.
+
+    Claiming is a compare-and-swap on next_run_at (the stalled-run sweep's
+    idiom): the conditional .update() is filtered on the value this sweep
+    read, so of two workers sweeping the same tick exactly one creates the
+    run. next_run_at advances from the due slot by whole intervals until it
+    is in the future — an overdue policy catches up by skipping missed slots,
+    ONE run per sweep pass, never a backfill burst. The unique
+    (workspace, dedupe_key) constraint is the second line of defence: a
+    duplicate slot key means the run already exists, which is the outcome we
+    wanted, not an error. Every run created here still passes
+    _enforce_policy (spend approval, daily limit, monthly cap) inside
+    execute_run before any generation is bought.
+    """
+    now = now or timezone.now()
+    created = 0
+    due = AutopilotPolicy.objects.filter(
+        enabled=True, paused=False, emergency_stop=False,
+        cadence__in=(AutopilotPolicy.Cadence.DAILY, AutopilotPolicy.Cadence.WEEKLY),
+        next_run_at__isnull=False, next_run_at__lte=now,
+    ).values_list('id', 'cadence', 'next_run_at')
+    for policy_id, cadence, due_slot in list(due):
+        try:
+            interval = AutopilotPolicy.CADENCE_INTERVALS[cadence]
+            next_slot = due_slot + interval
+            while next_slot <= now:
+                next_slot += interval
+            run = None
+            # Claim and create commit together: a crash after a committed
+            # claim would advance the schedule with no run row and nothing to
+            # retry — the slot silently lost. Atomic, the claim rolls back
+            # with the failure and the next tick retries the slot.
+            with transaction.atomic():
+                if not _claim_due_slot(policy_id, due_slot, next_slot, now):
+                    continue  # another sweep (or a concurrent edit) owns this slot
+                policy = AutopilotPolicy.objects.select_related('workspace').get(pk=policy_id)
+                try:
+                    with transaction.atomic():
+                        run = create_run(
+                            policy,
+                            scheduled_for=due_slot,
+                            dedupe_key=f'sched:{policy_id}:{due_slot.isoformat()}',
+                        )
+                except IntegrityError:
+                    # This slot's run already exists. The savepoint rolled the
+                    # create back; the committed claim still advances the
+                    # schedule past the already-covered slot.
+                    run = None
+            if run is None:
+                continue
+            created += 1
+            # Outside the claim transaction: if the process dies between the
+            # commit and this enqueue, the run exists as QUEUED with a dead
+            # task and the QUEUED-stale rescue re-drives it — never silent.
+            try:
+                _enqueue_execute(run)
+            except AutopilotQueueUnavailable:
+                # The run is already marked FAILED / QUEUE_ENQUEUE_FAILED and
+                # can be retried from the control centre; the schedule keeps
+                # moving regardless.
+                pass
+        except Exception:
+            # One bad policy must not stop the rest of the schedule.
+            logger.exception('Scheduled autopilot policy %s could not be swept', policy_id)
+    return created
+
+
+def _claim_due_slot(policy_id, due_slot, next_slot, now):
+    """Advance next_run_at only if it still holds the slot we read.
+
+    The compare-and-swap that makes two concurrent sweeps create one run:
+    the loser's update matches zero rows because the winner already moved
+    next_run_at. Kept as its own function so the conditional filter is
+    directly pinned by test — the dedupe constraint would mask its loss.
+    """
+    return AutopilotPolicy.objects.filter(
+        pk=policy_id, next_run_at=due_slot,
+    ).update(next_run_at=next_slot, updated_at=now)
+
+
+def sweep_stalled_autopilot_runs(now=None):
+    """Re-drives runs whose generation follow-up never arrived.
+
+    The fast path is event-driven: the generation task queues a follow-up
+    when it finishes. This sweep is the liveness guarantee behind it — a
+    follow-up can be lost to a dead worker, a queue hiccup, or a terminal
+    path that never knew about the run. Claiming is a compare-and-swap on
+    next_check_at (the gemini sweep's retry_count idiom) so two workers
+    sweeping at once re-drive a run exactly once, and every claim only
+    re-runs the existing execute_run state machine — no new generation is
+    created, so a sweep can never spend money.
+    """
+    from .tasks import execute_autopilot_run
+
+    now = now or timezone.now()
+    swept = 0
+
+    due = AutopilotRun.objects.filter(
+        status=AutopilotRun.Status.WAITING_GENERATION, next_check_at__lte=now,
+    ).values_list('id', 'started_at', 'generation_request_id')
+    for run_id, started_at, generation_id in list(due):
+        claimed = AutopilotRun.objects.filter(
+            pk=run_id,
+            status=AutopilotRun.Status.WAITING_GENERATION,
+            next_check_at__lte=now,
+        ).update(next_check_at=now + SWEEP_RECHECK_INTERVAL, updated_at=now)
+        if not claimed:
+            continue
+        if started_at and now - started_at > WAITING_GENERATION_DEADLINE:
+            # A long wait is only a dead end when no answer exists. A worker
+            # outage longer than the deadline is precisely the case where the
+            # generation may have COMPLETED with nobody left to say so —
+            # failing without looking would discard paid work and invite the
+            # user to pay for it again. Terminal generations fall through to
+            # the re-drive, where the state machine lands the honest outcome.
+            generation_status = GeminiGenerationRequest.objects.filter(
+                pk=generation_id
+            ).values_list('status', flat=True).first()
+            if generation_status not in (
+                GeminiGenerationRequest.Status.COMPLETED,
+                GeminiGenerationRequest.Status.FAILED,
+            ):
+                # Guarded like the RUNNING branch: a run a concurrent
+                # follow-up just advanced must never be clobbered to FAILED.
+                failed = AutopilotRun.objects.filter(
+                    pk=run_id, status=AutopilotRun.Status.WAITING_GENERATION,
+                ).update(
+                    status=AutopilotRun.Status.FAILED,
+                    error_code='GENERATION_STUCK',
+                    error='Generation did not finish in time. Trigger the policy again.',
+                    completed_at=now,
+                    next_check_at=None,
+                    updated_at=now,
+                )
+                if failed:
+                    _step(
+                        AutopilotRun.objects.get(pk=run_id), 'finish', 'FAILED',
+                        code='GENERATION_STUCK',
+                        message='Generation did not finish in time.',
+                    )
+                    swept += 1
+                continue
+        try:
+            execute_autopilot_run.enqueue(str(run_id))
+            swept += 1
+        except Exception:
+            # The pushed next_check_at doubles as the retry timer: the next
+            # pass tries again instead of this one dying mid-list.
+            logger.exception('Stalled autopilot run %s could not be re-queued', run_id)
+
+    # QUEUED runs whose durable task died — crashed out of every attempt, or
+    # was never enqueued. The status proves execute_run's first save never
+    # committed, so no generation exists and re-driving spends nothing. The
+    # CAS is on updated_at: claiming touches it, so of two concurrent sweeps
+    # only one update matches the old timestamp.
+    queued_cutoff = now - QUEUED_STALE_AFTER
+    lost = AutopilotRun.objects.filter(
+        status=AutopilotRun.Status.QUEUED, updated_at__lt=queued_cutoff,
+    ).values_list('id', 'updated_at')
+    for run_id, seen_updated_at in list(lost):
+        claimed = AutopilotRun.objects.filter(
+            pk=run_id, status=AutopilotRun.Status.QUEUED,
+            updated_at=seen_updated_at,
+        ).update(updated_at=now)
+        if not claimed:
+            continue
+        try:
+            execute_autopilot_run.enqueue(str(run_id))
+            swept += 1
+            logger.warning('Autopilot run %s lost its task while QUEUED; re-queued', run_id)
+        except Exception:
+            logger.exception('Lost QUEUED autopilot run %s could not be re-queued', run_id)
+
+    cutoff = now - RUNNING_STALE_AFTER
+    stale = AutopilotRun.objects.filter(
+        status=AutopilotRun.Status.RUNNING, updated_at__lt=cutoff,
+    ).values_list('id', flat=True)
+    for run_id in list(stale):
+        # No re-enqueue here: RUNNING may have died between creating a
+        # generation and recording it, and re-executing could pay for the
+        # same work twice. Failing honestly is the only spend-safe recovery.
+        claimed = AutopilotRun.objects.filter(
+            pk=run_id, status=AutopilotRun.Status.RUNNING, updated_at__lt=cutoff,
+        ).update(
+            status=AutopilotRun.Status.FAILED,
+            error_code='RUN_INTERRUPTED',
+            error='The worker executing this run was interrupted. Trigger the policy again.',
+            completed_at=now,
+            next_check_at=None,
+            updated_at=now,
+        )
+        if claimed:
+            _step(
+                AutopilotRun.objects.get(pk=run_id), 'finish', 'FAILED',
+                code='RUN_INTERRUPTED', message='Worker interrupted mid-run.',
+            )
+            swept += 1
+    return swept
 
 
 @transaction.atomic

@@ -8,6 +8,11 @@ gap: the same engine behind the studio's "Use this poster" runs automatically
 after a generation persists, so the draft arrives with the brand's palette,
 fonts, headline and offer already baked in.
 
+Only, though, when the user picked a template deliberately (CATALOG_TEMPLATE
+mode, or a layout a studio render already persisted). Delegated designs —
+AI_ORIGINAL and REFERENCE — ship the provider's poster untouched: the founder
+rejected the built-in patterns being auto-stamped on AI compositions.
+
 Best-effort by design: a compose failure leaves the raw generated image in
 place, because losing a paid generation to a font hiccup is worse than
 showing the photo bare.
@@ -21,11 +26,16 @@ from apps.marketing.models import MarketingAsset
 from apps.marketing.services.storage import SupabaseStorageService
 
 from . import export as export_engine
+from . import focus as focus_engine
 from . import registry
 from . import render as render_engine
 from . import variants
 
 logger = logging.getLogger(__name__)
+
+
+class PosterCompositionError(RuntimeError):
+    """An explicitly selected poster template could not be rendered."""
 
 
 def persist_composed(workspace, user, item, image, fmt, layout, suffix=''):
@@ -108,15 +118,45 @@ def generated_layout(item):
     """
     The pattern an automatic compose uses when nobody named one.
 
-    Falling through to the registry default meant every generated poster in a
-    brand shared a single skeleton — reviewers saw "the same poster" over and
-    over. The pick rotates across the photo-using patterns instead, keyed on
-    the item's id: stable for the item (a recompose or revision never reshuffles
-    a poster someone is already reviewing), different across items.
+    For a delegated design — creative_direction mode AI_ORIGINAL or
+    REFERENCE — the answer is None (founder decision, 2026-09): the provider
+    composed that poster, and stamping a built-in pattern on top of it is
+    exactly what was rejected. A None layout drops every automatic caller
+    into the existing "keep the raw image" branch, so the paid generation
+    ships untouched. Built-in patterns now apply only when a template was
+    picked deliberately: CATALOG_TEMPLATE mode, or a manual studio render.
+
+    For everything else — no recorded creative direction, and the coming
+    user-uploaded-template flows that will repurpose this pipeline — the
+    rotation below still answers. Falling through to the registry default
+    meant every generated poster in a brand shared a single skeleton —
+    reviewers saw "the same poster" over and over. The pick rotates across
+    the photo-using patterns instead, keyed on the item's id: stable for the
+    item, different across items.
+
+    When the workspace's variety toggle is on, the pick also weighs the
+    brand's last 8 composed items and takes the pattern with the fewest —
+    then oldest — recent uses, so a brand stops drawing the same skeleton run
+    after run. Determinism holds twice over:
+
+    * ties (including an empty history) fall back to the original uuid-modulo
+      ring, so the choice is a pure function of (item id, history) — and with
+      no history at all it is exactly the legacy pick;
+    * a recompose of the SAME item never reshuffles regardless: verified —
+      `compose_generated_poster` persists `item.layout_plugin` on first
+      compose and prefers it (`layout = item.layout_plugin or ...`) before
+      this function is ever consulted, so history only steers items whose
+      pattern is still undecided.
 
     Type-only patterns (`uses_photo=False`) are excluded — they would throw
     away the photograph the generation just paid for.
     """
+    config = getattr(item, 'layout_config', None)
+    direction = config.get('creative_direction') if isinstance(config, dict) else None
+    mode = str(direction.get('mode') or '') if isinstance(direction, dict) else ''
+    if mode in {'AI_ORIGINAL', 'REFERENCE'}:
+        return None
+
     options = [
         key for key in registry.keys()
         if getattr(registry.get(key), 'uses_photo', True)
@@ -125,7 +165,69 @@ def generated_layout(item):
         seed = uuid.UUID(str(item.pk)).int
     except (ValueError, AttributeError, TypeError):
         seed = 0
-    return options[seed % len(options)]
+    count = len(options)
+    legacy = options[seed % count]
+
+    # Callers without a persisted brand (restyle previews, unit fixtures)
+    # keep the stateless legacy pick — there is no history to weigh.
+    brand_id = getattr(item, 'brand_id', None)
+    workspace = getattr(item, 'workspace', None)
+    if brand_id is None or workspace is None:
+        return legacy
+    try:
+        from apps.universal.services import quality_settings_for
+
+        if not quality_settings_for(workspace).variety_enabled:
+            return legacy
+        from apps.content.models import ContentItem
+
+        recent = list(
+            ContentItem.objects.filter(brand_id=brand_id)
+            .exclude(layout_plugin='')
+            .order_by('-created_at')
+            .values_list('layout_plugin', flat=True)[:8]
+        )
+    except Exception:
+        # Layout choice is decoration; a settings or history read must never
+        # fail a compose.
+        logger.exception("Layout variety lookup failed; using the legacy pick")
+        return legacy
+    if not recent:
+        return legacy
+
+    def crowding(key):
+        # Recency-weighted: fewest uses in the window wins; among equals, the
+        # one whose latest use is furthest back (positions index 0 = newest,
+        # never-used counts as beyond the window); the final tie walks the
+        # option ring starting from the legacy uuid-modulo pick.
+        positions = [pos for pos, used in enumerate(recent) if used == key]
+        latest = positions[0] if positions else len(recent)
+        return (len(positions), -latest, (options.index(key) - seed) % count)
+
+    return min(options, key=crowding)
+
+
+def _prior_variant(item, layout):
+    """The dress this brand's most recent prior use of `layout` wore.
+
+    Returns a coerced variant dict, or None when there is no usable prior.
+    Read-only and defensive: `layout_config` is client-writable JSON.
+    """
+    from apps.content.models import ContentItem
+
+    if getattr(item, 'brand_id', None) is None:
+        return None
+    prior = (
+        ContentItem.objects.filter(brand_id=item.brand_id, layout_plugin=layout)
+        .exclude(pk=item.pk)
+        .order_by('-created_at')
+        .values_list('layout_config', flat=True)
+        .first()
+    )
+    stored = prior.get('style_variant') if isinstance(prior, dict) else None
+    if not isinstance(stored, dict):
+        return None
+    return variants.coerce(stored)
 
 
 def compose_generated_poster(item, *, user=None):
@@ -136,25 +238,80 @@ def compose_generated_poster(item, *, user=None):
     composed MarketingAsset, or None when there was nothing to compose or
     the composition failed — in which case the item is left exactly as the
     generation made it.
+
+    Composes ONLY when a template was named deliberately: an explicit
+    CATALOG_TEMPLATE choice, or a layout a studio render already persisted.
+    AI_ORIGINAL and REFERENCE generations ship the provider's raw poster —
+    the no-op is total: no dress, no style variant, no focus dispatch, no
+    layout_plugin written.
     """
     from apps.content.models import ContentItem
 
     if item is None or item.content_format != ContentItem.Format.POSTER:
         return None
-    if item.brand is None or not (item.headline or item.cta):
-        return None
-    if item.asset is None or not getattr(item.asset, 'file_url', ''):
+
+    direction = (
+        (item.layout_config or {}).get('creative_direction', {})
+        if isinstance(item.layout_config, dict)
+        else {}
+    )
+    mode = str(direction.get('mode') or '')
+    layout = item.layout_plugin or str(direction.get('layout') or '')
+    required = mode == 'CATALOG_TEMPLATE'
+    if (
+        item.brand is None
+        or not (item.headline or item.cta)
+        or item.asset is None
+        or not getattr(item.asset, 'file_url', '')
+    ):
+        if required:
+            raise PosterCompositionError(
+                'The selected template could not be applied to the generated content.'
+            )
         return None
 
     try:
+        if not layout and mode in {'AI_ORIGINAL', 'REFERENCE'}:
+            # The user explicitly delegated the composition decision for this
+            # one content item — which now means the provider's own
+            # composition stands: generated_layout answers None here.
+            layout = generated_layout(item)
+        if not layout:
+            # A delegated design, or an old/malformed request that made no
+            # creative-source choice. Keeping the paid raw image is honest;
+            # silently stamping a template on it is not. Resolved before the
+            # photo fetch and focus block so the no-op costs nothing.
+            return None
+
+        from apps.universal.services import quality_settings_for
+
+        quality = quality_settings_for(item.workspace)
         # The recorded source photograph when there is one — composing from an
         # already composed poster would bake the words on twice.
         photo = render_engine.photo_for(asset=source_photo_asset(item))
-        layout = (
-            item.layout_plugin
-            or (item.brand.layout_preference or '')
-            or generated_layout(item)
-        )
+        config = dict(item.layout_config or {})
+
+        # -- focal point: ONE vision call per source photo ----------------
+        # A stored dict — success OR a cached skip marker — is final, so
+        # recomposes, restyles and exports never dispatch (or pay) again.
+        # Only final results are stored (see focus_engine.cacheable): a
+        # transient failure stays out of layout_config so the next compose
+        # event may retry — bounded by compose events, not loops.
+        focus_info = config.get('photo_focus')
+        if (
+            photo is not None
+            and not isinstance(focus_info, dict)
+            and quality.focus_crop_enabled
+        ):
+            focus_info = focus_engine.detect_photo_focus(item.workspace, photo)
+            if focus_engine.cacheable(focus_info):
+                config['photo_focus'] = focus_info
+                # Persisted immediately rather than with the final save: a
+                # storage failure further down must not make the next compose
+                # pay for the same vision call again.
+                item.layout_config = config
+                item.save(update_fields=['layout_config', 'updated_at'])
+
         _label, width, height, _platform = export_engine.SIZES['instagram_portrait']
         # The copy a studio render saved on this item travels into automatic
         # composes too, so a regenerated revision carries the same words the
@@ -176,22 +333,46 @@ def compose_generated_poster(item, *, user=None):
         # The style variant this item wears — same skeleton, different dress.
         # A stored one is reused so a recompose never restyles a poster
         # someone is already reviewing; otherwise the item's id decides.
-        stored = (item.layout_config or {}).get('style_variant')
+        stored = config.get('style_variant')
+        uses_photo = getattr(registry.get(layout), 'uses_photo', True)
         if isinstance(stored, dict):
             variant = variants.coerce(stored)
         else:
-            variant = variants.variant_for(
-                item, uses_photo=getattr(registry.get(layout), 'uses_photo', True)
-            )
+            variant = variants.variant_for(item, uses_photo=uses_photo)
+            if quality.variety_enabled:
+                # Same skeleton in the same colour scheme as its last outing
+                # for this brand reads as "the same poster again" — restyle
+                # deterministically away from that prior dress. The palette
+                # axis is rotated directly: `different_variant_for` only
+                # moves on a FULL five-axis match, and the common prior
+                # shares nothing but the palette, which would leave the
+                # nudge a no-op. The item's other axes stay its own.
+                prior = _prior_variant(item, layout)
+                if prior is not None and prior.get('palette') == variant.get('palette'):
+                    variant = dict(variant)
+                    index = variants.PALETTES.index(prior['palette'])
+                    variant['palette'] = variants.PALETTES[
+                        (index + 1) % len(variants.PALETTES)
+                    ]
         spec = variants.apply(spec, variant)
+        # `variants.apply` grades the photo in place (grayscale / blend /
+        # enhance) but never resizes it, and the focus is normalized 0..1 —
+        # so steering the crop after grading is exact.
+        if isinstance(focus_info, dict) and 'x' in focus_info:
+            spec.photo_focus = focus_info
         image = render_engine.compose(spec, layout)
         source = item.asset
         asset = persist_composed(item.workspace, user, item, image, 'JPEG', layout)
-    except Exception:
+    except Exception as exc:
         logger.exception("Auto-compose failed for content %s; raw image kept", item.pk)
+        if required:
+            raise PosterCompositionError(
+                'The selected template could not be rendered. The generated draft was kept.'
+            ) from exc
         return None
 
-    config = dict(item.layout_config or {})
+    # `config` is the copy taken (and possibly focus-annotated) inside the
+    # try block; the success path finishes filling it in.
     config.setdefault('source_asset', str(source.pk))
     config['style_variant'] = variant
     item.layout_plugin = layout

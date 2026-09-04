@@ -35,7 +35,11 @@ from apps.brands.models import Brand
 from apps.brands.services.approval import ensure_subscription
 from apps.brands.services.brand_brain import rebuild_brand_brain_safely
 from apps.common.responses import APIResponse
-from apps.universal.services import set_client_universal
+from apps.universal.services import (
+    quality_settings_for,
+    set_client_quality,
+    set_client_universal,
+)
 from apps.workspaces.models import MarketingWorkspace
 from apps.workspaces.services.lifecycle import (
     archive_workspace,
@@ -195,6 +199,61 @@ class ClientUniversalView(ClientControlView):
             'standards_enabled': row.standards_enabled,
             'inspirations_enabled': row.inspirations_enabled,
         })
+
+
+# ───────────────────────────────────────────────────────── P4 — quality
+
+def _quality_flags(row):
+    return {
+        'critique_enabled': row.critique_enabled,
+        'focus_crop_enabled': row.focus_crop_enabled,
+        'variety_enabled': row.variety_enabled,
+    }
+
+
+class ClientQualityView(ClientControlView):
+    """GET .../quality/ — the three switches, defaults when no row exists.
+    POST .../quality/  {critique?: bool, focus_crop?: bool, variety?: bool}
+    """
+
+    def get(self, request, workspace_id):
+        workspace = self.load_workspace(workspace_id)
+        if workspace is None:
+            return self.not_found("Client")
+        # Read-only and unaudited: the visit is already recorded as
+        # CLIENT_VIEWED by the detail view this panel sits on.
+        return APIResponse(
+            success=True, data=_quality_flags(quality_settings_for(workspace)),
+        )
+
+    def post(self, request, workspace_id):
+        workspace = self.load_workspace(workspace_id)
+        if workspace is None:
+            return self.not_found("Client")
+
+        try:
+            critique = _as_bool(request.data.get('critique'))
+            focus_crop = _as_bool(request.data.get('focus_crop'))
+            variety = _as_bool(request.data.get('variety'))
+        except ValueError:
+            return _bad_request(
+                "critique, focus_crop and variety must be true or false.",
+                code='INVALID_TOGGLE',
+            )
+        if critique is None and focus_crop is None and variety is None:
+            return _bad_request(
+                "Send at least one of critique / focus_crop / variety.",
+                code='NOTHING_TO_CHANGE',
+            )
+
+        # set_client_quality audits itself (CLIENT_QUALITY_TOGGLED).
+        row = set_client_quality(
+            workspace, critique_enabled=critique, focus_crop_enabled=focus_crop,
+            variety_enabled=variety, by=request.user,
+        )
+        return APIResponse(
+            success=True, message="Quality engine updated.", data=_quality_flags(row),
+        )
 
 
 # ───────────────────────────────────────────────────────────── P4 — plan
@@ -376,6 +435,27 @@ class ProviderAvailabilityView(PlatformView):
             message=f"{provider.display_name} is now {'available' if wanted else 'disabled'} platform-wide.",
             data={'provider_key': provider.key, 'is_available': provider.is_available},
         )
+
+
+class PlatformProviderListView(PlatformView):
+    """Global catalogue availability only; never workspace credentials/config."""
+
+    def get(self, request):
+        from .pagination import page_rows
+
+        queryset = AIProvider.objects.filter(owner_workspace__isnull=True)
+        search = str(request.query_params.get('q', '')).strip()[:200]
+        if search:
+            queryset = queryset.filter(Q(display_name__icontains=search) | Q(key__icontains=search))
+        providers, pagination = page_rows(request, queryset.order_by('display_name', 'pk'))
+        self.audit('PLATFORM_PROVIDER_AVAILABILITY_VIEWED', detail={'count': len(providers)})
+        return APIResponse(success=True, data={
+            'providers': [{
+                'id': str(provider.pk), 'key': provider.key,
+                'display_name': provider.display_name, 'is_available': provider.is_available,
+            } for provider in providers],
+            **pagination,
+        })
 
 
 # ─────────────────────────────────────────────────── P7 — platform admins

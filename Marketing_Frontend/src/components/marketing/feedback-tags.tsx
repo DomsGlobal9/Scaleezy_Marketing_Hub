@@ -140,9 +140,11 @@ export function FeedbackTagPicker({
   // The quick row: this brand's recurring issues first, topped up with the
   // starter set so a brand new workspace still gets one-tap tags.
   const quick = useMemo(() => {
-    const row: { key: string; label: string; count?: number }[] = suggestions.map(
-      (s) => ({ key: s.key, label: s.label, count: s.count }),
-    );
+    const row: { key: string; label: string; count?: number }[] = suggestions.map((s) => ({
+      key: s.key,
+      label: s.label,
+      count: s.count,
+    }));
     const taken = new Set(row.map((r) => r.key));
     for (const key of STARTER_KEYS) {
       if (row.length >= 8) break;
