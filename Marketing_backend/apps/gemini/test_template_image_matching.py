@@ -161,6 +161,17 @@ class TemplateImageResolutionTests(TenantFixtureMixin, TestCase):
             self.assertEqual(_ambassador_image(self.brand), DATA_URL)
         self.assertEqual(loader.call_args.args[0].title, 'Latest shoot')
 
+    def test_ambassador_photos_are_uploadable(self):
+        # The upload serializer allowlists image-based types; leaving
+        # BRAND_AMBASSADOR out made the studio's "Your model" upload 400 in
+        # production while every direct-ORM test stayed green.
+        from apps.inspirations.serializers import IMAGE_INSPIRATION_TYPES
+
+        self.assertIn(
+            BrandInspiration.InspirationType.BRAND_AMBASSADOR,
+            IMAGE_INSPIRATION_TYPES,
+        )
+
     def test_no_ambassador_or_archived_only_means_no_photo(self):
         self.assertEqual(_ambassador_image(self.brand), '')
         BrandInspiration.objects.create(
