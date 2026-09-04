@@ -576,6 +576,20 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
 
         return ""
 
+    #: The words a caller's copy gate may change between the two steps.
+    COPY_KEYS = ('postTitle', 'postDescription', 'postHashtags')
+
+    @classmethod
+    def _settled_copy(cls, text_result: dict, hook) -> dict:
+        """Step 1's copy after the caller's `pre_image_hook(copy) -> copy`."""
+        settled = hook({key: text_result.get(key, '') for key in cls.COPY_KEYS})
+        if not isinstance(settled, dict):
+            return text_result
+        return {
+            **text_result,
+            **{key: settled[key] for key in cls.COPY_KEYS if key in settled},
+        }
+
     @classmethod
     def _mock_content(cls, request_data: dict) -> dict:
         """Placeholder copy, for local work without a key. Never reachable
@@ -607,6 +621,20 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         # Step 1: Generate text content + image prompt
         text_result = cls.generate_text_and_image_prompt(request_data, api_key=api_key)
         image_prompt = text_result.get("imagePrompt", "")
+
+        # Between the steps: the caller's copy gate. The headline is
+        # typography Step 2 paints, so everything that may still change the
+        # words (the brand's guardrails, the self-critique judge, their one
+        # copy-only rewrite) has to settle them BEFORE the poster is bought -
+        # a poster painted with the first draft under a headline rewritten
+        # afterwards contradicts its own caption. Provider-neutral contract,
+        # carried in the brief: `pre_image_hook(copy) -> copy`, over
+        # {postTitle, postDescription, postHashtags}. The caller builds it
+        # fail-open; a hook that raises is a failed provider call. A
+        # copy-only call has no image step to gate, so it never runs.
+        hook = request_data.get('pre_image_hook')
+        if callable(hook) and not request_data.get('copy_only'):
+            text_result = cls._settled_copy(text_result, hook)
 
         # Step 2: Generate poster image from the AI-crafted prompt.
         # Skipped for copy-only callers (surgical request-edits, the guardrail

@@ -12,7 +12,7 @@ import json
 import uuid
 from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
@@ -207,6 +207,38 @@ class OnImageTextPipelineTests(SimpleTestCase):
         sent, _result = self.image_call({**self.POSTER, 'contentType': 'carousel_slide'})
         self.assertIn(NO_TEXT_LINE, sent)
         self.assertNotIn('"Roasted this week"', sent)
+
+    def test_step_two_paints_the_headline_the_pre_image_hook_settled(self):
+        """The caller's copy gate runs between the steps, on Step 1's copy,
+        and Step 2 carries the words it returned — never the first draft."""
+        seen = []
+
+        def hook(copy):
+            seen.append(dict(copy))
+            return {**copy, 'postTitle': 'Final words'}
+
+        sent, result = self.image_call({**self.POSTER, 'pre_image_hook': hook})
+        self.assertEqual(seen, [{
+            'postTitle': 'Roasted this week', 'postDescription': 'D',
+            'postHashtags': '#h',
+        }])
+        self.assertIn('"Final words"', sent)
+        self.assertNotIn('"Roasted this week"', sent)
+        self.assertEqual(result['postTitle'], 'Final words')
+        self.assertEqual(result['postDescription'], 'D')
+        self.assertTrue(result['posterImageUrl'].startswith('data:image/png;base64,'))
+
+    def test_a_copy_only_call_never_runs_the_hook(self):
+        hook = Mock()
+        with override_settings(GEMINI_API_KEY='key', GEMINI_MOCK_MODE=False), patch.object(
+            GeminiGeneratorService, 'generate_text_and_image_prompt',
+            return_value=dict(self.STEP_ONE),
+        ), patch.object(GeminiGeneratorService, 'generate_poster_image') as step_two:
+            GeminiGeneratorService.generate_marketing_content(
+                {**self.POSTER, 'copy_only': True, 'pre_image_hook': hook}
+            )
+        hook.assert_not_called()
+        step_two.assert_not_called()
 
 
 class RecentHeadlineMemoryTests(TenantFixtureMixin, TestCase):
