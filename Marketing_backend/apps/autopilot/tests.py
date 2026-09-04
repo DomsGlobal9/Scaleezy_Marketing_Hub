@@ -223,6 +223,47 @@ class AutopilotTests(TestCase):
         self.assertEqual(content.status, ContentItem.Status.PENDING_REVIEW)
         self.assertIsNone(run.completed_at)
 
+    def test_poster_run_defaults_to_the_brand_template_when_one_exists(self):
+        """An autopilot brief follows uploaded brand templates: REFERENCE mode
+        with the template as the analysed, locked selection. Non-poster runs
+        keep raw AI_ORIGINAL — a poster design is no style reference for
+        video."""
+        from apps.inspirations.models import BrandInspiration
+
+        template = BrandInspiration.objects.create(
+            workspace=self.workspace,
+            brand=self.brand,
+            title='House poster',
+            inspiration_type=BrandInspiration.InspirationType.BRAND_TEMPLATE,
+            file_url='https://storage.test/inspirations/house.png',
+            storage_path='inspirations/house.png',
+            mime_type='image/png',
+            file_name='house.png',
+        )
+
+        poster_run = create_run(self.policy, initiated_by=self.user)
+        result = execute_run(poster_run.pk)
+        poster_run.refresh_from_db()
+        self.assertEqual(result['status'], AutopilotRun.Status.WAITING_GENERATION)
+        brief = json.loads(poster_run.generation_request.prompt_data)
+        self.assertEqual(brief['creative_direction']['mode'], 'REFERENCE')
+        self.assertEqual(
+            [row['id'] for row in brief['creative_direction']['selections']],
+            [str(template.pk)],
+        )
+        self.assertEqual(brief['analyze_before_generation_ids'], [str(template.pk)])
+        template.refresh_from_db(fields=['template_last_used_at'])
+        self.assertIsNotNone(template.template_last_used_at)
+
+        # Second run of this policy rotates to VIDEO: no template default.
+        video_run = create_run(self.policy, initiated_by=self.user)
+        execute_run(video_run.pk)
+        video_run.refresh_from_db()
+        video_brief = json.loads(video_run.generation_request.prompt_data)
+        self.assertEqual(video_brief['contentType'], 'video')
+        self.assertEqual(video_brief['creative_direction']['mode'], 'AI_ORIGINAL')
+        self.assertEqual(video_brief['analyze_before_generation_ids'], [])
+
     def test_ai_original_delegation_survives_into_the_persisted_draft(self):
         run = create_run(self.policy, initiated_by=self.user)
         execute_run(run.pk)

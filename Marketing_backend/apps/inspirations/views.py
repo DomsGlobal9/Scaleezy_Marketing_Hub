@@ -80,6 +80,11 @@ class BrandInspirationViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
         brand_id = self.request.query_params.get('brand_id')
         if brand_id:
             queryset = queryset.filter(brand_id=brand_id)
+        # The Templates tab lists only BRAND_TEMPLATE rows; the inspirations
+        # tab hides them. One filter serves both without a second endpoint.
+        inspiration_type = self.request.query_params.get('inspiration_type')
+        if inspiration_type:
+            queryset = queryset.filter(inspiration_type=inspiration_type)
         # Lets a caller ask for exactly what a future retrieval step would see,
         # instead of reimplementing the eligibility rule client-side.
         if self.request.query_params.get('eligible_only') == 'true':
