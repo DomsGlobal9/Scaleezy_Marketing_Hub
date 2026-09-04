@@ -2,6 +2,16 @@
 
 Reviewed 2026-09-03–04. Branch: `codex/tab-by-tab-product-closure`. Base: `5facc0e9`. Reference: current `marketing.scaleezy.com`, authenticated selected-client and Platform Console screens, plus current code and isolated diagnostics.
 
+## Current implementation update — 2026-09-04
+
+The original audit below is retained as historical evidence, not the current unimplemented backlog. PUB-01–06, CON-01–03, ENG-01, SYNC-01, ANA-01, ADM-01–03, SET-01 and PLAT-01–02 are now implemented locally, along with the recorded Brand evidence/Needs-review and Social authority/recovery follow-ups. Existing Editor-or-higher lazy brand bootstrap is retained for journey compatibility; VIEWER cannot provision through reads and onboarding summary no longer writes.
+
+Integrated backend gate after the final approved validity correction: **1,355 tests passed**. Prior frontend gate evidence: **11 frontend logic tests passed; typecheck/build passed; full lint had 0 errors and 14 existing warnings**. Those frontend gates were not rerun for this backend-only correction and do not certify subsequently changed frontend files. No schema changes. Focused local authenticated browser checks passed as enumerated in the integrated report; complete real-provider/production replay is not claimed.
+
+**Final recorded code gap closed after explicit user approval:** Platform's preloaded missing-snapshot compiler now applies the same expired/future-fact filter as ordinary compilation/generation. Six new tests cover date boundaries, matching fingerprints, retained source records, read purity, the actual Platform readiness path and tenant/brand isolation. All recorded code fixes are implemented locally; this is not a certification of complete production replay or live deployment. No commit, push, merge or deploy was performed for this correction.
+
+Current evidence: `docs/reviews/TAB_CLOSURE_ALL_GAPS_SELF_REVIEW_2026-09-04.md` and its focused reports, with the final approved-gap closure recorded in `docs/reviews/PRELOADED_BRAIN_VALIDITY_SELF_REVIEW_2026-09-04.md`. Earlier immutable reports retain their historical blocked status; the final addendum supersedes that one outstanding compiler finding. The following first-pass decisions and gate results predate this implementation.
+
 ## Decision in brief
 
 Keep the existing modules and architecture owners. No core module removal or merger is justified by this pass. Remove misleading controls/copy, finish failure and return journeys, and close the concrete execution-boundary gaps before adding more features.

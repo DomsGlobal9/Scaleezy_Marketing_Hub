@@ -266,7 +266,12 @@ export function KeyValueEditor({
             }
           }}
         />
-        <Button size="sm" variant="outline" disabled={disabled || !draft.trim()} onClick={() => add(draft)}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={disabled || !draft.trim()}
+          onClick={() => add(draft)}
+        >
           <Plus className="size-3.5" /> Add
         </Button>
         {unused.map((suggestion) => (

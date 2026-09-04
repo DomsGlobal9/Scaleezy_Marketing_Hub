@@ -15,7 +15,13 @@
 import { RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Chip, Empty, InlineError, Loading, useSlice } from "@/components/marketing/brand-master-primitives";
+import {
+  Chip,
+  Empty,
+  InlineError,
+  Loading,
+  useSlice,
+} from "@/components/marketing/brand-master-primitives";
 import { SectionTitle } from "@/components/marketing/primitives";
 import { fetchLearningUsage, type LearningUsageRow } from "@/lib/brand-master";
 
@@ -85,7 +91,9 @@ export function LearningUsagePanel({ brandId }: { brandId: string }) {
               <Chip tone="warn">{data.totals.not_in_force} not reaching generation</Chip>
             ) : null}
             {data.totals.never_used > 0 ? (
-              <Chip tone="soft">{data.totals.never_used} in force but not seen in a generation yet</Chip>
+              <Chip tone="soft">
+                {data.totals.never_used} in force but not seen in a generation yet
+              </Chip>
             ) : null}
           </div>
 

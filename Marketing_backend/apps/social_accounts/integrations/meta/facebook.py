@@ -247,5 +247,5 @@ class FacebookAdapter(SocialPlatformAdapter):
 
     def disconnect(self, access_token: str) -> bool:
         url = f"https://graph.facebook.com/{settings.META_API_VERSION}/me/permissions"
-        requests.delete(url, params={"access_token": access_token}, timeout=10)
-        return True
+        response = requests.delete(url, params={"access_token": access_token}, timeout=10)
+        return bool(response.ok and response.json().get('success'))

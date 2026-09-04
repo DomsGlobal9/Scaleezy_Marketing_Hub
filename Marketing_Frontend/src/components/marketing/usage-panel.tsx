@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 interface Usage {
@@ -43,19 +44,48 @@ function Meter({ used, limit }: { used: number; limit: number }) {
  */
 export function UsagePanel() {
   const [usage, setUsage] = useState<Usage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setError(null);
     void api<Usage>("/api/marketing/billing/")
       .then((data) => {
+        if (typeof data.subscribed !== "boolean")
+          throw new Error("The server returned invalid usage details.");
         if (!cancelled) setUsage(data);
       })
-      .catch(() => undefined);
+      .catch((e: unknown) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Could not load plan usage.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
 
+  if (loading)
+    return (
+      <p role="status" className="text-sm text-muted-foreground">
+        Loading plan usage…
+      </p>
+    );
+  if (error)
+    return (
+      <div className="space-y-3">
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+        <Button variant="outline" onClick={() => setAttempt((n) => n + 1)}>
+          Retry usage
+        </Button>
+      </div>
+    );
   if (!usage) return null;
 
   if (!usage.subscribed) {

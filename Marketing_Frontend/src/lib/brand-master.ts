@@ -13,6 +13,7 @@
  */
 import { ApiError, api, apiFetch } from "@/lib/api";
 import type { BrandDto } from "@/lib/brand-settings";
+import { hasStringFields, parseList } from "@/lib/list-response";
 
 export type ReadinessLevel = "STARTING" | "LEARNING" | "STRONG" | "READY";
 
@@ -94,6 +95,7 @@ export interface BrandMasterOverview {
   readiness: Readiness;
   brain: {
     compiled: boolean;
+    needs_refresh?: boolean;
     brain_version: string;
     schema_version: number | null;
     compiled_at: string | null;
@@ -351,13 +353,8 @@ export const SIGNAL_CATEGORIES: Array<{ value: string; label: string }> = [
  * through this so flipping an endpoint to paginated-by-default is a server
  * decision, not a coordinated deploy.
  */
-export function asList<T>(payload: unknown): T[] {
-  if (Array.isArray(payload)) return payload as T[];
-  if (payload && typeof payload === "object") {
-    const inner = payload as { results?: T[] };
-    if (Array.isArray(inner.results)) return inner.results;
-  }
-  return [];
+export function asList<T>(payload: unknown, fields: readonly string[] = ["id"]): T[] {
+  return parseList(payload, (item): item is T => hasStringFields(item, fields), "Records");
 }
 
 /**
@@ -420,7 +417,11 @@ export const rebuildBrain = (brandId: string) =>
 /* ---------------------------------------------------------------- knowledge */
 
 export const fetchKnowledge = async (brandId: string) =>
-  asList<KnowledgeSource>(await api(`/api/marketing/knowledge/sources/?brand_id=${brandId}`));
+  asList<KnowledgeSource>(await api(`/api/marketing/knowledge/sources/?brand_id=${brandId}`), [
+    "id",
+    "title",
+    "status",
+  ]);
 
 export const createTextSource = (
   brandId: string,
@@ -451,7 +452,12 @@ export const processSource = (sourceId: string) =>
   api(`/api/marketing/knowledge/sources/${sourceId}/process/`, { method: "POST" });
 
 export const fetchMemories = async (brandId: string) =>
-  asList<BrandMemoryRow>(await api(`/api/marketing/knowledge/memories/?brand_id=${brandId}`));
+  asList<BrandMemoryRow>(await api(`/api/marketing/knowledge/memories/?brand_id=${brandId}`), [
+    "id",
+    "status",
+    "content",
+    "memory_type",
+  ]);
 
 export const createMemory = (
   brandId: string,
@@ -471,11 +477,17 @@ export const rejectMemory = (memoryId: string) =>
 /* ------------------------------------------------------------- inspirations */
 
 export const fetchInspirations = async (brandId: string) =>
-  asList<Inspiration>(await api(`/api/marketing/inspirations/?brand_id=${brandId}`));
+  asList<Inspiration>(await api(`/api/marketing/inspirations/?brand_id=${brandId}`), [
+    "id",
+    "title",
+    "analysis_status",
+    "lifecycle_status",
+  ]);
 
 export const fetchSignals = async (brandId: string) =>
   asList<InspirationSignalRow>(
     await api(`/api/marketing/inspiration-signals/?brand_id=${brandId}`),
+    ["id", "inspiration", "user_confirmation"],
   );
 
 export interface InspirationInput {

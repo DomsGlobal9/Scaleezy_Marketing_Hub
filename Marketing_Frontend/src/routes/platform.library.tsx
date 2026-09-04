@@ -8,7 +8,9 @@
  */
 import { createFileRoute } from "@tanstack/react-router";
 import { Archive, Pencil, Plus, RefreshCw, Send, Upload } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { usePlatformPage } from "@/lib/use-platform-page";
+import { PlatformListControls } from "@/components/platform/list-controls";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -42,7 +44,6 @@ import {
   LIBRARY_UPLOAD_MAX_MB,
   createPlatformInspiration,
   errorText,
-  fetchPlatformInspirations,
   formatDate,
   publishPlatformInspiration,
   retirePlatformInspiration,
@@ -433,30 +434,16 @@ function FilterChip({
 }
 
 function LibraryPage() {
-  const [items, setItems] = useState<PlatformInspiration[] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<StatusFilter>("ALL");
   const [kindFilter, setKindFilter] = useState<KindFilter>("ALL");
+  const { items, pageInfo, loading, error, load, setPage, setQuery } =
+    usePlatformPage<PlatformInspiration>("/api/platform/inspirations/", "inspirations", {
+      status: filter,
+      kind: kindFilter,
+    });
   const [editing, setEditing] = useState<PlatformInspiration | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setItems(await fetchPlatformInspirations());
-    } catch (e: unknown) {
-      setError(errorText(e, "Could not load the library."));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   const publish = (item: PlatformInspiration) =>
     setConfirm({
@@ -486,17 +473,9 @@ function LibraryPage() {
       },
     });
 
-  const byStatus = (items ?? []).filter((i) => filter === "ALL" || i.status === filter);
-  const visible = byStatus.filter((i) => kindFilter === "ALL" || asKind(i.kind) === kindFilter);
-  const counts = {
-    ALL: items?.length ?? 0,
-    DRAFT: items?.filter((i) => i.status === "DRAFT").length ?? 0,
-    PUBLISHED: items?.filter((i) => i.status === "PUBLISHED").length ?? 0,
-    RETIRED: items?.filter((i) => i.status === "RETIRED").length ?? 0,
-  };
-  const kindCounts = Object.fromEntries(
-    LIBRARY_KINDS.map((k) => [k, byStatus.filter((i) => asKind(i.kind) === k).length]),
-  ) as Record<LibraryKind, number>;
+  const visible = items ?? [];
+  const counts = pageInfo?.status_counts;
+  const kindCounts = pageInfo?.kind_counts;
 
   return (
     <div>
@@ -522,28 +501,35 @@ function LibraryPage() {
         }
       />
 
+      <PlatformListControls
+        pageInfo={pageInfo}
+        loading={loading}
+        setPage={setPage}
+        setQuery={setQuery}
+      />
       <div className="mb-2 flex flex-wrap gap-2">
         {(["ALL", "DRAFT", "PUBLISHED", "RETIRED"] as StatusFilter[]).map((value) => (
           <FilterChip key={value} active={filter === value} onClick={() => setFilter(value)}>
             {value === "ALL" ? "All" : value.charAt(0) + value.slice(1).toLowerCase()} ·{" "}
-            {counts[value]}
+            {counts ? (counts[value] ?? 0) : "—"}
           </FilterChip>
         ))}
       </div>
       <div className="mb-4 flex flex-wrap gap-2">
         <FilterChip active={kindFilter === "ALL"} onClick={() => setKindFilter("ALL")}>
-          Every kind · {byStatus.length}
+          Every kind · {kindCounts ? (kindCounts["ALL"] ?? 0) : "—"}
         </FilterChip>
         {LIBRARY_KINDS.map((k) => (
           <FilterChip key={k} active={kindFilter === k} onClick={() => setKindFilter(k)}>
-            {k === "TEXT" ? "Text" : `${KIND_LABEL[k]}s`} · {kindCounts[k]}
+            {k === "TEXT" ? "Text" : `${KIND_LABEL[k]}s`} ·{" "}
+            {kindCounts ? (kindCounts[k] ?? 0) : "—"}
           </FilterChip>
         ))}
       </div>
 
       <ErrorNote message={error} />
 
-      {loading && !items ? (
+      {error && !items ? null : loading && !items ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-44 rounded-xl" />

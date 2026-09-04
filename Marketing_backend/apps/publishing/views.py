@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.db.models import Prefetch
 from django.utils import timezone
 
 from rest_framework import status, viewsets
@@ -29,7 +30,11 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     # Newest first. The history table reads this, and the opt-in pagination
     # (?page_size=) needs a deterministic order to page against — an
     # unordered queryset makes page boundaries db-dependent.
-    queryset = PublishingJob.objects.order_by('-created_at', '-id').prefetch_related('items')
+    queryset = PublishingJob.objects.order_by('-created_at', '-id').select_related(
+        'content_item'
+    ).prefetch_related(Prefetch(
+        'items', queryset=PublishingJobItem.objects.select_related('social_connection')
+    ))
     serializer_class = PublishingJobSerializer
     permission_classes = [IsAuthenticated, IsWorkspaceMember, HasWorkspaceRole]
     # Lists are scoped by WorkspaceScopedMixin, so an unresolvable workspace
@@ -204,8 +209,14 @@ class PublishingJobViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 id=item_id,
                 publishing_job__workspace__in=self.accessible_workspace_ids(),
             )
+            if item.publishing_job.status == PublishingJob.Status.CANCELLED:
+                return APIResponse(success=False, message='This publishing job was cancelled.', status=409)
             if item.status != PublishingJobItem.Status.FAILED:
                 return APIResponse(success=False, message="Item is not in FAILED state.", status=400)
+            try:
+                enforce_connection_policy(item.social_connection, at=timezone.now())
+            except PublishingPolicyError as exc:
+                return APIResponse(success=False, message=str(exc), error={'code': exc.code}, status=409)
                 
             item.status = PublishingJobItem.Status.QUEUED
             item.save()

@@ -168,6 +168,15 @@ class WorkspaceAIProviderSerializer(serializers.ModelSerializer):
         return super().create(self._apply_credentials(validated_data))
 
     def update(self, instance, validated_data):
+        connection_changed = 'credentials' in validated_data or any(
+            field in validated_data and validated_data[field] != getattr(instance, field)
+            for field in ('model_override', 'config', 'capabilities')
+        )
+        if connection_changed:
+            # A historical check must never certify a different connection.
+            validated_data.update(
+                last_health_check_at=None, last_health_ok=None, last_error='',
+            )
         updated = super().update(instance, self._apply_credentials(validated_data))
         if 'capabilities' in validated_data and updated.provider.is_custom:
             updated.provider.capabilities = list(updated.capabilities or [])

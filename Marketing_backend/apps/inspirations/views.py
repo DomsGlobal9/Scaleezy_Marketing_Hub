@@ -91,6 +91,12 @@ class BrandInspirationViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
             workspace=self._authorised_workspace(), created_by=self.request.user
         )
 
+    def perform_update(self, serializer):
+        inspiration = serializer.save()
+        # Scope/focus and user annotations are editable direction, not source
+        # identity. Recompile immediately so the snapshot respects the change.
+        rebuild_brand_brain_safely(inspiration.brand)
+
     def destroy(self, request, *args, **kwargs):
         return APIResponse(
             success=False,
@@ -296,6 +302,12 @@ class InspirationSignalViewSet(WorkspaceScopedMixin, WorkspaceResolvedViewSet):
         record_user_signal(serializer, user=self.request.user)
         # A stated preference is explicit intelligence: compile it in now.
         rebuild_brand_brain_safely(serializer.instance.inspiration.brand)
+
+    def perform_update(self, serializer):
+        signal = serializer.save()
+        # Weight/confidence are intentionally editable in PR2; the compiled
+        # snapshot must follow that edit without changing signal provenance.
+        rebuild_brand_brain_safely(signal.inspiration.brand)
 
     def destroy(self, request, *args, **kwargs):
         return APIResponse(

@@ -477,7 +477,7 @@ class DisconnectRoleGateTests(TestCase):
     def test_admin_can_start_connect_or_reconnect(self, get_adapter):
         client = self._client_with_role(WorkspaceMember.Role.ADMIN)
         self._connection()
-        get_adapter.return_value.get_authorization_url.return_value = 'https://example.test/oauth'
+        get_adapter.return_value.get_authorization_url.return_value = 'https://example.test/oauth?state=connect-test'
         response = client.post(
             '/api/marketing/social-accounts/connect/',
             {'workspace_id': str(self.workspace.id), 'platform': 'LINKEDIN'},
@@ -485,7 +485,7 @@ class DisconnectRoleGateTests(TestCase):
             HTTP_X_WORKSPACE_ID=str(self.workspace.id),
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['data']['authorization_url'], 'https://example.test/oauth')
+        self.assertEqual(response.data['data']['authorization_url'], 'https://example.test/oauth?state=connect-test')
         get_adapter.return_value.get_authorization_url.assert_called_once_with(
             workspace_id=str(self.workspace.id)
         )
@@ -495,6 +495,8 @@ class DisconnectRoleGateTests(TestCase):
     def test_admin_can_verify(self, get_adapter, decrypt):
         client = self._client_with_role(WorkspaceMember.Role.ADMIN)
         connection = self._connection()
+        connection.access_token_encrypted = encrypt_token('test-access')
+        connection.save()
         get_adapter.return_value.get_account_info.return_value = {'id': connection.external_account_id}
         response = client.post(
             f'/api/marketing/social-accounts/{connection.id}/verify/',

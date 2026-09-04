@@ -60,6 +60,9 @@ import {
   fetchBrain,
   fetchBrandMasterBootstrap,
   fetchKnowledge,
+  fetchInspirations,
+  fetchSignals,
+  fetchMemories,
   fetchLearningEvents,
   fetchOverview,
   fetchPreferences,
@@ -944,11 +947,36 @@ function AttentionTab({
   onChanged: () => void;
 }) {
   const sources = useSlice<KnowledgeSource[]>(() => fetchKnowledge(brandId), true);
+  const references = useSlice(() => fetchInspirations(brandId), true);
+  const signals = useSlice(() => fetchSignals(brandId), true);
+  const memories = useSlice(() => fetchMemories(brandId), true);
   const [busy, setBusy] = useState<string | null>(null);
   const conflicts = overview.conflicts;
   const needsAttention = (sources.data ?? []).filter(
     (s) => s.status === "FAILED" || s.status === "NEEDS_REVIEW",
   );
+  const referenceAttention = (references.data ?? []).filter(
+    (item) =>
+      item.lifecycle_status !== "ARCHIVED" &&
+      ["FAILED", "NEEDS_REVIEW"].includes(item.analysis_status),
+  );
+  const candidateFacts = (memories.data ?? []).filter(
+    (item) =>
+      item.status === "CANDIDATE" &&
+      (!item.source ||
+        sources.data?.some((source) => source.id === item.source && source.status !== "ARCHIVED")),
+  ).length;
+  const pendingSignals = (signals.data ?? []).filter(
+    (item) =>
+      item.user_confirmation === "PENDING" &&
+      !item.superseded_at &&
+      references.data?.some(
+        (reference) =>
+          reference.id === item.inspiration && reference.lifecycle_status !== "ARCHIVED",
+      ),
+  ).length;
+  const attentionSlices = [sources, references, signals, memories];
+  const incomplete = attentionSlices.some((slice) => slice.loading || slice.error || !slice.data);
 
   const resolve = async (conflict: BrandConflict, claim: BrandConflict["claims"][number]) => {
     if (!claim.source_id) return;
@@ -987,23 +1015,59 @@ function AttentionTab({
     brand_preference: "Retire this preference",
   };
 
-  if (sources.loading && !sources.data && !conflicts.length) return <Loading rows={2} />;
-  if (sources.error && !conflicts.length) {
-    return <Failed message={sources.error} onRetry={sources.reload} />;
-  }
-
-  if (!conflicts.length && !needsAttention.length) {
+  if (
+    !incomplete &&
+    !conflicts.length &&
+    !needsAttention.length &&
+    !referenceAttention.length &&
+    !candidateFacts &&
+    !pendingSignals &&
+    overview.brain.compiled &&
+    !overview.brain.needs_refresh
+  ) {
     return (
       <Empty
         title="Nothing needs your decision"
-        hint="When two equally trusted sources disagree, or a knowledge source needs review, it shows up here with a way to fix it."
+        hint="No pending facts, inspiration decisions or source failures were found. Conflicts and missing compiled context also appear here."
       />
     );
   }
 
   return (
     <div className="space-y-8">
-      {sources.error ? <Failed message={sources.error} onRetry={sources.reload} /> : null}
+      {attentionSlices.some((slice) => slice.loading) ? <Loading rows={2} /> : null}
+      {attentionSlices.map((slice, index) =>
+        slice.error ? <Failed key={index} message={slice.error} onRetry={slice.reload} /> : null,
+      )}
+      {!overview.brain.compiled || overview.brain.needs_refresh ? (
+        <div role="status" className="rounded-xl border border-amber-500/30 p-4">
+          <p className="font-medium">
+            {overview.brain.compiled
+              ? "Brand context needs a refresh"
+              : "Compiled brand context is not available yet"}
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Review what Scaleezy uses and its source status before generating.
+          </p>
+          <Button className="mt-3" variant="outline" onClick={() => onGoToTab("brain")}>
+            Check brand context
+          </Button>
+        </div>
+      ) : null}
+      {candidateFacts || pendingSignals ? (
+        <div className="flex flex-wrap gap-3">
+          {candidateFacts ? (
+            <Button variant="outline" onClick={() => onGoToTab("knowledge")}>
+              Review {candidateFacts} candidate facts
+            </Button>
+          ) : null}
+          {pendingSignals ? (
+            <Button variant="outline" onClick={() => onGoToTab("inspirations")}>
+              Review {pendingSignals} inspiration observations
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       {conflicts.length ? (
         <div className="space-y-4">
           <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
@@ -1081,6 +1145,30 @@ function AttentionTab({
             ))}
           </ul>
         </div>
+      ) : null}
+      {referenceAttention.length ? (
+        <section>
+          <SectionTitle
+            title="Inspirations that need attention"
+            description="Retry failed analysis or review the observations before they influence your brand."
+          />
+          <ul className="mt-3 space-y-2">
+            {referenceAttention.map((item) => (
+              <li
+                key={item.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3 text-sm"
+              >
+                <span>{item.title || "Untitled reference"}</span>
+                <span className="flex items-center gap-2">
+                  <Chip tone="warn">{humanize(item.analysis_status)}</Chip>
+                  <Button size="sm" variant="outline" onClick={() => onGoToTab("inspirations")}>
+                    Open inspiration
+                  </Button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
       ) : null}
     </div>
   );

@@ -58,8 +58,14 @@ import {
   type InspirationInput,
   uploadInspiration,
 } from "@/lib/brand-master";
-import { api, apiFetch, apiPost } from "@/lib/api";
+import { api, apiFetch, apiPost, ApiError } from "@/lib/api";
 import { readSelectedWorkspaceId } from "@/lib/workspace";
+import {
+  canCreateGeneration,
+  canDiscardRejectedDelivery,
+  generationDecision,
+  hasSavedGenerationImage,
+} from "@/lib/generation-state";
 
 export const Route = createFileRoute("/_hub/publishing")({
   head: () => ({
@@ -97,6 +103,8 @@ interface CarouselSlide {
 
 interface DraftAsset {
   id?: string | undefined;
+  generationId?: string | undefined;
+  mediaWarning?: string | undefined;
   /** ContentItem row the backend persisted for this generation. */
   contentItemId?: string | undefined;
   name: string;
@@ -313,7 +321,10 @@ class InspirationGenerationFlowError extends Error {
 }
 
 class GenerationRequestFailedError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly retryAllowed: boolean,
+  ) {
     super(message);
     this.name = "GenerationRequestFailedError";
   }
@@ -356,6 +367,17 @@ function PublishingPage() {
   // Lets the user stop waiting on a queued generation, which otherwise holds
   // the screen for the full ten-minute polling ceiling.
   const generationAbort = useRef<AbortController | null>(null);
+  const generationAttempt = useRef<{
+    id: string;
+    payload: Record<string, unknown>;
+    inspiration: InspirationGenerationOptions | undefined;
+    contentType: ContentType;
+    creativeMode: CreativeMode;
+    campaignName: string;
+    slides: CarouselSlide[];
+  } | null>(null);
+  const [generationPending, setGenerationPending] = useState(false);
+  const [retryingImage, setRetryingImage] = useState(false);
 
   // AI brief state
   const [campaignName, setCampaignName] = useState("");
@@ -406,6 +428,8 @@ function PublishingPage() {
       // and clear every browser-only reference when the active client changes
       // so the old client's result can never appear in the new client's UI.
       generationAbort.current?.abort();
+      generationAttempt.current = null;
+      setGenerationPending(false);
       setCreativeSelections([]);
       setReferenceImageBase64("");
       setAsset(null);
@@ -756,6 +780,19 @@ function PublishingPage() {
     if (!asset || contentLocked) return;
     setContentSaving(true);
     try {
+      if (!asset.id && asset.contentItemId && asset.mediaWarning) {
+        if (submit) throw new Error("Finish the missing image before submitting for review.");
+        await api(`/api/marketing/content/${asset.contentItemId}/`, {
+          method: "PATCH",
+          body: {
+            headline: asset.postTitle,
+            caption: asset.postDescription,
+            hashtags: asset.postHashtags,
+          },
+        });
+        toast.success("Copy saved. Retry the missing image when ready.");
+        return;
+      }
       const { id: assetId, fileUrl } = await ensureDraftAsset(asset);
       // Never send a data: URL to the server. It is not a URL the model can
       // store, and it is not one anything else could load either.
@@ -871,6 +908,7 @@ function PublishingPage() {
         if (typeof window !== "undefined" && window.location.search) {
           window.history.replaceState({}, "", window.location.pathname);
         }
+        setStep("ai_form");
       } else {
         toast.error(data.message || "Failed to publish.");
       }
@@ -880,7 +918,6 @@ function PublishingPage() {
     } finally {
       setRunning(false);
       await loadHistory();
-      setStep("ai_form");
     }
   };
 
@@ -904,7 +941,13 @@ function PublishingPage() {
 
       const res = await apiFetch(`/api/marketing/ai-generation/${generationId}/`, { signal });
       const json = await res.json();
+      if (!res.ok || json.success === false) {
+        throw new Error(
+          json.message || "Could not check generation status. Resume this attempt to check again.",
+        );
+      }
       const request = json.data ?? json;
+      const execution = request?.execution;
       const progress = request?.progress;
       if (progress?.content_type === "carousel" && progress.total_slides) {
         setProductionProgress(
@@ -920,17 +963,31 @@ function PublishingPage() {
         );
       }
 
-      if (request?.status === "FAILED") {
-        throw new GenerationRequestFailedError(request.error_message || "Generation failed.");
+      const decision = generationDecision(request);
+      if (decision === "wait") {
+        if (execution?.state === "RETRY_PENDING")
+          setProductionProgress(
+            "A worker retry is queued. Your existing generation is still running.",
+          );
+        continue;
       }
-      if (request?.status !== "COMPLETED") continue;
+      if (decision === "failed") {
+        throw new GenerationRequestFailedError(
+          request.error_message || "Generation failed.",
+          execution?.retry_allowed === true,
+        );
+      }
 
       const resultRes = await apiFetch(`/api/marketing/ai-generation/${generationId}/results/`, {
         signal,
       });
       const resultJson = await resultRes.json();
+      if (!resultRes.ok || resultJson.success === false)
+        throw new Error("Could not load the saved generation. Resume to try again.");
       const result = resultJson.data ?? {};
       const metadata = result.metadata ?? {};
+      if (!metadata.contentItemId)
+        throw new Error("The generation has no saved draft yet. Resume to check again.");
 
       return {
         postTitle: metadata.postTitle ?? "",
@@ -959,9 +1016,13 @@ function PublishingPage() {
   };
 
   const handleGenerate = async (inspiration?: InspirationGenerationOptions) => {
-    const requestedContentType: ContentType = inspiration ? "poster" : contentType;
-    const requestedMode: CreativeMode = inspiration ? "REFERENCE" : creativeMode!;
-    if (!inspiration) {
+    const pending = generationAttempt.current;
+    if (pending) inspiration = pending.inspiration;
+    const requestedContentType: ContentType =
+      pending?.contentType ?? (inspiration ? "poster" : contentType);
+    const requestedMode: CreativeMode =
+      pending?.creativeMode ?? (inspiration ? "REFERENCE" : creativeMode!);
+    if (!inspiration && !pending) {
       if (!creativeMode) {
         toast.error("Choose how Scaleezy should design this content.");
         return;
@@ -1001,7 +1062,8 @@ function PublishingPage() {
       // polling latency and returns the identical payload.
       const endpoint = "/api/marketing/ai-generation/generate-async/";
 
-      const requestedCampaignName = inspiration?.inspirationTitle || campaignName;
+      const requestedCampaignName =
+        pending?.campaignName ?? (inspiration?.inspirationTitle || campaignName);
       const generationPayload = inspiration
         ? {
             creativeMode: requestedMode,
@@ -1058,6 +1120,17 @@ function PublishingPage() {
               : {}),
           };
 
+      const attempt = pending ?? {
+        id: crypto.randomUUID(),
+        payload: generationPayload,
+        inspiration,
+        contentType: requestedContentType,
+        creativeMode: requestedMode,
+        campaignName: requestedCampaignName,
+        slides: [...slides],
+      };
+      generationAttempt.current = attempt;
+      setGenerationPending(true);
       const res = await apiFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1065,13 +1138,16 @@ function PublishingPage() {
         // The inspiration-led branch intentionally contains IDs only. The
         // worker re-resolves and analyzes the saved reference; browser base64
         // never enters durable generation state.
-        body: JSON.stringify(generationPayload),
+        body: JSON.stringify({ ...attempt.payload, requestId: attempt.id }),
       });
       const json = await res.json();
       if (!json.success) {
         const code = String(json.error?.code || "");
-        const definitelyNotRunning =
-          code === "QUEUE_FAILED" || (res.status >= 400 && res.status < 500);
+        const definitelyNotRunning = canDiscardRejectedDelivery(Boolean(pending), res.status, code);
+        if (definitelyNotRunning) {
+          generationAttempt.current = null;
+          setGenerationPending(false);
+        }
         throw new InspirationGenerationFlowError(
           json.message || "Generation failed",
           false,
@@ -1080,6 +1156,8 @@ function PublishingPage() {
       }
       queued = true;
       const d = await pollGeneration(json.data.generationId, controller.signal);
+      generationAttempt.current = null;
+      setGenerationPending(false);
 
       const returnedSlides: string[] = Array.isArray(d.slideImageUrls) ? d.slideImageUrls : [];
 
@@ -1093,6 +1171,11 @@ function PublishingPage() {
 
       setAsset({
         id: d.assetId || undefined,
+        generationId: json.data.generationId,
+        mediaWarning:
+          d.metadata?.media?.status === "FAILED"
+            ? String(d.metadata.media.error || "The image failed. Your copy is saved.")
+            : undefined,
         name: `${requestedCampaignName || "Untitled"} ${label}.${requestedContentType === "video" ? "mp4" : "jpg"}`,
         type: fileType,
         dimensions:
@@ -1126,7 +1209,7 @@ function PublishingPage() {
         contentItemId: d.contentItemId || undefined,
         ...(requestedContentType === "carousel"
           ? {
-              slides: slides.map((s, i) => ({
+              slides: attempt.slides.map((s, i) => ({
                 ...s,
                 description: s.description.trim() || slidePlaceholder(i),
                 previewUrl: returnedSlides[i],
@@ -1136,6 +1219,10 @@ function PublishingPage() {
       });
       setStep("preview");
     } catch (err: unknown) {
+      if (err instanceof GenerationRequestFailedError && err.retryAllowed) {
+        generationAttempt.current = null;
+        setGenerationPending(false);
+      }
       // A client switch owns the reset. Do not let the cancelled old-client
       // promise reopen any creation screen under the newly selected client.
       if (startedBrandId && creativeBrand.current && startedBrandId !== creativeBrand.current)
@@ -1155,7 +1242,7 @@ function PublishingPage() {
           // A queued request may still be retried by the durable task runner
           // after its application row briefly reports FAILED. Never offer a
           // second user-triggered request while that ownership is ambiguous.
-          false,
+          err instanceof GenerationRequestFailedError && err.retryAllowed,
         );
       }
       if (err instanceof Error && err.name === "AbortError") {
@@ -1170,6 +1257,53 @@ function PublishingPage() {
       setStep("ai_form");
     } finally {
       if (generationAbort.current === controller) generationAbort.current = null;
+    }
+  };
+
+  const retryMissingImage = async () => {
+    if (!asset?.generationId || retryingImage) return;
+    const id = asset.generationId;
+    const selectedClient = readSelectedWorkspaceId();
+    setRetryingImage(true);
+    try {
+      try {
+        await apiPost(`/api/marketing/ai-generation/${id}/retry-image/`, {});
+      } catch (error) {
+        // A previous retry may still own the task, or may already have saved
+        // its image after a lost response. Read that same generation instead.
+        if (!(error instanceof ApiError) || error.status !== 409) throw error;
+      }
+      const result = await pollGeneration(id, new AbortController().signal);
+      if (readSelectedWorkspaceId() !== selectedClient) return;
+      if (!hasSavedGenerationImage(result)) {
+        throw new Error(
+          result.metadata?.media?.error || "The image was not saved. Your copy is unchanged.",
+        );
+      }
+      setAsset((current) =>
+        current?.generationId === id
+          ? {
+              ...current,
+              id: result.assetId || undefined,
+              previewUrl: result.posterImageUrl || undefined,
+              mediaWarning:
+                result.metadata?.media?.status === "FAILED"
+                  ? result.metadata.media.error
+                  : undefined,
+              compositionWarning:
+                result.metadata?.composition?.status === "FAILED"
+                  ? result.metadata.composition.error
+                  : undefined,
+            }
+          : current,
+      );
+      toast.success("Image saved. Your existing copy was preserved.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Image retry failed. Your copy is unchanged.",
+      );
+    } finally {
+      setRetryingImage(false);
     }
   };
 
@@ -1477,6 +1611,25 @@ function PublishingPage() {
       />
 
       <div className="grid gap-6">
+        {generationPending && step !== "ai_generating" ? (
+          <div role="status" className="rounded-xl border border-border p-4 text-sm">
+            An earlier generation may still be running. Resume it before starting another.
+            <Button
+              variant="outline"
+              className="ml-3"
+              onClick={() =>
+                void handleGenerate(generationAttempt.current?.inspiration).catch(
+                  (error: unknown) =>
+                    toast.error(
+                      error instanceof Error ? error.message : "Could not resume generation.",
+                    ),
+                )
+              }
+            >
+              Resume generation
+            </Button>
+          </div>
+        ) : null}
         {step === "inspiration_form" && (
           <CreateFromInspiration
             key={brandId ?? "no-brand"}
@@ -1983,12 +2136,18 @@ function PublishingPage() {
                 <Button
                   onClick={() => void handleGenerate()}
                   disabled={
-                    awaitingApproval ||
-                    !creativeMode ||
-                    (creativeMode === "CATALOG_TEMPLATE" &&
-                      (layoutCatalogue.loading ||
-                        Boolean(layoutCatalogue.error) ||
-                        layoutCatalogue.layouts.length === 0))
+                    !canCreateGeneration({
+                      awaitingApproval,
+                      pending: generationPending,
+                      mode: creativeMode,
+                      brief: [creativeBrief, campaignName, product, offer],
+                      hasReference: Boolean(referenceImageBase64 || creativeSelections.length),
+                      layout: creativeLayout,
+                      catalogueReady:
+                        !layoutCatalogue.loading &&
+                        !layoutCatalogue.error &&
+                        layoutCatalogue.layouts.length > 0,
+                    })
                   }
                   title={
                     awaitingApproval
@@ -1997,7 +2156,8 @@ function PublishingPage() {
                   }
                   className="gap-2"
                 >
-                  <Sparkles className="size-4" /> Create now
+                  <Sparkles className="size-4" />{" "}
+                  {generationPending ? "Resume generation" : "Create now"}
                 </Button>
                 <Button
                   variant="ghost"
@@ -2106,7 +2266,12 @@ function PublishingPage() {
         {(step === "preview" || step === "publish_setup") && asset && (
           <div className="space-y-4">
             <button
-              onClick={() => setStep("ai_form")}
+              onClick={() => {
+                setContentLocked(false);
+                setSelected([]);
+                setAsset(null);
+                setStep("ai_form");
+              }}
               className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors w-fit p-2 pr-4 -ml-2 rounded-full hover:bg-secondary/50 text-sm font-medium"
             >
               {/* Renamed: this rewinds the wizard to step one. The dashboard
@@ -2117,6 +2282,24 @@ function PublishingPage() {
               {/* LEFT: CONTENT PREVIEW */}
               <section className="surface-card p-5 sm:p-8 animate-in fade-in">
                 <p className="label-eyebrow text-primary">CONTENT PREVIEW</p>
+                {asset.mediaWarning ? (
+                  <div
+                    role="alert"
+                    className="mt-4 rounded-xl border border-amber-400/50 p-4 text-sm"
+                  >
+                    <strong>Copy saved; image needs attention.</strong> {asset.mediaWarning}
+                    {asset.generationId ? (
+                      <Button
+                        className="mt-3"
+                        variant="outline"
+                        disabled={retryingImage}
+                        onClick={() => void retryMissingImage()}
+                      >
+                        {retryingImage ? "Retrying image…" : "Retry image only"}
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 {asset.compositionWarning ? (
                   <div
@@ -2356,7 +2539,7 @@ function PublishingPage() {
                     <Button
                       variant="outline"
                       className="h-12"
-                      disabled={contentSaving}
+                      disabled={contentSaving || retryingImage}
                       onClick={() => void saveContentDraft()}
                     >
                       {contentSaving ? <Loader2 className="size-4 animate-spin" /> : null}
@@ -2364,7 +2547,7 @@ function PublishingPage() {
                     </Button>
                     <Button
                       className="h-12"
-                      disabled={contentSaving}
+                      disabled={contentSaving || retryingImage || Boolean(asset.mediaWarning)}
                       onClick={() => void saveContentDraft({ submit: true })}
                     >
                       {contentSaving ? <Loader2 className="size-4 animate-spin" /> : null}

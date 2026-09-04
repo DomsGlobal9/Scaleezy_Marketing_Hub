@@ -20,7 +20,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ConfirmDialog, ErrorNote, StatusPill, type ConfirmRequest } from "@/components/platform/shared";
+import {
+  ConfirmDialog,
+  ErrorNote,
+  StatusPill,
+  type ConfirmRequest,
+} from "@/components/platform/shared";
 import { SectionTitle } from "@/components/marketing/primitives";
 import {
   errorText,
@@ -70,7 +75,8 @@ export function TeamPanel() {
     if (role === member.role) return;
     ask({
       title: `Make ${member.username} ${role}?`,
-      description: "The server re-checks that you may grant this role and that the client keeps an owner.",
+      description:
+        "The server re-checks that you may grant this role and that the client keeps an owner.",
       confirmLabel: "Change role",
       run: async () => {
         await setTeamRole(member.id, role);
@@ -115,14 +121,19 @@ export function TeamPanel() {
                 {team.members.map((member) => (
                   <tr key={member.id} className="border-t border-border align-middle">
                     <td className="px-3 py-2">
-                      <p className="font-medium text-foreground">{member.full_name || member.username}</p>
+                      <p className="font-medium text-foreground">
+                        {member.full_name || member.username}
+                      </p>
                       <p className="text-xs text-muted-foreground">
                         {member.username}
                         {member.email ? ` · ${member.email}` : ""}
                       </p>
                     </td>
                     <td className="px-3 py-2">
-                      <Select value={member.role} onValueChange={(role) => changeRole(member, role)}>
+                      <Select
+                        value={member.role}
+                        onValueChange={(role) => changeRole(member, role)}
+                      >
                         <SelectTrigger className="h-8 w-32 text-xs">
                           <SelectValue />
                         </SelectTrigger>
@@ -141,7 +152,9 @@ export function TeamPanel() {
                     <td className="px-3 py-2">
                       <StatusPill value={member.status} />
                     </td>
-                    <td className="px-3 py-2 text-xs text-muted-foreground">{formatAgo(member.last_active_at)}</td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">
+                      {formatAgo(member.last_active_at)}
+                    </td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">
                       {member.invited_by_username || "—"}
                     </td>
@@ -154,7 +167,8 @@ export function TeamPanel() {
                             onClick={() =>
                               ask({
                                 title: `Suspend ${member.username}?`,
-                                description: "They keep their seat but cannot act until reactivated.",
+                                description:
+                                  "They keep their seat but cannot act until reactivated.",
                                 confirmLabel: "Suspend",
                                 run: async () => {
                                   await suspendTeamMember(member.id);
@@ -190,7 +204,8 @@ export function TeamPanel() {
                           onClick={() =>
                             ask({
                               title: `Remove ${member.username} from this client?`,
-                              description: "They lose access to this client. Their account and other clients are untouched.",
+                              description:
+                                "They lose access to this client. Their account and other clients are untouched.",
                               confirmLabel: "Remove",
                               destructive: true,
                               run: async () => {
@@ -222,7 +237,9 @@ export function TeamPanel() {
             <span>{team.invite_note}</span>
           </p>
 
-          <h3 className="mt-6 text-sm font-semibold tracking-tight text-foreground">Permission matrix</h3>
+          <h3 className="mt-6 text-sm font-semibold tracking-tight text-foreground">
+            Permission matrix
+          </h3>
           <p className="mb-2 text-xs text-muted-foreground">
             Derived from the server's role ranking. A role grants everything at its rank and below.
           </p>
@@ -243,7 +260,9 @@ export function TeamPanel() {
                   <tr key={cap.key} className="border-t border-border">
                     <td className="px-3 py-1.5">
                       <p className="text-foreground">{cap.label}</p>
-                      <p className="text-[0.625rem] text-muted-foreground">from {cap.minimum_role}</p>
+                      <p className="text-[0.625rem] text-muted-foreground">
+                        from {cap.minimum_role}
+                      </p>
                     </td>
                     {roles.map((r) => (
                       <td key={r.role} className="px-3 py-1.5 text-center">

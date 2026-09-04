@@ -58,6 +58,7 @@ def build_brand_master_overview(brand):
         'readiness': readiness,
         'brain': {
             'compiled': bool(brand.creative_brain),
+            'needs_refresh': bool(brand.brain_last_error) or not bool(brand.creative_brain),
             'brain_version': brain.get('brain_version', ''),
             'schema_version': brain.get('schema_version'),
             'compiled_at': (brand.creative_brain or {}).get('compiled_at'),

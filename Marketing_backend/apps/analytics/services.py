@@ -22,6 +22,7 @@ from .models import (
     PlatformPerformance,
     RevenueEvent,
 )
+from .measurements import measured_fields
 
 
 class PerformanceSyncError(Exception):
@@ -48,6 +49,7 @@ def rebuild_workspace_projections(workspace):
     by_day = defaultdict(lambda: defaultdict(int))
     by_platform = defaultdict(lambda: defaultdict(int))
     campaign_spend = defaultdict(lambda: Decimal('0'))
+    campaign_currencies = defaultdict(set)
 
     for row in latest:
         day = row.observed_at.date()
@@ -57,6 +59,8 @@ def rebuild_workspace_projections(workspace):
             by_platform[row.platform][field] += int(getattr(row, field) or 0)
         if row.campaign_name:
             campaign_spend[row.campaign_name] += row.spend or Decimal('0')
+            if row.spend:
+                campaign_currencies[row.campaign_name].add(row.currency)
 
     published_by_day = dict(
         PublishingJobItem.objects.filter(
@@ -85,9 +89,9 @@ def rebuild_workspace_projections(workspace):
     PlatformPerformance.objects.filter(workspace=workspace).exclude(
         platform__in=by_platform.keys()
     ).delete()
-    revenue_total = RevenueEvent.objects.filter(workspace=workspace).aggregate(
-        total=Sum('amount')
-    )['total'] or Decimal('0')
+    revenue_by_currency = list(RevenueEvent.objects.filter(workspace=workspace)
+        .values('currency').annotate(total=Sum('amount')))
+    revenue_total = str(revenue_by_currency[0]['total']) if len(revenue_by_currency) == 1 else None
     for platform, metrics in by_platform.items():
         # Revenue without explicit campaign/content attribution stays a
         # workspace total and is never guessed onto a platform.
@@ -100,14 +104,17 @@ def rebuild_workspace_projections(workspace):
             },
         )
 
-    campaign_revenue = {
-        row['campaign_name']: row['total'] or Decimal('0')
-        for row in RevenueEvent.objects.filter(workspace=workspace)
-        .exclude(campaign_name='')
-        .values('campaign_name')
-        .annotate(total=Sum('amount'))
-    }
-    campaign_names = set(campaign_spend) | set(campaign_revenue)
+    campaign_revenue = defaultdict(lambda: Decimal('0'))
+    for row in (RevenueEvent.objects.filter(workspace=workspace)
+                .exclude(campaign_name='')
+                .values('campaign_name', 'currency')
+                .annotate(total=Sum('amount'))):
+        campaign_revenue[row['campaign_name']] += row['total'] or Decimal('0')
+        campaign_currencies[row['campaign_name']].add(row['currency'])
+    # The legacy projection has no currency dimension. Only project a ratio
+    # when both ledgers share one currency and spend is positive.
+    campaign_names = {name for name in campaign_revenue
+                      if len(campaign_currencies[name]) == 1 and campaign_spend[name] > 0}
     CampaignROI.objects.filter(workspace=workspace).exclude(
         campaign_name__in=campaign_names
     ).delete()
@@ -119,7 +126,9 @@ def rebuild_workspace_projections(workspace):
             workspace=workspace, campaign_name=name,
             defaults={'roi_multiplier': roi},
         )
-    return {'observations': len(latest), 'revenue': str(revenue_total)}
+    return {'observations': len(latest), 'revenue': revenue_total,
+            'revenue_by_currency': [{ 'currency': row['currency'], 'amount': str(row['total']) }
+                                    for row in revenue_by_currency]}
 
 
 def sync_performance(run_id):
@@ -191,6 +200,11 @@ def sync_performance(run_id):
                     'ingested_by': run.initiated_by,
                 },
             )
+            observation.source_payload = {
+                **observation.source_payload,
+                'measured_fields': sorted(measured_fields(observation)),
+            }
+            observation.save(update_fields=['source_payload'])
             record_event_safely(
                 workspace=run.workspace,
                 brand=observation.brand,

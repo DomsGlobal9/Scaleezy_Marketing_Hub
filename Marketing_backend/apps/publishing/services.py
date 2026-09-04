@@ -63,22 +63,36 @@ def execute_publishing_job(job_id: str):
     Each item is independent: one platform failing does not stop the others.
     """
     try:
-        job = PublishingJob.objects.get(id=job_id)
+        job = PublishingJob.objects.select_related('workspace').get(id=job_id)
     except PublishingJob.DoesNotExist:
+        return
+
+    if job.status == PublishingJob.Status.CANCELLED:
         return
 
     job.status = PublishingJob.Status.PUBLISHING
     job.started_at = timezone.now()
     job.save()
 
-    for item in job.items.all():
-        if item.status == PublishingJobItem.Status.PUBLISHED:
+    for item in job.items.select_related('social_connection__workspace'):
+        if item.status in (PublishingJobItem.Status.PUBLISHED, PublishingJobItem.Status.CANCELLED):
             # Already live with an external_post_id. Both retry paths re-run
             # the whole job, so without this a retry of one failed channel
             # posts a second copy to every channel that had succeeded.
             continue
 
         try:
+            # Cancellation and account configuration can change after enqueue,
+            # including while an earlier channel is publishing.
+            job.refresh_from_db(fields=['status'])
+            if job.status == PublishingJob.Status.CANCELLED:
+                return
+            item.refresh_from_db(fields=['status'])
+            if item.status == PublishingJobItem.Status.CANCELLED:
+                continue
+            item.social_connection.refresh_from_db()
+            if item.social_connection.workspace_id != job.workspace_id:
+                raise PublishingPolicyError('INVALID_SOCIAL_ACCOUNT', 'The account belongs to another client.')
             enforce_connection_policy(item.social_connection, at=timezone.now())
         except PublishingPolicyError as exc:
             item.status = PublishingJobItem.Status.FAILED
@@ -124,6 +138,8 @@ def execute_publishing_job(job_id: str):
     policy_failures = {
         'PUBLISHING_PAUSED', 'OUTSIDE_PUBLISHING_WINDOW',
         'DAILY_POST_LIMIT_REACHED', 'UNSUPPORTED_PLATFORM',
+        'WORKSPACE_INACTIVE', 'PUBLISHING_DISABLED', 'SOCIAL_ACCOUNT_NOT_READY',
+        'INVALID_SOCIAL_ACCOUNT',
     }
     retryable = [
         item for item in job.items.select_related('social_connection').filter(

@@ -44,8 +44,7 @@ const OVERVIEW_STALE_MS = 30_000;
 const kpisQuery = () =>
   queryOptions({
     queryKey: ["overview", "kpis", readSelectedWorkspaceId()],
-    queryFn: async () =>
-      (await api<{ kpis: Kpi[] }>("/api/marketing/analytics/kpis/")).kpis ?? [],
+    queryFn: async () => (await api<{ kpis: Kpi[] }>("/api/marketing/analytics/kpis/")).kpis ?? [],
     staleTime: OVERVIEW_STALE_MS,
   });
 

@@ -1,10 +1,12 @@
+import hashlib
+import json
 import logging
 import mimetypes
 
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils import timezone
@@ -237,13 +239,27 @@ class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 'normalized_key': memory.normalized_key,
                 'content': (memory.content or '')[:500],
             },
-            dedupe_key=f'memory-verdict:{memory.pk}:{memory.status}',
+            dedupe_key=(
+                f'memory-verdict:{memory.pk}:{memory.status}:'
+                + hashlib.sha256(json.dumps({
+                    field: str(getattr(memory, field, ''))
+                    for field in self.REVIEWED_FIELDS
+                }, sort_keys=True).encode()).hexdigest()[:24]
+            ),
             created_by=self.request.user,
         )
 
     @action(detail=True, methods=['post'])
     def confirm(self, request, pk=None):
         memory = self.get_object()
+        now = timezone.now()
+        if (
+            memory.status in (BrandMemory.MemoryStatus.SUPERSEDED, BrandMemory.MemoryStatus.EXPIRED)
+            or (memory.source_id and memory.source.status == BrandSource.SourceStatus.ARCHIVED)
+            or (memory.valid_until and memory.valid_until <= now)
+            or (memory.valid_from and memory.valid_from > now)
+        ):
+            raise ValidationError("This evidence is not current. Add a new fact or restore its source through the owning workflow.")
         memory.status = BrandMemory.MemoryStatus.CONFIRMED
         memory.reviewed_by = request.user
         memory.reviewed_at = timezone.now()
@@ -287,6 +303,8 @@ class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             status=status.HTTP_405_METHOD_NOT_ALLOWED,
         )
 
+    REVIEWED_FIELDS = ('content', 'memory_type', 'scope', 'valid_from', 'valid_until')
+
     def perform_update(self, serializer):
         """Editing what a confirmed fact SAYS withdraws the confirmation.
 
@@ -296,9 +314,9 @@ class BrandMemoryViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         """
         before = serializer.instance
         was_confirmed = before.status == BrandMemory.MemoryStatus.CONFIRMED
-        old_content = before.content
+        old_values = {field: getattr(before, field) for field in self.REVIEWED_FIELDS}
         memory = serializer.save()
-        if was_confirmed and memory.content != old_content:
+        if was_confirmed and any(getattr(memory, field) != value for field, value in old_values.items()):
             memory.status = BrandMemory.MemoryStatus.CANDIDATE
             memory.reviewed_by = None
             memory.reviewed_at = None

@@ -75,6 +75,8 @@ class BrandPreferenceSerializer(WorkspaceScopedBrandSerializer):
     evidence_event_ids = serializers.SerializerMethodField()
 
     def get_evidence_event_ids(self, obj):
+        if hasattr(obj, 'ordered_evidence'):
+            return [str(row.learning_event_id) for row in obj.ordered_evidence]
         return [
             str(pk)
             for pk in obj.evidence.order_by('created_at').values_list(

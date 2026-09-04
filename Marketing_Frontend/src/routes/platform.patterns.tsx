@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Archive, Eye, Loader2, Play, RefreshCw, Send } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { usePlatformPage } from "@/lib/use-platform-page";
+import { PlatformListControls } from "@/components/platform/list-controls";
 import { toast } from "sonner";
 
 import {
@@ -24,7 +26,6 @@ import {
   compileLearnedPatterns,
   errorText,
   fetchCompileStatus,
-  fetchLearnedPatterns,
   fetchPatternContributors,
   formatDateTime,
   publishLearnedPattern,
@@ -45,7 +46,13 @@ type Filter = "ALL" | "DRAFT" | "PUBLISHED" | "RETIRED";
 const COMPILE_POLL_MS = 3_000;
 const COMPILE_POLL_LIMIT = 40;
 
-function Contributors({ pattern, onClose }: { pattern: LearnedPattern | null; onClose: () => void }) {
+function Contributors({
+  pattern,
+  onClose,
+}: {
+  pattern: LearnedPattern | null;
+  onClose: () => void;
+}) {
   const [rows, setRows] = useState<PatternContributor[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -85,7 +92,10 @@ function Contributors({ pattern, onClose }: { pattern: LearnedPattern | null; on
         ) : (
           <div className="max-h-80 overflow-auto rounded-lg border">
             {rows.map((row) => (
-              <div key={row.workspace_id} className="flex justify-between border-b px-3 py-2 last:border-0">
+              <div
+                key={row.workspace_id}
+                className="flex justify-between border-b px-3 py-2 last:border-0"
+              >
                 <span className="text-sm font-medium">{row.name}</span>
                 <span className="font-mono text-xs text-muted-foreground">{row.client_code}</span>
               </div>
@@ -98,10 +108,16 @@ function Contributors({ pattern, onClose }: { pattern: LearnedPattern | null; on
 }
 
 function PatternsPage() {
-  const [patterns, setPatterns] = useState<LearnedPattern[] | null>(null);
   const [filter, setFilter] = useState<Filter>("ALL");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    items: patterns,
+    pageInfo,
+    loading,
+    error,
+    load: loadPage,
+    setPage,
+    setQuery,
+  } = usePlatformPage<LearnedPattern>("/api/platform/patterns/", "patterns", { status: filter });
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [contributors, setContributors] = useState<LearnedPattern | null>(null);
   // A queued compile is polled (below) until it finishes; the note carries
@@ -110,22 +126,9 @@ function PatternsPage() {
   const [compileTaskId, setCompileTaskId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
     setCompileNote(null);
-    try {
-      // The server filters by status (and sorts by contributor depth).
-      setPatterns(await fetchLearnedPatterns(filter === "ALL" ? {} : { status: filter }));
-    } catch (e: unknown) {
-      setError(errorText(e, "Could not load learned patterns."));
-    } finally {
-      setLoading(false);
-    }
-  }, [filter]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+    await loadPage();
+  }, [loadPage]);
 
   // Watch one queued compile: every 3s until it reaches a terminal state, at
   // most ~2 minutes. Success refreshes the list so the rebuilt drafts appear
@@ -157,9 +160,7 @@ function PatternsPage() {
           } else if (task.status === "FAILED") {
             clearInterval(timer);
             setCompileTaskId(null);
-            setCompileNote(
-              `Compile failed: ${task.error || "the worker reported no detail."}`,
-            );
+            setCompileNote(`Compile failed: ${task.error || "the worker reported no detail."}`);
           } else {
             setCompileNote(
               task.status === "RUNNING"
@@ -241,27 +242,44 @@ function PatternsPage() {
         }
       />
 
+      <PlatformListControls
+        pageInfo={pageInfo}
+        loading={loading}
+        setPage={setPage}
+        setQuery={setQuery}
+      />
       <div className="mb-4 flex flex-wrap gap-2">
         {(["ALL", "DRAFT", "PUBLISHED", "RETIRED"] as Filter[]).map((value) => (
           <button
             key={value}
             type="button"
             onClick={() => setFilter(value)}
+            aria-pressed={filter === value}
             className={cn(
               "rounded-full border px-3 py-1 text-xs font-medium",
-              filter === value ? "border-slate-900 bg-slate-900 text-white" : "bg-background text-muted-foreground",
+              filter === value
+                ? "border-slate-900 bg-slate-900 text-white"
+                : "bg-background text-muted-foreground",
             )}
           >
             {value === "ALL" ? "All" : value.toLowerCase()}
-            {filter === value && patterns ? ` · ${visible.length}` : ""}
+            {pageInfo?.status_counts ? ` · ${pageInfo.status_counts[value] ?? 0}` : ""}
           </button>
         ))}
       </div>
 
       <ErrorNote message={error} />
-      {compileNote ? <div className="mb-3"><MutedNote>{compileNote}</MutedNote></div> : null}
-      {loading && !patterns ? (
-        <div className="space-y-2">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-24" />)}</div>
+      {compileNote ? (
+        <div className="mb-3">
+          <MutedNote>{compileNote}</MutedNote>
+        </div>
+      ) : null}
+      {error && !patterns ? null : loading && !patterns ? (
+        <div className="space-y-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-24" />
+          ))}
+        </div>
       ) : visible.length === 0 ? (
         <div className="surface-card p-10 text-center text-sm text-muted-foreground">
           No patterns in this state. Compile to rebuild drafts from current evidence.
@@ -269,21 +287,37 @@ function PatternsPage() {
       ) : (
         <div className="space-y-3">
           {visible.map((pattern) => (
-            <article key={pattern.id} className="surface-card grid gap-4 p-4 lg:grid-cols-[120px_minmax(0,1fr)_auto]">
+            <article
+              key={pattern.id}
+              className="surface-card grid gap-4 p-4 lg:grid-cols-[120px_minmax(0,1fr)_auto]"
+            >
               <div>
-                <p className="font-display text-4xl font-semibold text-slate-900">{pattern.contributor_count}</p>
-                <p className="text-xs text-muted-foreground">contributing client{pattern.contributor_count === 1 ? "" : "s"}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{pattern.supporting_brand_count} brand{pattern.supporting_brand_count === 1 ? "" : "s"}</p>
+                <p className="font-display text-4xl font-semibold text-slate-900">
+                  {pattern.contributor_count}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  contributing client{pattern.contributor_count === 1 ? "" : "s"}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {pattern.supporting_brand_count} brand
+                  {pattern.supporting_brand_count === 1 ? "" : "s"}
+                </p>
               </div>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <StatusPill value={pattern.status} />
-                  <span className="font-mono text-[0.6875rem] text-muted-foreground">confidence {Math.round(pattern.confidence * 100)}%</span>
+                  <span className="font-mono text-[0.6875rem] text-muted-foreground">
+                    confidence {Math.round(pattern.confidence * 100)}%
+                  </span>
                 </div>
-                <p className="mt-2 font-mono text-xs text-muted-foreground">{pattern.category} / {pattern.attribute}</p>
+                <p className="mt-2 font-mono text-xs text-muted-foreground">
+                  {pattern.category} / {pattern.attribute}
+                </p>
                 <p className="mt-1 font-medium text-foreground">{pattern.value}</p>
                 <p className="mt-2 text-[0.6875rem] text-muted-foreground">
-                  {pattern.industry ? `Industry string = ${pattern.industry} · ` : "Global cohort · "}
+                  {pattern.industry
+                    ? `Industry string = ${pattern.industry} · `
+                    : "Global cohort · "}
                   compiled {formatDateTime(pattern.compiled_at)} · version {pattern.pattern_version}
                 </p>
               </div>
@@ -292,10 +326,14 @@ function PatternsPage() {
                   <Eye className="size-3.5" /> Contributors
                 </Button>
                 {pattern.status === "DRAFT" ? (
-                  <Button size="sm" onClick={() => publish(pattern)}><Send className="size-3.5" /> Publish</Button>
+                  <Button size="sm" onClick={() => publish(pattern)}>
+                    <Send className="size-3.5" /> Publish
+                  </Button>
                 ) : null}
                 {pattern.status === "PUBLISHED" ? (
-                  <Button size="sm" variant="outline" onClick={() => retire(pattern)}><Archive className="size-3.5" /> Retire</Button>
+                  <Button size="sm" variant="outline" onClick={() => retire(pattern)}>
+                    <Archive className="size-3.5" /> Retire
+                  </Button>
                 ) : null}
               </div>
             </article>

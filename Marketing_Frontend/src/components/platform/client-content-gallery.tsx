@@ -74,7 +74,9 @@ export function ClientContentGallery({
             <figcaption className="flex min-w-0 flex-1 flex-col gap-1.5 p-3">
               <div className="flex items-start justify-between gap-2">
                 <p className="min-w-0 truncate text-sm font-medium text-foreground">
-                  {item.headline || <span className="text-muted-foreground italic">No headline</span>}
+                  {item.headline || (
+                    <span className="text-muted-foreground italic">No headline</span>
+                  )}
                 </p>
                 {item.status ? <StatusPill value={item.status} /> : null}
               </div>

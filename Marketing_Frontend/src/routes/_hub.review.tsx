@@ -7,6 +7,7 @@ import {
   Loader2,
   Maximize2,
   Palette,
+  RefreshCw,
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -26,7 +27,7 @@ import { FeedbackTagPicker, useFeedbackElements } from "@/components/marketing/f
 import { PosterStudio, useLayoutCatalogue } from "@/components/marketing/poster-studio";
 import { EmptyState, PageHeader, StatusBadge } from "@/components/marketing/primitives";
 import { api, apiPost } from "@/lib/api";
-import { asList } from "@/lib/brand-master";
+import { hasStringFields, isRecord, parseList } from "@/lib/list-response";
 import { cn } from "@/lib/utils";
 import { useWorkspaces } from "@/lib/workspace";
 
@@ -37,7 +38,7 @@ export const Route = createFileRoute("/_hub/review")({
     typeof search["item"] === "string" && search["item"] ? { item: search["item"] } : {},
   head: () => ({
     meta: [
-      { title: "Review — Scaleezy Marketing Hub" },
+      { title: "Content library — Scaleezy Marketing Hub" },
       {
         name: "description",
         content: "Approve or reject generated marketing content before it is published.",
@@ -62,6 +63,103 @@ interface ContentItem {
   version: number;
   review_note: string;
   created_at: string;
+}
+
+function isContentItem(value: unknown): value is ContentItem {
+  return (
+    isRecord(value) &&
+    hasStringFields(value, [
+      "id",
+      "layout_plugin",
+      "headline",
+      "cta",
+      "caption",
+      "hashtags",
+      "preview_url",
+      "content_format",
+      "status",
+      "review_note",
+      "created_at",
+    ]) &&
+    (value["parent"] === null || typeof value["parent"] === "string") &&
+    (value["layout_config"] === null || isRecord(value["layout_config"])) &&
+    typeof value["version"] === "number"
+  );
+}
+
+function ContentPreview({
+  src,
+  headline,
+  onOpen,
+  full = false,
+}: {
+  src: string;
+  headline: string;
+  onOpen?: () => void;
+  full?: boolean;
+}) {
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [attempt, setAttempt] = useState(0);
+  return (
+    <div
+      className={cn(
+        "relative w-full border-b border-border bg-secondary/30",
+        full ? "min-h-40" : "aspect-[4/5] max-h-80",
+      )}
+    >
+      <img
+        key={attempt}
+        src={src}
+        alt={headline || "Saved content preview"}
+        loading={full ? "eager" : "lazy"}
+        decoding="async"
+        onLoad={() => setState("ready")}
+        onError={() => setState("error")}
+        className={cn(
+          "w-full object-contain",
+          full ? "max-h-[60vh]" : "h-full",
+          state !== "ready" && "invisible",
+        )}
+      />
+      {state === "loading" ? (
+        <p
+          role="status"
+          className="absolute inset-0 flex items-center justify-center gap-2 p-4 text-sm text-muted-foreground"
+        >
+          <Loader2 className="size-4 animate-spin" /> Loading preview…
+        </p>
+      ) : state === "error" ? (
+        <div
+          role="alert"
+          className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-4 text-center text-sm text-muted-foreground"
+        >
+          <FileImage className="size-6" />
+          <p>This preview could not be loaded. Your saved content is still available below.</p>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setState("loading");
+              setAttempt((value) => value + 1);
+            }}
+          >
+            <RefreshCw className="size-4" /> Retry preview
+          </Button>
+        </div>
+      ) : onOpen ? (
+        <button
+          type="button"
+          onClick={onOpen}
+          aria-label={`Preview full image: ${headline || "Untitled content"}`}
+          className="group absolute inset-0 w-full cursor-zoom-in focus-visible:outline-2 focus-visible:outline-primary"
+        >
+          <span className="absolute right-2 top-2 rounded-md bg-black/50 p-1.5 text-white opacity-70 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-visible:opacity-100">
+            <Maximize2 className="size-3.5" />
+          </span>
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 // Four ways work can relate to you, not six machine states. A reviewer should
@@ -132,6 +230,9 @@ function ReviewPage() {
   const [tab, setTab] = useState<string>("REVIEW");
   const [all, setAll] = useState<ContentItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const statusButtons = useRef<Record<string, HTMLButtonElement | null>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [fixes, setFixes] = useState<Record<string, string>>({});
@@ -174,13 +275,19 @@ function ReviewPage() {
       const data = await api<unknown>("/api/marketing/content/");
       // Tolerates both the bare array and a paginated envelope, so this page
       // cannot silently go empty if the endpoint is ever paginated by default.
-      setAll(asList<ContentItem>(data));
+      setAll(parseList(data, isContentItem, "Content"));
+      setHasLoaded(true);
+      setLoadError(null);
     } catch (e) {
-      if (!quiet) toast.error(e instanceof Error ? e.message : "Could not load content.");
+      setLoadError(e instanceof Error ? e.message : "Could not load content.");
     } finally {
       if (!quiet) setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    statusButtons.current[tab]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [tab]);
 
   // A returned item spawns a revision carrying the same image, so both used
   // to show — the "same poster in two tabs" confusion. The superseded version
@@ -388,9 +495,9 @@ function ReviewPage() {
   return (
     <div>
       <PageHeader
-        eyebrow="Marketing Hub"
-        title="Review"
-        subtitle="Nothing is published until it is approved here."
+        eyebrow="Content library"
+        title="Content"
+        subtitle="Review, edit and return to saved content. Only approved content can be published."
       />
 
       {report && (report.rules.length > 0 || report.total_feedback > 0) ? (
@@ -438,10 +545,18 @@ function ReviewPage() {
       ) : null}
 
       {/* One scrolling row on a phone instead of a three-deep wrap. */}
-      <div className="mb-6 flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-x-visible sm:pb-0">
+      <div
+        role="group"
+        aria-label="Content status"
+        className="mb-6 flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-x-visible sm:pb-0"
+      >
         {TABS.map((t) => (
           <Button
             key={t.key}
+            ref={(element) => {
+              statusButtons.current[t.key] = element;
+            }}
+            aria-pressed={tab === t.key}
             size="sm"
             className="shrink-0"
             variant={tab === t.key ? "default" : "outline"}
@@ -462,11 +577,36 @@ function ReviewPage() {
         ))}
       </div>
 
-      {loading ? (
-        <div className="flex items-center gap-2 py-16 text-sm text-muted-foreground">
+      {loadError ? (
+        <div
+          role="alert"
+          className="mb-5 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+        >
+          <p>
+            {loadError}
+            {hasLoaded ? " The last loaded content is still shown." : ""}
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="mt-3"
+            disabled={loading}
+            onClick={() => void load()}
+          >
+            <RefreshCw className="size-4" /> Try again
+          </Button>
+        </div>
+      ) : null}
+      {loading && hasLoaded ? (
+        <p role="status" className="mb-4 text-sm text-muted-foreground">
+          Refreshing content…
+        </p>
+      ) : null}
+      {loading && !hasLoaded ? (
+        <div role="status" className="flex items-center gap-2 py-16 text-sm text-muted-foreground">
           <Loader2 className="size-4 animate-spin" /> Loading content…
         </div>
-      ) : items.length === 0 ? (
+      ) : !hasLoaded ? null : items.length === 0 ? (
         <EmptyState
           icon={FileImage}
           title={EMPTY_COPY[tab]?.title ?? "Nothing here"}
@@ -488,29 +628,17 @@ function ReviewPage() {
               className="surface-card overflow-hidden"
             >
               {item.preview_url ? (
-                <button
-                  type="button"
-                  onClick={() => setLightbox(item)}
-                  aria-label="Preview full image"
-                  className="group relative block w-full cursor-zoom-in"
-                >
-                  {/* object-contain in a 4:5 frame: the whole poster is
-                      visible on the card — nothing is cropped away. Lazy and
-                      async: storage serves these slowly, and a dozen eager
-                      full-size downloads held the whole page in "loading" for
-                      tens of seconds. */}
-                  <img
-                    src={item.preview_url}
-                    alt=""
-                    loading="lazy"
-                    decoding="async"
-                    className="aspect-[4/5] max-h-80 w-full border-b border-border bg-secondary/30 object-contain"
-                  />
-                  <span className="absolute right-2 top-2 rounded-md bg-black/50 p-1.5 text-white opacity-70 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
-                    <Maximize2 className="size-3.5" />
-                  </span>
-                </button>
-              ) : null}
+                <ContentPreview
+                  key={item.preview_url}
+                  src={item.preview_url}
+                  headline={item.headline}
+                  onOpen={() => setLightbox(item)}
+                />
+              ) : (
+                <p className="border-b border-border bg-secondary/30 p-5 text-sm text-muted-foreground">
+                  No media preview saved.
+                </p>
+              )}
               <div className="p-5">
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
                   <h3 className="min-w-0 truncate text-base font-semibold text-foreground">
@@ -667,6 +795,7 @@ function ReviewPage() {
                       </p>
                     ) : null}
                     <Textarea
+                      aria-label={`Reviewer note for ${item.headline || "Untitled content"}`}
                       rows={2}
                       className="mt-4"
                       placeholder="Optional note for the creator…"
@@ -699,6 +828,7 @@ function ReviewPage() {
                             </p>
                           ))}
                         <Textarea
+                          aria-label={`Correction for ${item.headline || "Untitled content"}`}
                           rows={2}
                           className="mt-2"
                           placeholder="How should it be fixed next time? This becomes the rule."
@@ -756,11 +886,11 @@ function ReviewPage() {
                 {new Date(lightbox.created_at).toLocaleDateString()}
               </DialogDescription>
             </DialogHeader>
-            <img
+            <ContentPreview
+              key={lightbox.preview_url}
               src={lightbox.preview_url}
-              alt={lightbox.headline || "Content preview"}
-              decoding="async"
-              className="max-h-[60vh] w-full rounded-lg border border-border bg-secondary/20 object-contain"
+              headline={lightbox.headline}
+              full
             />
             {lightbox.caption ? (
               <p className="text-sm text-muted-foreground">{lightbox.caption}</p>

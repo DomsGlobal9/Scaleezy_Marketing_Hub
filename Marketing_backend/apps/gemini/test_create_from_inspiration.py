@@ -553,7 +553,7 @@ class CreateFromInspirationTests(TenantFixtureMixin, TestCase):
             )
         self.assertFalse(GeminiGenerationRequest.objects.exists())
 
-    def test_image_failure_cannot_persist_copy_only_similarity_claim(self):
+    def test_image_failure_preserves_copy_without_claiming_a_ready_poster(self):
         reference = self.reference(
             analysis_status=BrandInspiration.AnalysisStatus.READY
         )
@@ -584,11 +584,17 @@ class CreateFromInspirationTests(TenantFixtureMixin, TestCase):
         with patch(
             'apps.context.services.generation.generate_marketing_payload',
             return_value=failed_image,
-        ), self.assertRaisesRegex(RuntimeError, 'did not produce an image'):
+        ):
             generate_content.call(str(generation.pk))
         generation.refresh_from_db()
-        self.assertEqual(generation.status, GeminiGenerationRequest.Status.FAILED)
-        self.assertFalse(ContentItem.objects.exists())
+        self.assertEqual(generation.status, GeminiGenerationRequest.Status.COMPLETED)
+        item = ContentItem.objects.get()
+        self.assertEqual(item.status, ContentItem.Status.DRAFT)
+        self.assertIsNone(item.asset_id)
+        self.assertEqual(item.preview_url, '')
+        self.assertEqual(generation.result.metadata['media']['status'], 'FAILED')
+        self.assertEqual(generation.result.metadata['media']['error'], 'image provider unavailable')
+        self.assertIsNone(generation.result.metadata['assetId'])
 
     def test_compose_failure_keeps_one_completed_draft(self):
         reference = self.reference(

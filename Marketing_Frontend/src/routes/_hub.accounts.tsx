@@ -273,7 +273,9 @@ function AccountsPage() {
       toast.success("Connection verified.");
     } catch (e) {
       toast.error(
-        e instanceof Error ? e.message : "Verification failed — reauthorization required.",
+        e instanceof Error
+          ? e.message
+          : "Verification is unavailable. Retry to check this account.",
       );
     } finally {
       await load();
@@ -296,8 +298,17 @@ function AccountsPage() {
     if (!requireAccountAdmin()) return;
     setBusy(account.id);
     try {
-      await apiPost(`/api/marketing/social-accounts/${account.id}/disconnect/`, {});
-      toast.success("Account disconnected.");
+      const result = await apiPost<{ remote_revocation_confirmed: boolean }>(
+        `/api/marketing/social-accounts/${account.id}/disconnect/`,
+        {},
+      );
+      if (result.remote_revocation_confirmed) {
+        toast.success("Account disconnected and remote access revoked.");
+      } else {
+        toast.warning(
+          "Disconnected from Scaleezy. Remote revocation was not confirmed; remove access in the social platform's settings if needed.",
+        );
+      }
       await load();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to disconnect.");

@@ -105,12 +105,18 @@ class XAdapter:
         return response.json()
 
     def get_account_info(self, access_token: str):
+        from .exceptions import SocialPlatformError
         headers = {"Authorization": f"Bearer {access_token}"}
         params = {"user.fields": "profile_image_url,name,username"}
         response = requests.get(f"{self.API_BASE}/users/me", headers=headers, params=params, timeout=15)
         
         if not response.ok:
-            raise Exception(f"Failed to get user info: {response.text}")
+            code = 'X_AUTH_FAILED' if response.status_code == 401 else 'X_PERMISSION_DENIED' if response.status_code == 403 else 'X_API_ERROR'
+            raise SocialPlatformError(
+                f'X account lookup returned HTTP {response.status_code}',
+                safe_message='X could not verify this account. Check access or retry later.',
+                error_code=code,
+            )
             
         data = response.json().get("data", {})
         return {
