@@ -347,6 +347,48 @@ const canPublishTo = (acc: PublishingAccount, isVideoAsset: boolean): boolean =>
   return status === "CONNECTED" && enabled && !formatMismatch;
 };
 
+/**
+ * The generated-poster preview and its full-size lightbox, with the open
+ * state kept here on purpose. It used to live at the top of the studio
+ * component beside ~40 other hooks, so one click re-rendered the entire
+ * studio — brief, pickers, template grids, slides, history — before the
+ * dialog could paint (a 208ms INP block measured in production). Owning
+ * the state means a click re-renders only this subtree.
+ */
+function PosterPreviewLightbox({ previewUrl }: { previewUrl: string }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <img
+        src={previewUrl}
+        alt="Generated Poster"
+        loading="lazy"
+        decoding="async"
+        onClick={() => setOpen(true)}
+        className="absolute inset-0 h-full w-full cursor-pointer object-cover transition-transform duration-500 group-hover:scale-105"
+      />
+      <div className="absolute inset-0 bg-black/40 opacity-0 transition-opacity duration-300 group-hover:opacity-100 flex items-center justify-center pointer-events-none">
+        <div className="flex items-center gap-2 text-white bg-black/50 px-4 py-2 rounded-full backdrop-blur-md">
+          <ZoomIn className="size-4" />
+          <span className="text-sm font-medium">View Full Size</span>
+        </div>
+      </div>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-[90vw] md:max-w-3xl lg:max-w-4xl p-1 bg-transparent border-none shadow-none">
+          <DialogTitle className="sr-only">Full Size Poster Preview</DialogTitle>
+          <img
+            src={previewUrl}
+            alt="Full size poster"
+            decoding="async"
+            className="w-full h-auto max-h-[90vh] object-contain rounded-lg"
+          />
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 function PublishingPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState<WorkflowStep>("ai_form");
@@ -357,7 +399,6 @@ function PublishingPage() {
   // BEFORE the seven-field brief is filled in is the difference between a
   // disabled button with a reason and a red toast after the work.
   const [awaitingApproval, setAwaitingApproval] = useState(false);
-  const [showFullImage, setShowFullImage] = useState(false);
   const [referenceImageBase64, setReferenceImageBase64] = useState<string>("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [uploadIntention, setUploadIntention] = useState<"reference" | "final" | null>(null);
@@ -2388,11 +2429,8 @@ function PublishingPage() {
                   <div
                     className={cn(
                       "group relative flex items-end overflow-hidden bg-secondary p-6",
-                      asset.previewUrl ? "h-auto min-h-[280px] cursor-pointer" : "h-64",
+                      asset.previewUrl ? "h-auto min-h-[280px]" : "h-64",
                     )}
-                    onClick={() =>
-                      asset.previewUrl && asset.contentType !== "video" && setShowFullImage(true)
-                    }
                   >
                     {asset.previewUrl ? (
                       asset.contentType === "video" ? (
@@ -2402,21 +2440,7 @@ function PublishingPage() {
                           className="absolute inset-0 h-full w-full object-contain bg-black"
                         />
                       ) : (
-                        <>
-                          <img
-                            src={asset.previewUrl}
-                            alt="Generated Poster"
-                            loading="lazy"
-                            decoding="async"
-                            className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
-                          />
-                          <div className="absolute inset-0 bg-black/40 opacity-0 transition-opacity duration-300 group-hover:opacity-100 flex items-center justify-center pointer-events-none">
-                            <div className="flex items-center gap-2 text-white bg-black/50 px-4 py-2 rounded-full backdrop-blur-md">
-                              <ZoomIn className="size-4" />
-                              <span className="text-sm font-medium">View Full Size</span>
-                            </div>
-                          </div>
-                        </>
+                        <PosterPreviewLightbox previewUrl={asset.previewUrl} />
                       )
                     ) : (
                       <p className="relative z-10 font-display text-3xl text-white mix-blend-overlay">
@@ -2922,21 +2946,6 @@ function PublishingPage() {
           ) : null}
         </div>
       </section>
-
-      {/* FULL SIZE IMAGE MODAL */}
-      <Dialog open={showFullImage} onOpenChange={setShowFullImage}>
-        <DialogContent className="max-w-[90vw] md:max-w-3xl lg:max-w-4xl p-1 bg-transparent border-none shadow-none">
-          <DialogTitle className="sr-only">Full Size Poster Preview</DialogTitle>
-          {asset?.previewUrl && (
-            <img
-              src={asset.previewUrl}
-              alt="Full size poster"
-              decoding="async"
-              className="w-full h-auto max-h-[90vh] object-contain rounded-lg"
-            />
-          )}
-        </DialogContent>
-      </Dialog>
 
       {/* Hidden file input always available globally */}
       <input
