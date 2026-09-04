@@ -112,11 +112,27 @@ class OnImageTextDirectiveTests(SimpleTestCase):
         self.assertIn(f'"{HEADLINE}"', joined)
         self.assertNotIn('Compose a clean social-sale poster', joined)
 
-    def test_a_brand_template_selection_mirrors_too(self):
+    def test_a_brand_template_follows_the_templates_own_typography(self):
+        # The uppercase-headline/CTA-pill social-sale style is for posters
+        # designed from scratch. A template generation must follow the
+        # template's own case treatment and add nothing the template lacks —
+        # the founder's title-case template came back ALL CAPS with a second
+        # CTA button under the template's own one.
         brief = poster_brief(creative_direction={
             'mode': '', 'selections': [{'kind': 'BRAND_TEMPLATE', 'title': 'Diwali'}],
         })
-        self.assertIn(MIRROR_LINE, '\n'.join(on_image_text_lines(brief, HEADLINE)))
+        joined = '\n'.join(on_image_text_lines(brief, HEADLINE))
+        self.assertIn(f'"{HEADLINE}"', joined)
+        self.assertIn('CAPITALISATION STYLE', joined)
+        self.assertIn('do not force uppercase', joined)
+        self.assertNotIn('call-to-action pill/button reading', joined)
+        self.assertIn('never render the same call-to-action twice', joined)
+        # The brand CTA and campaign offer are offered as slot wording, not
+        # as new elements.
+        self.assertIn('call-to-action wording: "MORE INFO"', joined)
+        self.assertIn('offer wording: "30% off this weekend"', joined)
+        self.assertNotIn(MIRROR_LINE, joined)
+        self.assertNotIn('Compose a clean social-sale poster', joined)
 
     def test_text_stops_at_the_headline_and_one_cta_offer_line(self):
         joined = '\n'.join(on_image_text_lines(poster_brief(), HEADLINE))

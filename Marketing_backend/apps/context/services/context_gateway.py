@@ -413,13 +413,16 @@ def poster_renders_its_own_text(brief):
     return mode != 'CATALOG_TEMPLATE'
 
 
-def _mirrors_reference(direction):
-    if str(direction.get('mode') or '').strip().upper() == 'REFERENCE':
-        return True
+def _has_brand_template(direction):
+    """A BRAND_TEMPLATE selection: the brand's own poster design is the spec."""
     return any(
         isinstance(row, dict) and row.get('kind') == 'BRAND_TEMPLATE'
         for row in (direction.get('selections') or [])
     )
+
+
+def _mirrors_reference(direction):
+    return str(direction.get('mode') or '').strip().upper() == 'REFERENCE'
 
 
 def on_image_text_lines(brief, headline):
@@ -445,6 +448,34 @@ def on_image_text_lines(brief, headline):
     identity = (brief.get('structured') or {}).get('identity') or {}
     cta = ' '.join(str(identity.get('cta_keyword') or '').split())
     offer = ' '.join(str(brief.get('offer') or '').split())
+    direction = _direction(brief)
+
+    # Template mode: the template's own typography IS the spec. The founder's
+    # uppercase-headline/CTA-pill style below belongs to the classic
+    # social-sale poster; imposing it here uppercased a title-case template's
+    # headline and painted a second CTA button under the template's own one.
+    if _has_brand_template(direction):
+        available = []
+        if cta:
+            available.append(f'call-to-action wording: "{cta}"')
+        if offer:
+            available.append(f'offer wording: "{offer}"')
+        return [
+            'MUST: Render this exact headline ON the image, word for word and '
+            f'correctly spelled: "{headline}". Set it exactly where and how the '
+            "template sets its own headline - same position, size relationship, "
+            'typeface feel and CAPITALISATION STYLE as the template (do not '
+            'force uppercase unless the template itself uses it).',
+            "MUST: The template's design already contains all of its text "
+            'elements. Fill THOSE slots with this campaign\'s wording'
+            + (', using ' + ' and '.join(available) + ' where the template has '
+               'a matching slot' if available else '')
+            + '. Do NOT add any button, pill, banner or text element the '
+            'template does not already have, and never render the same '
+            'call-to-action twice.',
+            'MUST: No words beyond the template\'s own text slots - no '
+            'paragraphs, captions, hashtags, watermarks or third-party logos.',
+        ]
 
     lines = [
         'MUST: Render this exact headline ON the image, word for word and '
@@ -469,7 +500,7 @@ def on_image_text_lines(brief, headline):
         'watermarks or third-party logos; only the headline'
         + (' and the CTA/offer line' if extras else '') + ' above.'
     )
-    if _mirrors_reference(_direction(brief)):
+    if _mirrors_reference(direction):
         lines.append(
             "MUST: Mirror the reference's typographic hierarchy and text placement - "
             'framed border, centred photo panel, headline overlay position, CTA '
