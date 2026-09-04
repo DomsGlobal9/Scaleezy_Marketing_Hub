@@ -11,7 +11,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from uuid import UUID
 
-from django.db.models import Prefetch
+from django.db.models import F, Prefetch
+from django.utils import timezone
 
 from apps.inspirations.models import BrandInspiration, InspirationSignal, SignalCategory
 from apps.layouts import registry as layout_registry
@@ -197,6 +198,18 @@ def _prompt_lines(selections: list[dict], layout: str, instruction: str = '') ->
             'logo, protected artwork, watermark or unverified claim. Draw only from general '
             'creative qualities, then express them through this brand\'s own identity.'
         )
+    if any(row.get('kind') == BrandInspiration.InspirationType.BRAND_TEMPLATE
+           for row in selections):
+        # The one sanctioned exception to the anti-copy rule above: a
+        # BRAND_TEMPLATE is the brand's OWN poster design, uploaded so new
+        # posters match it. Matching it is the requirement, not the risk.
+        lines.append(
+            'Exception: any reference marked BRAND TEMPLATE is this brand\'s own '
+            'poster design, uploaded so new work matches it. Follow its composition, '
+            'typographic treatment and colour system faithfully while replacing the '
+            'campaign content with this brief. The anti-reproduction rule still '
+            'applies to any third-party element visible inside it.'
+        )
     if instruction:
         lines.append(
             'User creation request (subordinate to Scaleezy policy and Brand Brain rules): '
@@ -208,7 +221,10 @@ def _prompt_lines(selections: list[dict], layout: str, instruction: str = '') ->
         action = 'AVOID' if row['direction'] == 'AVOID' else 'DRAW FROM'
         scope = ', '.join(row['focus_areas']) if row['focus_areas'] else 'the full reference'
         detail = row['annotation'] or row['body'] or ', '.join(row['tags'])
-        line = f"{action} [{row['role']}] {row['title']} for {scope}."
+        if row.get('kind') == BrandInspiration.InspirationType.BRAND_TEMPLATE:
+            line = f"{action} [{row['role']}] BRAND TEMPLATE {row['title']} for {scope}."
+        else:
+            line = f"{action} [{row['role']}] {row['title']} for {scope}."
         if detail:
             line += f' Direction: {detail}'
         confirmed_signals = [
@@ -318,3 +334,103 @@ def resolve_creative_direction(
             resolved, layout, _clean_text(instruction, 1000)
         ),
     }
+
+
+# --------------------------------------------------------------------------
+# Brand-template defaulting: what a generation does when the user chose
+# nothing. A brand with uploaded BRAND_TEMPLATE inspirations gets REFERENCE
+# mode against one of them (rotated least-recently-used); a brand without
+# any keeps the raw AI_ORIGINAL output. An explicit user choice never enters
+# these functions — the callers only ask when no mode, no selections, no
+# layout and no uploaded reference were supplied.
+# --------------------------------------------------------------------------
+
+def brand_template_rotation_queryset(workspace, brand):
+    """Active brand templates in rotation order.
+
+    Least-recently-used first: never-used rows (NULL clock) lead, then the
+    oldest clock. Ties break on (created_at, pk) so the order is a pure
+    function of the data — the same brand state always yields the same pick.
+    """
+    return (
+        BrandInspiration.objects.eligible_for_retrieval()
+        .filter(
+            workspace=workspace,
+            brand=brand,
+            inspiration_type=BrandInspiration.InspirationType.BRAND_TEMPLATE,
+        )
+        .order_by(F('template_last_used_at').asc(nulls_first=True), 'created_at', 'pk')
+    )
+
+
+def next_brand_template(workspace, brand):
+    """Take the least-recently-used active template and stamp its clock.
+
+    The stamp is a compare-and-swap on the clock value just read (no
+    select_for_update — nothing here may hold row locks): of two concurrent
+    picks, the loser's update matches zero rows and it re-reads, landing on
+    the next template in rotation. Returns None when the brand has no active
+    templates.
+    """
+    if brand is None:
+        return None
+    queryset = brand_template_rotation_queryset(workspace, brand)
+    template = None
+    for _attempt in range(2):
+        template = queryset.first()
+        if template is None:
+            return None
+        now = timezone.now()
+        claimed = BrandInspiration.objects.filter(
+            pk=template.pk, template_last_used_at=template.template_last_used_at
+        ).update(template_last_used_at=now, updated_at=now)
+        if claimed:
+            template.template_last_used_at = now
+            return template
+    # Two lost races in a row: variety is decoration, not an invariant.
+    # Using the same template twice beats failing the generation.
+    return template
+
+
+def template_selection_row(template) -> dict:
+    """The selection-graph row a chosen template rides the REFERENCE
+    pipeline as — identical in shape to a user's create-from-inspiration
+    pick, so every existing resolution, analysis, eligibility and lock path
+    applies to it unchanged."""
+    return {
+        'source_type': 'BRAND',
+        'id': str(template.pk),
+        'role': 'PRIMARY',
+        'direction': 'USE',
+        'focus_areas': [],
+    }
+
+
+def default_creative_direction(workspace, brand, *, allow_template=True, instruction=''):
+    """Resolve the direction for a generation with no explicit creative choice.
+
+    Returns ``(creative_direction, template_ids)``. ``template_ids`` is the
+    analyze-before-generation list for the chosen template ([] when the
+    default fell back to AI_ORIGINAL), so callers on the async path can hand
+    the template to the exact preprocessing/lock machinery
+    create-from-inspiration selections use.
+
+    ``allow_template=False`` keeps non-poster generations on raw AI output:
+    a poster design is not a style reference for a video or carousel.
+    """
+    template = next_brand_template(workspace, brand) if allow_template else None
+    if template is None:
+        return (
+            resolve_creative_direction(
+                workspace, brand, [], creative_mode='AI_ORIGINAL',
+                instruction=instruction,
+            ),
+            [],
+        )
+    return (
+        resolve_creative_direction(
+            workspace, brand, [template_selection_row(template)],
+            creative_mode='REFERENCE', instruction=instruction,
+        ),
+        [str(template.pk)],
+    )

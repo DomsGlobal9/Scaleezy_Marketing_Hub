@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   Clock,
   ExternalLink,
@@ -54,7 +54,9 @@ import { useBrandSettings } from "@/lib/brand-settings";
 import {
   asList,
   createInspiration,
+  fetchBrandTemplates,
   fetchCurrentBrand,
+  type Inspiration,
   type InspirationInput,
   uploadInspiration,
 } from "@/lib/brand-master";
@@ -91,7 +93,7 @@ type WorkflowStep =
 
 /** What the AI is asked to produce. Drives the extra fields on the brief. */
 type ContentType = "poster" | "video" | "carousel";
-type CreativeMode = "AI_ORIGINAL" | "CATALOG_TEMPLATE" | "REFERENCE";
+type CreativeMode = "AI_ORIGINAL" | "BRAND_TEMPLATE" | "REFERENCE";
 const MAX_CREATIVE_BRIEF_CHARS = 1000;
 
 /** One carousel slide. `description` is the brief for that specific position. */
@@ -254,14 +256,14 @@ const CREATIVE_SOURCES: {
 }[] = [
   {
     id: "AI_ORIGINAL",
-    label: "Design it for me",
+    label: "AI original",
     hint: "Scaleezy creates a fresh direction from your brief and Brand Brain.",
     icon: Sparkles,
   },
   {
-    id: "CATALOG_TEMPLATE",
-    label: "Choose a template",
-    hint: "Pick the exact Scaleezy composition for this poster only.",
+    id: "BRAND_TEMPLATE",
+    label: "Your templates",
+    hint: "Match one of the poster templates you uploaded in Brand Master.",
     icon: Images,
   },
   {
@@ -390,7 +392,12 @@ function PublishingPage() {
   const [creativeBrief, setCreativeBrief] = useState("");
   const [creativeMode, setCreativeMode] = useState<CreativeMode | null>(null);
   const [creativeSelections, setCreativeSelections] = useState<CreativeSelection[]>([]);
-  const [creativeLayout, setCreativeLayout] = useState("");
+  // The brand's uploaded BRAND_TEMPLATE inspirations — what "Your templates"
+  // offers. null = not loaded yet; the id is the one the user picked.
+  const [brandTemplates, setBrandTemplates] = useState<Inspiration[] | null>(null);
+  const [brandTemplatesError, setBrandTemplatesError] = useState("");
+  const [creativeTemplateId, setCreativeTemplateId] = useState("");
+  const [templatesAttempt, setTemplatesAttempt] = useState(0);
   const [inspirationFlowError, setInspirationFlowError] = useState<string | null>(null);
   const [activeInspirationGeneration, setActiveInspirationGeneration] =
     useState<InspirationGenerationOptions | null>(null);
@@ -405,20 +412,51 @@ function PublishingPage() {
   const [slides, setSlides] = useState<CarouselSlide[]>([newSlide(), newSlide(), newSlide()]);
 
   const { brandId } = useBrandSettings();
-  const layoutCatalogue = useLayoutCatalogue(
-    creativeMode === "CATALOG_TEMPLATE" || Boolean(asset?.contentItemId),
-  );
+  // The built-in layout catalogue no longer feeds creation; it survives only
+  // for the manual Poster Studio on an already generated item.
+  const layoutCatalogue = useLayoutCatalogue(Boolean(asset?.contentItemId));
   const creativeBrand = useRef<string | null>(null);
+
+  // Load the brand's uploaded templates for the "Your templates" direction.
+  useEffect(() => {
+    if (!brandId) return;
+    let cancelled = false;
+    setBrandTemplatesError("");
+    fetchBrandTemplates(brandId)
+      .then((rows) => {
+        if (!cancelled) {
+          setBrandTemplates(rows.filter((row) => row.lifecycle_status !== "ARCHIVED"));
+        }
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) {
+          setBrandTemplatesError(
+            reason instanceof Error ? reason.message : "Your templates could not load.",
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [brandId, templatesAttempt]);
+
+  // Founder directive: with no uploaded templates, AI original is the default
+  // direction rather than an unmade choice.
+  useEffect(() => {
+    if (brandTemplates !== null && brandTemplates.length === 0 && creativeMode === null) {
+      setCreativeMode("AI_ORIGINAL");
+    }
+  }, [brandTemplates, creativeMode]);
 
   const chooseCreativeMode = (next: CreativeMode) => {
     setCreativeMode(next);
-    if (next !== "CATALOG_TEMPLATE") setCreativeLayout("");
+    if (next !== "BRAND_TEMPLATE") setCreativeTemplateId("");
   };
 
   useEffect(() => {
-    if (contentType !== "poster" && creativeMode === "CATALOG_TEMPLATE") {
+    if (contentType !== "poster" && creativeMode === "BRAND_TEMPLATE") {
       setCreativeMode(null);
-      setCreativeLayout("");
+      setCreativeTemplateId("");
     }
   }, [contentType, creativeMode]);
 
@@ -445,7 +483,8 @@ function PublishingPage() {
       setBrandTone("");
       setCreativeBrief("");
       setCreativeMode(null);
-      setCreativeLayout("");
+      setCreativeTemplateId("");
+      setBrandTemplates(null);
       setVideoScript("");
       setSlides([newSlide(), newSlide(), newSlide()]);
       setStep("ai_form");
@@ -1027,8 +1066,8 @@ function PublishingPage() {
         toast.error("Choose how Scaleezy should design this content.");
         return;
       }
-      if (creativeMode === "CATALOG_TEMPLATE" && !creativeLayout) {
-        toast.error("Choose a template before generation.");
+      if (creativeMode === "BRAND_TEMPLATE" && !creativeTemplateId) {
+        toast.error("Choose one of your templates before generation.");
         return;
       }
       if (
@@ -1089,7 +1128,11 @@ function PublishingPage() {
             analyzeBeforeGenerationIds: [inspiration.inspirationId],
           }
         : {
-            creativeMode: requestedMode,
+            // A chosen brand template travels exactly like a create-from-
+            // inspiration selection: REFERENCE mode plus one PRIMARY/USE
+            // BRAND selection, analysed before generation if needed. The
+            // backend never learns a separate template mode.
+            creativeMode: requestedMode === "BRAND_TEMPLATE" ? "REFERENCE" : requestedMode,
             campaignName,
             product,
             audience,
@@ -1099,8 +1142,24 @@ function PublishingPage() {
             brandTone,
             instruction: creativeBrief,
             referenceImageBase64: requestedMode === "REFERENCE" ? referenceImageBase64 : "",
-            inspirationSelections: requestedMode === "REFERENCE" ? creativeSelections : [],
-            layout: requestedMode === "CATALOG_TEMPLATE" ? creativeLayout : "",
+            inspirationSelections:
+              requestedMode === "REFERENCE"
+                ? creativeSelections
+                : requestedMode === "BRAND_TEMPLATE"
+                  ? [
+                      {
+                        sourceType: "BRAND",
+                        id: creativeTemplateId,
+                        role: "PRIMARY",
+                        direction: "USE",
+                        focusAreas: [],
+                      } satisfies CreativeSelection,
+                    ]
+                  : [],
+            layout: "",
+            ...(requestedMode === "BRAND_TEMPLATE"
+              ? { analyzeBeforeGenerationIds: [creativeTemplateId] }
+              : {}),
             contentType: requestedContentType,
             ...(requestedContentType === "video"
               ? {
@@ -1783,7 +1842,17 @@ function PublishingPage() {
                 </p>
                 <div className="mt-3 grid gap-3 md:grid-cols-3">
                   {CREATIVE_SOURCES.map((source) => {
-                    const disabled = source.id === "CATALOG_TEMPLATE" && contentType !== "poster";
+                    const templatesEmpty =
+                      brandTemplates !== null &&
+                      brandTemplates.length === 0 &&
+                      !brandTemplatesError;
+                    const disabled =
+                      source.id === "BRAND_TEMPLATE" &&
+                      (contentType !== "poster" || templatesEmpty);
+                    const disabledHint =
+                      contentType !== "poster"
+                        ? "Templates are available for posters."
+                        : "No templates uploaded yet — add them in Brand Master → Templates.";
                     const active = creativeMode === source.id;
                     return (
                       <button
@@ -1814,7 +1883,7 @@ function PublishingPage() {
                             active ? "text-white/65" : "text-muted-foreground",
                           )}
                         >
-                          {disabled ? "Templates are available for posters." : source.hint}
+                          {disabled ? disabledHint : source.hint}
                         </span>
                       </button>
                     );
@@ -2070,47 +2139,55 @@ function PublishingPage() {
                 </div>
               ) : null}
 
-              {creativeMode === "CATALOG_TEMPLATE" && layoutCatalogue.error ? (
+              {creativeMode === "BRAND_TEMPLATE" && brandTemplatesError ? (
                 <div
                   role="alert"
                   className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
                 >
-                  <span>{layoutCatalogue.error}</span>
+                  <span>{brandTemplatesError}</span>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={layoutCatalogue.reload}
+                    onClick={() => setTemplatesAttempt((current) => current + 1)}
                   >
                     Retry templates
                   </Button>
                 </div>
-              ) : creativeMode === "CATALOG_TEMPLATE" &&
-                layoutCatalogue.loading &&
-                layoutCatalogue.layouts.length === 0 ? (
+              ) : creativeMode === "BRAND_TEMPLATE" && brandTemplates === null ? (
                 <div
                   role="status"
                   className="mt-5 flex items-center gap-2 rounded-xl border border-border p-4 text-sm text-muted-foreground"
                 >
-                  <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Loading templates…
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Loading your
+                  templates…
                 </div>
-              ) : creativeMode === "CATALOG_TEMPLATE" && layoutCatalogue.layouts.length === 0 ? (
+              ) : creativeMode === "BRAND_TEMPLATE" &&
+                brandTemplates !== null &&
+                brandTemplates.length === 0 ? (
                 <div
                   role="status"
                   className="mt-5 rounded-xl border border-border p-4 text-sm text-muted-foreground"
                 >
-                  No templates are available right now. Choose “Design it for me” or use an
-                  inspiration.
+                  No templates uploaded yet. Add your poster designs under{" "}
+                  <Link
+                    to="/brand-master"
+                    search={{ tab: "templates" }}
+                    className="font-medium text-foreground underline underline-offset-2"
+                  >
+                    Brand Master → Templates
+                  </Link>
+                  , or choose “AI original”.
                 </div>
-              ) : creativeMode === "CATALOG_TEMPLATE" || creativeMode === "REFERENCE" ? (
+              ) : creativeMode === "BRAND_TEMPLATE" || creativeMode === "REFERENCE" ? (
                 <CreativeCommand
                   brandId={brandId}
                   selections={creativeSelections}
                   onSelectionsChange={setCreativeSelections}
-                  layout={creativeLayout}
-                  onLayoutChange={setCreativeLayout}
-                  layouts={layoutCatalogue.layouts}
-                  showTemplates={creativeMode === "CATALOG_TEMPLATE"}
+                  templates={brandTemplates ?? []}
+                  templateId={creativeTemplateId}
+                  onTemplateChange={setCreativeTemplateId}
+                  showTemplates={creativeMode === "BRAND_TEMPLATE"}
                   showReferences={creativeMode === "REFERENCE"}
                 />
               ) : null}
@@ -2142,11 +2219,7 @@ function PublishingPage() {
                       mode: creativeMode,
                       brief: [creativeBrief, campaignName, product, offer],
                       hasReference: Boolean(referenceImageBase64 || creativeSelections.length),
-                      layout: creativeLayout,
-                      catalogueReady:
-                        !layoutCatalogue.loading &&
-                        !layoutCatalogue.error &&
-                        layoutCatalogue.layouts.length > 0,
+                      templateId: creativeTemplateId,
                     })
                   }
                   title={
@@ -2164,7 +2237,7 @@ function PublishingPage() {
                   onClick={() => {
                     setCreativeBrief("");
                     setCreativeMode(null);
-                    setCreativeLayout("");
+                    setCreativeTemplateId("");
                     setCreativeSelections([]);
                     setReferenceImageBase64("");
                   }}
@@ -2493,7 +2566,6 @@ function PublishingPage() {
                         contentItemId={asset.contentItemId}
                         layouts={layoutCatalogue.layouts}
                         sizes={layoutCatalogue.sizes}
-                        defaultLayout={creativeLayout || undefined}
                         onRendered={() => void refreshComposedPoster()}
                       />
                     ) : null}

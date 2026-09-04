@@ -17,6 +17,7 @@ import {
   GraduationCap,
   IdCard,
   Image as ImageIcon,
+  LayoutTemplate,
   Lightbulb,
   Loader2,
   Scale,
@@ -51,6 +52,7 @@ import { EnrichFromWebsite, NlNoteBox } from "@/components/marketing/nl-note-box
 import { PageHeader, SectionTitle } from "@/components/marketing/primitives";
 import { BrandProfilePanel } from "@/components/marketing/products-audience-panel";
 import { TeachScaleezy } from "@/components/marketing/teach-scaleezy";
+import { TemplatesPanel } from "@/components/marketing/templates-panel";
 import {
   BRAND_MASTER_TABS,
   LEGACY_TAB_ALIASES,
@@ -1311,6 +1313,9 @@ function BrandMasterPage() {
             <TabsTrigger value="inspirations" className="min-h-11 shrink-0 gap-1.5">
               <Lightbulb className="size-3.5" /> Brand inspirations
             </TabsTrigger>
+            <TabsTrigger value="templates" className="min-h-11 shrink-0 gap-1.5">
+              <LayoutTemplate className="size-3.5" /> Templates
+            </TabsTrigger>
             <TabsTrigger value="rules" className="min-h-11 shrink-0 gap-1.5">
               <Scale className="size-3.5" /> Rules &amp; preferences
             </TabsTrigger>
@@ -1365,6 +1370,9 @@ function BrandMasterPage() {
                 refresh();
               }}
             />
+          </TabsContent>
+          <TabsContent value="templates">
+            <TemplatesPanel brandId={brandId} onChanged={refresh} />
           </TabsContent>
           <TabsContent value="rules" className="space-y-6">
             <HardRulesPanel brandId={brandId} />

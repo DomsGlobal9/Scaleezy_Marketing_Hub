@@ -107,6 +107,11 @@ class BrandInspiration(models.Model):
         # Words rather than a picture or a page: a hook, a headline, a caption.
         # What a TEXT entry of the Scaleezy library becomes when adopted.
         TEXT = 'TEXT', 'Text / copy'
+        # A poster design the brand uploaded for generation to MATCH — not
+        # merely draw from. The founder's replacement for the removed built-in
+        # catalogue: when a brand has templates and the user states no creative
+        # choice, generation runs REFERENCE mode against one of these rows.
+        BRAND_TEMPLATE = 'BRAND_TEMPLATE', 'Brand template'
         OTHER = 'OTHER', 'Other'
 
     class UsageScope(models.TextChoices):
@@ -177,6 +182,12 @@ class BrandInspiration(models.Model):
     lifecycle_status = models.CharField(
         max_length=20, choices=LifecycleStatus.choices, default=LifecycleStatus.ACTIVE
     )
+
+    # BRAND_TEMPLATE rotation clock: when this row last served as the
+    # defaulted generation template. NULL means never used, which the rotation
+    # reads as "most overdue". Meaningless (and left NULL) for every other
+    # inspiration type.
+    template_last_used_at = models.DateTimeField(null=True, blank=True)
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

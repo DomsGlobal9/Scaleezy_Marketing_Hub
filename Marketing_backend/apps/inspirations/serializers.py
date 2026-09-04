@@ -44,6 +44,10 @@ IMAGE_INSPIRATION_TYPES = frozenset({
     BrandInspiration.InspirationType.PIN,
     BrandInspiration.InspirationType.REFERENCE,
     BrandInspiration.InspirationType.MOODBOARD,
+    # A brand's own poster design, uploaded for generation to match. Image
+    # only: the whole point is a picture the generator can reproduce the look
+    # of.
+    BrandInspiration.InspirationType.BRAND_TEMPLATE,
 })
 
 
@@ -112,6 +116,7 @@ class BrandInspirationSerializer(serializers.ModelSerializer):
             'annotation', 'reference_url', 'storage_path', 'file_url',
             'mime_type', 'file_name', 'external_platform', 'metadata',
             'usage_scope', 'focus_areas', 'analysis_status', 'lifecycle_status',
+            'template_last_used_at',
             'retrieval_eligibility', 'created_by', 'archived_by', 'archived_at',
             'created_at', 'updated_at',
         ]
@@ -119,6 +124,8 @@ class BrandInspirationSerializer(serializers.ModelSerializer):
             'id', 'workspace', 'created_by',
             # Lifecycle moves through named actions only (PR1-003).
             'analysis_status', 'lifecycle_status', 'archived_by', 'archived_at',
+            # The rotation clock is written by the generation defaulting only.
+            'template_last_used_at',
             # Storage coordinates are server-assigned by the upload action; a
             # client that could set them could point a row at another tenant's
             # object.

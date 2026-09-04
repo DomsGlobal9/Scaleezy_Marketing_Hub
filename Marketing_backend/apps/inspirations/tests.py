@@ -300,6 +300,100 @@ class InspirationHappyPathTests(InspirationTestBase):
         self.assertEqual(data['focus_areas'], ['LAYOUT'])
 
 
+class BrandTemplateTests(InspirationTestBase):
+    """BRAND_TEMPLATE rows: re-hosted uploads, filterable, tenant-scoped."""
+
+    def test_brand_template_upload_is_rehosted_and_filterable(self):
+        file_obj = SimpleUploadedFile(
+            'house-poster.png', tiny_png_bytes(), content_type='image/png'
+        )
+        response = self.client1.post(
+            f'{INSPIRATIONS_URL}upload/',
+            {
+                'brand': str(self.brand1.id),
+                'file': file_obj,
+                'inspiration_type': BrandInspiration.InspirationType.BRAND_TEMPLATE,
+                'title': 'House poster',
+            },
+            format='multipart',
+            **self.ws1(),
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+        data = response.json()['data']
+        self.assertEqual(
+            data['inspiration_type'], BrandInspiration.InspirationType.BRAND_TEMPLATE
+        )
+        # Re-hosted like every other upload: server-assigned storage under
+        # this workspace, never a client-named location.
+        self.assertIn(str(self.workspace1.id), data['file_url'])
+        self.assertIsNone(data['template_last_used_at'])
+
+        BrandInspiration.objects.create(
+            workspace=self.workspace1,
+            brand=self.brand1,
+            title='Ordinary reference',
+            inspiration_type=BrandInspiration.InspirationType.IMAGE,
+            reference_url='https://example.com/x',
+        )
+        listed = self.client1.get(
+            f'{INSPIRATIONS_URL}?brand_id={self.brand1.id}'
+            '&inspiration_type=BRAND_TEMPLATE',
+            **self.ws1(),
+        )
+        self.assertEqual(
+            [row['title'] for row in listed.json()], ['House poster']
+        )
+
+    def test_template_rotation_is_tenant_and_brand_scoped(self):
+        from apps.context.services.creative_direction import next_brand_template
+
+        foreign = BrandInspiration.objects.create(
+            workspace=self.workspace2,
+            brand=self.brand2,
+            title='Foreign template',
+            inspiration_type=BrandInspiration.InspirationType.BRAND_TEMPLATE,
+            reference_url='https://example.com/foreign',
+        )
+        sibling = BrandInspiration.objects.create(
+            workspace=self.workspace1,
+            brand=self.brand1b,
+            title='Sibling brand template',
+            inspiration_type=BrandInspiration.InspirationType.BRAND_TEMPLATE,
+            reference_url='https://example.com/sibling',
+        )
+        self.assertIsNone(next_brand_template(self.workspace1, self.brand1))
+        self.assertEqual(
+            next_brand_template(self.workspace1, self.brand1b).pk, sibling.pk
+        )
+        self.assertEqual(
+            next_brand_template(self.workspace2, self.brand2).pk, foreign.pk
+        )
+
+    def test_archived_template_leaves_rotation_and_client_cannot_write_clock(self):
+        from apps.context.services.creative_direction import next_brand_template
+
+        template = BrandInspiration.objects.create(
+            workspace=self.workspace1,
+            brand=self.brand1,
+            title='Retiring template',
+            inspiration_type=BrandInspiration.InspirationType.BRAND_TEMPLATE,
+            reference_url='https://example.com/retiring',
+        )
+        # The rotation clock is server-owned: a PATCH naming it is ignored.
+        response = self.client1.patch(
+            f'{INSPIRATIONS_URL}{template.id}/',
+            {'template_last_used_at': timezone.now().isoformat()},
+            format='json',
+            **self.ws1(),
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        template.refresh_from_db()
+        self.assertIsNone(template.template_last_used_at)
+
+        self.client1.post(f'{INSPIRATIONS_URL}{template.id}/archive/', **self.ws1())
+        self.assertIsNone(next_brand_template(self.workspace1, self.brand1))
+
+
 class InspirationInputValidationTests(InspirationTestBase):
     @patch('apps.marketing.services.storage.SupabaseStorageService.upload_and_describe')
     def test_unsupported_upload_is_rejected_before_storage(self, upload):

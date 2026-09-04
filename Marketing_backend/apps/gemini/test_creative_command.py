@@ -87,16 +87,29 @@ class CreativeCommandTests(TenantFixtureMixin, TestCase):
             **extra,
         }
 
-    def test_creative_source_must_be_chosen_explicitly(self):
-        response = self.client.post(
-            GENERATE_URL,
-            {'campaignName': 'Creative launch', 'contentType': 'poster'},
-            format='json',
-            **workspace_header(self.workspace),
+    def test_no_creative_choice_defaults_to_raw_ai_original_without_templates(self):
+        """No stated direction and no uploaded brand templates: raw AI output.
+
+        This replaces the old CREATIVE_SOURCE_REQUIRED refusal — since the
+        built-in catalogue was removed, an unstated choice follows the brand
+        default (templates when they exist, AI_ORIGINAL when none do).
+        The template half of the default is pinned in
+        test_template_defaulting.
+        """
+        calls = []
+        with patch('apps.ai.router.AIRouter.dispatch', self.dispatch(calls)):
+            response = self.client.post(
+                GENERATE_URL,
+                {'campaignName': 'Creative launch', 'contentType': 'poster'},
+                format='json',
+                **workspace_header(self.workspace),
+            )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        item = ContentItem.objects.get()
+        self.assertEqual(
+            item.layout_config['creative_direction']['mode'], 'AI_ORIGINAL'
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.json()['error']['code'], 'CREATIVE_SOURCE_REQUIRED')
-        self.assertFalse(ContentItem.objects.exists())
+        self.assertEqual(item.layout_config['creative_direction']['selections'], [])
 
     def test_template_and_reference_modes_cannot_be_mixed(self):
         own = self.brand_reference()

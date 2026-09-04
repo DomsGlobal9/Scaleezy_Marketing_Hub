@@ -326,7 +326,8 @@ export function MissionsPanel() {
                   ]}
                 />
                 <p className="mt-2 text-xs text-muted-foreground">
-                  Scheduled runs only create drafts — nothing publishes on its own.
+                  Scheduled runs only create drafts — nothing publishes on its own. When your brand
+                  has uploaded templates, each run matches one of them.
                 </p>
               </div>
               <Choice

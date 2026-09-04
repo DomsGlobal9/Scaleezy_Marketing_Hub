@@ -158,6 +158,23 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
         }
 
     @staticmethod
+    def _explicit_creative_choice(data, has_uploaded_reference):
+        """Did the user state ANY creative direction for this generation?
+
+        When they did not — no mode, no selections, no layout, no uploaded
+        reference — the generation follows the brand default: REFERENCE
+        against one of the brand's uploaded templates when any exist,
+        AI_ORIGINAL raw output when none do. An explicit choice always wins
+        and never enters the defaulting path.
+        """
+        return bool(
+            str(data.get('creativeMode', data.get('creative_mode', '')) or '').strip()
+            or data.get('inspirationSelections', data.get('inspiration_selections', []))
+            or str(data.get('layout', '') or '').strip()
+            or has_uploaded_reference
+        )
+
+    @staticmethod
     def _requests_brand_direction(data):
         raw_analysis_ids = data.get(
             'analyzeBeforeGenerationIds',
@@ -403,6 +420,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
         from apps.brands.models import Brand
         from apps.context.services.creative_direction import (
             CreativeDirectionError,
+            default_creative_direction,
             resolve_creative_direction,
         )
 
@@ -417,14 +435,26 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            creative_direction = resolve_creative_direction(
-                workspace,
-                brand,
-                data.get('inspirationSelections', data.get('inspiration_selections', [])),
-                creative_mode=data.get('creativeMode', data.get('creative_mode', '')),
-                layout=data.get('layout', ''),
-                instruction=instruction,
-            )
+            if self._explicit_creative_choice(data, bool(reference_image_base64)):
+                creative_direction = resolve_creative_direction(
+                    workspace,
+                    brand,
+                    data.get('inspirationSelections', data.get('inspiration_selections', [])),
+                    creative_mode=data.get('creativeMode', data.get('creative_mode', '')),
+                    layout=data.get('layout', ''),
+                    instruction=instruction,
+                )
+            else:
+                # No stated direction: the brand's uploaded templates (when
+                # any exist) are the default, rotated least-recently-used.
+                # Poster designs are not style references for video or
+                # carousel output, so those fall back to raw AI_ORIGINAL.
+                creative_direction, _template_ids = default_creative_direction(
+                    workspace,
+                    brand,
+                    allow_template=content_type.casefold() in ('', 'poster'),
+                    instruction=instruction,
+                )
         except CreativeDirectionError as exc:
             return APIResponse(
                 success=False,
@@ -706,6 +736,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
         from apps.brands.models import Brand
         from apps.context.services.creative_direction import (
             CreativeDirectionError,
+            default_creative_direction,
             resolve_creative_direction,
         )
 
@@ -719,15 +750,29 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                 error={'code': 'INVALID_INSTRUCTION', 'message': str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        content_type = str(data.get('contentType', data.get('content_type', ''))).strip()
+        has_uploaded_reference = bool(data.get('referenceImageBase64'))
+        default_template_ids = []
         try:
-            creative_direction = resolve_creative_direction(
-                workspace,
-                brand,
-                data.get('inspirationSelections', data.get('inspiration_selections', [])),
-                creative_mode=data.get('creativeMode', data.get('creative_mode', '')),
-                layout=data.get('layout', ''),
-                instruction=instruction,
-            )
+            if self._explicit_creative_choice(data, has_uploaded_reference):
+                creative_direction = resolve_creative_direction(
+                    workspace,
+                    brand,
+                    data.get('inspirationSelections', data.get('inspiration_selections', [])),
+                    creative_mode=data.get('creativeMode', data.get('creative_mode', '')),
+                    layout=data.get('layout', ''),
+                    instruction=instruction,
+                )
+            else:
+                # No stated direction: default to the brand's uploaded
+                # templates (least-recently-used rotation) for poster output,
+                # raw AI_ORIGINAL otherwise or when the brand has none.
+                creative_direction, default_template_ids = default_creative_direction(
+                    workspace,
+                    brand,
+                    allow_template=content_type.casefold() in ('', 'poster'),
+                    instruction=instruction,
+                )
         except CreativeDirectionError as exc:
             return APIResponse(
                 success=False,
@@ -749,9 +794,11 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-        content_type = str(data.get('contentType', data.get('content_type', ''))).strip()
-        has_uploaded_reference = bool(data.get('referenceImageBase64'))
+        if default_template_ids and content_type.casefold() == 'poster':
+            # The defaulted template rides the exact create-from-inspiration
+            # machinery: worker-side analysis, grounded-observation and
+            # eligibility checks, and the persistence-time reference locks.
+            analyze_before_generation_ids = default_template_ids
         if (
             creative_direction['mode'] == 'REFERENCE'
             and not creative_direction['selections']

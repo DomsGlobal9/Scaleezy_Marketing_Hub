@@ -163,6 +163,52 @@ def _queue_generation(run, policy):
     ).exclude(error_code='QUEUE_ENQUEUE_FAILED').count()
     chosen = str(formats[previous % len(formats)]).upper()
     content_type = {'POSTER': 'poster', 'CAROUSEL': 'carousel', 'VIDEO': 'video'}[chosen]
+
+    # An autopilot mission states no per-run creative choice, so it follows
+    # the same brand default as manual generation: a brand with uploaded
+    # templates gets REFERENCE mode against one (rotated least-recently-used,
+    # with the full analyze-before-generation/lock machinery in the worker);
+    # a brand without any keeps the raw AI_ORIGINAL composition. Poster runs
+    # only — a poster template is not a style reference for video/carousel.
+    from apps.brands.models import Brand
+    from apps.context.services.creative_direction import (
+        next_brand_template,
+        template_selection_row,
+    )
+
+    # The generation worker validates preprocessing references against the
+    # workspace's DEFAULT brand (its own brand lookup). Default to a template
+    # only when the policy's brand IS that brand, or the worker would refuse
+    # a reference the policy legitimately owns.
+    default_brand = (
+        Brand.objects.filter(workspace=run.workspace).order_by('-is_default').first()
+    )
+    template = (
+        next_brand_template(run.workspace, policy.brand)
+        if chosen == 'POSTER'
+        and default_brand is not None
+        and default_brand.pk == policy.brand_id
+        else None
+    )
+    if template is not None:
+        creative_direction = {
+            'mode': 'REFERENCE',
+            'selection_count': 1,
+            'layout': '',
+            # IDs only, like a queued create-from-inspiration brief: the
+            # worker re-resolves (and analyses) the saved reference.
+            'selections': [template_selection_row(template)],
+        }
+        analyze_ids = [str(template.pk)]
+    else:
+        creative_direction = {
+            'mode': 'AI_ORIGINAL',
+            'selection_count': 0,
+            'layout': '',
+            'selections': [],
+            'instructions': [],
+        }
+        analyze_ids = []
     brief = {
         'campaign_name': policy.name,
         'product': policy.objective,
@@ -174,16 +220,8 @@ def _queue_generation(run, policy):
         'contentType': content_type,
         'slides': [],
         'brand_rules': [],
-        # Enabling an autopilot mission is an explicit delegation to create an
-        # original composition for each run. Template choice never comes from
-        # Brand Brain or a brand-wide default.
-        'creative_direction': {
-            'mode': 'AI_ORIGINAL',
-            'selection_count': 0,
-            'layout': '',
-            'selections': [],
-            'instructions': [],
-        },
+        'creative_direction': creative_direction,
+        'analyze_before_generation_ids': analyze_ids,
         'layout': '',
         'autopilot': {
             'run_id': str(run.pk),
@@ -222,7 +260,10 @@ def _queue_generation(run, policy):
     task_result = generate_content.enqueue(str(generation.pk))
     run.task_id = str(task_result.id)
     run.save(update_fields=['task_id', 'updated_at'])
-    _step(run, 'generate', 'QUEUED', generation_id=str(generation.pk), format=chosen)
+    _step(
+        run, 'generate', 'QUEUED', generation_id=str(generation.pk), format=chosen,
+        **({'template_id': str(template.pk)} if template is not None else {}),
+    )
     return {'status': run.status, 'generation_id': str(generation.pk)}
 
 

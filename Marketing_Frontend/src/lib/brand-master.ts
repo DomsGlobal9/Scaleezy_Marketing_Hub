@@ -524,6 +524,31 @@ export const uploadInspiration = (brandId: string, file: File, input: Inspiratio
 export const archiveInspiration = (inspirationId: string) =>
   api(`/api/marketing/inspirations/${inspirationId}/archive/`, { method: "POST" });
 
+/* ---------------------------------------------------------- brand templates */
+
+/**
+ * A brand template is an inspiration with this type — same API, same storage,
+ * its own surface. The built-in template catalogue is gone from creation;
+ * these uploads are what generations match instead.
+ */
+export const BRAND_TEMPLATE_TYPE = "BRAND_TEMPLATE";
+
+export const isBrandTemplate = (row: Inspiration) =>
+  row.inspiration_type === BRAND_TEMPLATE_TYPE;
+
+export const fetchBrandTemplates = async (brandId: string) =>
+  (await fetchInspirations(brandId)).filter(isBrandTemplate);
+
+export const uploadBrandTemplate = (brandId: string, file: File, title: string) =>
+  uploadInspiration(brandId, file, {
+    inspiration_type: BRAND_TEMPLATE_TYPE,
+    title: title || file.name,
+    annotation: "",
+    external_platform: "",
+    usage_scope: "FULL_REFERENCE",
+    focus_areas: [],
+  });
+
 export const analyzeInspiration = (inspirationId: string) =>
   api(`/api/marketing/inspirations/${inspirationId}/analyze/`, { method: "POST" });
 
@@ -657,13 +682,22 @@ export const READINESS_COPY: Record<ReadinessLevel, { label: string; blurb: stri
 
 /** Brand Master tabs. Kept in the URL so every card and link can target one. */
 export type BrandMasterTab =
-  "overview" | "basics" | "knowledge" | "inspirations" | "rules" | "brain" | "attention" | "teach";
+  | "overview"
+  | "basics"
+  | "knowledge"
+  | "inspirations"
+  | "templates"
+  | "rules"
+  | "brain"
+  | "attention"
+  | "teach";
 
 export const BRAND_MASTER_TABS: BrandMasterTab[] = [
   "overview",
   "basics",
   "knowledge",
   "inspirations",
+  "templates",
   "rules",
   "brain",
   "attention",
@@ -679,7 +713,6 @@ export const BRAND_MASTER_TABS: BrandMasterTab[] = [
 export const LEGACY_TAB_ALIASES: Record<string, BrandMasterTab> = {
   products: "basics",
   learning: "rules",
-  templates: "inspirations",
 };
 
 /** Where the readiness engine's "do this next" actually lives. */
