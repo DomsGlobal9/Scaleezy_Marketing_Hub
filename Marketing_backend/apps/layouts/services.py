@@ -251,9 +251,12 @@ def compose_generated_poster(item, *, user=None):
         photo = render_engine.photo_for(asset=source_photo_asset(item))
         config = dict(item.layout_config or {})
 
-        # -- focal point: ONE vision call per source photo, ever ---------
-        # A stored dict — success OR a {'skipped': reason} marker — is final,
-        # so recomposes, restyles and exports never dispatch (or pay) again.
+        # -- focal point: ONE vision call per source photo ----------------
+        # A stored dict — success OR a cached skip marker — is final, so
+        # recomposes, restyles and exports never dispatch (or pay) again.
+        # Only final results are stored (see focus_engine.cacheable): a
+        # transient failure stays out of layout_config so the next compose
+        # event may retry — bounded by compose events, not loops.
         focus_info = config.get('photo_focus')
         if (
             photo is not None
@@ -261,12 +264,13 @@ def compose_generated_poster(item, *, user=None):
             and quality.focus_crop_enabled
         ):
             focus_info = focus_engine.detect_photo_focus(item.workspace, photo)
-            config['photo_focus'] = focus_info
-            # Persisted immediately rather than with the final save: a
-            # storage failure further down must not make the next compose
-            # pay for the same vision call again.
-            item.layout_config = config
-            item.save(update_fields=['layout_config', 'updated_at'])
+            if focus_engine.cacheable(focus_info):
+                config['photo_focus'] = focus_info
+                # Persisted immediately rather than with the final save: a
+                # storage failure further down must not make the next compose
+                # pay for the same vision call again.
+                item.layout_config = config
+                item.save(update_fields=['layout_config', 'updated_at'])
 
         if not layout and mode in {'AI_ORIGINAL', 'REFERENCE'}:
             # The user explicitly delegated the composition decision for this
@@ -307,12 +311,18 @@ def compose_generated_poster(item, *, user=None):
             if quality.variety_enabled:
                 # Same skeleton in the same colour scheme as its last outing
                 # for this brand reads as "the same poster again" — restyle
-                # deterministically away from that prior dress.
+                # deterministically away from that prior dress. The palette
+                # axis is rotated directly: `different_variant_for` only
+                # moves on a FULL five-axis match, and the common prior
+                # shares nothing but the palette, which would leave the
+                # nudge a no-op. The item's other axes stay its own.
                 prior = _prior_variant(item, layout)
                 if prior is not None and prior.get('palette') == variant.get('palette'):
-                    variant = variants.different_variant_for(
-                        item, prior, uses_photo=uses_photo
-                    )
+                    variant = dict(variant)
+                    index = variants.PALETTES.index(prior['palette'])
+                    variant['palette'] = variants.PALETTES[
+                        (index + 1) % len(variants.PALETTES)
+                    ]
         spec = variants.apply(spec, variant)
         # `variants.apply` grades the photo in place (grayscale / blend /
         # enhance) but never resizes it, and the focus is normalized 0..1 —

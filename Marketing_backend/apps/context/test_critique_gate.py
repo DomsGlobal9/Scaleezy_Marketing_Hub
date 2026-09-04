@@ -159,6 +159,43 @@ class CritiqueGateTests(TenantFixtureMixin, TestCase):
         self.assertEqual(critique['skipped_reason'], 'disabled')
         self.assertEqual(result['payload'], PAYLOAD)
 
+    def test_a_crash_outside_the_judge_guard_skips_instead_of_failing(self):
+        """The whole gate is fail-open: even the settings read crashing must
+        record 'skipped' and ship the paid output, never fail the generation."""
+        with patch(ROUTE, return_value=self.routed(PAYLOAD)), \
+                patch(RETRY) as retry, patch(JUDGE_ROUTER) as router, \
+                patch(
+                    'apps.universal.services.quality_settings_for',
+                    side_effect=RuntimeError('settings table unavailable'),
+                ):
+            result = self.generate()
+
+        retry.assert_not_called()
+        router.return_value.dispatch.assert_not_called()
+        critique = result['trace']['critique']
+        self.assertEqual(critique['verdict'], 'skipped')
+        self.assertEqual(critique['skipped_reason'], 'RuntimeError')
+        self.assertEqual(result['payload'], PAYLOAD)
+
+    def test_video_and_carousel_get_an_honest_format_skip(self):
+        """Uncovered formats say so, instead of masquerading as an infra skip."""
+        for content_type in ('video', 'carousel'):
+            with self.subTest(content_type=content_type):
+                routed = self.routed(PAYLOAD)
+                routed.pop('copy_brief_context')
+                with patch(ROUTE, return_value=routed), \
+                        patch(RETRY) as retry, patch(JUDGE_ROUTER) as router:
+                    result = generate_marketing_payload(
+                        self.workspace,
+                        {'campaign_name': 'Launch', 'contentType': content_type},
+                    )
+                retry.assert_not_called()
+                router.return_value.dispatch.assert_not_called()
+                critique = result['trace']['critique']
+                self.assertEqual(critique['verdict'], 'skipped')
+                self.assertEqual(critique['skipped_reason'], 'format_not_covered')
+                self.assertEqual(result['payload'], PAYLOAD)
+
     def test_malformed_judge_json_skips_and_keeps_the_paid_output(self):
         with patch(ROUTE, return_value=self.routed(PAYLOAD)), \
                 patch(RETRY) as retry, patch(JUDGE_ROUTER) as router:

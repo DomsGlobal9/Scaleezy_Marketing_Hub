@@ -405,6 +405,33 @@ class LayoutAPITests(APITestCase):
         self.assertEqual(self.item.asset.source, MarketingAsset.Source.COMPOSED)
         self.assertEqual((self.item.asset.width, self.item.asset.height), (1080, 1350))
 
+    def test_render_with_a_client_config_keeps_the_paid_photo_focus(self):
+        """A client-posted config replaces layout_config — but the focal
+        point (or its cached skip marker) must survive the replacement the
+        way the saved copy does, or the crop recentres permanently and the
+        next compose re-buys the vision call."""
+        focus_dict = {'x': 0.3, 'y': 0.4, 'bbox': None,
+                      'has_face': True, 'provider': 'gemini'}
+        self.item.layout_config = {'photo_focus': dict(focus_dict)}
+        self.item.save(update_fields=['layout_config'])
+
+        self.as_(self.editor)
+        res = self.client.post(
+            '/api/marketing/layouts/render/',
+            {
+                'content_item': str(self.item.id),
+                'layout': 'data_hero',
+                'config': {'accent': '#00FF00'},
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.layout_config.get('photo_focus'), focus_dict)
+        # The client's own config keys were still applied.
+        self.assertEqual(self.item.layout_config.get('accent'), '#00FF00')
+
     def test_manual_render_becomes_the_explicit_per_content_template_choice(self):
         self.item.layout_config = {
             'creative_direction': {
@@ -952,14 +979,31 @@ class ComposeFocusTests(APITestCase):
             self.assertEqual(self.item.layout_plugin, chosen)
             self.assertEqual(self.item.layout_config['photo_focus'], self.STORED)
 
-    def test_a_failed_detection_degrades_and_is_never_retried(self):
+    def test_a_transient_failure_degrades_but_is_not_cached(self):
+        """This compose ships centred, and the skip stays OUT of
+        layout_config so the next compose event may retry — the retry budget
+        is bounded by compose events, never a loop."""
         with patch(
             'apps.ai.router.AIRouter.dispatch', side_effect=RuntimeError('boom')
         ) as dispatch:
             self.assertIsNotNone(services.compose_generated_poster(self.item))
             self.item.refresh_from_db()
+            self.assertNotIn('photo_focus', self.item.layout_config)
+            self.assertIsNotNone(services.compose_generated_poster(self.item))
+            self.assertEqual(dispatch.call_count, 2)
+
+    def test_a_malformed_response_is_cached_and_never_re_bought(self):
+        """The provider answered nonsense for THIS image and would again:
+        the one skip that stays final."""
+        with patch(
+            'apps.ai.router.AIRouter.dispatch',
+            return_value={'analysis': {'nope': 1}},
+        ) as dispatch:
+            self.assertIsNotNone(services.compose_generated_poster(self.item))
+            self.item.refresh_from_db()
             self.assertEqual(
-                self.item.layout_config['photo_focus'], {'skipped': 'RuntimeError'}
+                self.item.layout_config['photo_focus'],
+                {'skipped': 'MALFORMED_RESPONSE'},
             )
             self.assertIsNotNone(services.compose_generated_poster(self.item))
             self.assertEqual(dispatch.call_count, 1)
@@ -998,6 +1042,45 @@ class ComposeFocusTests(APITestCase):
             # Storage recovers; the vision call is not repeated.
             self.assertIsNotNone(services.compose_generated_poster(self.item))
             self.assertEqual(dispatch.call_count, 1)
+
+
+class SpecFocusTests(APITestCase):
+    """Studio renders and exports carry the paid focal point — without this,
+    every manual re-render and multi-size export reverts to the centred crop
+    the vision call was bought to fix."""
+
+    FOCUS = {'x': 0.2, 'y': 0.8, 'bbox': None, 'has_face': True, 'provider': 'gemini'}
+
+    def setUp(self):
+        self.ws = MarketingWorkspace.objects.create(customer_id='sf', workspace_name='SpecF')
+        self.brand = Brand.objects.create(
+            workspace=self.ws, name='SpecF Co', palette=dict(PALETTE), is_default=True,
+        )
+        self.item = ContentItem.objects.create(
+            workspace=self.ws, brand=self.brand, headline='Festive drop',
+            layout_config={'photo_focus': dict(self.FOCUS)},
+        )
+        patcher = patch('apps.layouts.render.photo_for', return_value=a_photo(800, 600))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def spec_for(self, data):
+        from apps.layouts.views import LayoutViewSet
+
+        spec, _brand = LayoutViewSet()._spec_for(self.ws, data, item=self.item)
+        return spec
+
+    def test_the_stored_focus_reaches_the_spec(self):
+        self.assertEqual(self.spec_for({}).photo_focus, self.FOCUS)
+
+    def test_a_client_config_without_focus_falls_back_to_the_stored_one(self):
+        spec = self.spec_for({'config': {'copy': {'subheadline': 'New line'}}})
+        self.assertEqual(spec.photo_focus, self.FOCUS)
+
+    def test_a_skip_marker_never_steers_the_crop(self):
+        self.item.layout_config = {'photo_focus': {'skipped': 'MALFORMED_RESPONSE'}}
+        self.item.save(update_fields=['layout_config'])
+        self.assertIsNone(self.spec_for({}).photo_focus)
 
 
 class VarietySelectionTests(APITestCase):
@@ -1130,6 +1213,28 @@ class VariantNudgeTests(APITestCase):
         )
         self.assertEqual(self.item.layout_config['style_variant'], expected)
         self.assertNotEqual(self.item.layout_config['style_variant'], self.candidate)
+
+    def test_a_prior_sharing_only_the_palette_still_rotates_the_palette(self):
+        """The common clash: same palette, different photo grading. The nudge
+        must change the colour scheme anyway — the palette axis rotates
+        directly, and the item's other axes stay its own."""
+        prior = dict(self.candidate)
+        photo_index = variants.PHOTOS.index(prior['photo'])
+        prior['photo'] = variants.PHOTOS[(photo_index + 1) % len(variants.PHOTOS)]
+        self.dress_prior(prior)
+
+        self.assertIsNotNone(services.compose_generated_poster(self.item))
+        self.item.refresh_from_db()
+        worn = self.item.layout_config['style_variant']
+        self.assertNotEqual(worn['palette'], prior['palette'])
+        palette_index = variants.PALETTES.index(prior['palette'])
+        self.assertEqual(
+            worn['palette'],
+            variants.PALETTES[(palette_index + 1) % len(variants.PALETTES)],
+        )
+        # Every other axis is still the item's own uuid pick.
+        for axis in ('photo', 'paper', 'casing', 'pairing'):
+            self.assertEqual(worn[axis], self.candidate[axis])
 
     def test_a_different_palette_prior_keeps_the_uuid_variant(self):
         different = dict(self.candidate)

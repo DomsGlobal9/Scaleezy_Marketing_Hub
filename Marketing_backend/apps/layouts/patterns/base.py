@@ -233,6 +233,12 @@ class LayoutPattern(ABC):
 
         The focus values come from client-writable JSON, so everything is
         re-validated here; anything malformed degrades to the centred crop.
+
+        Caveat: a degenerate tiny source (a 1px edge) is clamped by the
+        ``max(1, ...)`` resize floor, so integer rounding can leave the
+        resized image a pixel short of the window and the crop then pads the
+        missing edge. Real photographs never hit this; it is accepted rather
+        than special-cased.
         """
         width, height = max(1, int(width)), max(1, int(height))
         source = photo.convert('RGB')

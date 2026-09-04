@@ -106,23 +106,24 @@ class AIRouter:
         return route.strategy if route else Strategy.ROUND_ROBIN
 
     # ── execution ────────────────────────────────────────────────────────
-    def _run_one(self, candidate, capability, brief, strategy, content_item_id, selected=True):
+    def _run_one(self, candidate, capability, brief, strategy, content_item_id,
+                 selected=True, internal=False):
         adapter = candidate['adapter']
         started = time.monotonic()
         try:
             result = adapter.run(capability, brief)
             duration = time.monotonic() - started
             log = self._log(candidate, capability, strategy, duration, True, '',
-                            content_item_id, selected)
+                            content_item_id, selected, internal)
             return {'result': result, 'duration': duration, 'candidate': candidate, 'log': log}
         except Exception as exc:
             duration = time.monotonic() - started
             self._log(candidate, capability, strategy, duration, False, str(exc)[:500],
-                      content_item_id, False)
+                      content_item_id, False, internal)
             raise
 
     def _log(self, candidate, capability, strategy, duration, ok, error,
-             content_item_id, selected):
+             content_item_id, selected, internal=False):
         try:
             return AIUsageLog.objects.create(
                 workspace=self.workspace,
@@ -135,13 +136,19 @@ class AIRouter:
                 error=error,
                 strategy=strategy,
                 selected=selected,
+                is_internal=internal,
             )
         except Exception:
             logger.exception("Could not write AI usage log")
             return None
 
     def dispatch(self, capability: str, brief: Dict[str, Any],
-                 content_item_id=None) -> Dict[str, Any]:
+                 content_item_id=None, *, internal=False) -> Dict[str, Any]:
+        # `internal=True` marks platform QA overhead (the copy judge, the
+        # focus vision call): the AIUsageLog row it writes is real spend but
+        # not one of the customer's provisioned units — see
+        # apps.billing.quota.capability_usage. The unit/spend split is
+        # surfaced for founder review.
         # A client awaiting Scaleezy approval incurs no provider spend, of any
         # capability. Checked first so a pending client hears "awaiting
         # approval" rather than a quota message. This is the backstop for
@@ -168,7 +175,14 @@ class AIRouter:
         strategy = self.strategy_for(capability)
 
         if strategy == Strategy.BEST_OF and len(candidates) > 1:
-            return self._best_of(candidates, capability, brief, content_item_id)
+            if internal:
+                # BEST_OF exists to buy the customer a better asset. A QA
+                # dispatch is overhead: multiplying it by every routed
+                # provider would multiply the judge/focus spend for zero
+                # product. Internal calls always take exactly one provider.
+                candidates = candidates[:1]
+            else:
+                return self._best_of(candidates, capability, brief, content_item_id)
         if strategy == Strategy.ROUND_ROBIN and len(candidates) > 1:
             candidates = self._rotate(candidates, capability)
 
@@ -178,7 +192,8 @@ class AIRouter:
         for candidate in candidates:
             try:
                 outcome = self._run_one(
-                    candidate, capability, brief, strategy, content_item_id
+                    candidate, capability, brief, strategy, content_item_id,
+                    internal=internal,
                 )
                 return self._shape(outcome, strategy)
             except Exception as exc:

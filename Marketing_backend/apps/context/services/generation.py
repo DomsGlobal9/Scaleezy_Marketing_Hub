@@ -908,11 +908,13 @@ def generate_marketing_payload(
 
     # 4. LLM self-critique: the finished copy judged against the very rules
     #    the generator was told, plus this brand's standing reviewer
-    #    complaints. Spend: +1 TEXT dispatch to judge each generation; a
-    #    failing verdict adds one copy-only regeneration and one in-memory
-    #    re-judge (+2 TEXT, worst case) — never a second image. All flat
-    #    unit-cost accounted and quota-metered. Best-effort by construction:
-    #    every judge failure records 'skipped' and ships the paid output.
+    #    complaints. Spend: +1 internal TEXT dispatch to judge each
+    #    generation (spend-metered, never a customer TEXT unit); a failing
+    #    verdict adds one copy-only regeneration (a normal customer unit —
+    #    it replaces the copy the customer receives) and one in-memory
+    #    internal re-judge — never a second image. Best-effort by
+    #    construction: every judge failure records 'skipped' and ships the
+    #    paid output.
     from .critique import critique_copy
 
     copy_brief_context = routed.pop('copy_brief_context', None) or []
@@ -922,6 +924,7 @@ def generate_marketing_payload(
             workspace, resolved, payload,
             context_lines=copy_brief_context,
             guardrail_lines=list(brief.get('guardrail_rules') or []),
+            content_format=str(brief.get('contentType') or ''),
             rewrite=lambda feedback: generate_copy_only(
                 workspace, resolved,
                 {**brief, 'guardrail_feedback': feedback},

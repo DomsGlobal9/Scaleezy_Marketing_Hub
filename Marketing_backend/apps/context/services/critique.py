@@ -15,8 +15,10 @@ generation.
 
 Cost: +1 TEXT dispatch per generation to judge. A failing verdict adds one
 copy-only TEXT regeneration and one in-memory re-judge (+2 more TEXT
-dispatches, worst case). Every dispatch is flat unit-cost accounted and
-quota-metered like any other.
+dispatches, worst case). The judge and re-judge dispatch with
+``internal=True``: they are platform QA overhead, counted as spend but never
+as one of the customer's provisioned TEXT units. The copy rewrite stays a
+normal customer unit — it replaces the copy the customer receives.
 """
 import json
 import logging
@@ -160,13 +162,15 @@ def _judge(workspace, structured):
     from apps.brands.services.approval import SpendNotApproved
 
     try:
+        # internal=True: judging is QA overhead, not a unit of product —
+        # metered as spend, never against the customer's TEXT allowance.
         result = AIRouter(workspace).dispatch(Capability.TEXT, {
             'task': 'EXTRACT',
             'schema_name': 'scaleezy_copy_critique',
             'instruction': INSTRUCTION,
             'response_schema': CRITIQUE_SCHEMA,
             'structured': structured,
-        })
+        }, internal=True)
     except (NoProviderAvailable, QuotaExceeded, AIProviderError, SpendNotApproved) as exc:
         raise CritiqueUnavailable(f'{type(exc).__name__}: {str(exc)[:160]}') from exc
     except Exception as exc:
@@ -188,7 +192,8 @@ def _row(verdict, violations, *, retried=False, skipped_reason=None):
     }
 
 
-def critique_copy(workspace, brand, payload, *, context_lines, guardrail_lines, rewrite):
+def critique_copy(workspace, brand, payload, *, context_lines, guardrail_lines,
+                  rewrite, content_format=''):
     """Judge the copy; on a failing verdict, spend exactly one copy retry.
 
     `rewrite(feedback_lines)` is the caller's copy-only regeneration (it must
@@ -200,18 +205,46 @@ def critique_copy(workspace, brand, payload, *, context_lines, guardrail_lines, 
     Returns the trace row: {'verdict': 'passed'|'regenerated'|
     'accepted_with_notes'|'skipped', 'violations': [...], 'retried': bool,
     'skipped_reason': str|None}.
-    """
-    from apps.universal.services import quality_settings_for
 
-    if not quality_settings_for(workspace).critique_enabled:
-        return _row('skipped', [], skipped_reason='disabled')
+    Fail-open in EVERY direction, mirroring `generated_layout`'s degradation
+    idiom: the whole body is guarded, so an exception nobody anticipated —
+    the settings read, the complaints query — records 'skipped' and ships the
+    paid output instead of turning a PAID generation into FAILED.
+    """
+    try:
+        return _critique_copy(
+            workspace, brand, payload,
+            context_lines=context_lines, guardrail_lines=guardrail_lines,
+            rewrite=rewrite, content_format=content_format,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Copy critique crashed for workspace %s; output shipped unjudged",
+            getattr(workspace, 'pk', None),
+        )
+        return _row('skipped', [], skipped_reason=type(exc).__name__)
+
+
+def _critique_copy(workspace, brand, payload, *, context_lines, guardrail_lines,
+                   rewrite, content_format=''):
+    # Cheap in-memory checks first, so the paths that can never be judged
+    # (no brand, an uncovered format, no copy context) cost zero DB reads.
     if brand is None or not isinstance(payload, dict):
         return _row('skipped', [], skipped_reason='no_brand')
+    if str(content_format or '').strip().lower() in ('video', 'carousel'):
+        # Honest label: the gate does not cover these formats yet. Distinct
+        # from the infra-shaped skips so the trace never reads like a fault.
+        return _row('skipped', [], skipped_reason='format_not_covered')
     if not context_lines:
         # Only the poster path surfaces the brand-context lines its copy
         # generator saw; without them the judge would grade against rules
         # the generator was never told.
         return _row('skipped', [], skipped_reason='no_copy_context')
+
+    from apps.universal.services import quality_settings_for
+
+    if not quality_settings_for(workspace).critique_enabled:
+        return _row('skipped', [], skipped_reason='disabled')
 
     complaints = standing_complaints(brand)
     try:

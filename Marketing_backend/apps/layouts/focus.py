@@ -8,12 +8,15 @@ window. The fix has two halves. This module asks the routed vision provider
 ONCE per source photograph where the subject is; `cover()` then does the rest
 with pure geometry — no second AI call per pattern, per size or per recompose.
 
-The result (or the reason there is none) is cached by the caller in
-``layout_config['photo_focus']``, so recomposes and restyles never pay for
-the same photograph twice — a ``{'skipped': reason}`` marker is cached on
-failure for the same reason, so a failing provider is not retried on every
-compose. Failure always degrades: the crop stays centred, exactly as it was
-before this module existed, and nothing ever raises out of here because
+The result is cached by the caller in ``layout_config['photo_focus']``, so
+recomposes and restyles never pay for the same photograph twice. Caching is
+gated by `cacheable`: success is always final, and among failures only a
+``{'skipped': 'MALFORMED_RESPONSE'}`` marker is cached — the provider
+answered nonsense for THIS image and would again. Transient failures (no
+provider routed, quota, timeouts) are NOT cached, so the next compose event
+may retry — bounded by compose events, never a loop. Failure always
+degrades: the crop stays centred, exactly as it was before this module
+existed, and nothing ever raises out of here because
 `compose_generated_poster` is best-effort by contract.
 """
 import json
@@ -110,10 +113,11 @@ def _shape(payload, provider):
 def detect_photo_focus(workspace, image):
     """One vision call: where is the subject of this photograph?
 
-    Returns the dict the caller caches in ``layout_config['photo_focus']``:
-    ``{'x', 'y', 'bbox', 'has_face', 'provider'}`` on success, or
+    Returns ``{'x', 'y', 'bbox', 'has_face', 'provider'}`` on success, or
     ``{'skipped': reason}`` on any failure — NoProviderAvailable, quota, the
-    spend-approval gate, a timeout, malformed JSON. Never raises.
+    spend-approval gate, a timeout, malformed JSON. Never raises. The caller
+    stores the result in ``layout_config['photo_focus']`` only when
+    `cacheable` says it is final.
     """
     from apps.ai.models import Capability
     from apps.ai.router import AIRouter
@@ -121,6 +125,9 @@ def detect_photo_focus(workspace, image):
     try:
         small = image.copy()
         small.thumbnail((ANALYSIS_MAX_EDGE, ANALYSIS_MAX_EDGE))
+        # internal=True: locating the subject is platform QA overhead, not a
+        # unit of product — metered as spend, never against the customer's
+        # IMAGE_ANALYSIS allowance.
         result = AIRouter(workspace).dispatch(
             Capability.IMAGE_ANALYSIS,
             {
@@ -129,6 +136,7 @@ def detect_photo_focus(workspace, image):
                 'response_schema': FOCUS_SCHEMA,
                 'reference_image_base64': images.to_data_url(small),
             },
+            internal=True,
         )
         payload = result.get('analysis') or result.get('raw') or result
         if isinstance(payload, str):
@@ -138,7 +146,23 @@ def detect_photo_focus(workspace, image):
             return {'skipped': 'MALFORMED_RESPONSE'}
         return shaped
     except Exception as exc:
-        # Stored as skipped so the NEXT compose does not retry-pay the same
-        # doomed call; the crop simply stays centred.
+        # A transient skip: this compose degrades to the centred crop, and
+        # `cacheable` keeps the marker out of layout_config so the next
+        # compose event may try again.
         logger.info("Photo focus detection skipped: %s", exc)
         return {'skipped': type(exc).__name__}
+
+
+def cacheable(focus_info):
+    """Whether a detection result may live in ``layout_config`` for good.
+
+    Success is always final. Among skips only MALFORMED_RESPONSE is: the
+    provider answered with an unusable shape for THIS image and a retry buys
+    the same nonsense again. Every other skip is transient — no provider
+    routed, quota exhausted, spend not approved, a timeout — and is not
+    cached, so a later compose event may retry once conditions change.
+    """
+    return isinstance(focus_info, dict) and (
+        'skipped' not in focus_info
+        or focus_info.get('skipped') == 'MALFORMED_RESPONSE'
+    )

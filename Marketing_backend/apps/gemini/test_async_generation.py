@@ -679,6 +679,61 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
             self.revision.layout_config.get('style_variant'), self.PLANTED_VARIANT
         )
 
+    def test_a_full_regeneration_drops_the_old_photographs_focus(self):
+        """A new photograph replaces the parent's, so the old focal point is
+        popped alongside source_asset — the compose re-detects for the new
+        pixels instead of steering crops with stale coordinates."""
+        self.revision.layout_config = {
+            'regenerating': True,
+            'source_asset': '00000000-0000-0000-0000-000000000001',
+            'photo_focus': {'x': 0.3, 'y': 0.4, 'bbox': None,
+                            'has_face': True, 'provider': 'gemini'},
+        }
+        self.revision.save(update_fields=['layout_config'])
+
+        self.regenerate()
+
+        self.revision.refresh_from_db()
+        config = self.revision.layout_config
+        self.assertNotIn('photo_focus', config)
+        # The new photograph became the source (set by the compose), never
+        # the planted old id.
+        self.assertNotEqual(
+            config.get('source_asset'), '00000000-0000-0000-0000-000000000001'
+        )
+
+    def test_image_only_feedback_drops_the_focus_and_copy_only_keeps_it(self):
+        focus_dict = {'x': 0.3, 'y': 0.4, 'bbox': None,
+                      'has_face': True, 'provider': 'gemini'}
+
+        # Image flagged: the photograph changes, its focus must go with it.
+        self.with_inherited_look()
+        self.revision.layout_config = {
+            **self.revision.layout_config, 'photo_focus': dict(focus_dict),
+        }
+        self.revision.save(update_fields=['layout_config'])
+        self.scoped_feedback(['imagery_subject'], 'Wrong product entirely.')
+        self.run_scoped(image_result={
+            'image_url': 'https://storage.test/generated/new-photo.png',
+            'file_name': 'new-photo.png',
+        })
+        self.revision.refresh_from_db()
+        self.assertNotIn('photo_focus', self.revision.layout_config)
+
+        # Copy flagged on a fresh revision: the kept photograph never re-pays
+        # its vision call.
+        kept = ContentItem.objects.create(
+            workspace=self.workspace, brand=self.brand,
+            status=ContentItem.Status.DRAFT, version=3, parent=self.parent,
+            headline='Drape yourself in teal',
+            layout_config={'regenerating': True, 'photo_focus': dict(focus_dict)},
+        )
+        self.revision = kept
+        self.scoped_feedback(['headline'], 'Headline is flat.')
+        self.run_scoped(copy_payload={'postTitle': 'Sharper words'})
+        kept.refresh_from_db()
+        self.assertEqual(kept.layout_config.get('photo_focus'), focus_dict)
+
     def test_style_only_feedback_re_dresses_without_any_provider_spend(self):
         from apps.layouts import variants
         from apps.layouts.registry import catalogue
