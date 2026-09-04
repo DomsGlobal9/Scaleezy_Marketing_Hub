@@ -542,7 +542,7 @@ export const fetchPlatformInspirations = async () =>
   rows<PlatformInspiration>(await apiGet<unknown>("/api/platform/inspirations/"), "inspirations");
 
 export const createPlatformInspiration = (input: PlatformInspirationInput) =>
-  apiPost<unknown>("/api/platform/inspirations/", input);
+  apiPost<PlatformInspiration>("/api/platform/inspirations/", input);
 
 /**
  * Multipart: an image, video or file becomes a draft entry. The server picks

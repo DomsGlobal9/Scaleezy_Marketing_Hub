@@ -7,8 +7,8 @@
  * of the universal layer.
  */
 import { createFileRoute } from "@tanstack/react-router";
-import { Archive, Pencil, Plus, RefreshCw, Send, Upload } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Archive, Pencil, Plus, RefreshCw, Send, Upload, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePlatformPage } from "@/lib/use-platform-page";
 import { PlatformListControls } from "@/components/platform/list-controls";
 import { toast } from "sonner";
@@ -88,6 +88,290 @@ type StatusFilter = "ALL" | "DRAFT" | "PUBLISHED" | "RETIRED";
 type KindFilter = "ALL" | LibraryKind;
 
 const isHttp = (value: string) => /^https?:\/\//i.test(value.trim());
+
+/* -------------------------------------------------------------- quick add */
+
+const CHANNELS = ["Instagram", "Facebook", "LinkedIn", "YouTube", "Pinterest", "X"];
+const IMAGE_ACCEPT = ".png,.jpg,.jpeg,.gif,.webp,.avif";
+const isImageFile = (f: File) => f.type.startsWith("image/");
+
+/** The entry's title comes from the note — nobody should have to invent one. */
+const titleFromNote = (note: string) => {
+  const firstLine = note.trim().split(/[\n.!?]/, 1)[0]?.trim() ?? "";
+  if (firstLine.length <= 64) return firstLine || "Inspiration";
+  const cut = firstLine.slice(0, 64);
+  return cut.slice(0, Math.max(cut.lastIndexOf(" "), 40)) + "…";
+};
+
+function ImageThumb({ file, onRemove }: { file: File; onRemove: () => void }) {
+  const url = useMemo(() => URL.createObjectURL(file), [file]);
+  useEffect(() => () => URL.revokeObjectURL(url), [url]);
+  const tooBig = file.size > LIBRARY_UPLOAD_MAX_MB * 1024 * 1024;
+  return (
+    <div className="relative">
+      <img
+        src={url}
+        alt={file.name}
+        className={cn(
+          "aspect-square w-full rounded-lg border object-cover",
+          tooBig ? "border-destructive opacity-50" : "border-border",
+        )}
+      />
+      <button
+        type="button"
+        aria-label={`Remove ${file.name}`}
+        onClick={onRemove}
+        className="absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full border border-border bg-background text-muted-foreground shadow-sm hover:text-foreground"
+      >
+        <X className="size-3" />
+      </button>
+      {tooBig ? (
+        <p className="mt-0.5 text-[0.625rem] text-destructive">Over {LIBRARY_UPLOAD_MAX_MB} MB</p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The default way in: drop what you liked, say why in plain language, done.
+ * Entries publish immediately — the note IS the training signal, injected
+ * into generation context whenever the reference is used — so there is no
+ * draft step and nothing else to fill in. The full editor stays available
+ * behind "Advanced" for text entries, tags and drafts.
+ */
+function QuickAddSheet({
+  open,
+  onClose,
+  onSaved,
+  onAdvanced,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+  onAdvanced: () => void;
+}) {
+  const [files, setFiles] = useState<File[]>([]);
+  const [link, setLink] = useState("");
+  const [note, setNote] = useState("");
+  const [channel, setChannel] = useState("");
+  const [industry, setIndustry] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const pickerRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setFiles([]);
+    setLink("");
+    setNote("");
+    setChannel("");
+    setIndustry("");
+    setBusy(null);
+    setError(null);
+  }, [open]);
+
+  const addFiles = (incoming: FileList | File[]) => {
+    const images = Array.from(incoming).filter(isImageFile);
+    if (images.length) setFiles((prev) => [...prev, ...images]);
+  };
+
+  const oversized = files.some((f) => f.size > LIBRARY_UPLOAD_MAX_MB * 1024 * 1024);
+  const hasContent = files.length > 0 || isHttp(link);
+  const canAdd = hasContent && !!note.trim() && !oversized && !busy;
+
+  const add = async () => {
+    setError(null);
+    const shared = {
+      reference_url: "",
+      annotation: note.trim(),
+      industry: industry.trim(),
+      channel,
+      tags: [],
+    };
+    const title = titleFromNote(note);
+    const total = files.length + (isHttp(link) ? 1 : 0);
+    let added = 0;
+    let drafts = 0;
+
+    const publishQuietly = async (id: string) => {
+      try {
+        await publishPlatformInspiration(id);
+      } catch {
+        drafts += 1; // saved, just not live — visible under the Draft filter
+      }
+    };
+
+    try {
+      for (const [i, file] of files.entries()) {
+        setBusy(`Adding ${added + 1} of ${total}…`);
+        const entry = await uploadPlatformInspiration(file, {
+          ...shared,
+          title: files.length > 1 ? `${title} (${i + 1})` : title,
+        });
+        await publishQuietly(entry.id);
+        added += 1;
+        // Uploaded ones leave the tray, so a failure partway keeps only
+        // what still needs sending.
+        setFiles((prev) => prev.filter((f) => f !== file));
+      }
+      if (isHttp(link)) {
+        setBusy(`Adding ${added + 1} of ${total}…`);
+        const entry = await createPlatformInspiration({
+          ...shared,
+          kind: "LINK",
+          title,
+          reference_url: link.trim(),
+        });
+        await publishQuietly(entry.id);
+        added += 1;
+        setLink("");
+      }
+      toast.success(
+        drafts
+          ? `${added} added — ${drafts} saved as draft (publish failed, retry from the card).`
+          : `${added} reference${added === 1 ? "" : "s"} added to every client's library.`,
+      );
+      onSaved();
+      onClose();
+    } catch (e) {
+      setError(
+        `${errorText(e, "Something went wrong.")}${added ? ` ${added} of ${total} made it in; the rest are still here — try again.` : ""}`,
+      );
+      if (added) onSaved();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={(next) => (!next && !busy ? onClose() : null)}>
+      <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg">
+        <SheetHeader>
+          <SheetTitle>Add inspiration</SheetTitle>
+          <SheetDescription>
+            Drop what you liked and say why in your own words. It goes straight into the library
+            every client draws from — your note is exactly what the engine learns from.
+          </SheetDescription>
+        </SheetHeader>
+        <div className="mt-6 space-y-5">
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label="Add images"
+            onClick={() => pickerRef.current?.click()}
+            onKeyDown={(e) => (e.key === "Enter" ? pickerRef.current?.click() : null)}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              addFiles(e.dataTransfer.files);
+            }}
+            className="cursor-pointer rounded-xl border-2 border-dashed border-border bg-secondary/30 px-4 py-6 text-center transition-colors hover:border-primary/50"
+          >
+            <Upload className="mx-auto size-5 text-muted-foreground" />
+            <p className="mt-2 text-sm font-medium text-foreground">
+              Drop images here, or click to choose
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              As many as you like · up to {LIBRARY_UPLOAD_MAX_MB} MB each
+            </p>
+            <input
+              ref={pickerRef}
+              type="file"
+              multiple
+              accept={IMAGE_ACCEPT}
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) addFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+          </div>
+          {files.length ? (
+            <div className="grid grid-cols-4 gap-2">
+              {files.map((file, i) => (
+                <ImageThumb
+                  key={`${file.name}-${file.size}-${i}`}
+                  file={file}
+                  onRemove={() => setFiles((prev) => prev.filter((f) => f !== file))}
+                />
+              ))}
+            </div>
+          ) : null}
+
+          <Field label="…or paste a link" id="quick-link" hint="A post, a reel, a page — optional.">
+            <Input
+              id="quick-link"
+              value={link}
+              onChange={(e) => setLink(e.target.value)}
+              placeholder="https://instagram.com/p/…"
+            />
+          </Field>
+
+          <Field label="What do you like about it?" id="quick-note">
+            <Textarea
+              id="quick-note"
+              rows={3}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="e.g. Bold serif headline on dark navy, gold accent line feels premium — great direction for jewellery posts."
+            />
+          </Field>
+
+          <Field label="Channel" id="quick-channel" hint="Where this style belongs. Any = everywhere.">
+            <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Channel">
+              {["", ...CHANNELS].map((value) => (
+                <button
+                  key={value || "any"}
+                  type="button"
+                  role="radio"
+                  aria-checked={channel === value}
+                  onClick={() => setChannel(value)}
+                  className={cn(
+                    "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                    channel === value
+                      ? "border-slate-900 bg-slate-900 text-white"
+                      : "border-border bg-background text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {value || "Any"}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          <Field label="Industry" id="quick-industry" hint="Blank = every industry.">
+            <Input
+              id="quick-industry"
+              value={industry}
+              onChange={(e) => setIndustry(e.target.value)}
+              placeholder="e.g. Jewellery"
+            />
+          </Field>
+
+          <ErrorNote message={error} />
+
+          <div className="space-y-2 pt-1">
+            <Button className="w-full" onClick={() => void add()} disabled={!canAdd}>
+              {busy ?? "Add to library"}
+            </Button>
+            <p className="text-center text-[0.6875rem] text-muted-foreground">
+              Published instantly to every client's gallery (unless they opted out). Uploaded
+              files are publicly reachable by their link.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onAdvanced}
+            className="w-full text-center text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          >
+            Need a text entry, tags or a draft? Open the advanced form
+          </button>
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
 
 function EditorSheet({
   item,
@@ -443,6 +727,7 @@ function LibraryPage() {
     });
   const [editing, setEditing] = useState<PlatformInspiration | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [quickOpen, setQuickOpen] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
 
   const publish = (item: PlatformInspiration) =>
@@ -488,14 +773,8 @@ function LibraryPage() {
             <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
               <RefreshCw className={cn("size-4", loading && "animate-spin")} /> Refresh
             </Button>
-            <Button
-              size="sm"
-              onClick={() => {
-                setEditing(null);
-                setEditorOpen(true);
-              }}
-            >
-              <Plus className="size-4" /> New entry
+            <Button size="sm" onClick={() => setQuickOpen(true)}>
+              <Plus className="size-4" /> Add inspiration
             </Button>
           </>
         }
@@ -620,6 +899,16 @@ function LibraryPage() {
         </div>
       )}
 
+      <QuickAddSheet
+        open={quickOpen}
+        onClose={() => setQuickOpen(false)}
+        onSaved={() => void load()}
+        onAdvanced={() => {
+          setQuickOpen(false);
+          setEditing(null);
+          setEditorOpen(true);
+        }}
+      />
       <EditorSheet
         item={editing}
         open={editorOpen}
