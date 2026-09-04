@@ -106,8 +106,9 @@ class PlatformBoundaryTests(TenantFixtureMixin, TestCase):
         self.assertEqual(set(data), {'status', 'count', 'pending_total', 'signups'})
         row = data['signups'][0]
         self.assertEqual(set(row), {
-            'brand_id', 'workspace_id', 'client_code', 'name', 'website',
-            'industry', 'status', 'signed_up_at', 'signed_up_by',
+            'brand_id', 'workspace_id', 'client_code', 'name', 'legal_name',
+            'website', 'industry', 'location', 'contact_person',
+            'contact_phone', 'status', 'signed_up_at', 'signed_up_by',
             'knowledge_sources', 'inspirations', 'team_size',
             'reviewed_at', 'reviewed_by',
         })

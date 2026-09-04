@@ -100,8 +100,12 @@ export interface SignupRow {
   workspace_id: string;
   client_code: string;
   name: string;
+  legal_name: string;
   website: string;
   industry: string;
+  location: string;
+  contact_person: string;
+  contact_phone: string;
   status: BrandStatus | string;
   signed_up_at: string;
   signed_up_by: string;
@@ -125,6 +129,14 @@ export const fetchSignups = (status: BrandStatus = "PENDING") =>
 /** Just the queue's headline number — the Overview needs one figure, not 200 rows. */
 export const fetchPendingSignupTotal = () =>
   apiGet<{ pending_total: number }>("/api/platform/signups/?count_only=1");
+
+/**
+ * The same number for the nav badge's minute-by-minute poll. A dedicated
+ * unaudited endpoint, not `count_only` above: a background poll is not an
+ * operator action, and must not write an audit row per minute.
+ */
+export const fetchPendingSignupCount = () =>
+  apiGet<{ pending_total: number }>("/api/platform/signups/pending-count/");
 
 export const approveSignup = (
   brandId: string,

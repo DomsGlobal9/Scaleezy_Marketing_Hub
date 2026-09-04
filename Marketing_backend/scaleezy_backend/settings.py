@@ -253,6 +253,26 @@ TASKS = {
 }
 
 
+# Signup alerts (apps.users.alerts) — how Scaleezy hears about a new client.
+# Every channel is optional: leave its settings empty and it is skipped, so an
+# unconfigured deployment behaves exactly as before. Alerts run in the worker.
+SIGNUP_ALERT_EMAILS = env.list('SIGNUP_ALERT_EMAILS', default=[])
+EMAIL_HOST = env('EMAIL_HOST', default='')
+EMAIL_PORT = env.int('EMAIL_PORT', default=587)
+EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
+EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)
+DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default=EMAIL_HOST_USER or 'webmaster@localhost')
+
+# WhatsApp Cloud API (Meta). A free-form alert only reaches a number that has
+# messaged the business number in the last 24 hours — see apps.users.alerts.
+WHATSAPP_ACCESS_TOKEN = env('WHATSAPP_ACCESS_TOKEN', default='')
+WHATSAPP_PHONE_NUMBER_ID = env('WHATSAPP_PHONE_NUMBER_ID', default='')
+SIGNUP_ALERT_WHATSAPP_TO = env.list('SIGNUP_ALERT_WHATSAPP_TO', default=[])
+
+# Public origin of the deployed frontend, used for links inside alerts.
+PLATFORM_URL = env('PLATFORM_URL', default='')
+
 # API Keys & Third-party configs
 GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
 OPENAI_API_KEY = env('OPENAI_API_KEY', default='')

@@ -29,6 +29,10 @@ export interface BrandSettings {
 
   // Wider brand identity, editable in Brand Master.
   name: string;
+  /** Registered company name behind the brand; `name` is what posts speak as. */
+  legalName: string;
+  /** The human Scaleezy talks to; their email is the account itself. */
+  contactPerson: string;
   industry: string;
   website: string;
   location: string;
@@ -53,6 +57,8 @@ export const DEFAULT_BRAND_SETTINGS: BrandSettings = {
   phoneNumber: "",
   showPhoneOnPosters: false,
   name: "",
+  legalName: "",
+  contactPerson: "",
   industry: "",
   website: "",
   location: "",
@@ -75,6 +81,8 @@ export interface BrandDto {
   /** PENDING until Scaleezy approves the client; generation is refused before then. */
   status: string;
   name: string;
+  legal_name: string;
+  contact_person: string;
   industry: string;
   website: string;
   location: string;
@@ -136,6 +144,8 @@ const toSettings = (b: BrandDto): BrandSettings => ({
   phoneNumber: b.contact_phone ?? "",
   showPhoneOnPosters: !!b.show_phone_on_posters,
   name: b.name ?? "",
+  legalName: b.legal_name ?? "",
+  contactPerson: b.contact_person ?? "",
   industry: b.industry ?? "",
   website: b.website ?? "",
   location: b.location ?? "",
@@ -156,6 +166,8 @@ const toSettings = (b: BrandDto): BrandSettings => ({
 const toPayload = (patch: Partial<BrandSettings>) => {
   const out: Record<string, unknown> = {};
   if (patch.name !== undefined) out["name"] = patch.name;
+  if (patch.legalName !== undefined) out["legal_name"] = patch.legalName;
+  if (patch.contactPerson !== undefined) out["contact_person"] = patch.contactPerson;
   if (patch.industry !== undefined) out["industry"] = patch.industry;
   if (patch.website !== undefined) out["website"] = patch.website;
   if (patch.location !== undefined) out["location"] = patch.location;

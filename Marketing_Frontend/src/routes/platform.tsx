@@ -28,7 +28,7 @@ import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/s
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScaleezyLogo } from "@/components/marketing/brand-logo";
 import { apiPost } from "@/lib/api";
-import { clearMeCache, fetchMe, type Me } from "@/lib/platform";
+import { clearMeCache, fetchMe, fetchPendingSignupCount, type Me } from "@/lib/platform";
 import { clearWorkspaces } from "@/lib/workspace";
 
 export const Route = createFileRoute("/platform")({
@@ -65,7 +65,35 @@ const NAV = [
   { to: "/platform/admins", label: "Admins", icon: UserCog, exact: false },
 ] as const;
 
-function ConsoleNav({ onNavigate }: { onNavigate?: () => void }) {
+/**
+ * Pending-signups count for the nav badge — the console's own notification
+ * that a client is waiting. Polled quietly each minute against an endpoint
+ * that returns only the number, so the badge is fresh on every console page
+ * without flooding the audit log the way polling the real queue would.
+ */
+function usePendingSignups() {
+  const [pending, setPending] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      fetchPendingSignupCount()
+        .then((data) => {
+          if (!cancelled) setPending(data.pending_total);
+        })
+        .catch(() => {
+          /* a stale badge is fine; the queue page reports real errors */
+        });
+    void load();
+    const timer = setInterval(load, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+  return pending;
+}
+
+function ConsoleNav({ onNavigate, pending = 0 }: { onNavigate?: () => void; pending?: number }) {
   return (
     <nav className="space-y-1" aria-label="Platform console">
       <p className="mb-3 px-3 text-[0.625rem] font-semibold tracking-[0.16em] text-white/35 uppercase">
@@ -82,6 +110,14 @@ function ConsoleNav({ onNavigate }: { onNavigate?: () => void }) {
           <span className="absolute top-1/2 -left-3 hidden h-8 w-1 -translate-y-1/2 rounded-r-full bg-primary group-data-[status=active]:block" />
           <item.icon className="size-5 shrink-0" strokeWidth={1.75} />
           <span className="truncate">{item.label}</span>
+          {item.to === "/platform/signups" && pending > 0 ? (
+            <span
+              aria-label={`${pending} pending signup${pending === 1 ? "" : "s"}`}
+              className="ml-auto rounded-full bg-primary px-2 py-0.5 text-[0.6875rem] font-bold text-primary-foreground"
+            >
+              {pending}
+            </span>
+          ) : null}
         </Link>
       ))}
     </nav>
@@ -203,6 +239,7 @@ function ConsoleSkeleton() {
 
 function ConsoleLayout() {
   const [open, setOpen] = useState(false);
+  const pending = usePendingSignups();
   return (
     <div className="min-h-screen bg-background text-foreground">
       <TopBar onOpenMenu={() => setOpen(true)} />
@@ -219,7 +256,7 @@ function ConsoleLayout() {
           <div className="mb-6">
             <ModeBadge />
           </div>
-          <ConsoleNav onNavigate={() => setOpen(false)} />
+          <ConsoleNav onNavigate={() => setOpen(false)} pending={pending} />
           <div className="mt-6 space-y-2 border-t border-white/12 pt-4">
             <Button
               variant="ghost"
@@ -238,7 +275,7 @@ function ConsoleLayout() {
 
       <aside className="fixed inset-y-[72px] left-0 hidden w-[236px] flex-col bg-brand-dark px-4 py-6 lg:flex">
         <div className="flex flex-1 flex-col gap-6 overflow-y-auto">
-          <ConsoleNav />
+          <ConsoleNav pending={pending} />
           <div className="mt-auto border-t border-white/12 pt-4">
             <SignOut />
           </div>
