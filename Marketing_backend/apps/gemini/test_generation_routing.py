@@ -121,8 +121,8 @@ class GenerationRoutingTests(TenantFixtureMixin, TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertTrue(calls, "the generation never reached the router")
-        # Order-independent: copy and imagery now dispatch concurrently, so
-        # which lands first in the call log is a race, not a contract.
+        # The order (copy, then the image carrying its headline) is pinned
+        # by ConcurrentGenerationTests; here only reaching the router matters.
         self.assertIn(
             Capability.TEXT, {c['capability'] for c in calls}
         )
@@ -325,36 +325,36 @@ class GenerationRoutingTests(TenantFixtureMixin, TestCase):
 
 
 class ConcurrentGenerationTests(GenerationRoutingTests):
-    """PR6 blocker: the accelerator must be genuinely user-visible on the
-    primary /generate/ path — both capabilities dispatched together, partial
-    success kept, and no duplicate call when one provider answers both."""
+    """PR6 blocker, amended by the on-image-text directive: the primary
+    /generate/ path dispatches both capabilities — copy first, then the image
+    carrying the copy's headline — keeps partial success, and makes no
+    duplicate call when one provider answers both."""
 
-    def test_generate_dispatches_text_and_image_concurrently(self):
-        import threading
-
-        seen_threads = {}
-        barrier = threading.Barrier(2, timeout=10)
-
-        def concurrent_probe(self_router, capability, brief, content_item_id=None):
-            seen_threads[capability] = threading.current_thread().name
-            # Both dispatches must be in flight at once to pass the barrier;
-            # a sequential implementation deadlocks here and times out.
-            barrier.wait()
-            if capability == Capability.TEXT:
-                return dict(FAKE_TEXT_RESULT)
-            return dict(FAKE_IMAGE_RESULT)
-
-        with patch('apps.ai.router.AIRouter.dispatch', concurrent_probe):
+    def test_generate_dispatches_the_image_after_the_copy_with_its_headline(self):
+        calls = []
+        with patch('apps.ai.router.AIRouter.dispatch', self.routed(calls)):
             response = self.client1.post(
                 GENERATE_URL, self.payload(), format='json',
                 **workspace_header(self.workspace1),
             )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        # The self-critique judge's EXTRACT call is separate spend, not part
+        # of the generation order under test.
+        generation = [
+            c for c in calls if str(c['brief'].get('task') or '').upper() != 'EXTRACT'
+        ]
         self.assertEqual(
-            set(seen_threads), {Capability.TEXT, Capability.IMAGE},
-            "both capabilities must be dispatched",
+            [c['capability'] for c in generation],
+            [Capability.TEXT, Capability.IMAGE],
+            "the poster's headline is painted by the image model, so the copy "
+            "must exist before the image is asked for",
         )
+        image_lines = generation[1]['brief']['brand_context']
+        self.assertTrue(
+            any('"Roasted this week"' in line for line in image_lines), image_lines,
+        )
+        self.assertTrue(any('"20% off"' in line for line in image_lines), image_lines)
         data = response.json()['data']
         self.assertEqual(data['postTitle'], 'Roasted this week')
         # AI_ORIGINAL ships raw: the provider's image is the poster.

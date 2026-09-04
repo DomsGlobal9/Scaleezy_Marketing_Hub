@@ -27,6 +27,7 @@ import { FeedbackTagPicker, useFeedbackElements } from "@/components/marketing/f
 import { PosterStudio, useLayoutCatalogue } from "@/components/marketing/poster-studio";
 import { EmptyState, PageHeader, StatusBadge } from "@/components/marketing/primitives";
 import { api, apiPost } from "@/lib/api";
+import { fetchCurrentBrand, fetchInspirations, isBrandTemplate } from "@/lib/brand-master";
 import { hasStringFields, isRecord, parseList } from "@/lib/list-response";
 import { cn } from "@/lib/utils";
 import { useWorkspaces } from "@/lib/workspace";
@@ -175,8 +176,9 @@ const TABS = [
 /**
  * The self-critique verdict the quality engine stored in
  * layout_config.generation_trace.critique, as a one-line note — or
- * undefined for items generated before the gate, skipped checks, or
- * anything malformed.
+ * undefined for items generated before the gate, anything malformed, and
+ * every 'skipped' verdict: an uncovered format (video, carousel) is not a
+ * fault and an infra skip is not the reviewer's problem.
  */
 function selfCheckNote(item: ContentItem): string | undefined {
   const trace = item.layout_config?.["generation_trace"];
@@ -187,10 +189,42 @@ function selfCheckNote(item: ContentItem): string | undefined {
   }
   const verdict = (critique as Record<string, unknown>)["verdict"];
   if (verdict === "passed") return "Self-check: passed";
+  const violations = (critique as Record<string, unknown>)["violations"];
+  const count = Array.isArray(violations) && violations.length > 0 ? violations.length : 1;
   if (verdict === "regenerated") {
-    const violations = (critique as Record<string, unknown>)["violations"];
-    const count = Array.isArray(violations) && violations.length > 0 ? violations.length : 1;
     return `Self-check: fixed ${count} issue${count === 1 ? "" : "s"} before review`;
+  }
+  if (verdict === "accepted_with_notes") {
+    // The judge let it through with a soft miss (or its one retry still
+    // missed): the note is what a reviewer should glance at. Violations are
+    // {rule, element, severity, fix}; the fix is the actionable half.
+    const first = Array.isArray(violations) ? violations.find(isRecord) : undefined;
+    const fix = typeof first?.["fix"] === "string" ? first["fix"] : "";
+    const rule = typeof first?.["rule"] === "string" ? first["rule"] : "";
+    const text = fix || rule;
+    const summary = text.length > 90 ? `${text.slice(0, 89).trimEnd()}…` : text;
+    return `Self-check: ${count} note${count === 1 ? "" : "s"}${summary ? ` — ${summary}` : ""}`;
+  }
+  return undefined;
+}
+
+/**
+ * The id of the brand inspiration a REFERENCE-mode generation was matched
+ * to, or undefined. The backend resolver persists each selection as
+ * {source_type, id, role, direction, focus_areas} (the queued placeholder
+ * writes the same keys); the camelCase spelling is accepted as well, the
+ * way the resolver itself tolerates both on input.
+ */
+function matchedBrandReferenceId(item: ContentItem): string | undefined {
+  const direction = item.layout_config?.["creative_direction"];
+  if (!isRecord(direction) || direction["mode"] !== "REFERENCE") return undefined;
+  const selections = direction["selections"];
+  if (!Array.isArray(selections)) return undefined;
+  for (const row of selections) {
+    if (!isRecord(row)) continue;
+    const sourceType = row["source_type"] ?? row["sourceType"];
+    const id = row["id"];
+    if (sourceType === "BRAND" && typeof id === "string" && id) return id;
   }
   return undefined;
 }
@@ -385,6 +419,49 @@ function ReviewPage() {
   useEffect(() => {
     void loadReport();
   }, [loadReport]);
+
+  // Titles for the brand templates and references REFERENCE-mode cards were
+  // matched to: one inspirations load for the whole page, fetched only once
+  // a card that needs it exists, never per card. A failed or empty lookup
+  // stays null and the line simply does not render.
+  const [references, setReferences] = useState<Map<
+    string,
+    { title: string; template: boolean }
+  > | null>(null);
+  const needsReferences = useMemo(
+    () => all.some((item) => matchedBrandReferenceId(item) !== undefined),
+    [all],
+  );
+  useEffect(() => {
+    if (!needsReferences || references !== null) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const brand = await fetchCurrentBrand();
+        if (!brand || cancelled) return;
+        const rows = await fetchInspirations(brand.id);
+        if (cancelled) return;
+        setReferences(
+          new Map(rows.map((row) => [row.id, { title: row.title, template: isBrandTemplate(row) }])),
+        );
+      } catch {
+        // Attribution is a read-out, not a dependency of reviewing.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [needsReferences, references]);
+
+  const matchedNote = useCallback(
+    (item: ContentItem) => {
+      const id = matchedBrandReferenceId(item);
+      const row = id ? references?.get(id) : undefined;
+      if (!row || !row.title) return undefined;
+      return `Matched ${row.template ? "template" : "reference"}: ${row.title}`;
+    },
+    [references],
+  );
 
   const hasRegeneratingRevision = useMemo(
     () => all.some((item) => item.layout_config?.["regenerating"] === true),
@@ -684,6 +761,10 @@ function ReviewPage() {
 
                 {selfCheckNote(item) ? (
                   <p className="mt-1 text-xs text-muted-foreground">{selfCheckNote(item)}</p>
+                ) : null}
+
+                {matchedNote(item) ? (
+                  <p className="mt-1 text-xs text-muted-foreground">{matchedNote(item)}</p>
                 ) : null}
 
                 {item.caption && item.status !== "DRAFT" ? (

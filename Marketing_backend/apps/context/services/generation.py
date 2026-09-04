@@ -9,10 +9,12 @@ Nothing here knows a provider exists. The router picks one from what the
 workspace has routed, and the adapter turns the provider-neutral brief into
 whatever that API wants.
 
-The multi-capability path runs copy and imagery concurrently and keeps
-whatever succeeded: a failed poster costs a poster, never the copy that was
-already written. Retrying is per-capability for the same reason — repeating
-work that succeeded is how failover turns into duplicate spend.
+The multi-capability path runs copy first and then imagery — the poster's
+headline is typography the image model paints, so the image brief needs the
+words — and keeps whatever succeeded: a failed poster costs a poster, never
+the copy that was already written. Retrying is per-capability for the same
+reason — repeating work that succeeded is how failover turns into duplicate
+spend.
 """
 import base64
 import binascii
@@ -34,6 +36,7 @@ from .context_gateway import (
     TaskType,
     build_generation_context,
     context_as_brief,
+    on_image_text_lines,
 )
 
 logger = logging.getLogger(__name__)
@@ -375,6 +378,27 @@ def validate_output(capability, result, context):
     return result
 
 
+def _headline_of(text):
+    """The headline a TEXT result carries, in either provider shape."""
+    if not isinstance(text, dict):
+        return ''
+    raw = text.get('raw') or {}
+    return str(text.get('headline') or raw.get('postTitle') or '')
+
+
+def _with_on_image_text(brief, headline):
+    """An IMAGE brief with its words-in-the-picture directive appended to the
+    brand-context lines every adapter carries: the exact headline (and the
+    CTA/offer) for a delegated poster, the no-text line everywhere else."""
+    return {
+        **brief,
+        'brand_context': [
+            *(brief.get('brand_context') or []),
+            *on_image_text_lines(brief, headline),
+        ],
+    }
+
+
 def generate_with_context(workspace, brand, task_type=TaskType.COPY, *, instruction='',
                           channel='', content_format='', objective='',
                           content_item_id=None):
@@ -391,6 +415,10 @@ def generate_with_context(workspace, brand, task_type=TaskType.COPY, *, instruct
     )
     brief = context_as_brief(context)
     capability = CAPABILITY_FOR_TASK[task_type]
+    if capability == Capability.IMAGE:
+        # No copy exists on this direct path, so there is no headline to
+        # paint: the no-text line, never invented words.
+        brief = _with_on_image_text(brief, '')
 
     try:
         result = AIRouter(workspace).dispatch(capability, brief, content_item_id)
@@ -418,7 +446,8 @@ def generate_with_context(workspace, brand, task_type=TaskType.COPY, *, instruct
 
 
 def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
-    """Copy and imagery, concurrently, each surviving the other's failure.
+    """Copy, then imagery carrying the copy's headline, each surviving the
+    other's failure.
 
     Returns {'text': …, 'image': …, 'trace': …} where either capability may be
     None with its error recorded in the trace. The caller keeps whatever
@@ -429,8 +458,8 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
     layout grid; the image does not carry the objection list); both come from
     the same brain version, so the pair is still one coherent generation.
     """
-    # Primed here, on the main thread, before any context is built or worker
-    # started: the workers' dispatch() calls then skip the brands read.
+    # Primed here, before any context is built: every dispatch below then
+    # skips the brands read.
     router = AIRouter(workspace)
     router.require_spend_approved()
 
@@ -442,9 +471,9 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
     )
     # The gateway's cut wins for the keys it owns: the synchronous endpoint's
     # brief_extra carries a COPY-task brand_context, and merging it last used
-    # to clobber the IMAGE brief's own lines — including the no-text
-    # constraint, which then never reached the image provider on the main
-    # path. Campaign fields only exist in brief_extra, so they survive.
+    # to clobber the IMAGE brief's own lines, which then never reached the
+    # image provider on the main path. Campaign fields only exist in
+    # brief_extra, so they survive.
     text_brief = {**brief_extra, **context_as_brief(text_context)}
     image_brief = {**brief_extra, **context_as_brief(image_context)}
 
@@ -500,14 +529,18 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction=''):
                     'provider': text.get('provider', ''),
                 }
     else:
-        # Two independent providers, two independent calls, at the same time:
-        # nothing shared but the trace dict, which each branch writes under
-        # its own key.
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            text_future = pool.submit(run, Capability.TEXT, text_brief, text_context)
-            image_future = pool.submit(run, Capability.IMAGE, image_brief, image_context)
-            text = text_future.result()
-            image = image_future.result()
+        # Two independent providers, two calls - copy FIRST. The poster's
+        # headline is typography the image model paints, so the image brief
+        # cannot exist until the words do; the old concurrent dispatch bought
+        # a photograph that could never carry them. Each call still survives
+        # the other's failure: a failed TEXT leaves the IMAGE brief with no
+        # headline, and the no-text line rather than invented words.
+        text = run(Capability.TEXT, text_brief, text_context)
+        image = run(
+            Capability.IMAGE,
+            _with_on_image_text(image_brief, _headline_of(text)),
+            image_context,
+        )
 
         # A failed IMAGE dispatch does not throw away a poster the TEXT call
         # happened to return - partial success keeps everything that exists.
@@ -736,6 +769,10 @@ def generate_carousel_and_copy(
                 f"Create slide {position} of {len(slides)}. {description}"
             )[:2400],
         }
+        # Carousel slides keep the no-text rule the gateway used to inject:
+        # the directive helper answers by contentType, so this is the same
+        # line the slide brief always carried.
+        slide_brief = _with_on_image_text(slide_brief, text.get('headline', ''))
         image = router.dispatch(Capability.IMAGE, slide_brief)
         validate_output(Capability.IMAGE, image, image_context)
         image = persist_generated_image(workspace, image)
@@ -1082,7 +1119,12 @@ def retry_image(workspace, brand, brief_extra, *, instruction=''):
     context = build_generation_context(
         workspace, brand, TaskType.IMAGE, instruction=instruction,
     )
-    brief = {**context_as_brief(context), **brief_extra}
+    # The copy stays won, so the headline the poster must carry is whatever
+    # the caller saved: the draft's own, or the revision's kept headline.
+    brief = _with_on_image_text(
+        {**context_as_brief(context), **brief_extra},
+        brief_extra.get('headline') or brief_extra.get('previous_headline') or '',
+    )
     try:
         result = AIRouter(workspace).dispatch(Capability.IMAGE, brief)
         validate_output(Capability.IMAGE, result, context)

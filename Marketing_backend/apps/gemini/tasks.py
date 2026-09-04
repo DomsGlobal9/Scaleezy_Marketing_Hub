@@ -539,7 +539,12 @@ def _repair_missing_image(request, brief, brand):
     # The durable asset is the checkpoint; never buy it a second time.
     should_compose = item.asset_id is None or result.asset_id == item.asset_id
     if item.asset_id is None:
-        image = retry_image(request.workspace, item.brand, brief, instruction=brief.get('instruction', ''))
+        # The saved draft's own headline: the poster being repaired must
+        # carry the words the copy already won.
+        image = retry_image(
+            request.workspace, item.brand, {**brief, 'headline': item.headline},
+            instruction=brief.get('instruction', ''),
+        )
         with transaction.atomic():
             locked = ContentItem.objects.select_for_update().get(pk=item.pk)
             if locked.status != ContentItem.Status.DRAFT:
