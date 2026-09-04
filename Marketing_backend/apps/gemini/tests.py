@@ -26,11 +26,24 @@ from apps.layouts.services import generated_layout
 
 
 class GeneratedLayoutRotationTests(SimpleTestCase):
-    """The automatic compose no longer parks every brand on one skeleton."""
+    """The automatic compose no longer parks every brand on one skeleton.
+
+    Since the no-default-dress decision the rotation serves only callers
+    without a delegated creative direction (kept for the user-uploaded
+    template pipeline); AI_ORIGINAL and REFERENCE items get None and ship
+    the provider's poster raw."""
 
     @staticmethod
     def item(n):
         return SimpleNamespace(pk=uuid.UUID(int=n))
+
+    def test_a_delegated_design_gets_no_layout(self):
+        for mode in ('AI_ORIGINAL', 'REFERENCE'):
+            delegated = SimpleNamespace(
+                pk=uuid.UUID(int=3),
+                layout_config={'creative_direction': {'mode': mode}},
+            )
+            self.assertIsNone(generated_layout(delegated), mode)
 
     def test_rotation_stays_inside_the_photo_patterns(self):
         photo_keys = {k for k in registry.keys() if registry.get(k).uses_photo}

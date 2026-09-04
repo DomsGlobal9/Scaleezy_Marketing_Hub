@@ -807,7 +807,7 @@ def regenerate_revision(revision_id: str):
     from apps.feedback.models import Feedback
     from apps.feedback.training import element_labels
     from apps.layouts import registry, variants
-    from apps.layouts.services import compose_generated_poster, generated_layout
+    from apps.layouts.services import compose_generated_poster
 
     revision = (
         ContentItem.objects.select_related('workspace', 'brand', 'parent')
@@ -1024,23 +1024,27 @@ def regenerate_revision(revision_id: str):
             }
         if scope['restyle']:
             # The complaint is about the dress, not the photograph or words.
-            # A user-delegated AI/reference design may choose a fresh
-            # composition. A catalogue choice (and a legacy stored layout)
-            # remains fixed: regeneration must never silently replace an
-            # explicit per-content template.
+            # A catalogue choice (and a legacy stored layout) remains fixed:
+            # regeneration must never silently replace an explicit
+            # per-content template. A user-delegated AI/reference design has
+            # no dress at all any more — the raw provider poster ships — so
+            # clearing the inherited plugin is the whole restyle: the compose
+            # below keeps the raw image, and picking a variant for a dress
+            # that will never be worn would only record misleading state.
             inherited_variant = config.get('style_variant')
             if creative_direction.get('mode') in {'AI_ORIGINAL', 'REFERENCE'}:
                 revision.layout_plugin = ''
-                restyle_layout = generated_layout(revision)
+                restyle_layout = ''
             else:
                 restyle_layout = revision.layout_plugin or str(
                     creative_direction.get('layout') or ''
                 )
-            config['style_variant'] = variants.different_variant_for(
-                revision,
-                inherited_variant,
-                uses_photo=getattr(registry.get(restyle_layout), 'uses_photo', True),
-            )
+            if restyle_layout:
+                config['style_variant'] = variants.different_variant_for(
+                    revision,
+                    inherited_variant,
+                    uses_photo=getattr(registry.get(restyle_layout), 'uses_photo', True),
+                )
 
     revision.layout_config = config
     revision.save(

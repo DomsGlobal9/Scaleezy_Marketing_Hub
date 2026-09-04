@@ -648,7 +648,11 @@ class LayoutAPITests(APITestCase):
 
 
 class AutoComposeTests(APITestCase):
-    """The compose engine running automatically after a generation persists."""
+    """The compose engine running automatically after a generation persists.
+
+    Only for a deliberately picked template: CATALOG_TEMPLATE mode (or a
+    layout a studio render already persisted). Delegated designs —
+    AI_ORIGINAL and REFERENCE — ship the provider's raw poster untouched."""
 
     def setUp(self):
         self.ws = MarketingWorkspace.objects.create(customer_id='c', workspace_name='Gamma')
@@ -668,7 +672,15 @@ class AutoComposeTests(APITestCase):
             layout_config={'creative_direction': {'mode': 'AI_ORIGINAL'}},
         )
 
+    def pick_template(self, layout='cos_split'):
+        """Flips the fixture to an explicit per-content template choice."""
+        self.item.layout_config = {
+            'creative_direction': {'mode': 'CATALOG_TEMPLATE', 'layout': layout}
+        }
+        self.item.save(update_fields=['layout_config'])
+
     def test_composes_and_points_the_item_at_the_poster(self):
+        self.pick_template('cos_split')
         asset = services.compose_generated_poster(self.item)
 
         self.assertIsNotNone(asset)
@@ -676,12 +688,42 @@ class AutoComposeTests(APITestCase):
         self.assertEqual(self.item.asset_id, asset.id)
         self.assertEqual(asset.source, MarketingAsset.Source.COMPOSED)
         self.assertEqual(self.item.preview_url, asset.file_url)
-        self.assertTrue(self.item.layout_plugin)
+        self.assertEqual(self.item.layout_plugin, 'cos_split')
         # The original photograph survives, recorded as the source.
         self.assertEqual(self.item.layout_config['source_asset'], str(self.photo.id))
         self.assertTrue(MarketingAsset.objects.filter(pk=self.photo.pk).exists())
 
+    def test_a_delegated_design_ships_the_raw_image(self):
+        """The founder's call: no built-in pattern is auto-stamped on an AI
+        composition. The no-op is total — no compose asset, no layout_plugin,
+        no style variant, no focus annotation; the paid image IS the draft."""
+        for mode in ('AI_ORIGINAL', 'REFERENCE'):
+            with self.subTest(mode=mode):
+                self.item.layout_config = {'creative_direction': {'mode': mode}}
+                self.item.save(update_fields=['layout_config'])
+
+                self.assertIsNone(services.compose_generated_poster(self.item))
+
+                self.item.refresh_from_db()
+                self.assertEqual(self.item.asset_id, self.photo.id)
+                self.assertEqual(self.item.preview_url, self.photo.file_url)
+                self.assertEqual(self.item.layout_plugin, '')
+                self.assertEqual(
+                    self.item.layout_config,
+                    {'creative_direction': {'mode': mode}},
+                )
+                self.assertFalse(
+                    MarketingAsset.objects.filter(
+                        source=MarketingAsset.Source.COMPOSED
+                    ).exists()
+                )
+
     def test_a_compose_failure_leaves_the_generation_untouched(self):
+        # A legacy studio-rendered layout keeps composing; its failure path
+        # is the best-effort one — the raw image stays, no error escapes.
+        self.item.layout_plugin = 'cos_split'
+        self.item.layout_config = {}
+        self.item.save(update_fields=['layout_plugin', 'layout_config'])
         with patch(
             'apps.layouts.services.SupabaseStorageService.upload_and_describe',
             side_effect=StorageError('down'),
@@ -725,6 +767,7 @@ class AutoComposeTests(APITestCase):
         self.assertIsNone(services.compose_generated_poster(video))
 
     def test_recomposing_reads_the_original_photo_not_the_poster(self):
+        self.pick_template()
         services.compose_generated_poster(self.item)
         self.item.refresh_from_db()
         # The composed poster is the asset, but the photograph is the source.
@@ -822,12 +865,46 @@ class CoverFocusTests(APITestCase):
         focus_dict = {'x': 0.1, 'y': 0.5, 'bbox': [0.7, 0.0, 0.9, 1.0]}
         self.assertWindow(photo, (100, 100), focus_dict, 260, 0)
 
-    def test_a_bbox_bigger_than_the_window_centres_on_it(self):
+    def test_a_bbox_bigger_than_the_window_anchors_on_the_focal_x(self):
         photo = self.gradient(400, 100)
-        # Subject spans x 40..360 (320 wide, window 100): centre on its
-        # midpoint 200 -> left = floor(200 - 50) = 150.
-        focus_dict = {'x': 0.1, 'y': 0.5, 'bbox': [0.1, 0.0, 0.9, 1.0]}
-        self.assertWindow(photo, (100, 100), focus_dict, 150, 0)
+        # Subject spans x 40..360 (320 wide, window 100): it cannot fit, so
+        # the window centres on the focal point, not the bbox midpoint —
+        # left = floor(0.3 * 400 - 50) = 70. (The old midpoint centring gave
+        # 150 and lost whatever the detector actually pointed at.)
+        focus_dict = {'x': 0.3, 'y': 0.5, 'bbox': [0.1, 0.0, 0.9, 1.0]}
+        self.assertWindow(photo, (100, 100), focus_dict, 70, 0)
+
+    def test_a_too_tall_bbox_puts_the_focal_y_on_the_thirds_line(self):
+        photo = self.gradient(100, 400)
+        # Subject spans y 40..360 (320 tall, window 100): it cannot fit, so
+        # the focal point lands a third of the way down the window —
+        # top = floor(0.5 * 400 - 100 / 3) = 166, unclamped. Midpoint
+        # centring would have given 150 with the focal dead-centre.
+        focus_dict = {'x': 0.5, 'y': 0.5, 'bbox': [0.0, 0.1, 1.0, 0.9]}
+        self.assertWindow(photo, (100, 100), focus_dict, 0, 166)
+
+    def test_production_tall_subject_keeps_the_head_in_frame(self):
+        """The 2026-09 production forensics case, verbatim: a standing
+        subject spanning 84% of the source height with the face near the top
+        (focal y 0.186), cropped to cos_split's photo band. Bbox-midpoint
+        centring put the window at y 119..380 of 450 — the focal point (and
+        most of the head) above the crop. The focal anchor keeps the head
+        region (y 0.136..~0.35) in frame."""
+        focus_dict = {'x': 0.495, 'y': 0.186,
+                      'bbox': [0.351, 0.136, 0.651, 0.976], 'has_face': True}
+        photo = self.gradient(360, 450)
+        # cos_split at width 360: photo band height = int(450 * 0.58) = 261.
+        window = (360, 261)
+        # scale is 1.0, so origins are directly checkable: the focal anchor
+        # asks for top = int(0.186 * 450 - 261 / 3) = -3, clamped to 0.
+        top = 0
+        self.assertWindow(photo, window, focus_dict, 0, top)
+        # The contract the fix exists for: focal y in the top half of the
+        # crop, and the bbox-top head band entirely visible.
+        focal_y = focus_dict['y'] * 450
+        self.assertLess(focal_y - top, window[1] / 2)
+        self.assertGreaterEqual(focus_dict['bbox'][1] * 450, top)
+        self.assertLessEqual(0.35 * 450, top + window[1])
 
     def test_junk_focus_degrades_to_the_centred_crop(self):
         photo = self.gradient(305, 100)
@@ -934,7 +1011,12 @@ class PhotoFocusDetectionTests(APITestCase):
 
 
 class ComposeFocusTests(APITestCase):
-    """The automatic compose pays for at most one vision call per photo."""
+    """The automatic compose pays for at most one vision call per photo.
+
+    Fixtures pick an explicit CATALOG_TEMPLATE: focus detection (like every
+    part of the dress machinery) now runs only where a template was chosen
+    deliberately — a delegated AI_ORIGINAL/REFERENCE design ships raw and
+    never dispatches (covered by AutoComposeTests)."""
 
     PAYLOAD = PhotoFocusDetectionTests.GOOD
     STORED = {
@@ -957,7 +1039,11 @@ class ComposeFocusTests(APITestCase):
             workspace=self.ws, brand=self.brand, asset=self.photo,
             headline='Festive drop', cta='50% OFF',
             preview_url=self.photo.file_url,
-            layout_config={'creative_direction': {'mode': 'AI_ORIGINAL'}},
+            layout_config={
+                'creative_direction': {
+                    'mode': 'CATALOG_TEMPLATE', 'layout': 'cos_split',
+                }
+            },
         )
         # The photograph resolves locally; nothing is fetched in tests.
         patcher = patch('apps.layouts.render.photo_for', return_value=a_photo(800, 600))
@@ -1029,13 +1115,14 @@ class ComposeFocusTests(APITestCase):
 
     def test_the_focus_survives_a_storage_failure(self):
         """A paid vision result is cached even when the compose itself fails,
-        so the retry after a storage hiccup does not pay twice."""
+        so the retry after a storage hiccup does not pay twice. (A selected
+        template's failure is reported, not swallowed — hence the raise.)"""
         with patch('apps.ai.router.AIRouter.dispatch', return_value=self.PAYLOAD) as dispatch:
             with patch(
                 'apps.layouts.services.SupabaseStorageService.upload_and_describe',
                 side_effect=StorageError('down'),
-            ):
-                self.assertIsNone(services.compose_generated_poster(self.item))
+            ), self.assertRaises(services.PosterCompositionError):
+                services.compose_generated_poster(self.item)
             self.item.refresh_from_db()
             self.assertEqual(self.item.layout_config['photo_focus'], self.STORED)
 
@@ -1085,7 +1172,12 @@ class SpecFocusTests(APITestCase):
 
 class VarietySelectionTests(APITestCase):
     """Recency-weighted layout picking: the same brand stops getting the
-    same skeleton, without ever reshuffling an item under review."""
+    same skeleton, without ever reshuffling an item under review.
+
+    Since the no-default-dress decision the rotation answers only callers
+    without a delegated creative direction (none of today's automatic paths;
+    retained for the user-uploaded-template pipeline). AI_ORIGINAL and
+    REFERENCE items get None — the raw poster ships."""
 
     def setUp(self):
         self.ws = MarketingWorkspace.objects.create(customer_id='v', workspace_name='Var')
@@ -1153,9 +1245,23 @@ class VarietySelectionTests(APITestCase):
             services.generated_layout(item), self.options[5 % len(self.options)]
         )
 
+    def test_a_delegated_design_gets_no_layout_at_all(self):
+        # The founder's call: AI_ORIGINAL and REFERENCE ship the provider's
+        # poster raw — generated_layout must never volunteer a pattern.
+        for mode in ('AI_ORIGINAL', 'REFERENCE'):
+            item = ContentItem.objects.create(
+                workspace=self.ws, brand=self.brand, headline='raw',
+                layout_config={'creative_direction': {'mode': mode}},
+            )
+            self.assertIsNone(services.generated_layout(item), mode)
+
 
 class VariantNudgeTests(APITestCase):
-    """A repeated skeleton must not repeat its predecessor's dress too."""
+    """A repeated skeleton must not repeat its predecessor's dress too.
+
+    Fixtures pick an explicit CATALOG_TEMPLATE: the nudge (like the rest of
+    the dress machinery) now runs only where a template was chosen
+    deliberately — a delegated AI_ORIGINAL/REFERENCE design ships raw."""
 
     def setUp(self):
         self.ws = MarketingWorkspace.objects.create(customer_id='n', workspace_name='Nudge')
@@ -1168,23 +1274,28 @@ class VariantNudgeTests(APITestCase):
             file_url='https://storage.test/generated/x/generated.png',
             source=MarketingAsset.Source.AI_GENERATED,
         )
+        self.options = [
+            key for key in registry.keys()
+            if getattr(registry.get(key), 'uses_photo', True)
+        ]
+        self.chosen = self.options[-1]
         self.item = ContentItem.objects.create(
             workspace=self.ws, brand=self.brand, asset=self.photo,
             headline='Festive drop', cta='50% OFF',
             preview_url=self.photo.file_url,
-            layout_config={'creative_direction': {'mode': 'AI_ORIGINAL'}},
+            layout_config={
+                'creative_direction': {
+                    'mode': 'CATALOG_TEMPLATE', 'layout': self.chosen,
+                }
+            },
         )
         # No photo -> no focus dispatch; the nudge is what is under test.
         patcher = patch('apps.layouts.render.photo_for', return_value=None)
         patcher.start()
         self.addCleanup(patcher.stop)
 
-        # Every photo pattern used once, oldest last: the picker will choose
-        # the pattern of the OLDEST prior, which this test controls.
-        self.options = [
-            key for key in registry.keys()
-            if getattr(registry.get(key), 'uses_photo', True)
-        ]
+        # Every photo pattern used once; the prior wearing the CHOSEN
+        # template's pattern is the one whose dress the nudge inspects.
         self.priors = []
         for age, layout in enumerate(self.options, start=1):
             prior = ContentItem.objects.create(
@@ -1195,11 +1306,10 @@ class VariantNudgeTests(APITestCase):
                 created_at=timezone.now() - timedelta(minutes=age)
             )
             self.priors.append(prior)
-        self.chosen = self.options[-1]
         self.candidate = variants.variant_for(self.item, uses_photo=True)
 
     def dress_prior(self, variant):
-        prior = self.priors[-1]  # the oldest: its pattern is the one chosen
+        prior = self.priors[-1]  # its pattern is the chosen template's
         prior.layout_config = {'style_variant': variant}
         prior.save(update_fields=['layout_config'])
 

@@ -229,7 +229,9 @@ class LayoutPattern(ABC):
           bounds. Geometry, not a second AI call, keeps the subject whole:
           per axis, a bbox that fits the window shifts the window the
           minimum distance needed to contain it; a bbox larger than the
-          window centres the window on the bbox instead.
+          window anchors the window on the focal point instead — vertically
+          at the rule-of-thirds line, horizontally centred — so a face near
+          the top of a subject too tall to fit stays in frame.
 
         The focus values come from client-writable JSON, so everything is
         re-validated here; anything malformed degrades to the centred crop.
@@ -251,7 +253,8 @@ class LayoutPattern(ABC):
         left = _crop_origin(fx, resized.width, width,
                             (bbox[0], bbox[2]) if bbox else None)
         top = _crop_origin(fy, resized.height, height,
-                           (bbox[1], bbox[3]) if bbox else None)
+                           (bbox[1], bbox[3]) if bbox else None,
+                           anchor=FOCAL_ANCHOR_Y)
         return resized.crop((left, top, left + width, top + height))
 
     def placeholder(self, width: int, height: int) -> Image.Image:
@@ -300,6 +303,13 @@ def text_box(spec: Spec) -> Tuple[int, int]:
 
 
 # -- focal-point crop maths ------------------------------------------------
+#: Where the focal point sits inside a window that cannot contain the whole
+#: subject: a third of the way down. Faces live near the top of standing
+#: subjects, and the rule-of-thirds line is where a photographer would put
+#: them anyway. Horizontal keeps the centred default (0.5).
+FOCAL_ANCHOR_Y = 1 / 3
+
+
 def _unit_interval(value, default):
     """`value` as a float clamped to 0..1, or `default` when it is not one."""
     try:
@@ -329,12 +339,15 @@ def _focus_values(focus) -> Tuple[float, float, Optional[list]]:
     return fx, fy, bbox
 
 
-def _crop_origin(focal: float, resized: int, window: int, span) -> int:
+def _crop_origin(focal: float, resized: int, window: int, span,
+                 anchor: float = 0.5) -> int:
     """Left/top of a crop window along one axis.
 
     `focal` is the normalized focal coordinate, `resized` the resized photo's
     extent, `window` the crop's extent, and `span` the subject bbox's
     normalized (lo, hi) on this axis, or None when no bbox is known.
+    `anchor` is where the focal point lands inside a window that cannot
+    contain the whole subject (0.5 = centred, 1/3 = rule-of-thirds).
 
     Start by centring the window on the focal point. int() floors here on
     purpose: floor(0.5 * n - w / 2) == (n - w) // 2 for every n and w, so
@@ -354,8 +367,12 @@ def _crop_origin(focal: float, resized: int, window: int, span) -> int:
             origin = min(origin, int(lo))
             origin = max(origin, math.ceil(hi) - window)
         else:
-            # The subject cannot fit: centre on it and crop equally from
-            # both ends — the least-bad window.
-            origin = int((lo + hi) / 2 - window / 2)
+            # The subject cannot fit. Centring on the bbox midpoint here cut
+            # heads off in production — a face near the top of a subject
+            # spanning 84% of the source landed above the window entirely.
+            # Anchor on the focal point instead, placed `anchor` of the way
+            # into the window, and let the edge clamp below keep the window
+            # on the image.
+            origin = int(focal * resized - window * anchor)
     # Never read outside the resized image.
     return max(0, min(origin, resized - window))
