@@ -7,7 +7,7 @@ import {
   Search,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { startTransition, useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -264,8 +264,12 @@ export function CreativeCommand({
     () => [...library.map(libraryCard), ...brandRows.map(brandCard)],
     [library, brandRows],
   );
+  // Deferred: the input keeps every keystroke, while the card grid it drives
+  // re-filters in a low-priority render — typing stays responsive however
+  // large the library grows.
+  const deferredQuery = useDeferredValue(query);
   const filtered = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase();
+    const needle = deferredQuery.trim().toLocaleLowerCase();
     return cards.filter((card) => {
       if (tab !== "ALL" && card.sourceType !== tab) return false;
       if (!needle) return true;
@@ -274,7 +278,7 @@ export function CreativeCommand({
         .toLocaleLowerCase()
         .includes(needle);
     });
-  }, [cards, query, tab]);
+  }, [cards, deferredQuery, tab]);
 
   const selected = useMemo(
     () => new Map(selections.map((row) => [keyFor(row.sourceType, row.id), row])),
@@ -363,7 +367,9 @@ export function CreativeCommand({
                   key={value}
                   type="button"
                   aria-pressed={tab === value}
-                  onClick={() => setTab(value)}
+                  // Transition: switching re-renders the whole card grid;
+                  // sliced, the click paints inside the 200ms INP budget.
+                  onClick={() => startTransition(() => setTab(value))}
                   className={cn(
                     "rounded-full border px-3 py-1.5 text-xs font-medium",
                     tab === value
