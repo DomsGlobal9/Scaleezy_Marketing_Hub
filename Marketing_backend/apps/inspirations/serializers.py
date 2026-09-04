@@ -48,6 +48,9 @@ IMAGE_INSPIRATION_TYPES = frozenset({
     # only: the whole point is a picture the generator can reproduce the look
     # of.
     BrandInspiration.InspirationType.BRAND_TEMPLATE,
+    # The brand's model/ambassador photo — same reasoning: it exists to be a
+    # picture the generator keeps the identity of.
+    BrandInspiration.InspirationType.BRAND_AMBASSADOR,
 })
 
 
