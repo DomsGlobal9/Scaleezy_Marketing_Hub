@@ -894,6 +894,29 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             'feature_ambassador': bool(
                 data.get('featureAmbassador', data.get('feature_ambassador', True))
             ),
+            # Where the creative will run (drives the generated aspect and the
+            # copy's platform manners), the quality tier (drives image_size —
+            # 4K bills 2 units, the founder's price), and how faithfully a
+            # chosen template is followed (EXACT attaches its pixels;
+            # INSPIRED uses only its analysed observations).
+            'platform': str(data.get('platform', '') or '').strip().lower()[:32],
+            # Posters only: a carousel or video brief carrying a 4K quality
+            # would double-bill slides that never honour it.
+            'image_quality': (
+                (lambda q: q if q in ('1K', '2K', '4K') else '4K')(
+                    str(
+                        data.get('imageQuality', data.get('image_quality', '4K')) or '4K'
+                    ).upper()
+                )
+                if content_type in ('', 'poster') else ''
+            ),
+            'template_fidelity': (
+                'INSPIRED'
+                if str(
+                    data.get('templateFidelity', data.get('template_fidelity', ''))
+                ).upper() == 'INSPIRED'
+                else 'EXACT'
+            ),
         }
 
         # The whole point of written guardrails: refuse BEFORE a request row

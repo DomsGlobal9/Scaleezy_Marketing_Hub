@@ -136,7 +136,7 @@ def capability_usage(workspace, subscription=None, capability=None):
     much of a client's usage is QA" remains answerable.
     """
     from apps.ai.models import AIUsageLog
-    from django.db.models import Count
+    from django.db.models import Sum
 
     subscription = subscription or subscription_for(workspace)
     if subscription is None:
@@ -150,8 +150,10 @@ def capability_usage(workspace, subscription=None, capability=None):
     if capability is not None:
         rows = rows.filter(capability=capability)
     return {
+        # Sum of units, not a row count: an Ultra (4K) poster's image call is
+        # worth 2 units — the founder's pricing (2026-09-05).
         row['capability']: row['n']
-        for row in rows.values('capability').annotate(n=Count('id'))
+        for row in rows.values('capability').annotate(n=Sum('units'))
     }
 
 

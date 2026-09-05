@@ -500,6 +500,44 @@ Return ONLY a valid JSON object with these exact keys:
                 "or describe a different person's face, age, build or "
                 "complexion.\n"
             )
+        # Where the creative will run shapes the words, not just the pixels:
+        # a LinkedIn caption and an Instagram caption are different jobs.
+        platform_line = {
+            'instagram_post': (
+                'Instagram feed: energetic, emoji-friendly caption, 5-8 focused hashtags.'
+            ),
+            'instagram_story': (
+                'Instagram Story: one short line at most - the image and CTA do the work.'
+            ),
+            'facebook': 'Facebook: conversational caption, 1-3 hashtags only.',
+            'linkedin': (
+                'LinkedIn: professional, insight-led caption, minimal emoji, '
+                'at most 3 hashtags.'
+            ),
+            'x': 'X (Twitter): a punchy caption under 240 characters, 1-2 hashtags.',
+            'print': (
+                'Print poster: no hashtags, no handles, no platform callouts in the copy.'
+            ),
+        }.get(str(request_data.get('platform') or '').strip().lower(), '')
+        platform_block = (
+            f"\n\nTARGET PLATFORM - write the copy for it: {platform_line}\n"
+            if platform_line else ''
+        )
+        # INSPIRED fidelity: no template pixels ride along, and any
+        # follow-the-template-faithfully line in the resolved instructions is
+        # overridden — the template lends its flavour, never its layout.
+        # Placed late in the prompt, where the model weights hardest.
+        if (
+            str(request_data.get('template_fidelity') or '').upper() == 'INSPIRED'
+            and not request_data.get('template_image_base64')
+        ):
+            template_block = (
+                "\n\nTEMPLATE-INSPIRED MODE: the brand's template informs this "
+                "creative's palette, typography and mood ONLY. Any earlier "
+                "instruction to follow the template's composition or layout "
+                "faithfully is overridden: compose a FRESH layout for this "
+                "brief and do not reproduce the template's structure.\n"
+            )
         creative_direction = request_data.get('creative_direction') or {}
         creative_lines = creative_direction.get('instructions') or []
         creative_block = ''
@@ -541,7 +579,7 @@ For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just 
 
 {cls._rules_block(brand_rules)}{guardrail_block}
 {variety_block}
-{creative_block}{template_block}{ambassador_block}
+{creative_block}{template_block}{ambassador_block}{platform_block}
 Respond ONLY with a valid JSON object (no markdown, no code fences, no extra text):
 {{
   "postTitle": "A catchy, short title (max 10 words)",
@@ -592,11 +630,36 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
 
         return parsed
 
+    #: Where the poster will run → the aspect the image model is asked for.
+    #: Values must be ratios the API accepts. Print A4 is 1:1.414; 2:3 is the
+    #: closest supported ratio.
+    PLATFORM_ASPECTS = {
+        'instagram_post': '4:5',
+        'instagram_story': '9:16',
+        'facebook': '4:5',
+        'linkedin': '16:9',
+        'x': '16:9',
+        'print': '2:3',
+    }
+    QUALITY_SIZES = ('1K', '2K', '4K')
+
+    @classmethod
+    def poster_render_options(cls, request_data: dict) -> tuple[str, str]:
+        """(aspect_ratio, image_size) for this brief — invalid input falls
+        back to the Instagram-poster defaults rather than failing a buy."""
+        aspect = cls.PLATFORM_ASPECTS.get(
+            str(request_data.get('platform') or '').strip().lower(), '4:5'
+        )
+        quality = str(request_data.get('image_quality') or '4K').strip().upper()
+        return aspect, quality if quality in cls.QUALITY_SIZES else '4K'
+
     @classmethod
     def generate_poster_image(cls, image_prompt: str, reference_image_base64: str = "",
                               api_key: str = '', text_lines=None,
                               template_image_base64: str = "",
-                              ambassador_image_base64: str = "") -> str:
+                              ambassador_image_base64: str = "",
+                              aspect_ratio: str = '4:5',
+                              image_size: str = '4K') -> str:
         """
         Step 2: Send the AI-generated image prompt to the image model.
         Also send the original reference image if provided.
@@ -646,6 +709,14 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                 "photo, model, scene or props. Do NOT invent a new composition, "
                 "style or palette."
             )
+        if template_mime and template_bytes and aspect_ratio != '4:5':
+            preamble.append(
+                "FORMAT ADAPTATION: the attached template was designed as a 4:5 "
+                f"poster; this creative is {aspect_ratio}. Recompose its design "
+                "system - palette, typography, header and footer treatments, "
+                "decorative elements - to fill the new canvas gracefully. Never "
+                "letterbox, pad or stretch the original layout."
+            )
         ambassador_mime, ambassador_bytes = cls._parse_base64_image(ambassador_image_base64)
         if ambassador_mime and ambassador_bytes:
             image_parts.append(
@@ -678,7 +749,7 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         # output is handled at the persistence boundary instead
         # (persist_generated_image transcodes to JPEG). The fallback stays for
         # a routed model that rejects the config server-side.
-        image_config = types.ImageConfig(aspect_ratio='4:5', image_size='4K')
+        image_config = types.ImageConfig(aspect_ratio=aspect_ratio, image_size=image_size)
         try:
             response = client.models.generate_content(
                 model=cls.IMAGE_MODEL,
@@ -776,8 +847,11 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         poster_url = ""
         try:
             if image_prompt and not request_data.get('copy_only'):
+                aspect_ratio, image_size = cls.poster_render_options(request_data)
                 poster_url = cls.generate_poster_image(
                     image_prompt=image_prompt,
+                    aspect_ratio=aspect_ratio,
+                    image_size=image_size,
                     reference_image_base64=request_data.get('reference_image_base64', ''),
                     api_key=api_key,
                     # The headline exists now - Step 1 just wrote it - so the

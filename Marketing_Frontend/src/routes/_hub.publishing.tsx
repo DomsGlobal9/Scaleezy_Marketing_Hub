@@ -277,6 +277,28 @@ const CREATIVE_SOURCES: {
   },
 ];
 
+/** Where the poster will run — drives the generated aspect ratio server-side
+ * and the copy's platform manners. Every other size still exports from the
+ * result. */
+const POSTER_PLATFORMS: { id: string; label: string; hint: string }[] = [
+  { id: "instagram_post", label: "Instagram post", hint: "4:5" },
+  { id: "instagram_story", label: "Story / Reel", hint: "9:16" },
+  { id: "facebook", label: "Facebook", hint: "4:5" },
+  { id: "linkedin", label: "LinkedIn", hint: "16:9" },
+  { id: "x", label: "X", hint: "16:9" },
+  { id: "print", label: "Print", hint: "A4" },
+];
+
+/** Quality tiers. Ultra bills 2 generation units — the founder's pricing. */
+const QUALITY_TIERS: { id: string; label: string; hint: string }[] = [
+  { id: "1K", label: "Standard", hint: "fastest" },
+  { id: "2K", label: "High", hint: "sharp for social" },
+  { id: "4K", label: "Ultra", hint: "print-grade · 2 units" },
+];
+
+/** Per-brand memory for the quick choices, so the second visit is brief-only. */
+const studioDefaultsKey = (brandId: string) => `scaleezy.studio.${brandId}`;
+
 const VIDEO_DURATIONS = ["10 seconds", "15 seconds", "30 seconds", "60 seconds"];
 const VIDEO_ASPECTS = ["9:16 (Reels / Shorts)", "1:1 (Feed)", "16:9 (YouTube)"];
 const VIDEO_STYLES = [
@@ -442,6 +464,14 @@ function PublishingPage() {
   const [brandTemplatesError, setBrandTemplatesError] = useState("");
   const [creativeTemplateId, setCreativeTemplateId] = useState("");
   const [templatesAttempt, setTemplatesAttempt] = useState(0);
+  // The founder's flow additions: target platform (drives aspect + copy
+  // manners), quality tier (Ultra bills 2 units), and template fidelity
+  // (EXACT recreates the design, INSPIRED borrows only its flavour). All
+  // three are remembered per brand.
+  const [posterPlatform, setPosterPlatform] = useState("instagram_post");
+  const [imageQuality, setImageQuality] = useState("4K");
+  const [templateFidelity, setTemplateFidelity] = useState<"EXACT" | "INSPIRED">("EXACT");
+
   // The brand's model/ambassador photos. null = loading; the toggle defaults
   // ON — the founder's rule is that the model fronts every creative.
   const [ambassadors, setAmbassadors] = useState<Inspiration[] | null>(null);
@@ -469,6 +499,37 @@ function PublishingPage() {
     update: updateBrandKit,
     loading: brandKitLoading,
   } = useBrandSettings();
+
+  // Remembered quick choices, per brand: the second visit should be
+  // brief-only, with platform, quality and fidelity already set.
+  useEffect(() => {
+    if (!brandId) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem(studioDefaultsKey(brandId)) || "{}");
+      if (POSTER_PLATFORMS.some((p) => p.id === saved.platform))
+        setPosterPlatform(saved.platform);
+      if (QUALITY_TIERS.some((q) => q.id === saved.quality)) setImageQuality(saved.quality);
+      if (saved.fidelity === "INSPIRED" || saved.fidelity === "EXACT")
+        setTemplateFidelity(saved.fidelity);
+    } catch {
+      /* corrupted defaults are just defaults */
+    }
+  }, [brandId]);
+  useEffect(() => {
+    if (!brandId) return;
+    try {
+      localStorage.setItem(
+        studioDefaultsKey(brandId),
+        JSON.stringify({
+          platform: posterPlatform,
+          quality: imageQuality,
+          fidelity: templateFidelity,
+        }),
+      );
+    } catch {
+      /* private mode — remembering is a convenience, not a requirement */
+    }
+  }, [brandId, posterPlatform, imageQuality, templateFidelity]);
   // The built-in layout catalogue no longer feeds creation; it survives only
   // for the manual Poster Studio on an already generated item.
   const layoutCatalogue = useLayoutCatalogue(Boolean(asset?.contentItemId));
@@ -1208,6 +1269,9 @@ function PublishingPage() {
             brandTone,
             instruction: creativeBrief,
             featureAmbassador: featureModel && (ambassadors?.length ?? 0) > 0,
+            platform: requestedContentType === "poster" ? posterPlatform : "",
+            imageQuality: requestedContentType === "poster" ? imageQuality : "",
+            templateFidelity,
             referenceImageBase64: requestedMode === "REFERENCE" ? referenceImageBase64 : "",
             inspirationSelections:
               requestedMode === "REFERENCE"
@@ -1878,6 +1942,34 @@ function PublishingPage() {
                 </div>
               </div>
 
+              {contentType === "poster" ? (
+                <div className="mb-8">
+                  <Label className="text-xs tracking-wide uppercase">Where will it run?</Label>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Sets the shape and the caption's manners. Every other size still exports
+                    from the result.
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {POSTER_PLATFORMS.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        aria-pressed={posterPlatform === p.id}
+                        onClick={() => setPosterPlatform(p.id)}
+                        className={cn(
+                          "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                          posterPlatform === p.id
+                            ? "border-primary bg-black text-white"
+                            : "border-border bg-background text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {p.label} <span className="opacity-60">· {p.hint}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               <div className="mb-8 space-y-2">
                 <Label htmlFor="creative-brief">What should Scaleezy create?</Label>
                 <Textarea
@@ -1961,6 +2053,39 @@ function PublishingPage() {
                     );
                   })}
                 </div>
+                {creativeMode === "BRAND_TEMPLATE" ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      How closely?
+                    </span>
+                    {(
+                      [
+                        ["EXACT", "Match it exactly"],
+                        ["INSPIRED", "Just take inspiration"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        aria-pressed={templateFidelity === value}
+                        onClick={() => setTemplateFidelity(value)}
+                        className={cn(
+                          "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                          templateFidelity === value
+                            ? "border-primary bg-primary text-black"
+                            : "border-border bg-background text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                    <span className="text-[0.6875rem] text-muted-foreground">
+                      {templateFidelity === "EXACT"
+                        ? "Same layout, new content."
+                        : "Its colours, type and mood — a fresh layout every time."}
+                    </span>
+                  </div>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => {
@@ -1972,6 +2097,34 @@ function PublishingPage() {
                   <Upload className="size-4" /> I already have finished media
                 </button>
               </div>
+
+              {contentType === "poster" ? (
+                <div className="mb-8">
+                  <Label className="text-xs tracking-wide uppercase">Image quality</Label>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {QUALITY_TIERS.map((tier) => (
+                      <button
+                        key={tier.id}
+                        type="button"
+                        aria-pressed={imageQuality === tier.id}
+                        onClick={() => setImageQuality(tier.id)}
+                        className={cn(
+                          "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                          imageQuality === tier.id
+                            ? "border-primary bg-black text-white"
+                            : "border-border bg-background text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {tier.label} <span className="opacity-60">· {tier.hint}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
+                    Better quality uses more of your plan: Ultra counts as 2 generation units
+                    and takes a little longer. Standard and High count as 1.
+                  </p>
+                </div>
+              ) : null}
 
               {/* MODEL & LOGO — the two brand assets that ride every poster,
                   as live controls rather than settings buried elsewhere. */}

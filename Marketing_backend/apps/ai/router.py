@@ -18,6 +18,27 @@ from .registry import build
 logger = logging.getLogger(__name__)
 
 
+def billable_units(capability, adapter, brief, *, internal=False) -> int:
+    """How many customer units this dispatch is worth.
+
+    Founder's pricing (2026-09-05): an Ultra-quality poster (image_size 4K)
+    costs 2 units; everything else stays 1. The weight lands only on the call
+    that actually buys the image — the IMAGE dispatch, or the TEXT dispatch of
+    a provider whose single call paints the poster too — never on copy-only
+    retries or internal QA calls, and only when the brief really asks for 4K.
+    """
+    if internal or not isinstance(brief, dict):
+        return 1
+    if str(brief.get('image_quality') or '').upper() != '4K':
+        return 1
+    if brief.get('copy_only'):
+        return 1
+    buys_the_image = capability == 'IMAGE' or (
+        capability == 'TEXT' and getattr(adapter, 'yields_poster_with_text', False)
+    )
+    return 2 if buys_the_image else 1
+
+
 class NoProviderAvailable(Exception):
     """No enabled, credentialed provider is routed to this capability."""
 
@@ -109,27 +130,29 @@ class AIRouter:
     def _run_one(self, candidate, capability, brief, strategy, content_item_id,
                  selected=True, internal=False):
         adapter = candidate['adapter']
+        units = billable_units(capability, adapter, brief, internal=internal)
         started = time.monotonic()
         try:
             result = adapter.run(capability, brief)
             duration = time.monotonic() - started
             log = self._log(candidate, capability, strategy, duration, True, '',
-                            content_item_id, selected, internal)
+                            content_item_id, selected, internal, units)
             return {'result': result, 'duration': duration, 'candidate': candidate, 'log': log}
         except Exception as exc:
             duration = time.monotonic() - started
             self._log(candidate, capability, strategy, duration, False, str(exc)[:500],
-                      content_item_id, False, internal)
+                      content_item_id, False, internal, units)
             raise
 
     def _log(self, candidate, capability, strategy, duration, ok, error,
-             content_item_id, selected, internal=False):
+             content_item_id, selected, internal=False, units=1):
         try:
             return AIUsageLog.objects.create(
                 workspace=self.workspace,
                 provider=candidate['route'].provider,
                 capability=capability,
                 content_item_id=content_item_id,
+                units=units,
                 cost=candidate['adapter'].estimate_cost(capability),
                 latency_ms=int(duration * 1000),
                 success=ok,

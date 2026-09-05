@@ -138,6 +138,19 @@ class OnImageTextDirectiveTests(SimpleTestCase):
         self.assertNotIn(MIRROR_LINE, joined)
         self.assertNotIn('Compose a clean social-sale poster', joined)
 
+    def test_inspired_fidelity_takes_the_mirror_branch_not_the_template_branch(self):
+        # No pixels are attached in INSPIRED mode, so "the template's own
+        # slots" would reference a design the model cannot see.
+        brief = poster_brief(
+            template_fidelity='INSPIRED',
+            creative_direction={'mode': 'REFERENCE', 'selections': [
+                {'kind': 'BRAND_TEMPLATE', 'title': 'Diwali'},
+            ]},
+        )
+        joined = '\n'.join(on_image_text_lines(brief, HEADLINE))
+        self.assertIn(MIRROR_LINE, joined)
+        self.assertNotIn('CAPITALISATION STYLE', joined)
+
     def test_text_stops_at_the_headline_and_one_cta_offer_line(self):
         joined = '\n'.join(on_image_text_lines(poster_brief(), HEADLINE))
         self.assertIn('No other words on the image', joined)

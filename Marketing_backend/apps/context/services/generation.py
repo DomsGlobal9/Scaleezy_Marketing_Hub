@@ -135,8 +135,13 @@ def _reference_pixels(brand, brief_extra) -> dict:
     # A BRAND_TEMPLATE selection means "make it match this poster design" —
     # words alone cannot do that, so the template's own pixels ride in the
     # brief and the image model recreates the attached design with new
-    # content.
-    if 'template_image_base64' not in brief_extra:
+    # content. INSPIRED fidelity is the deliberate exception: the user asked
+    # for the template's flavour, not its layout, so only the analysed
+    # observations travel and the pixels stay home — the variety valve.
+    if (
+        'template_image_base64' not in brief_extra
+        and str(brief_extra.get('template_fidelity') or 'EXACT').upper() != 'INSPIRED'
+    ):
         template_data_url = _template_image(brief_extra.get('creative_direction'))
         if template_data_url:
             pixels['template_image_base64'] = template_data_url
@@ -173,7 +178,13 @@ def _variety_seed(workspace, brand, brief) -> dict:
         return {}
     direction = brief.get('creative_direction')
     wanted = ('composition_archetype', 'scene_variant')
-    if _has_brand_template(direction if isinstance(direction, dict) else {}):
+    # An EXACT template owns its own layout, so only the scene varies.
+    # INSPIRED keeps both dials — varying the composition is what that
+    # fidelity level is for.
+    if (
+        _has_brand_template(direction if isinstance(direction, dict) else {})
+        and str(brief.get('template_fidelity') or 'EXACT').upper() != 'INSPIRED'
+    ):
         wanted = ('scene_variant',)
     seed = {key: brief[key] for key in wanted if brief.get(key)}
     if len(seed) < len(wanted):
