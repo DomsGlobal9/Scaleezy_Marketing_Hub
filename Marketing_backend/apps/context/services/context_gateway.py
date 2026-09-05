@@ -731,7 +731,13 @@ def on_image_text_lines(brief, headline):
     # uppercase-headline/CTA-pill style below belongs to the classic
     # social-sale poster; imposing it here uppercased a title-case template's
     # headline and painted a second CTA button under the template's own one.
-    if _has_brand_template(direction):
+    # INSPIRED fidelity deliberately skips this: no pixels are attached, so
+    # "the template's own slots" would reference a design the model cannot
+    # see — those generations take the REFERENCE mirror branch below.
+    template_exact = (
+        str(brief.get('template_fidelity') or 'EXACT').upper() != 'INSPIRED'
+    )
+    if _has_brand_template(direction) and template_exact:
         available = []
         if cta:
             available.append(f'call-to-action wording: "{cta}"')

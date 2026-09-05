@@ -130,6 +130,48 @@ class PosterImageTemplateTests(TestCase):
         self.assertEqual(len(fake.models.calls), 2)
         self.assertIsNone(getattr(fake.models.calls[1]['config'], 'image_config', None))
 
+    def test_platforms_map_to_aspects_and_quality_tiers_to_sizes(self):
+        cases = [
+            ({'platform': 'instagram_story', 'image_quality': '2K'}, ('9:16', '2K')),
+            ({'platform': 'linkedin', 'image_quality': '1K'}, ('16:9', '1K')),
+            ({'platform': 'print'}, ('2:3', '4K')),
+            ({'platform': 'nonsense', 'image_quality': '8K'}, ('4:5', '4K')),
+            ({}, ('4:5', '4K')),
+        ]
+        for request_data, expected in cases:
+            self.assertEqual(
+                GeminiGeneratorService.poster_render_options(request_data), expected,
+            )
+
+    def test_the_requested_aspect_and_size_reach_the_image_call(self):
+        fake = SimpleNamespace(models=FakeModels())
+        with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
+            GeminiGeneratorService.generate_poster_image(
+                'A scene.', api_key='k', aspect_ratio='9:16', image_size='2K',
+            )
+        config = fake.models.calls[0]['config']
+        self.assertEqual(config.image_config.aspect_ratio, '9:16')
+        self.assertEqual(config.image_config.image_size, '2K')
+
+    def test_a_non_poster_aspect_tells_the_template_to_recompose(self):
+        fake = SimpleNamespace(models=FakeModels())
+        with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
+            GeminiGeneratorService.generate_poster_image(
+                'A scene.', api_key='k', template_image_base64=DATA_URL,
+                aspect_ratio='9:16',
+            )
+        directive = fake.models.calls[0]['contents'][-1]
+        self.assertIn('FORMAT ADAPTATION', directive)
+        self.assertIn('9:16', directive)
+
+    def test_the_native_aspect_needs_no_adaptation_note(self):
+        fake = SimpleNamespace(models=FakeModels())
+        with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
+            GeminiGeneratorService.generate_poster_image(
+                'A scene.', api_key='k', template_image_base64=DATA_URL,
+            )
+        self.assertNotIn('FORMAT ADAPTATION', fake.models.calls[0]['contents'][-1])
+
     def test_a_garbage_template_payload_degrades_to_text_only(self):
         fake = SimpleNamespace(models=FakeModels())
         with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
@@ -182,6 +224,23 @@ class TemplateImageResolutionTests(TenantFixtureMixin, TestCase):
             self.assertEqual(_template_image(self._direction()), '')
         self.assertEqual(_template_image(None), '')
         self.assertEqual(_template_image({'selections': []}), '')
+
+    def test_inspired_fidelity_keeps_the_template_pixels_home(self):
+        # INSPIRED is the variety valve: the template lends its flavour
+        # through analysed observations, never its pixels — so the layout can
+        # differ every run.
+        from apps.context.services.generation import _reference_pixels
+
+        brief = {'creative_direction': self._direction(), 'feature_ambassador': False}
+        with patch(
+            'apps.inspirations.analysis._stored_media_data', return_value=DATA_URL,
+        ):
+            exact = _reference_pixels(self.brand, brief)
+            inspired = _reference_pixels(
+                self.brand, {**brief, 'template_fidelity': 'INSPIRED'}
+            )
+        self.assertIn('template_image_base64', exact)
+        self.assertNotIn('template_image_base64', inspired)
 
     def test_the_newest_active_ambassador_photo_is_the_one_attached(self):
         for title in ('First shoot', 'Latest shoot'):

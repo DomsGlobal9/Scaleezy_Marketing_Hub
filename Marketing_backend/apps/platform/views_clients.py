@@ -130,8 +130,10 @@ def _bulk_usage(workspace_ids):
                 spend=Sum('cost'),
                 # Mirrors quota.capability_usage's billable-unit definition:
                 # internal QA dispatches count as customer units too (founder
-                # decision 2026-09-03, "option b").
-                used=Count('id', filter=Q(success=True, selected=True)),
+                # decision 2026-09-03, "option b"), and units are summed, not
+                # counted — an Ultra (4K) poster image call is worth 2
+                # (founder decision 2026-09-05).
+                used=Sum('units', filter=Q(success=True, selected=True)),
             )
         ):
             workspace_id = row['workspace_id']
