@@ -567,20 +567,44 @@ function PublishingPage() {
         if (!cancelled) setAmbassadors(rows);
       })
       .catch(() => {
-        // The toggle simply stays hidden; generation runs without the photo.
-        if (!cancelled) setAmbassadors([]);
+        // First load: the toggle simply stays hidden and generation runs
+        // without the photo. A later re-read (the tab coming back, often
+        // straight out of sleep) keeps the list it already had: dropping it
+        // would hide the model and buy the next poster without her.
+        if (!cancelled) setAmbassadors((current) => current ?? []);
       });
     fetchBrandProducts(brandId)
       .then((rows) => {
         if (!cancelled) setProductPhotos(rows);
       })
       .catch(() => {
-        if (!cancelled) setProductPhotos([]);
+        if (!cancelled) setProductPhotos((current) => current ?? []);
       });
     return () => {
       cancelled = true;
     };
   }, [brandId, templatesAttempt]);
+
+  // Templates, model and product photos are uploaded in Brand Master — often
+  // in another tab. This page holds its own copy of those lists, fetched once
+  // on mount, with no channel back from the upload: a Create Studio opened
+  // before the upload kept an honest-at-the-time empty list and "Your
+  // templates" stayed disabled until the page was left and re-entered. Ask
+  // again whenever this document comes back into view. The old list stays on
+  // screen until the answer lands, so nothing flickers.
+  useEffect(() => {
+    const refetch = () => {
+      if (document.visibilityState === "visible") {
+        setTemplatesAttempt((current) => current + 1);
+      }
+    };
+    document.addEventListener("visibilitychange", refetch);
+    window.addEventListener("focus", refetch);
+    return () => {
+      document.removeEventListener("visibilitychange", refetch);
+      window.removeEventListener("focus", refetch);
+    };
+  }, []);
 
   // Founder directive: with no uploaded templates, AI original is the default
   // direction rather than an unmade choice.
@@ -2679,7 +2703,9 @@ function PublishingPage() {
                 </div>
               ) : null}
 
-              {creativeMode === "BRAND_TEMPLATE" && brandTemplatesError ? (
+              {creativeMode === "BRAND_TEMPLATE" &&
+              brandTemplatesError &&
+              !brandTemplates?.length ? (
                 <div
                   role="alert"
                   className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
