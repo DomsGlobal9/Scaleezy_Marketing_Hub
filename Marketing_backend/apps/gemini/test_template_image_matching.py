@@ -105,6 +105,33 @@ class PosterImageTemplateTests(TestCase):
         self.assertEqual(len(contents), 2)
         self.assertIn("ATTACHED IMAGE 1 IS THE BRAND'S MODEL/AMBASSADOR", contents[1])
 
+    def test_the_brand_logo_rides_along_with_a_placement_directive(self):
+        fake = SimpleNamespace(models=FakeModels())
+        with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
+            GeminiGeneratorService.generate_poster_image(
+                'A serene product scene.', api_key='k',
+                template_image_base64=DATA_URL,
+                logo_image_base64=DATA_URL,
+            )
+        contents = fake.models.calls[0]['contents']
+        self.assertEqual(len(contents), 3)
+        directive = contents[2]
+        self.assertIn("ATTACHED IMAGE 2 IS THE BRAND'S OWN LOGO", directive)
+        self.assertIn('THIS EXACT logo artwork', directive)
+        self.assertIn('ONCE', directive)
+        self.assertIn('never invent a different logo', directive)
+
+    def test_the_logo_works_without_a_template_too(self):
+        fake = SimpleNamespace(models=FakeModels())
+        with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
+            GeminiGeneratorService.generate_poster_image(
+                'A serene product scene.', api_key='k',
+                logo_image_base64=DATA_URL,
+            )
+        contents = fake.models.calls[0]['contents']
+        self.assertEqual(len(contents), 2)
+        self.assertIn("ATTACHED IMAGE 1 IS THE BRAND'S OWN LOGO", contents[1])
+
     def test_the_image_call_requests_full_resolution_at_the_poster_aspect(self):
         # The reported blur: model-default ~1K output stretched to 1080x1350
         # and beyond by exports. Every poster call must ask for 4K at 4:5
@@ -307,6 +334,51 @@ class TemplateImageResolutionTests(TenantFixtureMixin, TestCase):
             )
         self.assertIn('template_image_base64', exact)
         self.assertNotIn('template_image_base64', inspired)
+
+    def test_the_brand_logo_resolves_only_when_its_own_switch_is_on(self):
+        # Brand Master's logo + the same show_logo_on_posters switch the
+        # studio chip toggles. Delegated posters honour it at the image
+        # step — the dressing pass that used to is retired for them.
+        from apps.context.services.generation import _logo_image
+
+        self.brand.logo_url = 'https://storage.test/logos/acme.png'
+        self.brand.logo_file_name = 'acme.png'
+        self.assertEqual(_logo_image(self.brand), '')  # switch off
+
+        self.brand.show_logo_on_posters = True
+        with patch(
+            'apps.inspirations.analysis._stored_media_data', return_value=DATA_URL,
+        ) as loader:
+            self.assertEqual(_logo_image(self.brand), DATA_URL)
+        shim = loader.call_args.args[0]
+        self.assertEqual(shim.file_url, 'https://storage.test/logos/acme.png')
+        self.assertEqual(shim.mime_type, 'image/png')
+
+        # No upload, or storage down: the paid run continues without it.
+        with patch(
+            'apps.inspirations.analysis._stored_media_data',
+            side_effect=RuntimeError('storage down'),
+        ):
+            self.assertEqual(_logo_image(self.brand), '')
+        self.brand.logo_url = ''
+        self.assertEqual(_logo_image(self.brand), '')
+        self.assertEqual(_logo_image(None), '')
+
+    def test_reference_pixels_carry_the_logo_key(self):
+        from apps.context.services.generation import _reference_pixels
+
+        self.brand.logo_url = 'https://storage.test/logos/acme.png'
+        self.brand.show_logo_on_posters = True
+        brief = {'creative_direction': None, 'feature_ambassador': False}
+        with patch(
+            'apps.inspirations.analysis._stored_media_data', return_value=DATA_URL,
+        ):
+            pixels = _reference_pixels(self.brand, brief)
+        self.assertEqual(pixels.get('logo_image_base64'), DATA_URL)
+        # A key the caller already fixed is kept, not fetched again.
+        self.assertEqual(
+            _reference_pixels(self.brand, {**brief, 'logo_image_base64': 'x'}), {},
+        )
 
     def test_the_newest_active_ambassador_photo_is_the_one_attached(self):
         for title in ('First shoot', 'Latest shoot'):

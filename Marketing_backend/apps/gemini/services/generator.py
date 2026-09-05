@@ -686,6 +686,7 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                               template_image_base64: str = "",
                               ambassador_image_base64: str = "",
                               product_image_base64: str = "",
+                              logo_image_base64: str = "",
                               aspect_ratio: str = '4:5',
                               image_size: str = '4K') -> str:
         """
@@ -774,6 +775,20 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                 "scene (worn or presented as the brief suggests). Never "
                 "substitute a similar product and never redesign it — the "
                 "customer must be able to buy exactly what they see."
+            )
+        logo_mime, logo_bytes = cls._parse_base64_image(logo_image_base64)
+        if logo_mime and logo_bytes:
+            image_parts.append(
+                types.Part.from_bytes(data=logo_bytes, mime_type=logo_mime)
+            )
+            preamble.append(
+                f"ATTACHED IMAGE {len(image_parts)} IS THE BRAND'S OWN LOGO. "
+                "Place THIS EXACT logo artwork on the poster ONCE - in the "
+                "template's own logo position when a template is attached, "
+                "otherwise small and elegant in a clear margin - reproducing "
+                "its shapes, lettering and colours faithfully at a legible "
+                "size. Never redraw, restyle, recolour or retype it, and "
+                "never invent a different logo, monogram or watermark."
             )
         if image_parts:
             contents = [*image_parts, "\n\n".join([*preamble, directive])]
@@ -915,6 +930,7 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                     template_image_base64=request_data.get('template_image_base64', ''),
                     ambassador_image_base64=request_data.get('ambassador_image_base64', ''),
                     product_image_base64=request_data.get('product_image_base64', ''),
+                    logo_image_base64=request_data.get('logo_image_base64', ''),
                 )
         except Exception as e:
             print(f"[Gemini] Step 2 failed: {e}")
