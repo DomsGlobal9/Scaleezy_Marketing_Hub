@@ -785,10 +785,12 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                 f"ATTACHED IMAGE {len(image_parts)} IS THE BRAND'S OWN LOGO. "
                 "Place THIS EXACT logo artwork on the poster ONCE - in the "
                 "template's own logo position when a template is attached, "
-                "otherwise small and elegant in a clear margin - reproducing "
-                "its shapes, lettering and colours faithfully at a legible "
-                "size. Never redraw, restyle, recolour or retype it, and "
-                "never invent a different logo, monogram or watermark."
+                "otherwise in a clear margin - reproducing its shapes, "
+                "lettering and colours faithfully, and generously sized: a "
+                "confident, unmistakable brand mark (roughly a quarter of the "
+                "poster's width), never a tiny watermark. Never redraw, "
+                "restyle, recolour or retype it, and never invent a "
+                "different logo, monogram or watermark."
             )
         if image_parts:
             contents = [*image_parts, "\n\n".join([*preamble, directive])]
