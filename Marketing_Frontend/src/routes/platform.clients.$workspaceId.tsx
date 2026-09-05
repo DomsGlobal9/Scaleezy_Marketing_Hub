@@ -401,6 +401,12 @@ function QualityPanel({
       checked: quality.variety_enabled,
       apply: (next) => setClientQuality(workspaceId, { variety: next }),
     },
+    {
+      label: "Image text check",
+      description: "Vision read-back that the text baked into a poster matches the copy.",
+      checked: quality.image_text_check_enabled,
+      apply: (next) => setClientQuality(workspaceId, { image_text_check: next }),
+    },
   ];
 
   return (

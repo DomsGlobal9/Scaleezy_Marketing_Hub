@@ -322,6 +322,8 @@ class ClientQualitySettings(models.Model):
     focus_crop_enabled = models.BooleanField(default=True)
     #: Recency-weighted layout variety.
     variety_enabled = models.BooleanField(default=True)
+    #: Vision read-back of the text baked into a finished poster.
+    image_text_check_enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

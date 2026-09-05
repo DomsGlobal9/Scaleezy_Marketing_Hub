@@ -312,12 +312,13 @@ export const setClientUniversal = (
   body: { standards?: boolean; inspirations?: boolean },
 ) => apiPost<unknown>(`/api/platform/clients/${workspaceId}/universal/`, body);
 
-/** The three quality-engine switches; the server answers defaults (all on)
+/** The four quality-engine switches; the server answers defaults (all on)
  *  when the client never changed anything. */
 export interface ClientQualitySettings {
   critique_enabled: boolean;
   focus_crop_enabled: boolean;
   variety_enabled: boolean;
+  image_text_check_enabled: boolean;
 }
 
 export const fetchClientQuality = (workspaceId: string) =>
@@ -325,7 +326,12 @@ export const fetchClientQuality = (workspaceId: string) =>
 
 export const setClientQuality = (
   workspaceId: string,
-  body: { critique?: boolean; focus_crop?: boolean; variety?: boolean },
+  body: {
+    critique?: boolean;
+    focus_crop?: boolean;
+    variety?: boolean;
+    image_text_check?: boolean;
+  },
 ) => apiPost<ClientQualitySettings>(`/api/platform/clients/${workspaceId}/quality/`, body);
 
 export const setClientPlan = (workspaceId: string, plan: string) =>

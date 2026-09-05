@@ -33,7 +33,9 @@ from apps.context.services.context_gateway import (
     DEFAULT_COMPOSITION_ARCHETYPE,
     FACE_VISIBLE_LINE,
     SCENE_VARIANTS,
+    brief_cta_and_offer,
     composition_archetype,
+    step1_line,
     on_image_text_lines,
     scene_directive,
 )
@@ -104,6 +106,16 @@ def recording_router(calls):
 class ArchetypeCatalogueTests(SimpleTestCase):
     """Eight distinct compositions, each complete, the legacy one first."""
 
+    def test_magazine_cover_asks_for_one_title_and_no_cover_lines(self):
+        # Live, 2026-09-05: the masthead/strapline wording came back with a
+        # second headline glued on and an invented strapline.
+        row = composition_archetype('magazine_cover')
+        for text in (row['composition'], row['step1']):
+            self.assertNotIn('masthead', text)
+            self.assertNotIn('strapline', text)
+            self.assertIn('no cover lines', text)
+        self.assertNotIn('strapline', row['offer'])
+
     def test_eight_unique_complete_archetypes_with_the_framed_panel_first(self):
         self.assertEqual(len(COMPOSITION_ARCHETYPES), 8)
         self.assertEqual(len(set(ARCHETYPE_KEYS)), 8)
@@ -116,8 +128,18 @@ class ArchetypeCatalogueTests(SimpleTestCase):
             self.assertIn('{cta}', row['composition'])
             self.assertIn('{offer}', row['composition'])
             self.assertIn('headline', row['step1'])
-            self.assertIn('call-to-action', row['step1'])
-            self.assertIn('offer', row['step1'])
+            self.assertIn('{cta}', row['step1'])
+            self.assertIn('{offer}', row['step1'])
+            self.assertIn('call-to-action', row['step1_cta'])
+            self.assertIn('offer', row['step1_offer'])
+            # The bare description names neither: a pill or an offer line the
+            # brief does not carry must never be described.
+            bare = step1_line(row, '', '')
+            self.assertNotIn('offer', bare)
+            self.assertNotIn('call-to-action', bare)
+            full = step1_line(row, 'SHOP NOW', '20% off')
+            self.assertIn('call-to-action', full)
+            self.assertIn('offer', full)
         self.assertEqual(
             len({opening(row) for row in COMPOSITION_ARCHETYPES}), 8,
             'every archetype must open with its own distinct directive',
@@ -222,15 +244,38 @@ class ArchetypeDirectiveTests(SimpleTestCase):
         self.assertNotIn(FRAMED_LINE, joined)
 
     def test_step_one_is_told_the_picked_archetype_not_the_framed_panel(self):
-        block = GeminiGeneratorService._on_image_text_block(
-            poster_brief(composition_archetype='split_vertical'),
+        brief = poster_brief(composition_archetype='split_vertical')
+        block = GeminiGeneratorService._on_image_text_block(brief)
+        self.assertIn(
+            step1_line(composition_archetype('split_vertical'), *brief_cta_and_offer(brief)),
+            block,
         )
-        self.assertIn(composition_archetype('split_vertical')['step1'], block)
         self.assertIn('Vertical split', block)
+        self.assertIn('call-to-action pill', block)
+        self.assertIn('vertical offer line', block)
         self.assertNotIn(FRAMED_STEP1, block)
         self.assertIn('Do NOT write the headline', block)
+        self.assertNotIn('The brief carries no offer', block)
         # Absent, the legacy recipe - existing behaviour.
         self.assertIn(FRAMED_STEP1, GeminiGeneratorService._on_image_text_block(poster_brief()))
+
+    def test_step_one_describes_no_offer_line_when_the_brief_has_no_offer(self):
+        # Live, 2026-09-05: an edge "kept clear for a vertical offer line" on
+        # a brief with no offer came back filled with an invented strapline.
+        brief = poster_brief(composition_archetype='magazine_cover', offer='')
+        block = GeminiGeneratorService._on_image_text_block(brief)
+        self.assertNotIn('offer line', block)
+        self.assertNotIn('strapline', block.split('The brief carries no offer')[0])
+        self.assertIn('The brief carries no offer: describe no strapline', block)
+        self.assertIn('the headline and the CTA pill are the only words', block)
+        # And with neither a CTA nor an offer, the headline alone.
+        bare = poster_brief(
+            composition_archetype='magazine_cover', offer='',
+            structured={'identity': {'cta_keyword': ''}},
+        )
+        block = GeminiGeneratorService._on_image_text_block(bare)
+        self.assertNotIn('call-to-action', block)
+        self.assertIn('the headline is the only words', block)
 
 
 class TemplateVariationTests(SimpleTestCase):
@@ -641,8 +686,11 @@ class VarietyInTheGenerationTests(TenantFixtureMixin, TestCase):
                 },
                 trace=trace,
             )
+        # (`image_text`, the words-on-the-picture check's own record, rides
+        # in the same trace - see test_image_text_gate.)
         self.assertEqual(
-            trace, {'composition_archetype': 'diagonal_cut', 'scene_variant': CLOSE_UP},
+            {key: trace[key] for key in ('composition_archetype', 'scene_variant')},
+            {'composition_archetype': 'diagonal_cut', 'scene_variant': CLOSE_UP},
         )
         self.assertIn(
             opening(composition_archetype('diagonal_cut')),

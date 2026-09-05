@@ -464,6 +464,7 @@ class OpenAIAdapter(AIProviderAdapter):
     _STRUCTURED_IMAGE_TASKS = {
         'INSPIRATION_ANALYSIS': 'scaleezy_inspiration_signals',
         'SUBJECT_FOCUS': 'scaleezy_subject_focus',
+        'IMAGE_TEXT_AUDIT': 'scaleezy_image_text_audit',
     }
 
     def analyze_image(self, brief: Dict[str, Any]) -> Dict[str, Any]:

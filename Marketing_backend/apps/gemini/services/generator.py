@@ -11,10 +11,12 @@ from google.genai import types
 from apps.context.services.context_gateway import (
     NO_TEXT_LINE,
     _has_brand_template,
+    brief_cta_and_offer,
     composition_archetype,
     on_image_text_lines,
     poster_renders_its_own_text,
     scene_directive,
+    step1_line,
 )
 
 
@@ -424,16 +426,29 @@ Return ONLY a valid JSON object with these exact keys:
         # generation layer: every delegated poster used to be described as
         # the same framed panel, so a brand's drafts all looked alike.
         archetype = composition_archetype(request_data.get('composition_archetype'))
+        # The pill and the offer line are described only when the brief
+        # carries them: an edge "kept clear for an offer line" that does not
+        # exist came back, live, filled with an invented one.
+        cta, offer = brief_cta_and_offer(request_data)
+        only_words = (
+            '' if offer else (
+                ' The brief carries no offer: describe no strapline, no secondary '
+                'line and no cover lines - the headline'
+                + (' and the CTA pill are' if cta else ' is')
+                + ' the only words on the poster.'
+            )
+        )
         return (
             "ON-IMAGE TEXT: this poster's headline is typography the image model "
             "paints itself. The `imagePrompt` must therefore describe a poster "
             "composition, not a bare photograph - specifically "
-            f"({archetype['label']}): {archetype['step1']}. Do NOT write the "
-            "headline's wording into the `imagePrompt` - the exact `postTitle`, "
-            "CTA and offer are appended to the image call verbatim afterwards - "
-            "and do not describe any other words, captions, watermarks or logos "
-            "on the image. Keep the `postTitle` short and punchy so it stays "
-            "legible as display type." + scene_sentence
+            f"({archetype['label']}): {step1_line(archetype, cta, offer)}. Do NOT "
+            "write the headline's wording into the `imagePrompt` - the exact "
+            "`postTitle`, CTA and offer are appended to the image call verbatim "
+            "afterwards - and do not describe any other words, captions, "
+            "watermarks or logos on the image. Keep the `postTitle` short and "
+            "punchy so it stays legible as display type." + only_words
+            + scene_sentence
         )
 
     @classmethod
@@ -865,6 +880,15 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         hook = request_data.get('pre_image_hook')
         if callable(hook) and not request_data.get('copy_only'):
             text_result = cls._settled_copy(text_result, hook)
+
+        # A brief that already carries `headline` is a re-buy of a poster
+        # whose words are won - the image-text re-buy, a repair, an
+        # image-only edit. Step 1 still ran (it writes the imagePrompt), but
+        # its fresh title must not be painted: the picture carries the saved
+        # headline, and the returned copy says so too.
+        fixed_headline = ' '.join(str(request_data.get('headline') or '').split())
+        if fixed_headline:
+            text_result = {**text_result, 'postTitle': fixed_headline}
 
         # Step 2: Generate poster image from the AI-crafted prompt.
         # Skipped for copy-only callers (surgical request-edits, the guardrail
