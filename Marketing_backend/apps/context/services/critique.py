@@ -72,7 +72,10 @@ INSTRUCTION = (
     'rule of your own. When every rule is satisfied return passes=true with '
     'an empty violations array. rewrite_instruction is one short instruction '
     'a copywriter could follow to fix every violation at once; empty when '
-    'passes is true.'
+    'passes is true. When INPUT_JSON carries requested_headline, the user '
+    'asked for that headline word for word: a headline that matches it is '
+    'never a violation of tone, style or preference, and no fix or '
+    'rewrite_instruction may change its words.'
 )
 
 
@@ -103,9 +106,13 @@ def standing_complaints(brand):
     return rows[:MAX_STANDING_COMPLAINTS]
 
 
-def _judge_input(payload, context_lines, guardrail_lines, complaints):
-    """Cite exactly what the generator saw, plus the reviewers' standing law."""
-    return {
+def _judge_input(payload, context_lines, guardrail_lines, complaints,
+                 requested_headline=''):
+    """Cite exactly what the generator saw, plus the reviewers' standing law.
+    A headline the user typed into the brief rides along as
+    `requested_headline`, so the judge knows those words were asked for and
+    never rewrites them for tone (the INSTRUCTION says so)."""
+    structured = {
         'copy': {
             'headline': str(payload.get('postTitle') or '')[:500],
             'caption': str(payload.get('postDescription') or '')[:MAX_COPY_CHARS],
@@ -117,6 +124,10 @@ def _judge_input(payload, context_lines, guardrail_lines, complaints):
         'brand_guardrails': [str(line)[:300] for line in list(guardrail_lines)[:20]],
         'standing_reviewer_complaints': complaints,
     }
+    requested_headline = ' '.join(str(requested_headline or '').split())
+    if requested_headline:
+        structured['requested_headline'] = requested_headline[:500]
+    return structured
 
 
 def _parse(payload):
@@ -193,7 +204,7 @@ def _row(verdict, violations, *, retried=False, skipped_reason=None):
 
 
 def critique_copy(workspace, brand, payload, *, context_lines, guardrail_lines,
-                  rewrite, content_format=''):
+                  rewrite, content_format='', requested_headline=''):
     """Judge the copy; on a failing verdict, spend exactly one copy retry.
 
     `rewrite(feedback_lines)` is the caller's copy-only regeneration (it must
@@ -201,6 +212,8 @@ def critique_copy(workspace, brand, payload, *, context_lines, guardrail_lines,
     second image). The merged copy is written into `payload` in place —
     mirroring the guardrail retry — and the retry result is judged again ONLY
     to record the final verdict, never to retry a second time.
+    `requested_headline` is the headline the user typed into the brief, when
+    any: the judge is told those words were asked for (see `_judge_input`).
 
     Returns the trace row: {'verdict': 'passed'|'regenerated'|
     'accepted_with_notes'|'skipped', 'violations': [...], 'retried': bool,
@@ -216,6 +229,7 @@ def critique_copy(workspace, brand, payload, *, context_lines, guardrail_lines,
             workspace, brand, payload,
             context_lines=context_lines, guardrail_lines=guardrail_lines,
             rewrite=rewrite, content_format=content_format,
+            requested_headline=requested_headline,
         )
     except Exception as exc:
         logger.exception(
@@ -226,7 +240,7 @@ def critique_copy(workspace, brand, payload, *, context_lines, guardrail_lines,
 
 
 def _critique_copy(workspace, brand, payload, *, context_lines, guardrail_lines,
-                   rewrite, content_format=''):
+                   rewrite, content_format='', requested_headline=''):
     # Cheap in-memory checks first, so the paths that can never be judged
     # (no brand, an uncovered format, no copy context) cost zero DB reads.
     if brand is None or not isinstance(payload, dict):
@@ -250,7 +264,10 @@ def _critique_copy(workspace, brand, payload, *, context_lines, guardrail_lines,
     try:
         verdict = _judge(
             workspace,
-            _judge_input(payload, context_lines, guardrail_lines, complaints),
+            _judge_input(
+                payload, context_lines, guardrail_lines, complaints,
+                requested_headline=requested_headline,
+            ),
         )
     except CritiqueUnavailable as exc:
         logger.info("Copy critique skipped for workspace %s: %s", workspace.pk, exc)
@@ -293,7 +310,10 @@ def _critique_copy(workspace, brand, payload, *, context_lines, guardrail_lines,
     try:
         final = _judge(
             workspace,
-            _judge_input(payload, context_lines, guardrail_lines, complaints),
+            _judge_input(
+                payload, context_lines, guardrail_lines, complaints,
+                requested_headline=requested_headline,
+            ),
         )
     except CritiqueUnavailable:
         return _row('regenerated', violations, retried=True)
