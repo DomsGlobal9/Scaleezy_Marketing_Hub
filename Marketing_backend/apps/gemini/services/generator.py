@@ -573,6 +573,12 @@ Return ONLY a valid JSON object with these exact keys:
                 'audience, never a word-for-word translation of English phrasing'
             ),
         }.get(str(request_data.get('caption_language') or '').strip().lower(), '')
+        # Written law outranks a per-generation chip: a brand whose
+        # guardrails say English-only never gets a contradictory language
+        # instruction in the same prompt. The literal is the exact line
+        # guardrails.prompt_lines() emits for language_rule='english_only'.
+        if 'Write in English only.' in (request_data.get('guardrail_rules') or []):
+            language_line = ''
         language_block = (
             f"\n\nCAPTION LANGUAGE: write `postDescription` in {language_line}. "
             "Keep `postTitle` in English exactly as it will be painted on the "

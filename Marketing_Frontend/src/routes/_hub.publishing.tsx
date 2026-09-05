@@ -1285,6 +1285,11 @@ function PublishingPage() {
             contentType: requestedContentType,
             instruction: inspiration.instruction,
             analyzeBeforeGenerationIds: [inspiration.inspirationId],
+            // The studio's remembered per-brand choices apply to quick
+            // inspiration generations too — same client, same language,
+            // same opt-in spend.
+            captionLanguage: requestedContentType === "poster" ? captionLanguage : "",
+            abVariants: requestedContentType === "poster" ? abVariants : false,
           }
         : {
             // A chosen brand template travels exactly like a create-from-

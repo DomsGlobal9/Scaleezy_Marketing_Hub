@@ -937,12 +937,15 @@ def regenerate_revision(revision_id: str):
     brief['feature_ambassador'] = bool(
         config.get('feature_ambassador', parent_config.get('feature_ambassador', True))
     )
-    # A regenerated caption speaks the language the original was asked in.
+    # A regenerated caption speaks the language the original was asked in —
+    # and the resolved answer is written back onto THIS revision's config, so
+    # the second review round (whose parent is this revision) still knows it.
     brief['caption_language'] = str(
         config.get('caption_language')
         or parent_config.get('caption_language')
         or 'english'
     )
+    config['caption_language'] = brief['caption_language']
     if (
         str(creative_direction.get('mode') or '').strip().upper() == 'REFERENCE'
         and (scope['copy'] or scope['image'] or revision.brand is None)

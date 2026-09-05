@@ -285,6 +285,10 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 for key in (
                     'source_asset', 'photo_focus', 'copy', 'style_variant',
                     'creative_direction', 'source_creative_direction',
+                    # A regenerated caption must speak the language the
+                    # original was asked in — through EVERY review round,
+                    # not just the first.
+                    'caption_language',
                 )
                 if parent_config.get(key)
             },
@@ -368,6 +372,12 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                 'adapted_platform': platform,
                 'feature_ambassador': bool(
                     parent_config.get('feature_ambassador', True)
+                ),
+                # The approved copy travels verbatim, and so does the
+                # language it was written in — a later edit of the adapted
+                # draft must not fall back to English.
+                'caption_language': str(
+                    parent_config.get('caption_language') or 'english'
                 ),
             },
             created_by=request.user,

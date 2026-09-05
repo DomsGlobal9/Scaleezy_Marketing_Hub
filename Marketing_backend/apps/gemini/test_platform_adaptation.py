@@ -97,7 +97,7 @@ class AdaptEndpointTests(APITestCase):
             caption='The bridal edit.', hashtags='#ruby',
             status=ContentItem.Status.APPROVED, asset=self.asset,
             preview_url='https://storage.test/generated/approved.jpg',
-            layout_config={'feature_ambassador': False},
+            layout_config={'feature_ambassador': False, 'caption_language': 'telugu'},
         )
         self.client.force_authenticate(user=self.manager)
         self.client.credentials(HTTP_X_WORKSPACE_ID=str(self.ws.id))
@@ -119,6 +119,9 @@ class AdaptEndpointTests(APITestCase):
         self.assertEqual(adapted.caption, self.item.caption)
         self.assertEqual(adapted.layout_config['adapted_platform'], 'instagram_story')
         self.assertFalse(adapted.layout_config['feature_ambassador'])
+        # A later edit of the adapted draft must keep speaking the language
+        # the approved creative was asked in.
+        self.assertEqual(adapted.layout_config['caption_language'], 'telugu')
         self.assertTrue(adapted.layout_config['regenerating'])
         self.assertTrue(res.data['data']['adaptation_queued'])
         run = TaskRun.objects.filter(task_path__endswith='adapt_platform').first()

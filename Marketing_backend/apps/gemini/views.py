@@ -389,6 +389,17 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             # Closes the training loop: what reviewers have repeatedly
             # rejected becomes a constraint on the next generation.
             'brand_rules': self._brand_rules(request),
+            # The caption's language, same contract as the async path: the
+            # headline stays English, anything off the allowlist is English.
+            'caption_language': (
+                (lambda lang: lang if lang in GeminiGeneratorService.CAPTION_LANGUAGES
+                 else 'english')(
+                    str(
+                        data.get('captionLanguage', data.get('caption_language', ''))
+                        or 'english'
+                    ).strip().lower()
+                )
+            ),
         }
 
         # Everything the Context Gateway resolved, carried alongside the
