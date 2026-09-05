@@ -567,15 +567,18 @@ function PublishingPage() {
         if (!cancelled) setAmbassadors(rows);
       })
       .catch(() => {
-        // The toggle simply stays hidden; generation runs without the photo.
-        if (!cancelled) setAmbassadors([]);
+        // First load: the toggle simply stays hidden and generation runs
+        // without the photo. A later re-read (the tab coming back, often
+        // straight out of sleep) keeps the list it already had: dropping it
+        // would hide the model and buy the next poster without her.
+        if (!cancelled) setAmbassadors((current) => current ?? []);
       });
     fetchBrandProducts(brandId)
       .then((rows) => {
         if (!cancelled) setProductPhotos(rows);
       })
       .catch(() => {
-        if (!cancelled) setProductPhotos([]);
+        if (!cancelled) setProductPhotos((current) => current ?? []);
       });
     return () => {
       cancelled = true;
@@ -2700,7 +2703,9 @@ function PublishingPage() {
                 </div>
               ) : null}
 
-              {creativeMode === "BRAND_TEMPLATE" && brandTemplatesError ? (
+              {creativeMode === "BRAND_TEMPLATE" &&
+              brandTemplatesError &&
+              !brandTemplates?.length ? (
                 <div
                   role="alert"
                   className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"

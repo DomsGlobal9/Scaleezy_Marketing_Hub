@@ -10,7 +10,8 @@ rotation cannot drift apart unnoticed:
   set, so the templates arrive on the first page however many other
   inspirations the brand holds and wherever ordering puts them;
 * the default (unpaginated) response carries every row, which is what the
-  shipped client relies on when it picks templates out client-side;
+  ambassador and product pickers still rely on when they sift client-side
+  (the templates picker now asks by type);
 * brand scoping comes only from the `brand_id` the caller names; the server
   never narrows to a workspace default brand;
 * a template is listed whatever its analysis state; only archiving removes it
@@ -155,15 +156,15 @@ class TemplateListingTests(TenantFixtureMixin, TestCase):
             f'brand_id={self.brand.pk}&inspiration_type=BRAND_TEMPLATE,BRAND_AMBASSADOR'
         )
         self.assertEqual(compound.status_code, status.HTTP_200_OK)
-        self.assertLessEqual(
-            {row['inspiration_type'] for row in rows_of(compound)},
-            {TEMPLATE, Type.BRAND_AMBASSADOR},
-        )
+        # An exact-match filter: a comma list names no type, so nothing comes
+        # back - never the whole brand.
+        self.assertEqual(rows_of(compound), [])
 
     # --- the shipped caller ---------------------------------------------------
 
     def test_default_response_is_the_whole_brand_so_a_client_side_pick_still_finds_templates(self):
-        # What the shipped picker actually sends: brand only, no type, no page.
+        # What the ambassador and product pickers send: brand only, no type,
+        # no page (the templates picker asks by type since PR #58).
         listed = self.get(f'brand_id={self.brand.pk}')
         self.assertEqual(listed.status_code, status.HTTP_200_OK, listed.content[:300])
         rows = listed.json()
