@@ -759,6 +759,22 @@ def on_image_text_lines(brief, headline):
     if not headline or not poster_renders_its_own_text(brief):
         return [NO_TEXT_LINE]
 
+    # Format adaptation: the attached image is the brand's own APPROVED
+    # creative, and the job is the same poster on a new canvas — not a new
+    # photograph, not new words, not a new design. Every other branch below
+    # exists to make something new; this one exists to change nothing but
+    # the frame.
+    if brief.get('format_adaptation'):
+        return [
+            'MUST: Render this exact headline ON the image, word for word and '
+            f'correctly spelled: "{headline}", with the same typographic '
+            'treatment the attached approved creative gives it.',
+            'MUST: Reproduce every text element of the attached creative '
+            'verbatim - same wording, casing, hierarchy and relative '
+            'placement, recomposed gracefully for the new canvas. Add no '
+            'text element and drop none.',
+        ]
+
     cta, offer = brief_cta_and_offer(brief)
     direction = _direction(brief)
 

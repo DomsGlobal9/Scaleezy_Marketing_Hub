@@ -488,7 +488,19 @@ Return ONLY a valid JSON object with these exact keys:
         # inventing a wildly creative composition — would fight that, so it
         # is told the composition is already decided.
         template_block = ''
-        if request_data.get('template_image_base64'):
+        if request_data.get('format_adaptation'):
+            # The attached image is the brand's own APPROVED creative and the
+            # only job is the same poster on a new canvas. Step 1 must not
+            # write a new scene - the words and photograph are already won.
+            template_block = (
+                "\n\nFORMAT ADAPTATION MODE: this creative already exists and "
+                "was approved; the image model receives it attached and will "
+                "recompose it for a different canvas. The `imagePrompt` must "
+                "describe the attached creative AS IT IS - its subject, scene "
+                "and design - in 1-2 sentences and ask for nothing new: no new "
+                "pose, setting, styling, palette or layout ideas.\n"
+            )
+        elif request_data.get('template_image_base64'):
             template_block = (
                 "\n\nBRAND TEMPLATE MODE: this poster will be generated FROM the "
                 "brand's own fixed template design, which the image model receives "
@@ -688,7 +700,8 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                               product_image_base64: str = "",
                               logo_image_base64: str = "",
                               aspect_ratio: str = '4:5',
-                              image_size: str = '4K') -> str:
+                              image_size: str = '4K',
+                              format_adaptation: bool = False) -> str:
         """
         Step 2: Send the AI-generated image prompt to the image model.
         Also send the original reference image if provided.
@@ -721,7 +734,21 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         image_parts = []
         preamble = []
         template_mime, template_bytes = cls._parse_base64_image(template_image_base64)
-        if template_mime and template_bytes:
+        if template_mime and template_bytes and format_adaptation:
+            image_parts.append(
+                types.Part.from_bytes(data=template_bytes, mime_type=template_mime)
+            )
+            preamble.append(
+                f"ATTACHED IMAGE {len(image_parts)} IS THE BRAND'S APPROVED "
+                "CREATIVE. Recreate THIS EXACT poster on the new canvas: the "
+                "same design system, the same photograph - same subject, pose, "
+                "styling and scene - the same text treatment and the same logo, "
+                f"faithfully recomposed for the {aspect_ratio} format. Extend or "
+                "crop backgrounds gracefully to fill the canvas; never "
+                "letterbox, pad or stretch. Do not redesign, restyle or invent "
+                "anything new."
+            )
+        elif template_mime and template_bytes:
             image_parts.append(
                 types.Part.from_bytes(data=template_bytes, mime_type=template_mime)
             )
@@ -933,6 +960,7 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                     ambassador_image_base64=request_data.get('ambassador_image_base64', ''),
                     product_image_base64=request_data.get('product_image_base64', ''),
                     logo_image_base64=request_data.get('logo_image_base64', ''),
+                    format_adaptation=bool(request_data.get('format_adaptation')),
                 )
         except Exception as e:
             print(f"[Gemini] Step 2 failed: {e}")

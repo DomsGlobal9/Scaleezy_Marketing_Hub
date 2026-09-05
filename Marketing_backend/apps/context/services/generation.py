@@ -268,6 +268,11 @@ def _variety_seed(workspace, brand, brief) -> dict:
 
     if brand is None or not poster_renders_its_own_text(brief):
         return {}
+    # A format adaptation reproduces an approved creative on a new canvas:
+    # its composition and scene are already won, so no variety is drawn and
+    # none is recorded — the picture is the same picture, reframed.
+    if brief.get('format_adaptation'):
+        return {}
     wanted = ('composition_archetype', 'scene_variant')
     # An EXACT template owns its own layout, so only the scene varies.
     # INSPIRED keeps both dials — varying the composition is what that
