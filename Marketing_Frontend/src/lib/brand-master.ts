@@ -476,13 +476,21 @@ export const rejectMemory = (memoryId: string) =>
 
 /* ------------------------------------------------------------- inspirations */
 
-export const fetchInspirations = async (brandId: string) =>
-  asList<Inspiration>(await api(`/api/marketing/inspirations/?brand_id=${brandId}`), [
-    "id",
-    "title",
-    "analysis_status",
-    "lifecycle_status",
-  ]);
+/**
+ * `inspirationType` narrows the list server-side (the endpoint's own
+ * `?inspiration_type=` filter). Callers that want one kind of row should ask
+ * for it here rather than sifting the whole list: the list is validated as a
+ * unit, so one malformed row of an unrelated type would otherwise take the
+ * whole surface down with it.
+ */
+export const fetchInspirations = async (brandId: string, inspirationType?: string) =>
+  asList<Inspiration>(
+    await api(
+      `/api/marketing/inspirations/?brand_id=${brandId}` +
+        (inspirationType ? `&inspiration_type=${encodeURIComponent(inspirationType)}` : ""),
+    ),
+    ["id", "title", "analysis_status", "lifecycle_status"],
+  );
 
 export const fetchSignals = async (brandId: string) =>
   asList<InspirationSignalRow>(
@@ -536,8 +544,11 @@ export const BRAND_TEMPLATE_TYPE = "BRAND_TEMPLATE";
 export const isBrandTemplate = (row: Inspiration) =>
   row.inspiration_type === BRAND_TEMPLATE_TYPE;
 
+// Asked for by type so the answer is the templates themselves, not whatever
+// survives a client-side sift of every reference the brand owns. The filter
+// stays as a guard against a server that ignores the parameter.
 export const fetchBrandTemplates = async (brandId: string) =>
-  (await fetchInspirations(brandId)).filter(isBrandTemplate);
+  (await fetchInspirations(brandId, BRAND_TEMPLATE_TYPE)).filter(isBrandTemplate);
 
 export const uploadBrandTemplate = (brandId: string, file: File, title: string) =>
   uploadInspiration(brandId, file, {

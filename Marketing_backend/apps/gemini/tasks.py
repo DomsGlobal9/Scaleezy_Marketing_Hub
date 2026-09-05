@@ -1158,6 +1158,7 @@ def _persist(request, brief, result_data, routed, *, brand=None):
 
     from apps.brands.models import Brand
     from apps.content.models import ContentItem
+    from apps.context.services.brief_fields import stored_offer
     from apps.context.services.generation import (
         create_generated_asset,
         intelligence_in_force,
@@ -1194,7 +1195,10 @@ def _persist(request, brief, result_data, routed, *, brand=None):
                 headline=(result_data.get('postTitle') or '')[:500],
                 caption=result_data.get('postDescription') or '',
                 hashtags=result_data.get('postHashtags') or '',
-                cta=(brief.get('offer') or '')[:255],
+                # The offer line (this column stores the offer text): the
+                # chip's, else the one read out of the typed brief, which
+                # only the generation's own trace still carries.
+                cta=stored_offer(brief, routed.get('trace'))[:255],
                 preview_url=(
                     result_data.get('videoUrl')
                     or result_data.get('posterImageUrl')

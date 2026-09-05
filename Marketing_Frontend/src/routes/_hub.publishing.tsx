@@ -51,6 +51,7 @@ import {
 } from "@/components/marketing/create-from-inspiration";
 import { PosterStudio, useLayoutCatalogue } from "@/components/marketing/poster-studio";
 import { cn } from "@/lib/utils";
+import { extractBriefFields, type BriefFieldKey } from "@/lib/brief-fields";
 import { useBrandSettings } from "@/lib/brand-settings";
 import {
   asList,
@@ -73,6 +74,53 @@ import {
   generationDecision,
   hasSavedGenerationImage,
 } from "@/lib/generation-state";
+
+/** The campaign fields a labelled line in the brief may fill while they are blank. */
+type BriefAutoKey = Extract<
+  BriefFieldKey,
+  "offer" | "occasion" | "campaignName" | "product" | "audience" | "location" | "brandTone"
+>;
+const BRIEF_AUTO_KEYS: readonly BriefAutoKey[] = [
+  "offer",
+  "occasion",
+  "campaignName",
+  "product",
+  "audience",
+  "location",
+  "brandTone",
+];
+/** Fields behind the collapsed "More details" — opened when the brief fills one, so the pick-up is seen. */
+const HIDDEN_BRIEF_KEYS: ReadonlySet<BriefAutoKey> = new Set<BriefAutoKey>([
+  "campaignName",
+  "product",
+  "audience",
+  "location",
+  "brandTone",
+]);
+type BriefAutoFields = Partial<Record<BriefAutoKey, string>>;
+const EMPTY_BRIEF_TARGETS: Record<BriefAutoKey, string> = {
+  offer: "",
+  occasion: "",
+  campaignName: "",
+  product: "",
+  audience: "",
+  location: "",
+  brandTone: "",
+};
+/** Parser key -> the name the backend's brief parser gives the same field. */
+const BRIEF_BACKEND_KEYS: Record<BriefAutoKey, string> = {
+  offer: "offer",
+  occasion: "occasion",
+  campaignName: "campaign_name",
+  product: "product",
+  audience: "target_audience",
+  location: "location",
+  brandTone: "brand_tone",
+};
+/** Stable DOM ids for an auto-fillable input and the "From your brief" pill that describes it. */
+const briefFieldId = (key: BriefAutoKey) =>
+  `studio-${key.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}`;
+const briefPillId = (key: BriefAutoKey) => `${briefFieldId(key)}-from-brief`;
 
 export const Route = createFileRoute("/_hub/publishing")({
   head: () => ({
@@ -470,6 +518,16 @@ function PublishingPage() {
   const [offer, setOffer] = useState("");
   const [brandTone, setBrandTone] = useState("");
   const [creativeBrief, setCreativeBrief] = useState("");
+  // What the brief itself filled in: a field still equal to the value it was
+  // given here shows "From your brief" and follows the brief; anything the
+  // user typed or tapped over is theirs. Headline and CTA have no field of
+  // their own, so they are only shown.
+  const [briefAuto, setBriefAuto] = useState<BriefAutoFields>({});
+  const [briefHints, setBriefHints] = useState<{
+    requestedHeadline?: string | undefined;
+    cta?: string | undefined;
+  }>({});
+  const [moreDetailsOpen, setMoreDetailsOpen] = useState(false);
   const [creativeMode, setCreativeMode] = useState<CreativeMode | null>(null);
   const [creativeSelections, setCreativeSelections] = useState<CreativeSelection[]>([]);
   // The brand's uploaded BRAND_TEMPLATE inspirations — what "Your templates"
@@ -586,20 +644,44 @@ function PublishingPage() {
         if (!cancelled) setAmbassadors(rows);
       })
       .catch(() => {
-        // The toggle simply stays hidden; generation runs without the photo.
-        if (!cancelled) setAmbassadors([]);
+        // First load: the toggle simply stays hidden and generation runs
+        // without the photo. A later re-read (the tab coming back, often
+        // straight out of sleep) keeps the list it already had: dropping it
+        // would hide the model and buy the next poster without her.
+        if (!cancelled) setAmbassadors((current) => current ?? []);
       });
     fetchBrandProducts(brandId)
       .then((rows) => {
         if (!cancelled) setProductPhotos(rows);
       })
       .catch(() => {
-        if (!cancelled) setProductPhotos([]);
+        if (!cancelled) setProductPhotos((current) => current ?? []);
       });
     return () => {
       cancelled = true;
     };
   }, [brandId, templatesAttempt]);
+
+  // Templates, model and product photos are uploaded in Brand Master — often
+  // in another tab. This page holds its own copy of those lists, fetched once
+  // on mount, with no channel back from the upload: a Create Studio opened
+  // before the upload kept an honest-at-the-time empty list and "Your
+  // templates" stayed disabled until the page was left and re-entered. Ask
+  // again whenever this document comes back into view. The old list stays on
+  // screen until the answer lands, so nothing flickers.
+  useEffect(() => {
+    const refetch = () => {
+      if (document.visibilityState === "visible") {
+        setTemplatesAttempt((current) => current + 1);
+      }
+    };
+    document.addEventListener("visibilitychange", refetch);
+    window.addEventListener("focus", refetch);
+    return () => {
+      document.removeEventListener("visibilitychange", refetch);
+      window.removeEventListener("focus", refetch);
+    };
+  }, []);
 
   // Founder directive: with no uploaded templates, AI original is the default
   // direction rather than an unmade choice.
@@ -713,6 +795,81 @@ function PublishingPage() {
       cancelled = true;
     };
   }, [brandId]);
+
+  // Labelled lines in the brief ("Offer: 20% off launch week") fill the
+  // campaign fields the user left blank, so the offer slot is never empty
+  // just because no chip was tapped. The ref mirrors the on-screen values so
+  // the debounced parse reads what is there without re-running on every
+  // keystroke in the fields themselves — re-running there would refill a
+  // field the user had just cleared.
+  const briefTargets = useRef<Record<BriefAutoKey, string>>(EMPTY_BRIEF_TARGETS);
+  useEffect(() => {
+    briefTargets.current = { offer, occasion, campaignName, product, audience, location, brandTone };
+  });
+  const briefAutoRef = useRef<BriefAutoFields>({});
+  // A brief-filled field the user then emptied (cleared, or its chip tapped
+  // off) stays empty while the brief still says the same thing — the value
+  // is remembered here as dismissed. Once the brief's value for that key
+  // changes, the dismissal lifts and the pick-up resumes.
+  const briefDismissedRef = useRef<BriefAutoFields>({});
+  const applyBriefFields = useCallback((text: string) => {
+    const parsed = extractBriefFields(text);
+    const setters: Record<BriefAutoKey, (value: string) => void> = {
+      offer: setOffer,
+      occasion: setOccasion,
+      campaignName: setCampaignName,
+      product: setProduct,
+      audience: setAudience,
+      location: setLocation,
+      brandTone: setBrandTone,
+    };
+    const current = briefTargets.current;
+    const previous = briefAutoRef.current;
+    const dismissed = briefDismissedRef.current;
+    const next: BriefAutoFields = {};
+    let revealMore = false;
+    for (const key of BRIEF_AUTO_KEYS) {
+      const value = parsed[key];
+      const ours = previous[key] !== undefined && current[key] === previous[key];
+      if (previous[key] !== undefined && !current[key]) dismissed[key] = previous[key];
+      if (dismissed[key] !== undefined && dismissed[key] !== value) delete dismissed[key];
+      if (value) {
+        if (dismissed[key] === value) continue;
+        if (!current[key] || ours) {
+          setters[key](value);
+          next[key] = value;
+          if (!ours && HIDDEN_BRIEF_KEYS.has(key)) revealMore = true;
+        }
+      } else if (ours) {
+        setters[key]("");
+      }
+    }
+    briefAutoRef.current = next;
+    setBriefAuto(next);
+    setBriefHints({ requestedHeadline: parsed.requestedHeadline, cta: parsed.cta });
+    if (revealMore) setMoreDetailsOpen(true);
+  }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => applyBriefFields(creativeBrief), 300);
+    return () => window.clearTimeout(timer);
+  }, [creativeBrief, applyBriefFields]);
+
+  // The input carries a stable id and, while the pill is shown, points
+  // aria-describedby at it; the pill is a status region so its appearance
+  // is announced.
+  const briefFieldProps = (key: BriefAutoKey, value: string) => ({
+    id: briefFieldId(key),
+    "aria-describedby": value && briefAuto[key] === value ? briefPillId(key) : undefined,
+  });
+  const fromBrief = (key: BriefAutoKey, value: string) =>
+    value && briefAuto[key] === value ? (
+      <p id={briefPillId(key)} role="status" className="text-[11px] text-muted-foreground">
+        <span className="rounded-full border border-primary/50 bg-primary/15 px-2 py-0.5 font-medium text-foreground">
+          From your brief
+        </span>{" "}
+        — change it here or in the brief.
+      </p>
+    ) : null;
 
   /** (Re)loads the first page of history; "Load more" appends the rest. */
   const loadHistory = useCallback(async () => {
@@ -1264,6 +1421,18 @@ function PublishingPage() {
 
       const requestedCampaignName =
         pending?.campaignName ?? (inspiration?.inspirationTitle || campaignName);
+      // A brief-filled field the user then emptied stays empty on the server
+      // too: the backend re-parses the same brief and would fill it again
+      // unless told which of the brief's current values were dismissed here.
+      // Decided at submit time from the brief as it is now — the debounced
+      // pick-up may not have run since the field was cleared.
+      const briefNow = extractBriefFields(creativeBrief);
+      const fieldNow = briefTargets.current;
+      const briefFieldsDismissed = BRIEF_AUTO_KEYS.filter((key) => {
+        const value = briefNow[key];
+        if (!value || fieldNow[key].trim()) return false;
+        return briefDismissedRef.current[key] === value || briefAutoRef.current[key] === value;
+      }).map((key) => BRIEF_BACKEND_KEYS[key]);
       const generationPayload = inspiration
         ? {
             creativeMode: requestedMode,
@@ -1307,6 +1476,7 @@ function PublishingPage() {
             offer,
             brandTone,
             instruction: creativeBrief,
+            briefFieldsDismissed,
             featureAmbassador: featureModel && (ambassadors?.length ?? 0) > 0,
             platform: requestedContentType === "poster" ? posterPlatform : "",
             imageQuality: requestedContentType === "poster" ? imageQuality : "",
@@ -2020,6 +2190,7 @@ function PublishingPage() {
                   rows={5}
                   value={creativeBrief}
                   onChange={(event) => setCreativeBrief(event.target.value)}
+                  onBlur={() => applyBriefFields(creativeBrief)}
                   maxLength={MAX_CREATIVE_BRIEF_CHARS}
                   placeholder="Example: Launch our summer linen collection with a premium, energetic poster. Highlight 25% off this weekend and drive people to shop online."
                   className="resize-y text-base"
@@ -2454,9 +2625,30 @@ function PublishingPage() {
                   Optional — tap what fits, type what doesn't. Anything left blank is filled
                   from Brand Master.
                 </p>
+                {briefHints.requestedHeadline || briefHints.cta ? (
+                  <p className="mt-2 text-xs text-foreground" aria-live="polite">
+                    {briefHints.requestedHeadline ? (
+                      <>
+                        Headline requested:{" "}
+                        <span className="font-medium">{briefHints.requestedHeadline}</span>
+                      </>
+                    ) : null}
+                    {briefHints.requestedHeadline && briefHints.cta ? " · " : null}
+                    {briefHints.cta ? (
+                      <>
+                        CTA: <span className="font-medium">{briefHints.cta}</span>
+                      </>
+                    ) : null}
+                  </p>
+                ) : null}
                 <div className="mt-4 space-y-4">
                   <div className="space-y-2">
-                    <Label className="text-xs tracking-wide uppercase">Occasion</Label>
+                    <Label
+                      htmlFor={briefFieldId("occasion")}
+                      className="text-xs tracking-wide uppercase"
+                    >
+                      Occasion
+                    </Label>
                     <div className="flex flex-wrap gap-1.5">
                       {[
                         "Diwali",
@@ -2483,13 +2675,20 @@ function PublishingPage() {
                       ))}
                     </div>
                     <Input
+                      {...briefFieldProps("occasion", occasion)}
                       value={occasion}
                       onChange={(e) => setOccasion(e.target.value)}
                       placeholder="…or type your own occasion"
                     />
+                    {fromBrief("occasion", occasion)}
                   </div>
                   <div className="space-y-2">
-                    <Label className="text-xs tracking-wide uppercase">Offer</Label>
+                    <Label
+                      htmlFor={briefFieldId("offer")}
+                      className="text-xs tracking-wide uppercase"
+                    >
+                      Offer
+                    </Label>
                     <div className="flex flex-wrap gap-1.5">
                       {["10% off", "20% off", "Buy 1 Get 1", "Free styling session"].map(
                         (chip) => (
@@ -2511,38 +2710,67 @@ function PublishingPage() {
                       )}
                     </div>
                     <Input
+                      {...briefFieldProps("offer", offer)}
                       value={offer}
                       onChange={(e) => setOffer(e.target.value)}
                       placeholder="…or type the exact offer"
                     />
+                    {fromBrief("offer", offer)}
                   </div>
-                  <details>
+                  <details
+                    open={moreDetailsOpen}
+                    onToggle={(event) => setMoreDetailsOpen(event.currentTarget.open)}
+                  >
                     <summary className="cursor-pointer text-xs font-semibold text-muted-foreground hover:text-foreground">
                       More details — campaign name, product, audience, location, tone
                     </summary>
                     <div className="mt-4 grid gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
-                        <Label>Campaign / promotion name</Label>
+                        <Label htmlFor={briefFieldId("campaignName")}>
+                          Campaign / promotion name
+                        </Label>
                         <Input
+                          {...briefFieldProps("campaignName", campaignName)}
                           value={campaignName}
                           onChange={(e) => setCampaignName(e.target.value)}
                         />
+                        {fromBrief("campaignName", campaignName)}
                       </div>
                       <div className="space-y-2">
-                        <Label>Product or collection</Label>
-                        <Input value={product} onChange={(e) => setProduct(e.target.value)} />
+                        <Label htmlFor={briefFieldId("product")}>Product or collection</Label>
+                        <Input
+                          {...briefFieldProps("product", product)}
+                          value={product}
+                          onChange={(e) => setProduct(e.target.value)}
+                        />
+                        {fromBrief("product", product)}
                       </div>
                       <div className="space-y-2">
-                        <Label>Target audience</Label>
-                        <Input value={audience} onChange={(e) => setAudience(e.target.value)} />
+                        <Label htmlFor={briefFieldId("audience")}>Target audience</Label>
+                        <Input
+                          {...briefFieldProps("audience", audience)}
+                          value={audience}
+                          onChange={(e) => setAudience(e.target.value)}
+                        />
+                        {fromBrief("audience", audience)}
                       </div>
                       <div className="space-y-2">
-                        <Label>Location</Label>
-                        <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+                        <Label htmlFor={briefFieldId("location")}>Location</Label>
+                        <Input
+                          {...briefFieldProps("location", location)}
+                          value={location}
+                          onChange={(e) => setLocation(e.target.value)}
+                        />
+                        {fromBrief("location", location)}
                       </div>
                       <div className="space-y-2 sm:col-span-2">
-                        <Label>Brand tone</Label>
-                        <Input value={brandTone} onChange={(e) => setBrandTone(e.target.value)} />
+                        <Label htmlFor={briefFieldId("brandTone")}>Brand tone</Label>
+                        <Input
+                          {...briefFieldProps("brandTone", brandTone)}
+                          value={brandTone}
+                          onChange={(e) => setBrandTone(e.target.value)}
+                        />
+                        {fromBrief("brandTone", brandTone)}
                       </div>
                     </div>
                   </details>
@@ -2751,7 +2979,9 @@ function PublishingPage() {
                 </div>
               ) : null}
 
-              {creativeMode === "BRAND_TEMPLATE" && brandTemplatesError ? (
+              {creativeMode === "BRAND_TEMPLATE" &&
+              brandTemplatesError &&
+              !brandTemplates?.length ? (
                 <div
                   role="alert"
                   className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"

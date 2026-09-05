@@ -118,6 +118,32 @@ class CopyLawTests(SimpleTestCase):
         self.assertIn('#sale', joined)
         self.assertIn('DM keyword', joined)
 
+    def test_an_approved_typed_cta_stands_in_for_the_caption_keyword(self):
+        # The poster's own call to action (typed into the brief, painted on
+        # the image) is an approved keyword: the caption owes no second one,
+        # so the check agrees with `enforce`, which declines to append it.
+        payload = {
+            'postTitle': 'Precision wins', 'postDescription': 'A lovely drop.',
+            'postHashtags': '#foam',
+        }
+        self.assertEqual(law.copy_violations(a_brand(), payload, cta='protect'), [])
+        # An unlisted one - or none - still wants the keyword in the caption.
+        for cta in ('Shop now', ''):
+            with self.subTest(cta=cta):
+                self.assertEqual(len(law.copy_violations(a_brand(), payload, cta=cta)), 1)
+        # And the law's own prompt line says so - the generator, its rewrite
+        # and the judge all read this rendering.
+        lines = law.prompt_lines(a_brand(), cta='Protect')
+        self.assertFalse([line for line in lines if 'MUST use exactly one of' in line])
+        self.assertTrue(
+            [line for line in lines if '"Protect"' in line and 'no other DM keyword' in line],
+            lines,
+        )
+        self.assertTrue([
+            line for line in law.prompt_lines(a_brand(), cta='Shop now')
+            if 'MUST use exactly one of' in line
+        ])
+
     def test_compliant_copy_raises_nothing(self):
         payload = {
             'postTitle': 'Precision protection',
@@ -172,6 +198,39 @@ class CopyLawTests(SimpleTestCase):
         twice, notes = law.enforce(a_brand(), once)
         self.assertEqual(once, twice)
         self.assertEqual(notes, [])
+
+    def test_a_posters_own_approved_cta_needs_no_dm_line_in_the_caption(self):
+        # A CTA typed into the brief is painted on the image. When it is one
+        # of the approved keywords the poster already carries its CTA: one
+        # CTA per poster, so the caption gets no second "DM PROTECT" line.
+        payload = {
+            'postTitle': 'Precision protection',
+            'postDescription': 'Built to spec.\nrajvipackaging.com',
+            'postHashtags': '#foam',
+        }
+        fixed, notes = law.enforce(a_brand(), payload, cta=' protect ')
+        self.assertEqual(fixed, payload)
+        self.assertEqual(notes, [])
+        # Any other CTA - or none - leaves the append as it was.
+        for cta in ('Shop now', 'DM PROTECT', ''):
+            with self.subTest(cta=cta):
+                fixed, notes = law.enforce(a_brand(), payload, cta=cta)
+                self.assertIn('DM PROTECT', fixed['postDescription'])
+                self.assertEqual(len(notes), 1)
+
+    def test_an_approved_cta_matches_whole_case_insensitively_with_whitespace_collapsed(self):
+        self.assertEqual(law.approved_ctas(a_brand()), ['PROTECT', 'SAMPLE'])
+        self.assertEqual(law.approved_ctas(a_brand({})), [])
+        self.assertEqual(law.approved_ctas(None), [])
+        self.assertTrue(law.is_approved_cta(a_brand(), ' Protect '))
+        self.assertTrue(
+            law.is_approved_cta(a_brand({'approved_ctas': ['Get  Sample']}), 'get sample')
+        )
+        for cta in ('DM PROTECT', 'PROTECTED', '', None):
+            with self.subTest(cta=cta):
+                self.assertFalse(law.is_approved_cta(a_brand(), cta))
+        self.assertFalse(law.is_approved_cta(a_brand({}), 'PROTECT'))
+        self.assertFalse(law.is_approved_cta(None, 'PROTECT'))
 
     def test_enforce_with_no_rules_is_a_no_op(self):
         payload = {'postTitle': 'T', 'postDescription': 'D', 'postHashtags': '#h'}
