@@ -68,6 +68,36 @@ class PickTwinTests(APITestCase):
         }
         self.assertIn((self.a.pk, Feedback.Verdict.APPROVE), verdicts)
         self.assertIn((self.b.pk, Feedback.Verdict.REJECT), verdicts)
+        # The loser's rejection is VERDICT-ONLY: the machine note (and the
+        # reviewer's praise of the winner) must never reach the NL parser as
+        # if a reviewer had criticised this creative.
+        loser_row = Feedback.objects.get(content_item=self.b)
+        self.assertEqual(loser_row.feedback_text, '')
+        self.assertEqual(loser_row.element_keys, [])
+
+    def test_the_pairing_authority_is_not_client_writable(self):
+        # An editor PATCHing ab_group onto arbitrary items could weaponise a
+        # pick into auto-rejection — layout_config is the engine's ledger.
+        self.as_(self.editor)
+        res = self.client.patch(
+            f'/api/marketing/content/{self.a.pk}/',
+            {'layout_config': {'ab_group': 'spoofed', 'ab_slot': 'A'}},
+            format='json',
+        )
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.layout_config.get('ab_group'), GROUP, res.data)
+
+    def test_a_group_that_is_not_exactly_two_is_refused(self):
+        ContentItem.objects.create(
+            workspace=self.ws, headline='Variant C',
+            status=ContentItem.Status.DRAFT,
+            layout_config={'ab_group': GROUP, 'ab_slot': 'C'},
+        )
+        self.as_(self.manager)
+        res = self.pick(self.a)
+        self.assertEqual(res.status_code, 409)
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.status, ContentItem.Status.DRAFT)
 
     def test_a_decided_pair_refuses_a_pick(self):
         self.b.status = ContentItem.Status.APPROVED

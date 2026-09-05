@@ -733,8 +733,9 @@ function ReviewPage() {
                           className="mt-2 aspect-[4/5] w-full rounded-lg object-cover"
                         />
                       ) : (
-                        <div className="mt-2 flex aspect-[4/5] w-full items-center justify-center rounded-lg bg-muted text-xs text-muted-foreground">
-                          Still generating…
+                        <div className="mt-2 flex aspect-[4/5] w-full items-center justify-center rounded-lg bg-muted p-4 text-center text-xs text-muted-foreground">
+                          No picture on this variant — if it stays empty, its image
+                          failed. Open its card below to retry or review it normally.
                         </div>
                       )}
                       <p className="mt-2 line-clamp-2 text-sm font-medium">{variant.headline}</p>
