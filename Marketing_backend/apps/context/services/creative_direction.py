@@ -521,7 +521,7 @@ def _least_recently_used(options, recent, request_id):
     return min(options, key=crowding)
 
 
-def pick_variety(workspace, brand, request_id, *, face_safe=False):
+def pick_variety(workspace, brand, request_id, *, face_safe=False, exclude=None):
     """Both variety picks for one generation from ONE history read.
 
     `composition_archetype` (see `COMPOSITION_ARCHETYPES`) and
@@ -529,18 +529,30 @@ def pick_variety(workspace, brand, request_id, *, face_safe=False):
     brand over its last 8 posters. `face_safe` drops the seeds that frame
     tighter than a face - for a poster that carries the brand ambassador's
     photo, whose face is the point.
+
+    `exclude` is a sibling generation's picks: an A/B twin must genuinely
+    differ, and the LRU is a pure function of history — two briefs picked
+    from the same history would converge on the same answer, so the twin's
+    pick drops its sibling's keys from the running (never below one option).
     """
     from .context_gateway import COMPOSITION_ARCHETYPES, SCENE_VARIANTS
 
     recent = _recent_variety_keys(workspace, brand)
+    excluded = exclude if isinstance(exclude, dict) else {}
+    archetypes = [row['key'] for row in COMPOSITION_ARCHETYPES]
+    archetypes = [
+        key for key in archetypes if key != excluded.get('composition_archetype')
+    ] or archetypes
     scenes = [
         row['key'] for row in SCENE_VARIANTS
         if not (face_safe and row.get('crops_face'))
     ]
+    scenes = [
+        key for key in scenes if key != excluded.get('scene_variant')
+    ] or scenes
     return {
         'composition_archetype': _least_recently_used(
-            [row['key'] for row in COMPOSITION_ARCHETYPES],
-            recent['composition_archetype'], request_id,
+            archetypes, recent['composition_archetype'], request_id,
         ),
         'scene_variant': _least_recently_used(
             scenes, recent['scene_variant'], request_id,

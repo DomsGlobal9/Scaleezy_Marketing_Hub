@@ -18,6 +18,7 @@ from apps.common.permissions import (
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.responses import APIResponse
 from apps.brands.services.approval import approval_gate_response
+from apps.gemini.services.generator import GeminiGeneratorService
 from apps.workspaces.models import WorkspaceMember
 from django.utils import timezone
 
@@ -357,6 +358,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                 layout_config={
                     'creative_direction': brief.get('creative_direction') or {},
                     'feature_ambassador': bool(brief.get('feature_ambassador', True)),
+                    'caption_language': str(brief.get('caption_language') or 'english'),
                 },
                 created_by=creator,
             )
@@ -404,6 +406,17 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             # Closes the training loop: what reviewers have repeatedly
             # rejected becomes a constraint on the next generation.
             'brand_rules': self._brand_rules(request),
+            # The caption's language, same contract as the async path: the
+            # headline stays English, anything off the allowlist is English.
+            'caption_language': (
+                (lambda lang: lang if lang in GeminiGeneratorService.CAPTION_LANGUAGES
+                 else 'english')(
+                    str(
+                        data.get('captionLanguage', data.get('caption_language', ''))
+                        or 'english'
+                    ).strip().lower()
+                )
+            ),
         }
 
         # Everything the Context Gateway resolved, carried alongside the
@@ -733,10 +746,23 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             if existing is not None:
                 if existing.workspace_id != workspace.pk:
                     return APIResponse(success=False, message='Generation request unavailable.', status=409)
+                # An A/B twin's id is deterministic on the primary's, so a
+                # retry whose first response was lost still learns the twin
+                # it already paid for. Pure read — nothing is queued here.
+                from uuid import NAMESPACE_URL, uuid5
+
+                twin_pk = uuid5(NAMESPACE_URL, f'scaleezy-ab-twin:{requested_id}')
+                twin_row = GeminiGenerationRequest.objects.filter(
+                    pk=twin_pk, workspace=workspace,
+                ).first()
                 return APIResponse(success=True, data={
                     'generationId': str(existing.pk), 'taskId': None,
                     'status': existing.status,
                     'pollUrl': f'/api/marketing/ai-generation/{existing.pk}/',
+                    'twin': {
+                        'generationId': str(twin_row.pk),
+                        'pollUrl': f'/api/marketing/ai-generation/{twin_row.pk}/',
+                    } if twin_row is not None else None,
                 }, status=202)
 
         quota_error = self._quota_error(workspace)
@@ -941,6 +967,17 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             'product_image_id': str(
                 data.get('productImageId', data.get('product_image_id', '')) or ''
             ).strip()[:64],
+            # The caption's language. The headline stays English — it is
+            # painted into the image. Anything off the allowlist is English.
+            'caption_language': (
+                (lambda lang: lang if lang in GeminiGeneratorService.CAPTION_LANGUAGES
+                 else 'english')(
+                    str(
+                        data.get('captionLanguage', data.get('caption_language', ''))
+                        or 'english'
+                    ).strip().lower()
+                )
+            ),
         }
 
         # The whole point of written guardrails: refuse BEFORE a request row
@@ -948,6 +985,60 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
         blocked = self._guardrail_block(brand, brief)
         if blocked:
             return blocked
+
+        from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+
+        try:
+            generation_id = UUID(str(data.get('requestId'))) if data.get('requestId') else uuid4()
+        except (ValueError, TypeError, AttributeError):
+            return APIResponse(success=False, message='Invalid generation request id.', status=400)
+
+        # A/B twins: the client opted into TWO variants of this brief — two
+        # image buys, clearly priced in the studio. The variety engine's LRU
+        # is a pure function of history, so two concurrent picks would
+        # converge on the same design; both briefs are picked HERE, the
+        # twin's with its sibling's keys excluded, so the pair is guaranteed
+        # to genuinely differ.
+        twin_brief = None
+        twin_id = None
+        if (
+            bool(data.get('abVariants', data.get('ab_variants', False)))
+            and content_type.casefold() in ('', 'poster')
+            and brand is not None
+            # A catalogue template owns its layout and the compose engine its
+            # words: the variety keys the twins differ by are dead there, and
+            # billing double for two identical posters is exactly the promise
+            # the toggle must never break.
+            and str(creative_direction.get('mode') or '').upper() != 'CATALOG_TEMPLATE'
+        ):
+            from apps.billing.quota import check as quota_check
+            from apps.context.services.creative_direction import pick_variety
+
+            # Room for TWO, decided now: the accept-time gate above cleared
+            # one unit, and a twin that would die on quota mid-queue is a
+            # promise the 202 must not make.
+            verdict = quota_check(workspace)
+            if verdict.allowed and (
+                verdict.limit <= 0 or verdict.limit - verdict.used >= 2
+            ):
+                # Deterministic, so a client retry of the same requestId
+                # finds the SAME twin instead of minting or losing one.
+                twin_id = uuid5(NAMESPACE_URL, f'scaleezy-ab-twin:{generation_id}')
+                face_safe = bool(brief.get('feature_ambassador', True))
+                first_picks = pick_variety(
+                    workspace, brand, generation_id, face_safe=face_safe,
+                )
+                brief.update(first_picks)
+                brief['ab_group'] = str(generation_id)
+                brief['ab_slot'] = 'A'
+                twin_brief = {
+                    **brief,
+                    **pick_variety(
+                        workspace, brand, twin_id,
+                        face_safe=face_safe, exclude=first_picks,
+                    ),
+                    'ab_slot': 'B',
+                }
 
         generation_defaults = dict(
             workspace=workspace,
@@ -966,12 +1057,6 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
 
         from apps.gemini.tasks import generate_content
         from django.db import transaction
-        from uuid import UUID, uuid4
-
-        try:
-            generation_id = UUID(str(data.get('requestId'))) if data.get('requestId') else uuid4()
-        except (ValueError, TypeError, AttributeError):
-            return APIResponse(success=False, message='Invalid generation request id.', status=400)
 
         try:
             # Client retries after an uncertain HTTP response reuse this ID.
@@ -1006,6 +1091,29 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        # The twin is best-effort AFTER the first is safely queued: a client
+        # retry reusing the requestId finds created=False and never spawns a
+        # second pair, and a twin that cannot queue costs nothing — the first
+        # variant stands alone and the response says so.
+        twin_payload = None
+        if twin_brief is not None and created:
+            try:
+                with transaction.atomic():
+                    twin, _ = GeminiGenerationRequest.objects.get_or_create(
+                        pk=twin_id,
+                        defaults={
+                            **generation_defaults,
+                            'prompt_data': json.dumps(twin_brief),
+                        },
+                    )
+                    generate_content.enqueue(str(twin.id))
+                twin_payload = {
+                    'generationId': str(twin.id),
+                    'pollUrl': f"/api/marketing/ai-generation/{twin.id}/",
+                }
+            except Exception:
+                logger.exception('A/B twin %s could not be queued', twin_id)
+
         return APIResponse(
             success=True,
             data={
@@ -1013,6 +1121,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                 'taskId': task_result.id if task_result else None,
                 'status': generation.status,
                 'pollUrl': f"/api/marketing/ai-generation/{generation.id}/",
+                'twin': twin_payload,
             },
             status=status.HTTP_202_ACCEPTED,
         )

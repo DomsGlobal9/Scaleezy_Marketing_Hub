@@ -937,6 +937,15 @@ def regenerate_revision(revision_id: str):
     brief['feature_ambassador'] = bool(
         config.get('feature_ambassador', parent_config.get('feature_ambassador', True))
     )
+    # A regenerated caption speaks the language the original was asked in —
+    # and the resolved answer is written back onto THIS revision's config, so
+    # the second review round (whose parent is this revision) still knows it.
+    brief['caption_language'] = str(
+        config.get('caption_language')
+        or parent_config.get('caption_language')
+        or 'english'
+    )
+    config['caption_language'] = brief['caption_language']
     if (
         str(creative_direction.get('mode') or '').strip().upper() == 'REFERENCE'
         and (scope['copy'] or scope['image'] or revision.brand is None)
@@ -1210,6 +1219,15 @@ def _persist(request, brief, result_data, routed, *, brand=None):
                     # honours it instead of fronting a face the original
                     # was made without.
                     'feature_ambassador': bool(brief.get('feature_ambassador', True)),
+                    # So does the caption's language: a regenerated caption
+                    # must speak the language the original was asked in.
+                    'caption_language': str(brief.get('caption_language') or 'english'),
+                    # An A/B twin knows its pair, so the review queue can
+                    # present the compare-and-pick moment the toggle sold.
+                    **({
+                        'ab_group': str(brief.get('ab_group')),
+                        'ab_slot': str(brief.get('ab_slot')),
+                    } if brief.get('ab_group') else {}),
                     'generation_trace': {
                         'brain_version': routed.get('brain_version', ''),
                         **(routed.get('trace') or {}),

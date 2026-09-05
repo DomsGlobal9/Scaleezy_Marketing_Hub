@@ -603,10 +603,54 @@ REQUIRED_FIELDS = {
 }
 
 
-def validate_output(capability, result, context):
+def _caption_language_note(brief):
+    """The provider-neutral language instruction, as a brief field.
+
+    Gemini's Step 1 builds a rich language block of its own; every other
+    TEXT adapter serializes the brief into its prompt, so a bare
+    `caption_language` key would be a hint at best. This note spells the
+    contract out in words any model follows — and the headline half of it
+    is enforced deterministically in `validate_output`.
+    """
+    lang = str(brief.get('caption_language') or '').strip().lower()
+    if lang in ('', 'english') or 'caption_language_note' in brief:
+        return brief
+    return {**brief, 'caption_language_note': (
+        f'Write postDescription in natural {lang} for the audience. '
+        'postTitle MUST remain in English - it is painted into the image. '
+        'Keep brand/product hashtags in English plus 2-3 in-language tags.'
+    )}
+
+
+#: How much of a headline's lettering may be non-Latin before it is refused
+#: as un-paintable. Generous: an emoji or a brand word never trips it.
+NON_LATIN_HEADLINE_RATIO = 0.5
+
+
+def validate_output(capability, result, context, brief=None):
     """Refuse obviously broken or rule-breaking output before accepting it."""
     if not isinstance(result, dict):
         raise OutputRejected(f"{capability} returned no structured result.")
+
+    # The caption may speak any language; the headline is painted into the
+    # image and must stay English. Gemini is told so in its own prompt, but
+    # a workspace routed to any other TEXT provider has only the brief note
+    # — this check is the deterministic backstop for all of them.
+    if (
+        capability == Capability.TEXT
+        and isinstance(brief, dict)
+        and str(brief.get('caption_language') or 'english').lower() != 'english'
+    ):
+        raw = result.get('raw') or {}
+        headline = str(result.get('headline') or raw.get('postTitle') or '')
+        letters = [ch for ch in headline if ch.isalpha()]
+        if letters:
+            non_latin = sum(1 for ch in letters if ord(ch) > 0x024F)
+            if non_latin / len(letters) > NON_LATIN_HEADLINE_RATIO:
+                raise OutputRejected(
+                    'The headline must stay in English: it is painted into '
+                    f'the image. Got: {headline[:80]!r}'
+                )
 
     for field in REQUIRED_FIELDS.get(capability, ()):
         raw = result.get('raw') or {}
@@ -946,7 +990,7 @@ def generate_with_context(workspace, brand, task_type=TaskType.COPY, *, instruct
         # a workspace with no provider routed has not generated anything.
         raise NoProviderConfigured(str(exc)) from exc
 
-    validate_output(capability, result, context)
+    validate_output(capability, result, context, brief=brief)
     if capability == Capability.IMAGE:
         result = persist_generated_image(workspace, result)
 
@@ -1006,7 +1050,7 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction='',
     # to clobber the IMAGE brief's own lines, which then never reached the
     # image provider on the main path. Campaign fields only exist in
     # brief_extra, so they survive.
-    text_brief = {**brief_extra, **context_as_brief(text_context)}
+    text_brief = _caption_language_note({**brief_extra, **context_as_brief(text_context)})
     # A fixed `headline` belongs to painted IMAGE briefs only (see
     # `_with_on_image_text`): on the TEXT brief a combined provider would
     # paint it and the judge would never see the title Step 1 wrote. No
@@ -1048,7 +1092,7 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction='',
     def run(capability, brief, context):
         try:
             result = router.dispatch(capability, brief)
-            validate_output(capability, result, context)
+            validate_output(capability, result, context, brief=brief)
             trace['capabilities'][capability] = {
                 'status': 'OK',
                 'provider': result.get('provider', ''),
@@ -1241,11 +1285,13 @@ def generate_video_and_copy(workspace, brand, brief_extra, *, instruction='', pr
             'status': 'OK', 'resumed': True, 'provider': text.get('provider', ''),
         }
     else:
-        text = router.dispatch(
-            Capability.TEXT,
-            _with_requested_headline({**context_as_brief(text_context), **brief_extra}),
+        dispatched_text_brief = _with_requested_headline(
+            {**context_as_brief(text_context), **brief_extra}
         )
-        validate_output(Capability.TEXT, text, text_context)
+        text = router.dispatch(Capability.TEXT, dispatched_text_brief)
+        validate_output(
+            Capability.TEXT, text, text_context, brief=dispatched_text_brief,
+        )
         text = _compact_text_result(text)
         state['text'] = text
         _save_progress(progress, state)
@@ -1335,11 +1381,13 @@ def generate_carousel_and_copy(
             'status': 'OK', 'resumed': True, 'provider': text.get('provider', ''),
         }
     else:
-        text = router.dispatch(
-            Capability.TEXT,
-            _with_requested_headline({**context_as_brief(text_context), **brief_extra}),
+        dispatched_text_brief = _with_requested_headline(
+            {**context_as_brief(text_context), **brief_extra}
         )
-        validate_output(Capability.TEXT, text, text_context)
+        text = router.dispatch(Capability.TEXT, dispatched_text_brief)
+        validate_output(
+            Capability.TEXT, text, text_context, brief=dispatched_text_brief,
+        )
         text = _compact_text_result(text)
         state['text'] = text
         _save_progress(progress, state)
@@ -1880,12 +1928,12 @@ def generate_copy_only(workspace, brand, brief_extra, *, instruction=''):
     # copy_only tells a combined provider (Gemini serves TEXT and IMAGE from
     # one pipeline) to skip its image step: nobody here will use a poster,
     # and paying for one to discard it is the waste this path exists to avoid.
-    brief = _with_requested_headline(
+    brief = _caption_language_note(_with_requested_headline(
         {**brief_extra, **context_as_brief(context), 'copy_only': True},
-    )
+    ))
     try:
         result = AIRouter(workspace).dispatch(Capability.TEXT, brief)
-        validate_output(Capability.TEXT, result, context)
+        validate_output(Capability.TEXT, result, context, brief=brief)
     except NoProviderAvailable as exc:
         raise NoProviderConfigured(str(exc)) from exc
     raw = result.get('raw') or {}

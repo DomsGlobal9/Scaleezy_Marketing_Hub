@@ -159,6 +159,8 @@ interface CarouselSlide {
 interface DraftAsset {
   id?: string | undefined;
   generationId?: string | undefined;
+  /** The A/B twin's generation id, when the client paid for two variants. */
+  twinGenerationId?: string | undefined;
   mediaWarning?: string | undefined;
   /** ContentItem row the backend persisted for this generation. */
   contentItemId?: string | undefined;
@@ -346,6 +348,16 @@ const QUALITY_TIERS: { id: string; label: string; hint: string }[] = [
   { id: "4K", label: "Ultra", hint: "print-grade · 2 units" },
 ];
 
+/** The language the caption speaks. Headlines stay English — they are
+ * painted into the image, where non-Latin glyphs are not yet trustworthy. */
+const CAPTION_LANGUAGES: { id: string; label: string }[] = [
+  { id: "english", label: "English" },
+  { id: "hinglish", label: "Hinglish" },
+  { id: "hindi", label: "हिंदी" },
+  { id: "telugu", label: "తెలుగు" },
+  { id: "tamil", label: "தமிழ்" },
+];
+
 /** Per-brand memory for the quick choices, so the second visit is brief-only. */
 const studioDefaultsKey = (brandId: string) => `scaleezy.studio.${brandId}`;
 
@@ -531,6 +543,10 @@ function PublishingPage() {
   const [posterPlatform, setPosterPlatform] = useState("instagram_post");
   const [imageQuality, setImageQuality] = useState("4K");
   const [templateFidelity, setTemplateFidelity] = useState<"EXACT" | "INSPIRED">("EXACT");
+  const [captionLanguage, setCaptionLanguage] = useState("english");
+  // A/B twins: two deliberately different designs of the same brief, both
+  // billed. Off by default — it is a spend choice, not a convenience.
+  const [abVariants, setAbVariants] = useState(false);
 
   // The brand's model/ambassador photos. null = loading; the toggle defaults
   // ON — the founder's rule is that the model fronts every creative.
@@ -577,6 +593,8 @@ function PublishingPage() {
       if (QUALITY_TIERS.some((q) => q.id === saved.quality)) setImageQuality(saved.quality);
       if (saved.fidelity === "INSPIRED" || saved.fidelity === "EXACT")
         setTemplateFidelity(saved.fidelity);
+      if (CAPTION_LANGUAGES.some((l) => l.id === saved.language))
+        setCaptionLanguage(saved.language);
     } catch {
       /* corrupted defaults are just defaults */
     }
@@ -590,12 +608,13 @@ function PublishingPage() {
           platform: posterPlatform,
           quality: imageQuality,
           fidelity: templateFidelity,
+          language: captionLanguage,
         }),
       );
     } catch {
       /* private mode — remembering is a convenience, not a requirement */
     }
-  }, [brandId, posterPlatform, imageQuality, templateFidelity]);
+  }, [brandId, posterPlatform, imageQuality, templateFidelity, captionLanguage]);
   // The built-in layout catalogue no longer feeds creation; it survives only
   // for the manual Poster Studio on an already generated item.
   const layoutCatalogue = useLayoutCatalogue(Boolean(asset?.contentItemId));
@@ -1437,6 +1456,11 @@ function PublishingPage() {
             contentType: requestedContentType,
             instruction: inspiration.instruction,
             analyzeBeforeGenerationIds: [inspiration.inspirationId],
+            // The studio's remembered per-brand choices apply to quick
+            // inspiration generations too — same client, same language,
+            // same opt-in spend.
+            captionLanguage: requestedContentType === "poster" ? captionLanguage : "",
+            abVariants: requestedContentType === "poster" ? abVariants : false,
           }
         : {
             // A chosen brand template travels exactly like a create-from-
@@ -1456,6 +1480,8 @@ function PublishingPage() {
             featureAmbassador: featureModel && (ambassadors?.length ?? 0) > 0,
             platform: requestedContentType === "poster" ? posterPlatform : "",
             imageQuality: requestedContentType === "poster" ? imageQuality : "",
+            captionLanguage: requestedContentType === "poster" ? captionLanguage : "",
+            abVariants: requestedContentType === "poster" ? abVariants : false,
             templateFidelity,
             productImageId: requestedContentType === "poster" ? productImageId : "",
             referenceImageBase64: requestedMode === "REFERENCE" ? referenceImageBase64 : "",
@@ -1548,6 +1574,7 @@ function PublishingPage() {
       setAsset({
         id: d.assetId || undefined,
         generationId: json.data.generationId,
+        twinGenerationId: json.data.twin?.generationId || undefined,
         mediaWarning:
           d.metadata?.media?.status === "FAILED"
             ? String(d.metadata.media.error || "The image failed. Your copy is saved.")
@@ -2310,6 +2337,51 @@ function PublishingPage() {
                     Better quality uses more of your plan: Ultra counts as 2 generation units
                     and takes a little longer. Standard and High count as 1.
                   </p>
+                  <Label className="mt-4 block text-xs tracking-wide uppercase">
+                    Caption language
+                  </Label>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {CAPTION_LANGUAGES.map((lang) => (
+                      <button
+                        key={lang.id}
+                        type="button"
+                        aria-pressed={captionLanguage === lang.id}
+                        onClick={() => setCaptionLanguage(lang.id)}
+                        className={cn(
+                          "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                          captionLanguage === lang.id
+                            ? "border-primary bg-black text-white"
+                            : "border-border bg-background text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {lang.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
+                    The caption and a few hashtags speak this language. The headline on the
+                    poster stays in English.
+                  </p>
+                  <div className="mt-4 flex items-start gap-2">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={abVariants}
+                      onClick={() => setAbVariants((v) => !v)}
+                      className={cn(
+                        "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                        abVariants
+                          ? "border-primary bg-black text-white"
+                          : "border-border bg-background text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      A/B: two variants
+                    </button>
+                    <p className="pt-1.5 text-[0.6875rem] text-muted-foreground">
+                      Two deliberately different designs of this brief, so you pick the
+                      winner. Uses double the generation units.
+                    </p>
+                  </div>
                 </div>
               ) : null}
 
@@ -3127,6 +3199,16 @@ function PublishingPage() {
               {/* LEFT: CONTENT PREVIEW */}
               <section className="surface-card p-5 sm:p-8 animate-in fade-in">
                 <p className="label-eyebrow text-primary">CONTENT PREVIEW</p>
+                {asset.twinGenerationId ? (
+                  <div className="mt-4 rounded-xl border border-border bg-muted/40 p-4 text-sm">
+                    <strong>This is variant A of your A/B pair.</strong> Variant B is
+                    generating with a deliberately different design — both land in your{" "}
+                    <Link to="/review" className="underline underline-offset-2">
+                      Content library
+                    </Link>{" "}
+                    side by side. Approve the winner; what you keep teaches the engine.
+                  </div>
+                ) : null}
                 {asset.mediaWarning ? (
                   <div
                     role="alert"
