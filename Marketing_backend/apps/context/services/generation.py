@@ -116,6 +116,43 @@ def _template_image(direction) -> str:
         return ''
 
 
+def _reference_pixels(brand, brief_extra) -> dict:
+    """The reference pixels a generation attaches at its image step, as the
+    brief keys to merge in: `template_image_base64`, the chosen
+    BRAND_TEMPLATE's own design (see `_template_image`), and
+    `ambassador_image_base64`, the brand's model (see `_ambassador_image`)
+    unless this generation said `feature_ambassador: False`.
+
+    One reading for the first buy and for `retry_image`, so a re-bought
+    picture can never quietly drop the face or the design the first one
+    carried - the founder's promise is that the same face fronts every
+    creative. A key the caller already fixed in `brief_extra` is kept and
+    not fetched again. Best effort throughout: a file that cannot be
+    fetched leaves its key out, and the paid generation it decorates runs
+    without it.
+    """
+    pixels = {}
+    # A BRAND_TEMPLATE selection means "make it match this poster design" —
+    # words alone cannot do that, so the template's own pixels ride in the
+    # brief and the image model recreates the attached design with new
+    # content.
+    if 'template_image_base64' not in brief_extra:
+        template_data_url = _template_image(brief_extra.get('creative_direction'))
+        if template_data_url:
+            pixels['template_image_base64'] = template_data_url
+    # The brand's model fronts every creative unless this generation said
+    # otherwise. Same shape as the template: pixels in the brief, attached
+    # at the image step.
+    if (
+        'ambassador_image_base64' not in brief_extra
+        and brief_extra.get('feature_ambassador', True)
+    ):
+        ambassador_data_url = _ambassador_image(brand)
+        if ambassador_data_url:
+            pixels['ambassador_image_base64'] = ambassador_data_url
+    return pixels
+
+
 def _variety_seed(workspace, brand, brief) -> dict:
     """The per-brand variety keys this poster generation rides on:
     `composition_archetype` (delegated designs that are not a brand
@@ -666,25 +703,13 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction='',
     text_brief = {**brief_extra, **context_as_brief(text_context)}
     image_brief = {**brief_extra, **context_as_brief(image_context)}
 
-    # A BRAND_TEMPLATE selection means "make it match this poster design" —
-    # words alone cannot do that, so the template's own pixels ride in the
-    # brief: Step 1 stops inventing compositions and the image model
-    # recreates the attached design with new content. Best effort — a
-    # template whose file cannot be fetched must not fail the paid
-    # generation it decorates.
-    template_data_url = _template_image(brief_extra.get('creative_direction'))
-    if template_data_url:
-        text_brief = {**text_brief, 'template_image_base64': template_data_url}
-        image_brief = {**image_brief, 'template_image_base64': template_data_url}
-
-    # The brand's model fronts every creative unless this generation said
-    # otherwise. Same shape as the template: pixels in the brief, attached at
-    # the image step, best effort.
-    if brief_extra.get('feature_ambassador', True):
-        ambassador_data_url = _ambassador_image(brand)
-        if ambassador_data_url:
-            text_brief = {**text_brief, 'ambassador_image_base64': ambassador_data_url}
-            image_brief = {**image_brief, 'ambassador_image_base64': ambassador_data_url}
+    # The matched template's design and the brand ambassador's face ride in
+    # both briefs (see `_reference_pixels`): Step 1 stops inventing
+    # compositions and writes the scene around the brand's own model, and
+    # the image step attaches both.
+    pixels = _reference_pixels(brand, brief_extra)
+    text_brief = {**text_brief, **pixels}
+    image_brief = {**image_brief, **pixels}
 
     # Variety: which composition archetype and which scene seed this poster
     # gets, least-recently-used per brand. Both briefs carry them (Step 1
@@ -1395,6 +1420,12 @@ def _with_guardrail_lines(brand, brief_extra):
 def retry_image(workspace, brand, brief_extra, *, instruction='', trace=None):
     """Retry ONLY the image capability. The copy that succeeded stays won.
 
+    The re-bought picture carries the same reference pixels the first buy
+    attached - the matched brand template's design and the brand
+    ambassador's face (see `_reference_pixels`) - so a repaired or
+    image-only revised poster still fronts the same model in the same
+    design.
+
     When `trace` is a dict, the variety keys this retry rode on
     (`composition_archetype`, `scene_variant`) are recorded into it, so a
     caller that persists the re-bought picture can record which composition
@@ -1402,6 +1433,13 @@ def retry_image(workspace, brand, brief_extra, *, instruction='', trace=None):
     """
     _require_spend_approved(workspace)
     brief_extra = _with_guardrail_lines(brand, brief_extra)
+    # Attached before the variety pick below: with the ambassador in the
+    # brief no scene seed that would crop the face is drawn. A carousel
+    # slide is the exception: its siblings were bought by
+    # `generate_carousel_and_copy`, which attaches neither reference, so a
+    # re-bought slide must not be the one slide fronting the model.
+    if str(brief_extra.get('contentType') or '').lower() != 'carousel_slide':
+        brief_extra = {**brief_extra, **_reference_pixels(brand, brief_extra)}
     context = build_generation_context(
         workspace, brand, TaskType.IMAGE, instruction=instruction,
     )

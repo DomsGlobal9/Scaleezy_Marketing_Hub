@@ -342,6 +342,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                 layout_plugin=str(brief.get('layout') or '')[:64],
                 layout_config={
                     'creative_direction': brief.get('creative_direction') or {},
+                    'feature_ambassador': bool(brief.get('feature_ambassador', True)),
                 },
                 created_by=creator,
             )
