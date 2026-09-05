@@ -668,10 +668,18 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         # Full resolution, explicitly. Left to its defaults the model returns
         # a ~1K image (about 900x1150 at 4:5), which the app then stretches to
         # 1080x1350 and exports stretch as far as A4 print — the reported
-        # blur. 2K at the poster's own 4:5 keeps the source ahead of every
-        # export size. A routed model that rejects the config must not cost
-        # the poster, so that call is retried once without it.
-        image_config = types.ImageConfig(aspect_ratio='4:5', image_size='2K')
+        # blur. 4K at the poster's own 4:5 (founder's call: +$0.05/image over
+        # 2K is not significant) keeps the source ahead of print itself. JPEG
+        # output on purpose: a 4K PNG can exceed the 20 MB persistence cap
+        # and would forfeit the poster; a q95 JPEG never gets close. A routed
+        # model that rejects the config must not cost the poster either, so
+        # that call is retried once without it.
+        image_config = types.ImageConfig(
+            aspect_ratio='4:5',
+            image_size='4K',
+            output_mime_type='image/jpeg',
+            output_compression_quality=95,
+        )
         try:
             response = client.models.generate_content(
                 model=cls.IMAGE_MODEL,
