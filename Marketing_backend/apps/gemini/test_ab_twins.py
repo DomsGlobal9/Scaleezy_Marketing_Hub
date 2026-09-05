@@ -93,18 +93,60 @@ class AbTwinEndpointTests(TenantFixtureMixin, TestCase):
         # The worker still owns the variety pick on a single run.
         self.assertNotIn('composition_archetype', brief)
 
-    def test_a_retry_reusing_the_request_id_never_spawns_a_second_pair(self):
+    def test_a_retry_reusing_the_request_id_finds_the_same_pair(self):
         rid = str(uuid.uuid4())
         first = self.post(abVariants=True, requestId=rid)
         self.assertIsNotNone(first.data['data']['twin'])
         again = self.post(abVariants=True, requestId=rid)
         self.assertEqual(again.status_code, status.HTTP_202_ACCEPTED)
-        # The known-request short-circuit answers before the twin logic runs.
-        self.assertIsNone(again.data['data'].get('twin'))
+        # The known-request short-circuit re-reads the deterministic twin —
+        # a lost HTTP response never loses the pair the client paid for,
+        # and nothing new is queued.
+        self.assertEqual(
+            again.data['data']['twin']['generationId'],
+            first.data['data']['twin']['generationId'],
+        )
         self.assertEqual(GeminiGenerationRequest.objects.count(), 2)
         self.assertEqual(
             TaskRun.objects.filter(task_path__endswith='generate_content').count(), 2
         )
+
+    def test_the_briefs_name_their_pair_and_slots(self):
+        rid = str(uuid.uuid4())
+        self.post(abVariants=True, requestId=rid)
+        briefs = [
+            json.loads(r.prompt_data) for r in GeminiGenerationRequest.objects.all()
+        ]
+        self.assertEqual({b['ab_group'] for b in briefs}, {rid})
+        self.assertEqual({b['ab_slot'] for b in briefs}, {'A', 'B'})
+
+    def test_a_catalogue_template_never_buys_an_identical_twin(self):
+        # CATALOG_TEMPLATE posters ignore the variety keys entirely — two
+        # runs would be the same poster twice, double-billed.
+        response = self.post(
+            abVariants=True, creativeMode='CATALOG_TEMPLATE', layout='classic_sale',
+        )
+        if response.status_code == status.HTTP_202_ACCEPTED:
+            self.assertIsNone(response.data['data']['twin'])
+            self.assertEqual(GeminiGenerationRequest.objects.count(), 1)
+        else:
+            # An uninstalled layout refuses before any request row exists —
+            # either way, no twin was bought.
+            self.assertEqual(GeminiGenerationRequest.objects.count(), 0)
+
+    def test_no_headroom_for_two_means_one_honest_variant(self):
+        from unittest.mock import patch
+
+        from apps.billing.quota import Verdict
+
+        with patch(
+            'apps.billing.quota.check',
+            return_value=Verdict(allowed=True, used=99, limit=100),
+        ):
+            response = self.post(abVariants=True)
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertIsNone(response.data['data']['twin'])
+        self.assertEqual(GeminiGenerationRequest.objects.count(), 1)
 
     def test_carousels_and_video_ignore_the_toggle(self):
         response = self.post(abVariants=True, contentType='carousel')

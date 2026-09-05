@@ -1218,6 +1218,12 @@ def _persist(request, brief, result_data, routed, *, brand=None):
                     # So does the caption's language: a regenerated caption
                     # must speak the language the original was asked in.
                     'caption_language': str(brief.get('caption_language') or 'english'),
+                    # An A/B twin knows its pair, so the review queue can
+                    # present the compare-and-pick moment the toggle sold.
+                    **({
+                        'ab_group': str(brief.get('ab_group')),
+                        'ab_slot': str(brief.get('ab_slot')),
+                    } if brief.get('ab_group') else {}),
                     'generation_trace': {
                         'brain_version': routed.get('brain_version', ''),
                         **(routed.get('trace') or {}),

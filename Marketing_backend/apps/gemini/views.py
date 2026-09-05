@@ -728,10 +728,23 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             if existing is not None:
                 if existing.workspace_id != workspace.pk:
                     return APIResponse(success=False, message='Generation request unavailable.', status=409)
+                # An A/B twin's id is deterministic on the primary's, so a
+                # retry whose first response was lost still learns the twin
+                # it already paid for. Pure read — nothing is queued here.
+                from uuid import NAMESPACE_URL, uuid5
+
+                twin_pk = uuid5(NAMESPACE_URL, f'scaleezy-ab-twin:{requested_id}')
+                twin_row = GeminiGenerationRequest.objects.filter(
+                    pk=twin_pk, workspace=workspace,
+                ).first()
                 return APIResponse(success=True, data={
                     'generationId': str(existing.pk), 'taskId': None,
                     'status': existing.status,
                     'pollUrl': f'/api/marketing/ai-generation/{existing.pk}/',
+                    'twin': {
+                        'generationId': str(twin_row.pk),
+                        'pollUrl': f'/api/marketing/ai-generation/{twin_row.pk}/',
+                    } if twin_row is not None else None,
                 }, status=202)
 
         quota_error = self._quota_error(workspace)
@@ -954,7 +967,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
         if blocked:
             return blocked
 
-        from uuid import UUID, uuid4
+        from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
         try:
             generation_id = UUID(str(data.get('requestId'))) if data.get('requestId') else uuid4()
@@ -973,22 +986,40 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             bool(data.get('abVariants', data.get('ab_variants', False)))
             and content_type.casefold() in ('', 'poster')
             and brand is not None
+            # A catalogue template owns its layout and the compose engine its
+            # words: the variety keys the twins differ by are dead there, and
+            # billing double for two identical posters is exactly the promise
+            # the toggle must never break.
+            and str(creative_direction.get('mode') or '').upper() != 'CATALOG_TEMPLATE'
         ):
+            from apps.billing.quota import check as quota_check
             from apps.context.services.creative_direction import pick_variety
 
-            twin_id = uuid4()
-            face_safe = bool(brief.get('feature_ambassador', True))
-            first_picks = pick_variety(
-                workspace, brand, generation_id, face_safe=face_safe,
-            )
-            brief.update(first_picks)
-            twin_brief = {
-                **brief,
-                **pick_variety(
-                    workspace, brand, twin_id,
-                    face_safe=face_safe, exclude=first_picks,
-                ),
-            }
+            # Room for TWO, decided now: the accept-time gate above cleared
+            # one unit, and a twin that would die on quota mid-queue is a
+            # promise the 202 must not make.
+            verdict = quota_check(workspace)
+            if verdict.allowed and (
+                verdict.limit <= 0 or verdict.limit - verdict.used >= 2
+            ):
+                # Deterministic, so a client retry of the same requestId
+                # finds the SAME twin instead of minting or losing one.
+                twin_id = uuid5(NAMESPACE_URL, f'scaleezy-ab-twin:{generation_id}')
+                face_safe = bool(brief.get('feature_ambassador', True))
+                first_picks = pick_variety(
+                    workspace, brand, generation_id, face_safe=face_safe,
+                )
+                brief.update(first_picks)
+                brief['ab_group'] = str(generation_id)
+                brief['ab_slot'] = 'A'
+                twin_brief = {
+                    **brief,
+                    **pick_variety(
+                        workspace, brand, twin_id,
+                        face_safe=face_safe, exclude=first_picks,
+                    ),
+                    'ab_slot': 'B',
+                }
 
         generation_defaults = dict(
             workspace=workspace,

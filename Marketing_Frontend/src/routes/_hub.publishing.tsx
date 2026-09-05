@@ -111,6 +111,8 @@ interface CarouselSlide {
 interface DraftAsset {
   id?: string | undefined;
   generationId?: string | undefined;
+  /** The A/B twin's generation id, when the client paid for two variants. */
+  twinGenerationId?: string | undefined;
   mediaWarning?: string | undefined;
   /** ContentItem row the backend persisted for this generation. */
   contentItemId?: string | undefined;
@@ -1402,6 +1404,7 @@ function PublishingPage() {
       setAsset({
         id: d.assetId || undefined,
         generationId: json.data.generationId,
+        twinGenerationId: json.data.twin?.generationId || undefined,
         mediaWarning:
           d.metadata?.media?.status === "FAILED"
             ? String(d.metadata.media.error || "The image failed. Your copy is saved.")
@@ -2966,6 +2969,16 @@ function PublishingPage() {
               {/* LEFT: CONTENT PREVIEW */}
               <section className="surface-card p-5 sm:p-8 animate-in fade-in">
                 <p className="label-eyebrow text-primary">CONTENT PREVIEW</p>
+                {asset.twinGenerationId ? (
+                  <div className="mt-4 rounded-xl border border-border bg-muted/40 p-4 text-sm">
+                    <strong>This is variant A of your A/B pair.</strong> Variant B is
+                    generating with a deliberately different design — both land in your{" "}
+                    <Link to="/review" className="underline underline-offset-2">
+                      Content library
+                    </Link>{" "}
+                    side by side. Approve the winner; what you keep teaches the engine.
+                  </div>
+                ) : null}
                 {asset.mediaWarning ? (
                   <div
                     role="alert"
