@@ -537,9 +537,9 @@ COMPOSITION_ARCHETYPES = (
         'key': 'polaroid_card',
         'label': 'Polaroid card',
         'composition': (
-            'Compose a polaroid-card poster: the photograph sits as a slightly '
-            'tilted white-bordered card on a textured brand-colour ground, and the '
-            'headline is set beside it{cta}{offer}.'
+            'Compose a polaroid-card poster: ONE photograph sits as a slightly '
+            'tilted white-bordered card on a textured brand-colour ground (no '
+            'second card or inset), and the headline is set beside it{cta}{offer}.'
         ),
         'cta': ' with a CTA pill below',
         'offer': ', the offer line set vertically along the far edge',
@@ -612,7 +612,14 @@ SCENE_VARIANTS = (
 
 #: Appended to every scene seed when the brand ambassador's photo rides in
 #: the brief: a seed may vary the setting and the pose, never the face.
-FACE_VISIBLE_LINE = "the brand ambassador's face stays fully visible"
+#: Live, 2026-09-05: a polaroid composition put the model's face in a small
+#: second card and a headless torso in the main one - "visible" was met,
+#: the founder's "face is cut" was not. The face belongs in the main
+#: photograph, not only in an inset.
+FACE_VISIBLE_LINE = (
+    "the brand ambassador's face stays fully visible inside the main "
+    "photograph, never only in a smaller inset, card or second frame"
+)
 
 
 def composition_archetype(key):
