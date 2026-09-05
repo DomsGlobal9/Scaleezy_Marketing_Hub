@@ -665,13 +665,31 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         else:
             contents = [directive]
 
-        response = client.models.generate_content(
-            model=cls.IMAGE_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                response_modalities=['TEXT', 'IMAGE']
+        # Full resolution, explicitly. Left to its defaults the model returns
+        # a ~1K image (about 900x1150 at 4:5), which the app then stretches to
+        # 1080x1350 and exports stretch as far as A4 print — the reported
+        # blur. 2K at the poster's own 4:5 keeps the source ahead of every
+        # export size. A routed model that rejects the config must not cost
+        # the poster, so that call is retried once without it.
+        image_config = types.ImageConfig(aspect_ratio='4:5', image_size='2K')
+        try:
+            response = client.models.generate_content(
+                model=cls.IMAGE_MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_modalities=['TEXT', 'IMAGE'],
+                    image_config=image_config,
+                ),
             )
-        )
+        except Exception as exc:
+            print(f"[Gemini] image_config rejected ({exc}); retrying at model defaults")
+            response = client.models.generate_content(
+                model=cls.IMAGE_MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_modalities=['TEXT', 'IMAGE']
+                )
+            )
 
         # Extract the image from the response
         for part in response.candidates[0].content.parts:
