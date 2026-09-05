@@ -18,6 +18,7 @@ from apps.common.permissions import (
 from apps.common.mixins import WorkspaceScopedMixin
 from apps.common.responses import APIResponse
 from apps.brands.services.approval import approval_gate_response
+from apps.gemini.services.generator import GeminiGeneratorService
 from apps.workspaces.models import WorkspaceMember
 from django.utils import timezone
 
@@ -343,6 +344,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                 layout_config={
                     'creative_direction': brief.get('creative_direction') or {},
                     'feature_ambassador': bool(brief.get('feature_ambassador', True)),
+                    'caption_language': str(brief.get('caption_language') or 'english'),
                 },
                 created_by=creator,
             )
@@ -922,6 +924,17 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             'product_image_id': str(
                 data.get('productImageId', data.get('product_image_id', '')) or ''
             ).strip()[:64],
+            # The caption's language. The headline stays English — it is
+            # painted into the image. Anything off the allowlist is English.
+            'caption_language': (
+                (lambda lang: lang if lang in GeminiGeneratorService.CAPTION_LANGUAGES
+                 else 'english')(
+                    str(
+                        data.get('captionLanguage', data.get('caption_language', ''))
+                        or 'english'
+                    ).strip().lower()
+                )
+            ),
         }
 
         # The whole point of written guardrails: refuse BEFORE a request row

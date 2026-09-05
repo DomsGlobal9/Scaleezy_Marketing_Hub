@@ -550,6 +550,36 @@ Return ONLY a valid JSON object with these exact keys:
             f"\n\nTARGET PLATFORM - write the copy for it: {platform_line}\n"
             if platform_line else ''
         )
+        # The caption speaks the customer's language; the headline stays
+        # English because it is painted INTO the image, and the image model's
+        # non-Latin glyph rendering is not yet trustworthy enough to bet a
+        # client's poster on.
+        language_line = {
+            'hindi': (
+                'natural, warm Hindi in Devanagari script - written for the '
+                'audience, never a word-for-word translation of English phrasing'
+            ),
+            'hinglish': (
+                'Hinglish - conversational Hindi written in Latin script, '
+                'mixed naturally with English words, the way Indian social '
+                'media actually talks'
+            ),
+            'telugu': (
+                'natural, warm Telugu in Telugu script - written for the '
+                'audience, never a word-for-word translation of English phrasing'
+            ),
+            'tamil': (
+                'natural, warm Tamil in Tamil script - written for the '
+                'audience, never a word-for-word translation of English phrasing'
+            ),
+        }.get(str(request_data.get('caption_language') or '').strip().lower(), '')
+        language_block = (
+            f"\n\nCAPTION LANGUAGE: write `postDescription` in {language_line}. "
+            "Keep `postTitle` in English exactly as it will be painted on the "
+            "image. For `postHashtags`, keep brand and product tags in English "
+            "and add 2-3 tags in the caption's language.\n"
+            if language_line else ''
+        )
         # INSPIRED fidelity: no template pixels ride along, and any
         # follow-the-template-faithfully line in the resolved instructions is
         # overridden — the template lends its flavour, never its layout.
@@ -618,7 +648,7 @@ For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just 
 
 {cls._rules_block(brand_rules)}{guardrail_block}
 {variety_block}
-{creative_block}{template_block}{ambassador_block}{product_block}{platform_block}
+{creative_block}{template_block}{ambassador_block}{product_block}{platform_block}{language_block}
 Respond ONLY with a valid JSON object (no markdown, no code fences, no extra text):
 {{
   "postTitle": "A catchy, short title (max 10 words)",
@@ -681,6 +711,9 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         'print': '2:3',
     }
     QUALITY_SIZES = ('1K', '2K', '4K')
+    #: Languages the caption may speak. The headline always stays English —
+    #: it is painted into the image (see the language block above).
+    CAPTION_LANGUAGES = ('english', 'hindi', 'hinglish', 'telugu', 'tamil')
 
     @classmethod
     def poster_render_options(cls, request_data: dict) -> tuple[str, str]:
