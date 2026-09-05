@@ -1005,10 +1005,16 @@ def regenerate_revision(revision_id: str):
         # liked keep their photograph, their words and their look.
         # A kept photograph did not change, so its composition and scene did
         # not either: the trace written below must go on naming the archetype
-        # and seed this poster is, or the per-brand rotation forgets them
-        # after a copy-only edit and can serve the same pair again. An image
-        # edit overwrites both with the new picture's own picks.
-        stored = dict(config.get('generation_trace') or {})
+        # and seed this poster is, or it misdescribes the picture it sits
+        # under. request_edits leaves the trace on the parent (it describes
+        # the parent's generation), so that is where a first edit reads it;
+        # a revision regenerated before carries its own. An image edit
+        # overwrites both with the new picture's own picks.
+        stored = dict(
+            config.get('generation_trace')
+            or parent_config.get('generation_trace')
+            or {}
+        )
         variety = {
             key: stored[key]
             for key in ('composition_archetype', 'scene_variant')

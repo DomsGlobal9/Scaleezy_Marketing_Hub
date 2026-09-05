@@ -866,11 +866,13 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         # The studio's toggle is a per-generation choice the item records;
         # the re-bought picture must not front a face the poster was made
         # without.
+        # Recorded on the parent by _persist; request_edits does not copy it,
+        # so the edit must look it up there.
         self.with_inherited_look()
-        self.revision.layout_config = {
-            **self.revision.layout_config, 'feature_ambassador': False,
+        self.parent.layout_config = {
+            **(self.parent.layout_config or {}), 'feature_ambassador': False,
         }
-        self.revision.save(update_fields=['layout_config'])
+        self.parent.save(update_fields=['layout_config'])
 
         self.assertIs(self.rebuy_brief()['feature_ambassador'], False)
 
@@ -882,14 +884,19 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         self.assertIs(self.rebuy_brief()['feature_ambassador'], True)
 
     def with_inherited_trace(self, **trace):
-        """The generation_trace request-edits copies onto a revision, as the
-        parent's persisted poster recorded it."""
+        """The generation_trace the parent's persisted poster recorded.
+
+        request_edits deliberately leaves it on the parent, so the revision
+        under edit carries none of its own - exactly what production hands
+        regenerate_revision."""
         self.with_inherited_look()
-        self.revision.layout_config = {
-            **self.revision.layout_config,
+        self.parent.layout_config = {
+            **(self.parent.layout_config or {}),
             'generation_trace': {'brain_version': '', 'capabilities': {}, **trace},
         }
-        self.revision.save(update_fields=['layout_config'])
+        self.parent.save(update_fields=['layout_config'])
+        self.revision.refresh_from_db()
+        self.assertNotIn('generation_trace', self.revision.layout_config or {})
 
     def test_copy_only_edits_keep_the_kept_photographs_composition_and_scene(self):
         # The photograph did not change, so its composition did not either.
