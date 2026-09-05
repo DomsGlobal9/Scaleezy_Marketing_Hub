@@ -902,6 +902,14 @@ def regenerate_revision(revision_id: str):
     )
     if not isinstance(creative_direction, dict):
         creative_direction = {}
+    # The original generation's choice to leave the brand's model out is
+    # recorded on the item; a re-bought picture must honour it rather than
+    # front a face the poster was deliberately made without. Items saved
+    # before the choice was recorded default to the brand's model, as the
+    # first buy did.
+    brief['feature_ambassador'] = bool(
+        config.get('feature_ambassador', parent_config.get('feature_ambassador', True))
+    )
     if (
         str(creative_direction.get('mode') or '').strip().upper() == 'REFERENCE'
         and (scope['copy'] or scope['image'] or revision.brand is None)
@@ -995,7 +1003,17 @@ def regenerate_revision(revision_id: str):
     else:
         # Surgical: only what the reviewer flagged changes. Elements they
         # liked keep their photograph, their words and their look.
-        variety = {}
+        # A kept photograph did not change, so its composition and scene did
+        # not either: the trace written below must go on naming the archetype
+        # and seed this poster is, or the per-brand rotation forgets them
+        # after a copy-only edit and can serve the same pair again. An image
+        # edit overwrites both with the new picture's own picks.
+        stored = dict(config.get('generation_trace') or {})
+        variety = {
+            key: stored[key]
+            for key in ('composition_archetype', 'scene_variant')
+            if isinstance(stored.get(key), str) and stored[key]
+        }
         if scope['copy']:
             try:
                 payload = generate_copy_only(
@@ -1142,6 +1160,11 @@ def _persist(request, brief, result_data, routed, *, brand=None):
                 # attributable as one made in the request.
                 layout_config={
                     'creative_direction': brief.get('creative_direction') or {},
+                    # The studio's per-generation choice to leave the
+                    # model out travels with the item, so a later edit
+                    # honours it instead of fronting a face the original
+                    # was made without.
+                    'feature_ambassador': bool(brief.get('feature_ambassador', True)),
                     'generation_trace': {
                         'brain_version': routed.get('brain_version', ''),
                         **(routed.get('trace') or {}),

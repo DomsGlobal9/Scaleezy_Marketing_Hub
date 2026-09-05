@@ -186,9 +186,16 @@ class OpenAIAdapter(AIProviderAdapter):
     def _brief_json(brief: Mapping[str, Any]) -> str:
         # A brief may carry a caller hook (`pre_image_hook`, for providers
         # that paint the poster inside their TEXT call); the prompt gets the
-        # brief's data, never an object repr.
+        # brief's data, never an object repr. Nor its pixels: a reference
+        # photo (`ambassador_image_base64`, `template_image_base64`, ...) is
+        # tens of thousands of characters that would blow the prompt limit
+        # and mean nothing as text. Adapters that can use a reference read
+        # the key from the brief directly.
         return json.dumps(
-            {key: value for key, value in brief.items() if not callable(value)},
+            {
+                key: value for key, value in brief.items()
+                if not callable(value) and 'base64' not in key.casefold()
+            },
             ensure_ascii=False,
             sort_keys=True,
             separators=(',', ':'),

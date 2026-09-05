@@ -838,6 +838,137 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         self.assertEqual(trace['composition_archetype'], 'polaroid_card')
         self.assertEqual(trace['scene_variant'], 'street_golden_hour')
 
+    def rebuy_brief(self):
+        """Runs an image-scope edit and returns the brief retry_image got."""
+        from apps.gemini.tasks import regenerate_revision
+
+        self.scoped_feedback(['imagery_subject'], 'Wrong product entirely.')
+        seen = {}
+
+        def rebought(workspace, brand, brief, *, instruction='', trace=None):
+            seen.update(brief)
+            return {
+                'image_url': 'https://storage.test/generated/new-photo.png',
+                'file_name': 'new-photo.png',
+            }
+
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload'
+        ), patch(
+            'apps.context.services.generation.generate_copy_only',
+        ), patch(
+            'apps.context.services.generation.retry_image', side_effect=rebought,
+        ):
+            regenerate_revision.func(str(self.revision.pk))
+        return seen
+
+    def test_image_edits_honour_the_recorded_choice_to_leave_the_model_out(self):
+        # The studio's toggle is a per-generation choice the item records;
+        # the re-bought picture must not front a face the poster was made
+        # without.
+        self.with_inherited_look()
+        self.revision.layout_config = {
+            **self.revision.layout_config, 'feature_ambassador': False,
+        }
+        self.revision.save(update_fields=['layout_config'])
+
+        self.assertIs(self.rebuy_brief()['feature_ambassador'], False)
+
+    def test_image_edits_default_to_the_brand_model_when_nothing_was_recorded(self):
+        # Items saved before the choice was recorded were bought with the
+        # model, so their edits are too.
+        self.with_inherited_look()
+
+        self.assertIs(self.rebuy_brief()['feature_ambassador'], True)
+
+    def with_inherited_trace(self, **trace):
+        """The generation_trace request-edits copies onto a revision, as the
+        parent's persisted poster recorded it."""
+        self.with_inherited_look()
+        self.revision.layout_config = {
+            **self.revision.layout_config,
+            'generation_trace': {'brain_version': '', 'capabilities': {}, **trace},
+        }
+        self.revision.save(update_fields=['layout_config'])
+
+    def test_copy_only_edits_keep_the_kept_photographs_composition_and_scene(self):
+        # The photograph did not change, so its composition did not either.
+        # Dropping the pair here is how the per-brand rotation forgot which
+        # composition a copy-edited poster was, and served it again.
+        self.with_inherited_trace(
+            composition_archetype='split_vertical', scene_variant='motion_mid_frame',
+        )
+        self.scoped_feedback(['headline'], 'Headline is flat.')
+
+        full, copy_call, image_call = self.run_scoped(
+            copy_payload={'postTitle': 'Sharper words'}
+        )
+
+        full.assert_not_called()
+        image_call.assert_not_called()
+        copy_call.assert_called_once()
+        self.revision.refresh_from_db()
+        trace = self.revision.layout_config['generation_trace']
+        self.assertEqual(trace['composition_archetype'], 'split_vertical')
+        self.assertEqual(trace['scene_variant'], 'motion_mid_frame')
+        self.assertIn('brain_version', trace)
+
+    def test_image_edits_replace_the_inherited_composition_and_scene(self):
+        from apps.gemini.tasks import regenerate_revision
+
+        # A new photograph is a new poster: its own picks win over the pair
+        # the parent's picture rode on.
+        self.with_inherited_trace(
+            composition_archetype='split_vertical', scene_variant='motion_mid_frame',
+        )
+        self.scoped_feedback(['imagery_subject'], 'Wrong product entirely.')
+
+        def rebought(workspace, brand, brief, *, instruction='', trace=None):
+            trace.update({
+                'composition_archetype': 'type_first',
+                'scene_variant': 'studio_three_quarter',
+            })
+            return {
+                'image_url': 'https://storage.test/generated/new-photo.png',
+                'file_name': 'new-photo.png',
+            }
+
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload'
+        ) as full, patch(
+            'apps.context.services.generation.generate_copy_only',
+        ) as copy_call, patch(
+            'apps.context.services.generation.retry_image', side_effect=rebought,
+        ) as image_call:
+            regenerate_revision.func(str(self.revision.pk))
+
+        full.assert_not_called()
+        copy_call.assert_not_called()
+        image_call.assert_called_once()
+        self.revision.refresh_from_db()
+        trace = self.revision.layout_config['generation_trace']
+        self.assertEqual(trace['composition_archetype'], 'type_first')
+        self.assertEqual(trace['scene_variant'], 'studio_three_quarter')
+
+    def test_copy_only_edits_invent_no_composition_for_an_untraced_photograph(self):
+        # A poster made before the picks were recorded has no pair to keep:
+        # the trace simply carries none, rather than a made-up one.
+        self.with_inherited_trace()
+        self.scoped_feedback(['headline'], 'Headline is flat.')
+
+        full, copy_call, image_call = self.run_scoped(
+            copy_payload={'postTitle': 'Sharper words'}
+        )
+
+        full.assert_not_called()
+        image_call.assert_not_called()
+        copy_call.assert_called_once()
+        self.revision.refresh_from_db()
+        trace = self.revision.layout_config['generation_trace']
+        self.assertNotIn('composition_archetype', trace)
+        self.assertNotIn('scene_variant', trace)
+        self.assertIn('brain_version', trace)
+
     def test_style_only_feedback_on_a_delegated_design_ships_the_raw_image(self):
         photo = self.with_inherited_look()
         self.scoped_feedback(['logo_placement', 'composition_balance'], 'Layout feels off.')
