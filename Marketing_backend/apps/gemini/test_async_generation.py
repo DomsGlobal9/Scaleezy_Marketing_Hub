@@ -835,12 +835,15 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         self.revision.refresh_from_db()
         self.assertNotIn('photo_focus', self.revision.layout_config)
 
-        # Copy flagged on a fresh revision: the kept photograph never re-pays
-        # its vision call.
+        # Copy flagged on a fresh DRESSED revision: the kept photograph never
+        # re-pays its vision call. Dressed on purpose — on an undressed
+        # poster the words live in the image, so a copy complaint re-buys it
+        # (see _scope_for_revision).
         kept = ContentItem.objects.create(
             workspace=self.workspace, brand=self.brand,
             status=ContentItem.Status.DRAFT, version=3, parent=self.parent,
             headline='Drape yourself in teal',
+            layout_plugin='agency_column',
             layout_config={'regenerating': True, 'photo_focus': dict(focus_dict)},
         )
         self.revision = kept
