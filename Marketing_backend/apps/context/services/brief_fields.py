@@ -10,21 +10,36 @@ structured key), and the typed headline was rewritten by the copy judge.
 This module reads such labels back out of the text - no model in the loop -
 so a typed field counts exactly like a chip.
 
-THE MATCHING RULE. A label counts only where a person would open a labelled
-field: at the start of the text, after a newline, or right after sentence
-punctuation (`.`, `!`, `?`, `;`, `,`) or an opening bracket, with any
-whitespace in between. It must be immediately followed by `:`, ` - ` or
-` = `. Prose such as "the price: unbeatable" therefore never matches -
-"price" follows a word, not punctuation. Labels are case-insensitive and
-whole words ("Offers:" is not "Offer:"). A value runs until the next
-recognised label, a newline or the end of the text; it is stripped of
-surrounding quotes and one trailing `.`, whitespace-collapsed and cut to
-MAX_VALUE_CHARS. The first occurrence of a key wins; a label with an empty
-value is not a field and stays in the text.
+THE MATCHING RULE (the studio mirrors this paragraph verbatim). A label
+counts in two places: (1) at the start of the text, after a newline, or
+right after sentence punctuation (`.`, `!`, `?`, `;`, `,`) or an opening
+bracket (`(`, `[`, `{`), with any whitespace between, when it is followed by
+`:` (spaces or tabs allowed before it), by ` - ` (at least one space or tab
+on BOTH sides of the dash) or by `=` (spaces or tabs optional on either
+side); or (2) right after a space or tab, when its first letter is uppercase
+in the source and the separator is `:` - so "sarees Headline: Woven" is a
+field while "the price: unbeatable" and "sarees Tone = warm" never are.
+Labels are case-insensitive whole words ("Offers:" is not "Offer:"); a
+multi-word label takes exactly one space or one hyphen between its words
+("Call to action", "Call-to-action", "Button text", "Button-text"), never a
+run of them. Neither the separator's whitespace nor the value ever crosses a
+newline: a label with nothing before the end of its line is not a field and
+stays in the text, and a label on the next line is read normally. A value
+runs to the next recognised label, the end of its line or the end of the
+text, and is cut at a closing bracket (`)`, `]`, `}`) that has no opener
+inside the value; it is whitespace-collapsed, then - twice over, in either
+order - stripped of one trailing `.` and of one MATCHING pair of surrounding
+quotes (`"…"`, `'…'`, `“…”`, `‘…’`; a mixed or unclosed quote is left
+alone), and finally cut to MAX_VALUE_CHARS. The first occurrence of a key
+wins.
 """
 import re
 
 MAX_VALUE_CHARS = 200
+#: Set on a brief this module has read, so a later pass over the same brief
+#: (the copy-only rewrite hands it back) never re-reads the tidied text and
+#: invents a second field from a segment a chip had already decided.
+PARSED_MARKER = 'brief_fields_parsed'
 
 #: Structured brief key -> the labels a person may type for it.
 LABELS = {
@@ -39,23 +54,37 @@ LABELS = {
     'brand_tone': ('tone', 'voice', 'mood'),
 }
 
-_KEY_OF = {label: key for key, labels in LABELS.items() for label in labels}
+#: Spaced spelling of a label -> key: "call-to-action" reads as "call to action".
+_KEY_OF = {
+    label.replace('-', ' '): key for key, labels in LABELS.items() for label in labels
+}
+
+
+def _label_pattern(label):
+    """One space OR one hyphen between the words of a multi-word label."""
+    return re.escape(label).replace('\\ ', '[ -]').replace('\\-', '[ -]')
+
 
 # Longest label first, so "campaign name:" is never read as "campaign" + a
 # value of "name: ...".
 _ALTERNATION = '|'.join(
-    re.escape(label) for label in sorted(_KEY_OF, key=len, reverse=True)
+    _label_pattern(label) for label in sorted(_KEY_OF, key=len, reverse=True)
 )
 # Separator and value whitespace never cross a newline: "Offer:" alone on a
 # line is an empty field, not a field whose value is the next line.
 _FIELD = re.compile(
-    r'(?:^|[\n.!?;,(\[{])\s*'                            # where a field may open
+    r'(?:'
+    r'(?:^|[\n.!?;,(\[{])\s*'                            # (1) where a field opens
     rf'(?P<label>{_ALTERNATION})'                        # the label, whole word
-    r'(?:[^\S\n]*:|[^\S\n]+-(?=[^\S\n])|[^\S\n]*=)[^\S\n]*',  # ':' or ' - ' or ' = '
+    r'(?:[^\S\n]*:|[^\S\n]+-[^\S\n]+|[^\S\n]*=)'         # ':' or ' - ' or '='
+    r'|'
+    r'(?<=[^\S\n])(?=(?-i:[A-Z]))'                       # (2) after a space, Capitalised
+    rf'(?P<loose>{_ALTERNATION})[^\S\n]*:'               # and only with ':'
+    r')[^\S\n]*',
     re.IGNORECASE,
 )
-_QUOTES_OPEN = '"\'“‘'
-_QUOTES_CLOSE = '"\'”’'
+#: Opening quote -> the one closing quote that pairs with it.
+_QUOTE_PAIRS = {'"': '"', "'": "'", '“': '”', '‘': '’'}
 _SENTINEL = '\x00'
 #: A run of punctuation/whitespace around one or more removed fields.
 _REMOVED_RUN = re.compile(r'[.!?;,\x00 \t]*\x00[.!?;,\x00 \t]*')
@@ -67,11 +96,7 @@ def _clean_value(raw):
     for _ in range(2):
         if value.endswith('.'):
             value = value[:-1].rstrip()
-        if (
-            len(value) >= 2
-            and value[0] in _QUOTES_OPEN
-            and value[-1] in _QUOTES_CLOSE
-        ):
+        if len(value) >= 2 and _QUOTE_PAIRS.get(value[0]) == value[-1]:
             value = value[1:-1].strip()
     return value[:MAX_VALUE_CHARS].rstrip()
 
@@ -106,8 +131,9 @@ def _scan(text):
         value = _clean_value(raw)
         if not value:
             continue
-        key = _KEY_OF[match.group('label').casefold()]
-        found.append((key, value, (match.start('label'), match.end() + len(raw))))
+        group = 'label' if match.group('label') is not None else 'loose'
+        key = _KEY_OF[match.group(group).casefold().replace('-', ' ')]
+        found.append((key, value, (match.start(group), match.end() + len(raw))))
     return found
 
 
@@ -120,12 +146,16 @@ def extract_brief_fields(text):
     return fields
 
 
-def plain_brief(text):
-    """`text` with every recognised `Label: value` segment removed and the
-    punctuation and whitespace around it tidied, so the copy model reads the
-    brief without the field noise. The original text when nothing was found."""
+def plain_brief(text, keys=None):
+    """`text` with every recognised `Label: value` segment removed - only
+    those of the keys in `keys` when it is given - and the punctuation and
+    whitespace around it tidied, so the copy model reads the brief without
+    the field noise. The original text when nothing was removed."""
     text = str(text or '')
-    found = _scan(text)
+    found = [
+        (key, value, span) for key, value, span in _scan(text)
+        if keys is None or key in keys
+    ]
     if not found:
         return text
     pieces = []
@@ -156,7 +186,17 @@ def _tidy_run(match):
     return ' '
 
 
-def with_brief_fields(brief, instruction=''):
+def _requoted(line, source, plain):
+    """The direction line that quoted `source` now quotes `plain`. The line
+    is built whitespace-collapsed (see `creative_direction._clean_text`), so
+    a brief typed one field per line is quoted there on one line."""
+    if not isinstance(line, str):
+        return line
+    line = line.replace(source, plain)
+    return line.replace(' '.join(source.split()), ' '.join(plain.split()))
+
+
+def with_brief_fields(brief, instruction='', brand=None):
     """A brief with the fields typed into its own `instruction` applied.
 
     Reads `brief['instruction']` - the studio's typed brief - and ONLY that:
@@ -164,34 +204,51 @@ def with_brief_fields(brief, instruction=''):
     same text, the synchronous endpoint the campaign name, request-edits a
     reviewer's verdict, which must never be mined for labels). A structured
     key is filled only when the brief's own value is empty - the studio's
-    chip always wins - and `requested_headline` / `cta` are set the same
-    way. When any field was recognised the brief's instruction becomes the
-    plain text (see `plain_brief`), as does the `instruction` argument when
-    it was that same text, and the creative direction's "User creation
-    request" line that quoted it.
+    chip always wins, and the typed segment then STAYS in the text so the
+    copy model still reads what was typed - and `requested_headline` / `cta`
+    are set the same way. When `brand` has approved DM keywords
+    (`guardrails.approved_ctas`) a typed CTA must be one of them: an unlisted
+    one never becomes the on-image CTA - it is dropped and reported as
+    `cta_ignored`. The segments this call decided (applied or dropped) leave
+    the brief's instruction (see `plain_brief`), the `instruction` argument
+    when it was that same text, and the creative direction's "User creation
+    request" line that quoted it. The brief is marked (`PARSED_MARKER`); a
+    marked brief is handed back untouched, whatever its text now says.
 
     Returns (brief, instruction, filled): `filled` is {key: value} for what
-    this call supplied, for the generation trace.
+    this call supplied, plus `cta_ignored` for a typed CTA it refused, for
+    the generation trace.
     """
+    if brief.get(PARSED_MARKER):
+        return brief, instruction, {}
     source = str(brief.get('instruction') or '')
     fields = extract_brief_fields(source)
     if not fields:
         return brief, instruction, {}
-    filled = {
+    applied = {
         key: value for key, value in fields.items()
         if not ' '.join(str(brief.get(key) or '').split())
     }
-    plain = plain_brief(source)
-    updated = {**brief, **filled, 'instruction': plain}
+    decided = set(applied)
+    report = dict(applied)
+    if 'cta' in applied:
+        from apps.brands.services import guardrails
+
+        if guardrails.approved_ctas(brand) and not guardrails.is_approved_cta(
+            brand, applied['cta'],
+        ):
+            report['cta_ignored'] = applied.pop('cta')
+            del report['cta']
+    plain = plain_brief(source, decided)
+    updated = {**brief, **applied, 'instruction': plain, PARSED_MARKER: True}
     direction = brief.get('creative_direction')
     if plain and isinstance(direction, dict) and isinstance(direction.get('instructions'), list):
         updated['creative_direction'] = {
             **direction,
             'instructions': [
-                line.replace(source, plain) if isinstance(line, str) else line
-                for line in direction['instructions']
+                _requoted(line, source, plain) for line in direction['instructions']
             ],
         }
     if instruction == source:
         instruction = plain
-    return updated, instruction, filled
+    return updated, instruction, report

@@ -173,6 +173,39 @@ class CopyLawTests(SimpleTestCase):
         self.assertEqual(once, twice)
         self.assertEqual(notes, [])
 
+    def test_a_posters_own_approved_cta_needs_no_dm_line_in_the_caption(self):
+        # A CTA typed into the brief is painted on the image. When it is one
+        # of the approved keywords the poster already carries its CTA: one
+        # CTA per poster, so the caption gets no second "DM PROTECT" line.
+        payload = {
+            'postTitle': 'Precision protection',
+            'postDescription': 'Built to spec.\nrajvipackaging.com',
+            'postHashtags': '#foam',
+        }
+        fixed, notes = law.enforce(a_brand(), payload, cta=' protect ')
+        self.assertEqual(fixed, payload)
+        self.assertEqual(notes, [])
+        # Any other CTA - or none - leaves the append as it was.
+        for cta in ('Shop now', 'DM PROTECT', ''):
+            with self.subTest(cta=cta):
+                fixed, notes = law.enforce(a_brand(), payload, cta=cta)
+                self.assertIn('DM PROTECT', fixed['postDescription'])
+                self.assertEqual(len(notes), 1)
+
+    def test_an_approved_cta_matches_whole_case_insensitively_with_whitespace_collapsed(self):
+        self.assertEqual(law.approved_ctas(a_brand()), ['PROTECT', 'SAMPLE'])
+        self.assertEqual(law.approved_ctas(a_brand({})), [])
+        self.assertEqual(law.approved_ctas(None), [])
+        self.assertTrue(law.is_approved_cta(a_brand(), ' Protect '))
+        self.assertTrue(
+            law.is_approved_cta(a_brand({'approved_ctas': ['Get  Sample']}), 'get sample')
+        )
+        for cta in ('DM PROTECT', 'PROTECTED', '', None):
+            with self.subTest(cta=cta):
+                self.assertFalse(law.is_approved_cta(a_brand(), cta))
+        self.assertFalse(law.is_approved_cta(a_brand({}), 'PROTECT'))
+        self.assertFalse(law.is_approved_cta(None, 'PROTECT'))
+
     def test_enforce_with_no_rules_is_a_no_op(self):
         payload = {'postTitle': 'T', 'postDescription': 'D', 'postHashtags': '#h'}
         fixed, notes = law.enforce(a_brand({}), payload)

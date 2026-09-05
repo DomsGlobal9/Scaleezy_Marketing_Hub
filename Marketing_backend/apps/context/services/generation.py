@@ -1511,18 +1511,19 @@ def generate_marketing_payload(
 
     from .critique import critique_copy
 
-    # The fields typed into the studio's brief ("Offer: 20% off launch week.
-    # CTA: Shop the collection."), read here - once, for every route that
-    # reaches this boundary - so a typed offer, CTA or headline counts like
-    # a chip. A key is filled only where the brief's own value is empty;
-    # what was filled is recorded into the trace below.
-    brief, instruction, brief_fields = with_brief_fields(brief, instruction)
-
     resolved = brand
     if resolved is None:
         resolved = (
             Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
         )
+    # The fields typed into the studio's brief ("Offer: 20% off launch week.
+    # CTA: Shop the collection."), read here - once, for every route that
+    # reaches this boundary - so a typed offer, CTA or headline counts like
+    # a chip. A key is filled only where the brief's own value is empty, and
+    # a typed CTA only when the brand's law approves it; what was filled (or
+    # refused) is recorded into the trace below.
+    brief, instruction, brief_fields = with_brief_fields(brief, instruction, brand=resolved)
+
     lines = guardrail_law.prompt_lines(resolved)
     if lines and 'guardrail_rules' not in brief:
         brief = {**brief, 'guardrail_rules': lines}
@@ -1558,7 +1559,9 @@ def generate_marketing_payload(
                         "Guardrail copy retry failed for workspace %s; keeping first copy",
                         workspace.pk,
                     )
-            payload, fixed = guardrail_law.enforce(resolved, payload)
+            payload, fixed = guardrail_law.enforce(
+                resolved, payload, cta=str(brief.get('cta') or ''),
+            )
             if caught:
                 # Recomputed AFTER enforce: a hashtag the strip removed or a
                 # CTA the append supplied is resolved, and must not be
@@ -1787,7 +1790,9 @@ def retry_image(workspace, brand, brief_extra, *, instruction='', trace=None):
     # The repair and request-edits paths hand this the stored brief directly,
     # never through `generate_marketing_payload`: the typed offer and CTA
     # must reach the re-bought picture the same way they reached the first.
-    brief_extra, instruction, filled = with_brief_fields(brief_extra, instruction)
+    brief_extra, instruction, filled = with_brief_fields(
+        brief_extra, instruction, brand=brand,
+    )
     # Attached before the variety pick below: with the ambassador in the
     # brief no scene seed that would crop the face is drawn. A carousel
     # slide is the exception: its siblings were bought by
@@ -1850,7 +1855,9 @@ def generate_copy_only(workspace, brand, brief_extra, *, instruction=''):
     # A no-op on the rewrite path (the shared boundary already read the
     # typed brief); here for a direct caller's brief, the same as
     # `retry_image`.
-    brief_extra, instruction, _filled = with_brief_fields(brief_extra, instruction)
+    brief_extra, instruction, _filled = with_brief_fields(
+        brief_extra, instruction, brand=brand,
+    )
     context = build_generation_context(
         workspace, brand, TaskType.COPY, instruction=instruction,
     )
@@ -1876,5 +1883,7 @@ def generate_copy_only(workspace, brand, brief_extra, *, instruction=''):
     # caption would fabricate a truthy boilerplate caption that callers'
     # keep-the-old-copy guards would then wrongly adopt.
     if str(payload.get('postDescription') or '').strip():
-        payload, _fixed = guardrail_law.enforce(brand, payload)
+        payload, _fixed = guardrail_law.enforce(
+            brand, payload, cta=str(brief_extra.get('cta') or ''),
+        )
     return payload

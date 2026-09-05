@@ -774,6 +774,11 @@ function PublishingPage() {
     briefTargets.current = { offer, occasion, campaignName, product, audience, location, brandTone };
   });
   const briefAutoRef = useRef<BriefAutoFields>({});
+  // A brief-filled field the user then emptied (cleared, or its chip tapped
+  // off) stays empty while the brief still says the same thing — the value
+  // is remembered here as dismissed. Once the brief's value for that key
+  // changes, the dismissal lifts and the pick-up resumes.
+  const briefDismissedRef = useRef<BriefAutoFields>({});
   const applyBriefFields = useCallback((text: string) => {
     const parsed = extractBriefFields(text);
     const setters: Record<BriefAutoKey, (value: string) => void> = {
@@ -787,12 +792,16 @@ function PublishingPage() {
     };
     const current = briefTargets.current;
     const previous = briefAutoRef.current;
+    const dismissed = briefDismissedRef.current;
     const next: BriefAutoFields = {};
     let revealMore = false;
     for (const key of BRIEF_AUTO_KEYS) {
       const value = parsed[key];
       const ours = previous[key] !== undefined && current[key] === previous[key];
+      if (previous[key] !== undefined && !current[key]) dismissed[key] = previous[key];
+      if (dismissed[key] !== undefined && dismissed[key] !== value) delete dismissed[key];
       if (value) {
+        if (dismissed[key] === value) continue;
         if (!current[key] || ours) {
           setters[key](value);
           next[key] = value;
