@@ -669,17 +669,16 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
         # a ~1K image (about 900x1150 at 4:5), which the app then stretches to
         # 1080x1350 and exports stretch as far as A4 print — the reported
         # blur. 4K at the poster's own 4:5 (founder's call: +$0.05/image over
-        # 2K is not significant) keeps the source ahead of print itself. JPEG
-        # output on purpose: a 4K PNG can exceed the 20 MB persistence cap
-        # and would forfeit the poster; a q95 JPEG never gets close. A routed
-        # model that rejects the config must not cost the poster either, so
-        # that call is retried once without it.
-        image_config = types.ImageConfig(
-            aspect_ratio='4:5',
-            image_size='4K',
-            output_mime_type='image/jpeg',
-            output_compression_quality=95,
-        )
+        # 2K is not significant) keeps the source ahead of print itself.
+        #
+        # ONLY these two fields. output_mime_type/output_compression_quality
+        # are Vertex-only: on the api-key path the SDK raises for them
+        # CLIENT-SIDE, which silently rode the fallback below and shipped 1K
+        # posters while the code read as if it asked for more. Oversized PNG
+        # output is handled at the persistence boundary instead
+        # (persist_generated_image transcodes to JPEG). The fallback stays for
+        # a routed model that rejects the config server-side.
+        image_config = types.ImageConfig(aspect_ratio='4:5', image_size='4K')
         try:
             response = client.models.generate_content(
                 model=cls.IMAGE_MODEL,

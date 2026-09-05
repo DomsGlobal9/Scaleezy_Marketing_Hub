@@ -108,16 +108,19 @@ class PosterImageTemplateTests(TestCase):
     def test_the_image_call_requests_full_resolution_at_the_poster_aspect(self):
         # The reported blur: model-default ~1K output stretched to 1080x1350
         # and beyond by exports. Every poster call must ask for 4K at 4:5
-        # (founder's call), as a JPEG — a 4K PNG can exceed the 20 MB
-        # persistence cap and would forfeit the poster.
+        # (founder's call) — and ONLY those two fields: output_mime_type and
+        # output_compression_quality are Vertex-only, and on the api-key path
+        # the SDK raises for them client-side, which silently rode the
+        # fallback and shipped 1K posters.
         fake = SimpleNamespace(models=FakeModels())
         with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
             GeminiGeneratorService.generate_poster_image('A scene.', api_key='k')
+        self.assertEqual(len(fake.models.calls), 1, 'the config must not trip the fallback')
         config = fake.models.calls[0]['config']
         self.assertEqual(config.image_config.aspect_ratio, '4:5')
         self.assertEqual(config.image_config.image_size, '4K')
-        self.assertEqual(config.image_config.output_mime_type, 'image/jpeg')
-        self.assertEqual(config.image_config.output_compression_quality, 95)
+        self.assertIsNone(config.image_config.output_mime_type)
+        self.assertIsNone(config.image_config.output_compression_quality)
 
     def test_a_model_that_rejects_the_resolution_hint_still_delivers(self):
         fake = SimpleNamespace(models=FakeModels(reject_image_config=True))

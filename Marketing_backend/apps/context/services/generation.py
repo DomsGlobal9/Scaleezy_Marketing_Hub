@@ -17,6 +17,7 @@ reason — repeating work that succeeded is how failover turns into duplicate
 spend.
 """
 import base64
+import io
 import binascii
 import logging
 import uuid
@@ -169,6 +170,10 @@ class OutputRejected(Exception):
 
 
 MAX_GENERATED_IMAGE_BYTES = 20 * 1024 * 1024
+#: A 4K photographic PNG can be enormous, and the Developer API cannot be
+#: asked for JPEG output (that knob is Vertex-only). PNGs past this size are
+#: transcoded to JPEG at the persistence boundary instead of being rejected.
+PNG_TRANSCODE_OVER_BYTES = 8 * 1024 * 1024
 MAX_GENERATED_VIDEO_BYTES = 250 * 1024 * 1024
 MAX_MEDIA_REDIRECTS = 4
 
@@ -275,6 +280,25 @@ def persist_generated_image(workspace, result):
         raise OutputRejected("Image provider returned invalid base64 data.") from exc
     except httpx.HTTPError as exc:
         raise OutputRejected("Provider image could not be copied to durable storage.") from exc
+
+    # A 4K PNG straight from the model can brush or pass the byte cap.
+    # Rejecting there would forfeit a poster that is already paid for, so a
+    # heavyweight PNG becomes a q95 JPEG — visually identical for
+    # photographic posters, a fraction of the bytes. Best effort: if the
+    # transcode itself fails, the cap below still protects storage.
+    if mime_type == 'image/png' and payload and len(payload) > PNG_TRANSCODE_OVER_BYTES:
+        try:
+            from PIL import Image as PILImage
+
+            with PILImage.open(io.BytesIO(payload)) as decoded:
+                buffer = io.BytesIO()
+                decoded.convert('RGB').save(
+                    buffer, format='JPEG', quality=95, optimize=True
+                )
+            payload = buffer.getvalue()
+            mime_type = 'image/jpeg'
+        except Exception as exc:
+            logger.warning('Oversized PNG transcode failed: %s', exc)
 
     if not payload or len(payload) > MAX_GENERATED_IMAGE_BYTES:
         raise OutputRejected("Generated image is empty or exceeds the 20 MB limit.")
