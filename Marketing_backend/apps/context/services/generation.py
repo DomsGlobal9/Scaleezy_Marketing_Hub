@@ -1528,8 +1528,18 @@ def generate_marketing_payload(
     # a typed CTA only when the brand's law approves it; what was filled (or
     # refused) is recorded into the trace below.
     brief, instruction, brief_fields = with_brief_fields(brief, instruction, brand=resolved)
+    # The poster's own call to action, when the typed one was approved: the
+    # law's DM-keyword demand stands down for it in the prompt line, the
+    # copy check and the deterministic fix alike - one CTA per poster, so
+    # the one free copy rewrite is never spent on a keyword the caption
+    # does not owe. Only where the picture paints its own words, though: a
+    # video, a carousel or a catalogue-template poster carries no CTA on the
+    # media, so there the caption still owes the keyword.
+    typed_cta = (
+        str(brief.get('cta') or '') if poster_renders_its_own_text(brief) else ''
+    )
 
-    lines = guardrail_law.prompt_lines(resolved)
+    lines = guardrail_law.prompt_lines(resolved, cta=typed_cta)
     if lines and 'guardrail_rules' not in brief:
         brief = {**brief, 'guardrail_rules': lines}
 
@@ -1547,7 +1557,7 @@ def generate_marketing_payload(
         would read as provider failure and fail over into a second paid
         generation — the exact double-buy this ordering exists to prevent."""
         try:
-            caught = guardrail_law.copy_violations(resolved, payload)
+            caught = guardrail_law.copy_violations(resolved, payload, cta=typed_cta)
             unresolved = caught
             if caught:
                 # One free retry, words only. The photograph/video that
@@ -1564,14 +1574,14 @@ def generate_marketing_payload(
                         "Guardrail copy retry failed for workspace %s; keeping first copy",
                         workspace.pk,
                     )
-            payload, fixed = guardrail_law.enforce(
-                resolved, payload, cta=str(brief.get('cta') or ''),
-            )
+            payload, fixed = guardrail_law.enforce(resolved, payload, cta=typed_cta)
             if caught:
                 # Recomputed AFTER enforce: a hashtag the strip removed or a
                 # CTA the append supplied is resolved, and must not be
                 # reported otherwise.
-                unresolved = guardrail_law.copy_violations(resolved, payload)
+                unresolved = guardrail_law.copy_violations(
+                    resolved, payload, cta=typed_cta,
+                )
             if caught or fixed:
                 # Caught-then-fixed still counts: the scorecard's whole job
                 # is to show how often the gate had to step in.
@@ -1767,10 +1777,11 @@ def _route_marketing_payload(
 
 
 def _with_guardrail_lines(brand, brief_extra):
-    """The written law added to a direct capability call's brief, once."""
+    """The written law added to a direct capability call's brief, once -
+    read after `with_brief_fields`, so it stands down for a typed CTA."""
     from apps.brands.services import guardrails as guardrail_law
 
-    lines = guardrail_law.prompt_lines(brand)
+    lines = guardrail_law.prompt_lines(brand, cta=str(brief_extra.get('cta') or ''))
     if lines and 'guardrail_rules' not in brief_extra:
         return {**brief_extra, 'guardrail_rules': lines}
     return brief_extra
@@ -1791,13 +1802,13 @@ def retry_image(workspace, brand, brief_extra, *, instruction='', trace=None):
     and scene the picture actually carries.
     """
     _require_spend_approved(workspace)
-    brief_extra = _with_guardrail_lines(brand, brief_extra)
     # The repair and request-edits paths hand this the stored brief directly,
     # never through `generate_marketing_payload`: the typed offer and CTA
     # must reach the re-bought picture the same way they reached the first.
     brief_extra, instruction, filled = with_brief_fields(
         brief_extra, instruction, brand=brand,
     )
+    brief_extra = _with_guardrail_lines(brand, brief_extra)
     # Attached before the variety pick below: with the ambassador in the
     # brief no scene seed that would crop the face is drawn. A carousel
     # slide is the exception: its siblings were bought by
@@ -1856,13 +1867,13 @@ def generate_copy_only(workspace, brand, brief_extra, *, instruction=''):
     from apps.brands.services import guardrails as guardrail_law
 
     _require_spend_approved(workspace)
-    brief_extra = _with_guardrail_lines(brand, brief_extra)
     # A no-op on the rewrite path (the shared boundary already read the
     # typed brief); here for a direct caller's brief, the same as
     # `retry_image`.
     brief_extra, instruction, _filled = with_brief_fields(
         brief_extra, instruction, brand=brand,
     )
+    brief_extra = _with_guardrail_lines(brand, brief_extra)
     context = build_generation_context(
         workspace, brand, TaskType.COPY, instruction=instruction,
     )

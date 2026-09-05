@@ -31,7 +31,8 @@ inside the value; it is whitespace-collapsed, then - twice over, in either
 order - stripped of one trailing `.` and of one MATCHING pair of surrounding
 quotes (`"…"`, `'…'`, `“…”`, `‘…’`; a mixed or unclosed quote is left
 alone), and finally cut to MAX_VALUE_CHARS. The first occurrence of a key
-wins.
+wins, and only that occurrence ever leaves the text: a repeat, or a synonym
+label later on, stays as prose.
 """
 import re
 
@@ -40,6 +41,10 @@ MAX_VALUE_CHARS = 200
 #: (the copy-only rewrite hands it back) never re-reads the tidied text and
 #: invents a second field from a segment a chip had already decided.
 PARSED_MARKER = 'brief_fields_parsed'
+#: The brief key naming the parser keys the studio's user dismissed from
+#: auto-fill (`briefFieldsDismissed` on the wire): those stay prose.
+DISMISSED_KEY = 'brief_fields_dismissed'
+MAX_DISMISSED = 12
 
 #: Structured brief key -> the labels a person may type for it.
 LABELS = {
@@ -147,15 +152,20 @@ def extract_brief_fields(text):
 
 
 def plain_brief(text, keys=None):
-    """`text` with every recognised `Label: value` segment removed - only
-    those of the keys in `keys` when it is given - and the punctuation and
-    whitespace around it tidied, so the copy model reads the brief without
-    the field noise. The original text when nothing was removed."""
+    """`text` with the `Label: value` segment of every recognised field
+    removed - only those of the keys in `keys` when it is given - and the
+    punctuation and whitespace around it tidied, so the copy model reads the
+    brief without the field noise. Only the occurrence a key was read from
+    leaves (the first, see `extract_brief_fields`): a repeat, or a synonym
+    label later on, was never applied and stays as prose. The original text
+    when nothing was removed."""
     text = str(text or '')
-    found = [
-        (key, value, span) for key, value, span in _scan(text)
-        if keys is None or key in keys
-    ]
+    found = []
+    seen = set()
+    for key, value, span in _scan(text):
+        if (keys is None or key in keys) and key not in seen:
+            seen.add(key)
+            found.append((key, value, span))
     if not found:
         return text
     pieces = []
@@ -205,19 +215,24 @@ def with_brief_fields(brief, instruction='', brand=None):
     reviewer's verdict, which must never be mined for labels). A structured
     key is filled only when the brief's own value is empty - the studio's
     chip always wins, and the typed segment then STAYS in the text so the
-    copy model still reads what was typed - and `requested_headline` / `cta`
-    are set the same way. When `brand` has approved DM keywords
+    copy model still reads what was typed - and never when the user dismissed
+    its auto-fill in the studio (`brief[DISMISSED_KEY]`, a list of parser
+    keys: the segment stays as prose the same way); `requested_headline` /
+    `cta` are set the same way. When `brand` has approved DM keywords
     (`guardrails.approved_ctas`) a typed CTA must be one of them: an unlisted
     one never becomes the on-image CTA - it is dropped and reported as
     `cta_ignored`. The segments this call decided (applied or dropped) leave
     the brief's instruction (see `plain_brief`), the `instruction` argument
     when it was that same text, and the creative direction's "User creation
-    request" line that quoted it. The brief is marked (`PARSED_MARKER`); a
-    marked brief is handed back untouched, whatever its text now says.
+    request" line that quoted it - which goes altogether when nothing but
+    fields was typed, so a refused CTA never survives there. The brief is
+    marked (`PARSED_MARKER`); a marked brief is handed back untouched,
+    whatever its text now says.
 
     Returns (brief, instruction, filled): `filled` is {key: value} for what
-    this call supplied, plus `cta_ignored` for a typed CTA it refused, for
-    the generation trace.
+    this call supplied, plus `cta_ignored` for a typed CTA it refused and
+    `dismissed` for the typed keys the user had dismissed, for the
+    generation trace.
     """
     if brief.get(PARSED_MARKER):
         return brief, instruction, {}
@@ -225,9 +240,14 @@ def with_brief_fields(brief, instruction='', brand=None):
     fields = extract_brief_fields(source)
     if not fields:
         return brief, instruction, {}
+    dismissed = brief.get(DISMISSED_KEY)
+    dismissed = (
+        {key for key in dismissed if isinstance(key, str)}
+        if isinstance(dismissed, (list, tuple, set)) else set()
+    )
     applied = {
         key: value for key, value in fields.items()
-        if not ' '.join(str(brief.get(key) or '').split())
+        if key not in dismissed and not ' '.join(str(brief.get(key) or '').split())
     }
     decided = set(applied)
     report = dict(applied)
@@ -239,16 +259,49 @@ def with_brief_fields(brief, instruction='', brand=None):
         ):
             report['cta_ignored'] = applied.pop('cta')
             del report['cta']
+    dismissed_typed = [key for key in fields if key in dismissed]
+    if dismissed_typed:
+        report['dismissed'] = dismissed_typed
     plain = plain_brief(source, decided)
     updated = {**brief, **applied, 'instruction': plain, PARSED_MARKER: True}
     direction = brief.get('creative_direction')
-    if plain and isinstance(direction, dict) and isinstance(direction.get('instructions'), list):
-        updated['creative_direction'] = {
-            **direction,
-            'instructions': [
-                _requoted(line, source, plain) for line in direction['instructions']
-            ],
-        }
+    if isinstance(direction, dict) and isinstance(direction.get('instructions'), list):
+        # A line that quoted the typed text now quotes the tidied text; with
+        # nothing left to quote it goes, rather than keep the raw fields.
+        lines = []
+        for line in direction['instructions']:
+            requoted = _requoted(line, source, plain)
+            if plain or requoted == line:
+                lines.append(requoted)
+        updated['creative_direction'] = {**direction, 'instructions': lines}
     if instruction == source:
         instruction = plain
     return updated, instruction, report
+
+
+def dismissed_brief_fields(data):
+    """The parser keys a generate request dismissed from auto-fill,
+    validated: keys of `LABELS` only, deduplicated in order, read from the
+    first MAX_DISMISSED entries of `briefFieldsDismissed` (or its snake_case
+    twin); anything but a list reads as none."""
+    raw = data.get('briefFieldsDismissed', data.get(DISMISSED_KEY, []))
+    if not isinstance(raw, list):
+        return []
+    keys = []
+    for key in raw[:MAX_DISMISSED]:
+        if isinstance(key, str) and key in LABELS and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def stored_offer(brief, trace):
+    """The offer a persisted item carries (`ContentItem.cta` stores the offer
+    text): the brief's own, else the one this parse filled. The parsed brief
+    is local to `generate_marketing_payload` - its callers persist the brief
+    they passed in - so a typed-only offer is read back from the trace it
+    recorded (`trace['brief_fields']`)."""
+    offer = str(brief.get('offer') or '')
+    if offer.strip():
+        return offer
+    filled = trace.get('brief_fields') if isinstance(trace, dict) else None
+    return str(filled.get('offer') or '') if isinstance(filled, dict) else ''

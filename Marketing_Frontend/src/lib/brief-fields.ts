@@ -10,8 +10,9 @@
  *
  * The rule (keep in step with the backend parser):
  *  - a label is case-insensitive and a whole word ("Offers:" is not
- *    "Offer:"); a multi-word label takes exactly one space or hyphen between
- *    its words ("Call to action", "Call-to-action", "Button text");
+ *    "Offer:"); a multi-word label takes exactly one space or one hyphen at
+ *    each gap between its words ("Call to action", "Call-to-action",
+ *    "Call-to action", "Button text");
  *  - it is followed by `:` or `=` (any same-line spacing) or ` - ` (a space
  *    on both sides); neither the separator's spacing nor the value crosses a
  *    newline, so "Offer:" alone on a line is an empty field, not the next
@@ -44,12 +45,16 @@ export type BriefFields = Partial<Record<BriefFieldKey, string>>;
 
 const MAX_VALUE_CHARS = 200;
 
-/** Longest spellings first so "Campaign name" is never read as "Campaign". */
+/**
+ * Longest spellings first so "Campaign name" is never read as "Campaign".
+ * Each gap in a multi-word label is `[ -]` — one space or one hyphen, chosen
+ * per gap, exactly as the backend builds them ("Call-to action" counts).
+ */
 const LABELS: ReadonlyArray<readonly [BriefFieldKey, string]> = [
-  ["cta", "call to action|call-to-action"],
-  ["audience", "target audience"],
-  ["campaignName", "campaign name"],
-  ["cta", "button text"],
+  ["cta", "call[ -]to[ -]action"],
+  ["audience", "target[ -]audience"],
+  ["campaignName", "campaign[ -]name"],
+  ["cta", "button[ -]text"],
   ["offer", "offer|deal|discount|promo|promotion|price"],
   ["requestedHeadline", "headline|title|hook|tagline"],
   ["cta", "cta|button"],
@@ -111,8 +116,26 @@ function clean(raw: string): string {
   return value.slice(0, MAX_VALUE_CHARS).trim();
 }
 
-export function extractBriefFields(text: string): BriefFields {
+/**
+ * The API tidies the brief before the backend parser sees it: CRLF to LF,
+ * runs of spaces and tabs collapsed within each line, lines trimmed, blank
+ * lines dropped (gemini/views.py `_generation_instruction`). Parse the same
+ * text here, or a double-spaced label fills on the server with no pill and
+ * nothing to dismiss.
+ */
+export function normalizeBrief(text: string): string {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter((line) => line.length > 0)
+    .join("\n");
+}
+
+export function extractBriefFields(raw: string): BriefFields {
   const fields: BriefFields = {};
+  if (!raw) return fields;
+  const text = normalizeBrief(raw);
   if (!text) return fields;
   const matches: Array<{ key: BriefFieldKey; start: number; valueStart: number }> = [];
   LABEL_RE.lastIndex = 0;

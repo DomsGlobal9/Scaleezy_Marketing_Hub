@@ -173,8 +173,12 @@ def _hashtag_tokens(hashtags):
     ]
 
 
-def copy_violations(brand, payload):
-    """What the generated copy got wrong against the written law."""
+def copy_violations(brand, payload, *, cta=''):
+    """What the generated copy got wrong against the written law. `cta` is
+    the poster's own call to action (typed into the brief, painted on the
+    image): when it is itself an approved DM keyword the caption owes no
+    second one - the same escape `enforce` takes, so a caption it declines
+    to append to is never reported as missing the keyword."""
     g = _for_brand(brand)
     payload = payload if isinstance(payload, dict) else {}
     title = str(payload.get('postTitle') or '')
@@ -193,8 +197,8 @@ def copy_violations(brand, payload):
             if token.casefold() in banned_tags:
                 messages.append(f'The banned hashtag "#{token}" was used.')
 
-    if g['approved_ctas'] and not any(
-        _pattern(cta).search(prose) for cta in g['approved_ctas']
+    if g['approved_ctas'] and not is_approved_cta(brand, cta) and not any(
+        _pattern(term).search(prose) for term in g['approved_ctas']
     ):
         listed = ', '.join(g['approved_ctas'])
         messages.append(
@@ -253,8 +257,11 @@ def enforce(brand, payload, *, cta=''):
     return payload, notes
 
 
-def prompt_lines(brand):
-    """The written law rendered as prompt constraints, [] when none exists."""
+def prompt_lines(brand, *, cta=''):
+    """The written law rendered as prompt constraints, [] when none exists.
+    With `cta` an approved keyword (the poster's own call to action) the
+    DM-keyword line says so instead of demanding one in the caption: the
+    copy prompt, its rewrite and the judge all read this one rendering."""
     g = _for_brand(brand)
     lines = []
     if g['forbidden_words']:
@@ -274,7 +281,13 @@ def prompt_lines(brand):
         )
     for required in g['required_on_every_post']:
         lines.append(f'The caption MUST contain, verbatim: "{required}".')
-    if g['approved_ctas']:
+    if g['approved_ctas'] and is_approved_cta(brand, cta):
+        lines.append(
+            f'The call to action is "{" ".join(str(cta).split())}", one of the '
+            "brand's approved DM keywords, and the poster carries it; the "
+            'caption needs no other DM keyword.'
+        )
+    elif g['approved_ctas']:
         lines.append(
             'The call to action MUST use exactly one of these DM keywords: '
             + ', '.join(g['approved_ctas']) + '.'

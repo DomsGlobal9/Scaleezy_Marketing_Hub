@@ -17,22 +17,34 @@ copy judge rewrote the typed headline. These tests pin:
     line-keeping normalisation feeding the parser one field per line;
   * `with_brief_fields`: a typed CTA outside the brand's approved keywords
     is dropped and reported as `cta_ignored`; a brief it read is marked and
-    never read twice; a chip's typed alternative stays in the text;
+    never read twice; a chip's typed alternative stays in the text; so does
+    a key the studio's user dismissed from auto-fill
+    (`brief_fields_dismissed`, reported as `dismissed`); only the occurrence
+    a key was read from leaves the text; an only-fields brief leaves no
+    "User creation request" line behind;
   * the one parse point in `generate_marketing_payload`: a typed offer
     reaches the IMAGE brief's on-image offer line and the trace
     (`layout_config.generation_trace['brief_fields']`); a selected chip wins
     over a typed value; a typed headline is a MUST line in the TEXT brief
     (the judge's rewrite included) and reaches the critique judge as
     `requested_headline`; a typed CTA is the on-image call-to-action when
-    the brand's law allows it, and then the caption gets no second CTA;
+    the brand's law allows it, and then the law's DM-keyword demand stands
+    down for it - in the prompt line, the copy check and the judge - so no
+    rewrite is spent on a keyword the caption does not owe;
   * the worker's shape (instruction=brief['instruction']) and the
     synchronous endpoint's shape (instruction=campaign name) both parse;
     `retry_image` on a stored brief carries the typed fields; a reviewer's
-    request-edits verdict is never mined for labels.
+    request-edits verdict is never mined for labels;
+  * persistence: a typed-only offer lands in `ContentItem.cta` (the offer
+    column) on the worker path and the synchronous one - each persists the
+    brief it passed in, so it is read back from the trace - and rides into
+    a request-edits regeneration; both endpoints carry the studio's
+    dismissed keys, validated against the vocabulary.
 
 The router is a recording stand-in: no provider is ever called.
 """
 import copy
+import json
 import uuid
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -43,18 +55,26 @@ from django.test import SimpleTestCase, TestCase
 from apps.ai.models import Capability
 from apps.ai.router import NoProviderAvailable
 from apps.brands.models import Brand
-from apps.common.testing import TenantFixtureMixin
+from apps.common.testing import TenantFixtureMixin, workspace_header
+from apps.content.models import ContentItem
 from apps.context.services.brief_fields import (
     LABELS,
+    MAX_DISMISSED,
     MAX_VALUE_CHARS,
     PARSED_MARKER,
+    dismissed_brief_fields,
     extract_brief_fields,
     plain_brief,
+    stored_offer,
     with_brief_fields,
 )
 from apps.context.services.generation import generate_marketing_payload, retry_image
+from apps.gemini.models import GeminiGenerationRequest
+from apps.workspaces.models import WorkspaceMember
 
 DISPATCH = 'apps.ai.router.AIRouter.dispatch'
+GENERATE_URL = '/api/marketing/gemini/generate/'
+GENERATE_ASYNC_URL = '/api/marketing/gemini/generate-async/'
 #: The finished picture's text check would fetch the (fake) image first;
 #: it is not under test here, so it reads as skipped.
 CHECKER = 'apps.context.services.image_text.check_image_text'
@@ -496,6 +516,118 @@ class BriefFieldParserTests(SimpleTestCase):
         self.assertEqual(again['instruction'], LIVE_KEPT_OFFER)
         self.assertEqual(word, LIVE_KEPT_OFFER)
 
+    def test_only_the_occurrence_a_key_was_read_from_leaves_the_text(self):
+        # The first occurrence wins; a repeat, or a synonym label later on,
+        # was never applied, so it is not scrubbed either - it stays prose.
+        self.assertEqual(plain_brief('Offer: 10% off. Offer: 20% off'), 'Offer: 20% off')
+        self.assertEqual(
+            plain_brief('Offer: 10% off. Discount: 20% off'), 'Discount: 20% off',
+        )
+        brief = studio_brief(instruction='Poster for sarees. Offer: 10% off. Offer: 20% off')
+        updated, word, filled = with_brief_fields(brief, brief['instruction'])
+        self.assertEqual(filled, {'offer': '10% off'})
+        self.assertEqual(updated['offer'], '10% off')
+        self.assertEqual(updated['instruction'], 'Poster for sarees. Offer: 20% off')
+        self.assertEqual(word, 'Poster for sarees. Offer: 20% off')
+
+    def test_a_dismissed_field_stays_prose_and_never_fills_its_key(self):
+        # The studio's user dismissed the offer auto-fill: the segment is
+        # neither applied nor scrubbed, and the report says so.
+        brief = studio_brief(brief_fields_dismissed=['offer'])
+        updated, word, filled = with_brief_fields(brief, LIVE)
+        self.assertEqual(filled, {
+            'requested_headline': 'Woven For Celebrations', 'cta': 'Shop the collection',
+            'dismissed': ['offer'],
+        })
+        self.assertEqual(updated['offer'], '')
+        self.assertEqual(updated['instruction'], LIVE_KEPT_OFFER)
+        self.assertEqual(word, LIVE_KEPT_OFFER)
+        self.assertEqual(
+            updated['creative_direction']['instructions'], [REQUEST_PREFIX + LIVE_KEPT_OFFER],
+        )
+        # Every typed field dismissed: nothing fills, the text is untouched,
+        # and the brief is still marked as read.
+        brief = studio_brief(
+            instruction='Poster for sarees. Offer: 10% off.',
+            brief_fields_dismissed=['offer', 'cta'],
+        )
+        updated, word, filled = with_brief_fields(brief, brief['instruction'])
+        self.assertEqual(filled, {'dismissed': ['offer']})
+        self.assertEqual(updated['offer'], '')
+        self.assertEqual(updated['instruction'], 'Poster for sarees. Offer: 10% off.')
+        self.assertEqual(word, 'Poster for sarees. Offer: 10% off.')
+        self.assertIs(updated[PARSED_MARKER], True)
+        # Junk under the key is ignored, never fatal.
+        for junk in ('offer', {'offer': True}, [{'key': 'offer'}], None):
+            with self.subTest(junk=junk):
+                updated, _word, filled = with_brief_fields(
+                    studio_brief(brief_fields_dismissed=junk), LIVE,
+                )
+                self.assertEqual(filled, LIVE_FIELDS)
+                self.assertEqual(updated['offer'], '20% off launch week')
+
+    def test_dismissed_keys_are_validated_against_the_vocabulary(self):
+        self.assertEqual(
+            dismissed_brief_fields({
+                'briefFieldsDismissed': ['offer', 'Offer', 'nope', 7, 'cta', 'offer'],
+            }),
+            ['offer', 'cta'],
+        )
+        self.assertEqual(
+            dismissed_brief_fields({'brief_fields_dismissed': ['occasion']}), ['occasion'],
+        )
+        # camelCase wins when both are sent; anything but a list reads as none.
+        self.assertEqual(
+            dismissed_brief_fields({
+                'briefFieldsDismissed': ['cta'], 'brief_fields_dismissed': ['offer'],
+            }),
+            ['cta'],
+        )
+        for junk in ('offer', {'offer': True}, None, 7):
+            with self.subTest(junk=junk):
+                self.assertEqual(dismissed_brief_fields({'briefFieldsDismissed': junk}), [])
+        self.assertEqual(dismissed_brief_fields({}), [])
+        # Bounded: only the first MAX_DISMISSED entries are ever read.
+        self.assertEqual(
+            dismissed_brief_fields({
+                'briefFieldsDismissed': ['nope'] * MAX_DISMISSED + ['offer'],
+            }),
+            [],
+        )
+
+    def test_stored_offer_reads_the_chip_first_then_the_trace(self):
+        typed = {'brief_fields': {'offer': '20% off launch week'}}
+        self.assertEqual(stored_offer({'offer': 'Flat 40% off'}, typed), 'Flat 40% off')
+        self.assertEqual(stored_offer({'offer': ''}, typed), '20% off launch week')
+        self.assertEqual(stored_offer({'offer': '  '}, typed), '20% off launch week')
+        self.assertEqual(stored_offer({}, {'brief_fields': {'dismissed': ['offer']}}), '')
+        self.assertEqual(stored_offer({}, None), '')
+        self.assertEqual(stored_offer({}, {'brief_fields': 'junk'}), '')
+
+    def test_an_only_fields_brief_leaves_no_request_line_behind(self):
+        # Nothing but fields was typed: with nothing left to quote, the
+        # creative direction's "User creation request" line goes - a refused
+        # CTA must not survive there as prose. Other lines are untouched.
+        law = SimpleNamespace(guardrails={'approved_ctas': ['PROTECT']})
+        typed = 'Headline: Woven. Offer: 10% off. CTA: Shop'
+        brief = studio_brief(instruction=typed)
+        brief['creative_direction']['instructions'] = [
+            'Use the selected Scaleezy composition layout: x.', REQUEST_PREFIX + typed,
+        ]
+        updated, word, filled = with_brief_fields(brief, typed, brand=law)
+        self.assertEqual(
+            filled, {'requested_headline': 'Woven', 'offer': '10% off', 'cta_ignored': 'Shop'},
+        )
+        self.assertEqual(updated['instruction'], '')
+        self.assertEqual(word, '')
+        self.assertEqual(
+            updated['creative_direction']['instructions'],
+            ['Use the selected Scaleezy composition layout: x.'],
+        )
+        self.assertNotIn('Shop', str(updated['creative_direction']))
+        # The caller's brief is untouched.
+        self.assertEqual(brief['creative_direction']['instructions'][1], REQUEST_PREFIX + typed)
+
 
 class BriefFieldsGenerationTests(TenantFixtureMixin, TestCase):
     """The one parse point, seen from the provider side of the exchange."""
@@ -555,6 +687,21 @@ class BriefFieldsGenerationTests(TenantFixtureMixin, TestCase):
         self.assertEqual(text_brief['instruction'], 'Poster for sarees. Offer: 20% off launch week.')
         self.assertEqual(text_brief['offer'], 'Flat 40% off')
 
+    def test_a_dismissed_offer_stays_prose_all_the_way_to_the_providers(self):
+        router = Router()
+        result = self.generate(router, studio_brief(brief_fields_dismissed=['offer']))
+
+        (image_brief,) = router.image_briefs()
+        self.assertEqual(image_brief['offer'], '')
+        self.assertFalse(lines_with(image_brief, 'the offer line'))
+        (text_brief,) = router.text_briefs()
+        self.assertEqual(text_brief['instruction'], LIVE_KEPT_OFFER)
+        self.assertEqual(text_brief['offer'], '')
+        self.assertEqual(result['trace']['brief_fields'], {
+            'requested_headline': 'Woven For Celebrations', 'cta': 'Shop the collection',
+            'dismissed': ['offer'],
+        })
+
     def test_a_typed_cta_outside_the_brands_law_never_reaches_the_image(self):
         self.brand.guardrails = {'approved_ctas': ['PROTECT']}
         self.brand.save(update_fields=['guardrails'])
@@ -574,7 +721,12 @@ class BriefFieldsGenerationTests(TenantFixtureMixin, TestCase):
         })
         self.assertIn('DM PROTECT', result['payload']['postDescription'])
 
-        # Approved: it is the pill, and the caption gets no second CTA.
+        # Approved: it is the pill, the caption gets no second CTA, and the
+        # law stands down for it everywhere - the copy check does not burn
+        # the one free rewrite on the missing keyword (exactly ONE TEXT
+        # dispatch), nothing is left unresolved, and the prompt line the
+        # generator and the judge read names the CTA instead of demanding a
+        # keyword.
         router = Router()
         result = self.generate(router, studio_brief(instruction='Poster for sarees. CTA: Protect'))
         (image_brief,) = router.image_briefs()
@@ -583,7 +735,33 @@ class BriefFieldsGenerationTests(TenantFixtureMixin, TestCase):
         )
         self.assertEqual(result['trace']['brief_fields'], {'cta': 'Protect'})
         self.assertEqual(result['payload']['postDescription'], COPY['caption'])
-        self.assertEqual(result['trace']['guardrails']['fixed'], [])
+        self.assertEqual(result['trace'].get('guardrails', {}).get('unresolved', []), [])
+        (text_brief,) = router.text_briefs()
+        rules = text_brief['guardrail_rules']
+        self.assertFalse([line for line in rules if 'MUST use exactly one of' in line], rules)
+        self.assertTrue([line for line in rules if '"Protect"' in line], rules)
+        (judged,) = router.judge_inputs()
+        self.assertEqual(judged['brand_guardrails'], rules)
+
+    def test_the_stand_down_needs_a_poster_that_paints_its_own_cta(self):
+        # A catalogue-template poster (like a video or a carousel) paints no
+        # words of its own, so an approved typed CTA sits on no media at
+        # all: the caption still owes the brand's keyword, and the law's
+        # demand stays in the prompt line the generator and the judge read.
+        self.brand.guardrails = {'approved_ctas': ['PROTECT']}
+        self.brand.save(update_fields=['guardrails'])
+        router = Router()
+        result = self.generate(router, studio_brief(
+            instruction='Poster for sarees. CTA: Protect',
+            creative_direction={
+                'mode': 'CATALOG_TEMPLATE', 'layout': 'agency_column', 'selections': [],
+            },
+        ))
+        self.assertEqual(result['trace']['brief_fields'], {'cta': 'Protect'})
+        self.assertIn('DM PROTECT', result['payload']['postDescription'])
+        first_text = router.text_briefs()[0]
+        rules = first_text['guardrail_rules']
+        self.assertTrue([line for line in rules if 'MUST use exactly one of' in line], rules)
 
     def test_a_typed_headline_is_a_must_line_for_the_copy_and_a_constraint_for_the_judge(self):
         # The judge fails the first draft once, so the copy-only rewrite
@@ -674,3 +852,115 @@ class BriefFieldsGenerationTests(TenantFixtureMixin, TestCase):
         self.assertFalse(lines_with(text_brief, 'MUST: Use this exact headline'))
         (image_brief,) = router.image_briefs()
         self.assertFalse(lines_with(image_brief, 'the offer line'))
+
+
+class BriefFieldsPersistenceTests(TenantFixtureMixin, TestCase):
+    """A typed-only offer lands on the item (`ContentItem.cta` stores the
+    offer text) on both persistence paths - the worker's and the synchronous
+    endpoint's - although each persists the brief it passed in, not the
+    parsed one; and both endpoints carry the studio's dismissed keys."""
+
+    def setUp(self):
+        self.ws = self.make_workspace('Rajvi', 'rajvi-brief-persist')
+        self.user, self.api = self.authenticate_as(
+            self.ws, WorkspaceMember.Role.MANAGER, 'rajvi-brief-manager',
+        )
+        self.brand = Brand.objects.create(
+            workspace=self.ws, name='Rajvi Silks', is_default=True,
+            status=Brand.Status.ACTIVE, cta_keyword='MORE INFO',
+        )
+
+    def test_the_worker_persists_the_typed_offer_and_request_edits_carries_it(self):
+        from apps.gemini.tasks import generate_content, regenerate_revision
+
+        request = GeminiGenerationRequest.objects.create(
+            workspace=self.ws, user=self.user,
+            prompt_data=json.dumps(studio_brief()),
+            status=GeminiGenerationRequest.Status.PENDING,
+        )
+        router = Router()
+        with router.patched():
+            generate_content.func(str(request.pk))
+        request.refresh_from_db()
+        self.assertEqual(
+            request.status, GeminiGenerationRequest.Status.COMPLETED, request.error_message,
+        )
+        item = ContentItem.objects.get(workspace=self.ws)
+        self.assertEqual(item.cta, '20% off launch week')
+        self.assertEqual(item.layout_config['generation_trace']['brief_fields'], LIVE_FIELDS)
+
+        # Sent back for edits: the revision inherits the offer, and the
+        # regeneration's brief carries it as its own offer.
+        item.status = ContentItem.Status.PENDING_REVIEW
+        item.save(update_fields=['status'])
+        with patch('apps.gemini.tasks.regenerate_revision'):
+            res = self.api.post(
+                f'/api/marketing/content/{item.id}/request-edits/',
+                {'note': 'headline is flat', 'elements': ['headline', 'imagery_subject']},
+                format='json', **workspace_header(self.ws),
+            )
+        self.assertEqual(res.status_code, 200, res.content[:300])
+        revision = ContentItem.objects.get(parent=item)
+        self.assertEqual(revision.cta, '20% off launch week')
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload',
+            return_value={
+                'payload': {
+                    'postTitle': 'Woven For Celebrations', 'postDescription': 'Revised.',
+                    'postHashtags': '#silk', 'posterImageUrl': IMAGE['image_url'],
+                },
+                'provider': 'OPENAI', 'provider_name': 'OpenAI', 'brain_version': '',
+                'trace': {},
+            },
+        ) as dispatched:
+            regenerate_revision.func(str(revision.pk))
+        dispatched.assert_called_once()
+        self.assertEqual(dispatched.call_args.args[1]['offer'], '20% off launch week')
+
+    def test_the_synchronous_endpoint_persists_the_typed_offer(self):
+        router = Router()
+        with router.patched():
+            res = self.api.post(
+                GENERATE_URL,
+                {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Kanjivaram launch',
+                 'offer': '', 'instruction': LIVE},
+                format='json', **workspace_header(self.ws),
+            )
+        self.assertEqual(res.status_code, 201, res.content[:300])
+        item = ContentItem.objects.get(id=res.json()['data']['contentItemId'])
+        self.assertEqual(item.cta, '20% off launch week')
+        self.assertEqual(item.layout_config['generation_trace']['brief_fields'], LIVE_FIELDS)
+
+    def test_the_endpoints_carry_the_studios_dismissed_keys_validated(self):
+        res = self.api.post(
+            GENERATE_ASYNC_URL,
+            {'campaignName': 'Kanjivaram launch', 'contentType': 'poster',
+             'creativeMode': 'AI_ORIGINAL', 'instruction': LIVE,
+             'briefFieldsDismissed': ['offer', 'bogus', 7, 'offer']},
+            format='json', **workspace_header(self.ws),
+        )
+        self.assertEqual(res.status_code, 202, res.content[:300])
+        queued = json.loads(GeminiGenerationRequest.objects.get().prompt_data)
+        self.assertEqual(queued['brief_fields_dismissed'], ['offer'])
+
+        # The synchronous endpoint takes the snake_case twin, and the parse
+        # honours it: the offer chip stays empty, nothing is persisted as
+        # the offer, and the trace says why.
+        router = Router()
+        with router.patched():
+            res = self.api.post(
+                GENERATE_URL,
+                {'creativeMode': 'AI_ORIGINAL', 'campaignName': 'Kanjivaram launch',
+                 'offer': '', 'instruction': LIVE, 'brief_fields_dismissed': ['offer']},
+                format='json', **workspace_header(self.ws),
+            )
+        self.assertEqual(res.status_code, 201, res.content[:300])
+        (image_brief,) = router.image_briefs()
+        self.assertEqual(image_brief['offer'], '')
+        self.assertFalse(lines_with(image_brief, 'the offer line'))
+        item = ContentItem.objects.get(id=res.json()['data']['contentItemId'])
+        self.assertEqual(item.cta, '')
+        self.assertEqual(item.layout_config['generation_trace']['brief_fields'], {
+            'requested_headline': 'Woven For Celebrations', 'cta': 'Shop the collection',
+            'dismissed': ['offer'],
+        })
