@@ -119,6 +119,8 @@ class PosterImageTemplateTests(TestCase):
         self.assertIn("ATTACHED IMAGE 2 IS THE BRAND'S OWN LOGO", directive)
         self.assertIn('THIS EXACT logo artwork', directive)
         self.assertIn('ONCE', directive)
+        self.assertIn('generously sized', directive)
+        self.assertIn('never a tiny watermark', directive)
         self.assertIn('never invent a different logo', directive)
 
     def test_the_logo_works_without_a_template_too(self):
