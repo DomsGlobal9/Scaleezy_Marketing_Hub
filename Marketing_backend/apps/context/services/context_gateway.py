@@ -789,8 +789,11 @@ def on_image_text_lines(brief, headline):
             + (', using ' + ' and '.join(available) + ' where the template has '
                'a matching slot' if available else '')
             + '. Do NOT add any button, pill, banner or text element the '
-            'template does not already have, and never render the same '
-            'call-to-action twice.',
+            'template does not already have. The finished poster carries '
+            'EXACTLY ONE call-to-action element in total: when the '
+            "template's design shows more than one (a button plus a text "
+            'link, say), keep only the most prominent slot and leave the '
+            'others out entirely.',
             'MUST: No words beyond the template\'s own text slots - no '
             'paragraphs, captions, hashtags, watermarks or third-party logos.',
             # Structure fidelity, not scene fidelity: every run of one

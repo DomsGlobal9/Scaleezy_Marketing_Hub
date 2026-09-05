@@ -43,7 +43,26 @@ SHORT_FRAGMENT_WORDS = 2
 MAX_FRAGMENTS = 40
 MAX_FRAGMENT_CHARS = 200
 
-VERDICTS = ('ok', 'headline_missing', 'headline_altered', 'extra_text', 'skipped')
+VERDICTS = (
+    'ok', 'headline_missing', 'headline_altered', 'cta_duplicated',
+    'extra_text', 'skipped',
+)
+
+#: The first word of a text block that reads as a call to action. A block
+#: counts as one only when it is short (`CTA_MAX_WORDS` words at most) and
+#: does not close a sentence: "Book a styling session" and "SHOP THE
+#: COLLECTION" both count; "Timeless silhouettes, woven in elegance." — a
+#: kicker line, full stop and all — never does. Live, a brand template that
+#: carried both a booking line and a shopping link came back with both
+#: painted, and template mode tolerated them as slots; this lexicon is how
+#: the judge names that failure without knowing the template.
+CTA_LEAD_WORDS = frozenset((
+    'shop', 'book', 'buy', 'order', 'visit', 'call', 'explore', 'discover',
+    'browse', 'enquire', 'inquire', 'grab', 'get', 'join', 'register',
+    'subscribe', 'reserve', 'schedule', 'claim', 'avail', 'tap', 'click',
+    'swipe', 'dm', 'whatsapp', 'contact', 'download', 'try',
+))
+CTA_MAX_WORDS = 5
 
 TEXT_SCHEMA = {
     'type': 'object',
@@ -142,13 +161,43 @@ def _quoted(raws, limit=6):
     return shown
 
 
+def _cta_blocks(fragments, expected, offer):
+    """The blocks that read as a call to action, occurrences and all.
+
+    Short, imperative, not a sentence — see `CTA_LEAD_WORDS`. Two carve-outs:
+    a block carrying the headline is the headline whatever verb it opens on,
+    and the approved offer is the deal, not the button ("Get 20% Off" beside
+    a Shop Now pill is one CTA, not two). The approved CTA itself is counted:
+    the same pill painted twice, or painted next to a template's own booking
+    line, is exactly the duplication this names.
+    """
+    offer_norm = _norm(offer)
+    blocks = []
+    for raw, normalised in fragments:
+        words = normalised.split()
+        if not words or len(words) > CTA_MAX_WORDS:
+            continue
+        if words[0] not in CTA_LEAD_WORDS:
+            continue
+        if str(raw).rstrip().endswith(('.', '…')):
+            continue
+        if _contains(normalised, expected):
+            continue
+        if offer_norm and _contains(offer_norm, normalised):
+            continue
+        blocks.append(raw)
+    return blocks
+
+
 def judge_texts(found, headline, cta='', offer='', brand_name=''):
     """Judge a transcript of the poster's text blocks against the copy.
 
     Pure: no I/O, no provider. Returns ``(verdict, reason)`` with the verdict
     one of `VERDICTS`. Precedence when several apply is headline_missing >
-    headline_altered > extra_text > ok, because a wrong headline is the
-    failure the founder saw and the one a re-buy is for.
+    headline_altered > cta_duplicated > extra_text > ok, because a wrong
+    headline is the failure the founder saw and the one a re-buy is for —
+    and a second call-to-action outranks stray text because template mode
+    forgives strays (its own slots) but never a doubled CTA.
 
     Casing, punctuation and word separators never matter, and '&' reads as
     "and". One block that is exactly the headline plus approved copy (cta,
@@ -209,6 +258,16 @@ def judge_texts(found, headline, cta='', offer='', brand_name=''):
         return (
             'headline_altered',
             f'Headline reads "{carrying[0][0]}" on the image, not "{headline_shown}".',
+        )
+
+    # One call to action per poster, whoever wrote each of them: the
+    # founder's directive after a template's booking line and shopping link
+    # both came through. Occurrences count, so the same pill twice fails too.
+    ctas = _cta_blocks(fragments, expected, offer)
+    if len(ctas) > 1:
+        return (
+            'cta_duplicated',
+            f'More than one call-to-action on the image: {_quoted(ctas)}.',
         )
 
     # Every block is a stray when, with the approved copy taken out and any

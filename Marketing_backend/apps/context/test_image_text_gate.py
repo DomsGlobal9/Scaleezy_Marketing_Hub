@@ -93,6 +93,11 @@ MISSING = verdict(
     reason='the headline is not on the image',
 )
 SKIPPED = verdict('skipped', reason='disabled for this workspace')
+CTA_DUP = verdict(
+    'cta_duplicated',
+    found=[HEADLINE, 'Book a styling session', 'SHOP THE COLLECTION'],
+    reason='More than one call-to-action on the image.',
+)
 
 
 def poster_brief(**overrides):
@@ -432,6 +437,31 @@ class ImageTextGateTests(TenantFixtureMixin, TestCase):
         self.assertEqual(len(router.image_briefs()), 2)
         self.assertEqual(outcome['image']['image_url'], SECOND_URL)
         self.assertEqual(outcome['trace']['image_text']['reason'], EXTRA['reason'])
+
+    def test_a_template_never_tolerates_a_duplicated_cta(self):
+        """The live failure the tolerance hid: the Sumaya template carries a
+        booking line and a shopping link, both were painted, and extra_text
+        was forgiven as slots. cta_duplicated is not a slot — it re-buys
+        even in template mode, and a clean second picture ships."""
+        router, checker = Router([FIRST, SECOND]), Checker([CTA_DUP, OK])
+        outcome = self.generate(router, checker, template_brief())
+
+        self.assertEqual(len(router.image_briefs()), 2)
+        self.assertEqual(outcome['image']['image_url'], SECOND_URL)
+        record = outcome['trace']['image_text']
+        self.assertEqual(record['verdict'], 'cta_duplicated')
+        self.assertTrue(record['retried'])
+        self.assertEqual(record['kept'], 'second')
+        self.assertEqual(record['final_verdict'], 'ok')
+
+        # A re-buy that still doubles the CTA ties and ships as the second
+        # picture, recorded honestly.
+        router, checker = Router([FIRST, SECOND]), Checker([CTA_DUP, CTA_DUP])
+        outcome = self.generate(router, checker, template_brief())
+        self.assertEqual(len(router.image_briefs()), 2)
+        self.assertEqual(
+            outcome['trace']['image_text']['final_verdict'], 'cta_duplicated'
+        )
 
     def test_a_skipped_check_buys_nothing_more(self):
         router, checker = Router([FIRST]), Checker([SKIPPED])
