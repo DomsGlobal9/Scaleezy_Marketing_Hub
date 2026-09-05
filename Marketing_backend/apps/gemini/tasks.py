@@ -768,6 +768,27 @@ _RESTYLE_GROUPS = frozenset({'TYPOGRAPHY', 'LOGO', 'LAYOUT'})
 _COLOUR_KEYS = frozenset({'brand_colours', 'colour_palette'})
 
 
+def _scope_for_revision(feedback, revision):
+    """`_regeneration_scope`, corrected for where the words actually live.
+
+    Since the no-default-dress decision a delegated poster's headline and CTA
+    are typography the image model paints — there is no compose pass to carry
+    new words onto the old picture. Scoping a headline complaint to copy-only
+    on such an item shipped a revision whose caption was title case under an
+    image still shouting ALL CAPS (seen live, 2026-09-05). Copy complaints on
+    an undressed poster therefore re-buy the image too; dressed items
+    (layout_plugin set) and carousels keep the surgical copy-only path.
+    """
+    scope = _regeneration_scope(feedback)
+    words_live_in_the_image = (
+        revision.content_format == revision.Format.POSTER
+        and not revision.layout_plugin
+    )
+    if scope['copy'] and words_live_in_the_image:
+        scope['image'] = True
+    return scope
+
+
 def _regeneration_scope(feedback):
     """What a reviewer's flagged elements actually ask to be changed.
 
@@ -886,7 +907,7 @@ def regenerate_revision(revision_id: str):
         'revision_feedback': corrections,
     }
 
-    scope = _regeneration_scope(feedback)
+    scope = _scope_for_revision(feedback, revision)
     config = dict(revision.layout_config or {})
     config.pop('regenerating', None)
     parent_config = (

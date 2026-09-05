@@ -206,6 +206,38 @@ class PosterImageTemplateTests(TestCase):
             BrandInspiration.InspirationType.BRAND_PRODUCT, IMAGE_INSPIRATION_TYPES,
         )
 
+    def test_copy_complaints_rebuy_the_image_when_the_words_live_in_it(self):
+        # Seen live: a headline-tagged request-edits on an undressed poster
+        # regenerated the caption to title case while the image kept shouting
+        # ALL CAPS — the words are painted into a delegated poster, so a
+        # copy-only pass cannot fix them.
+        from apps.content.models import ContentItem
+        from apps.gemini.tasks import _scope_for_revision
+
+        feedback = SimpleNamespace(element_keys=['headline'])
+        undressed = SimpleNamespace(
+            content_format=ContentItem.Format.POSTER,
+            layout_plugin='',
+            Format=ContentItem.Format,
+        )
+        dressed = SimpleNamespace(
+            content_format=ContentItem.Format.POSTER,
+            layout_plugin='agency_column',
+            Format=ContentItem.Format,
+        )
+        carousel = SimpleNamespace(
+            content_format=ContentItem.Format.CAROUSEL,
+            layout_plugin='',
+            Format=ContentItem.Format,
+        )
+        with patch(
+            'apps.gemini.tasks._regeneration_scope',
+            side_effect=lambda f: {'copy': True, 'image': False, 'restyle': False},
+        ):
+            self.assertTrue(_scope_for_revision(feedback, undressed)['image'])
+            self.assertFalse(_scope_for_revision(feedback, dressed)['image'])
+            self.assertFalse(_scope_for_revision(feedback, carousel)['image'])
+
     def test_a_garbage_template_payload_degrades_to_text_only(self):
         fake = SimpleNamespace(models=FakeModels())
         with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
