@@ -10,8 +10,9 @@
  *
  * The rule (keep in step with the backend parser):
  *  - a label is case-insensitive and a whole word ("Offers:" is not
- *    "Offer:"); a multi-word label takes exactly one space or hyphen between
- *    its words ("Call to action", "Call-to-action", "Button text");
+ *    "Offer:"); a multi-word label takes exactly one space or one hyphen at
+ *    each gap between its words ("Call to action", "Call-to-action",
+ *    "Call-to action", "Button text");
  *  - it is followed by `:` or `=` (any same-line spacing) or ` - ` (a space
  *    on both sides); neither the separator's spacing nor the value crosses a
  *    newline, so "Offer:" alone on a line is an empty field, not the next
@@ -44,12 +45,16 @@ export type BriefFields = Partial<Record<BriefFieldKey, string>>;
 
 const MAX_VALUE_CHARS = 200;
 
-/** Longest spellings first so "Campaign name" is never read as "Campaign". */
+/**
+ * Longest spellings first so "Campaign name" is never read as "Campaign".
+ * Each gap in a multi-word label is `[ -]` — one space or one hyphen, chosen
+ * per gap, exactly as the backend builds them ("Call-to action" counts).
+ */
 const LABELS: ReadonlyArray<readonly [BriefFieldKey, string]> = [
-  ["cta", "call to action|call-to-action"],
-  ["audience", "target audience"],
-  ["campaignName", "campaign name"],
-  ["cta", "button text"],
+  ["cta", "call[ -]to[ -]action"],
+  ["audience", "target[ -]audience"],
+  ["campaignName", "campaign[ -]name"],
+  ["cta", "button[ -]text"],
   ["offer", "offer|deal|discount|promo|promotion|price"],
   ["requestedHeadline", "headline|title|hook|tagline"],
   ["cta", "cta|button"],

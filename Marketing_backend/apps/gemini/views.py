@@ -32,6 +32,7 @@ MAX_GENERATION_INSTRUCTION_CHARS = 1000
 # the same attribution the synchronous path does; kept under its old name
 # because the call sites below read naturally with it.
 from apps.context.services.generation import intelligence_in_force as _intelligence_in_force  # noqa: E402
+from apps.context.services.brief_fields import dismissed_brief_fields, stored_offer  # noqa: E402
 
 
 class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSet):
@@ -297,13 +298,15 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             return []
         return gateway['brief']['brand_context']
 
-    def _persist_content(self, request, brief, result, provider_key=''):
+    def _persist_content(self, request, brief, result, provider_key='', trace=None):
         """
         Saves a generation as a DRAFT ContentItem.
 
         Persistence is part of completion. A response without a durable draft
         cannot enter review or publishing, so storage failure must be reported
         honestly rather than returning a success the user cannot recover.
+        `trace` is the generation's own trace: a typed-only offer lives there
+        (`brief_fields`), not in the brief the caller still holds.
         """
         from django.db import transaction
 
@@ -338,7 +341,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                 headline=(result.get('postTitle') or '')[:500],
                 caption=result.get('postDescription') or '',
                 hashtags=result.get('postHashtags') or '',
-                cta=(brief.get('offer') or '')[:255],
+                cta=stored_offer(brief, trace)[:255],
                 preview_url=(
                     result.get('videoUrl')
                     or result.get('posterImageUrl')
@@ -388,6 +391,9 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             'occasion': occasion,
             'offer': offer,
             'brand_tone': brand_tone,
+            # The parser keys whose auto-fill the studio's user dismissed:
+            # those typed segments stay prose (see `brief_fields`).
+            'brief_fields_dismissed': dismissed_brief_fields(data),
             'reference_image_base64': reference_image_base64,
             'contentType': content_type,
             'slides': data.get('slides') or [],
@@ -560,7 +566,8 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
         # lost on refresh.
         try:
             content_item = self._persist_content(
-                request, request_data, result_data, provider_key=routed['provider']
+                request, request_data, result_data, provider_key=routed['provider'],
+                trace=routed.get('trace'),
             )
         except Exception:
             logger.exception("Generated content could not be persisted")
@@ -877,6 +884,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             'occasion': data.get('occasion', ''),
             'offer': data.get('offer', ''),
             'brand_tone': data.get('brandTone', data.get('brand_tone', '')),
+            'brief_fields_dismissed': dismissed_brief_fields(data),
             # The governed create-from-inspiration path stores durable IDs,
             # never a browser base64 blob. The legacy field remains only for
             # calls that do not request durable preprocessing.

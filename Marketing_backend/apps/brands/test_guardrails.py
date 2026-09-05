@@ -118,6 +118,32 @@ class CopyLawTests(SimpleTestCase):
         self.assertIn('#sale', joined)
         self.assertIn('DM keyword', joined)
 
+    def test_an_approved_typed_cta_stands_in_for_the_caption_keyword(self):
+        # The poster's own call to action (typed into the brief, painted on
+        # the image) is an approved keyword: the caption owes no second one,
+        # so the check agrees with `enforce`, which declines to append it.
+        payload = {
+            'postTitle': 'Precision wins', 'postDescription': 'A lovely drop.',
+            'postHashtags': '#foam',
+        }
+        self.assertEqual(law.copy_violations(a_brand(), payload, cta='protect'), [])
+        # An unlisted one - or none - still wants the keyword in the caption.
+        for cta in ('Shop now', ''):
+            with self.subTest(cta=cta):
+                self.assertEqual(len(law.copy_violations(a_brand(), payload, cta=cta)), 1)
+        # And the law's own prompt line says so - the generator, its rewrite
+        # and the judge all read this rendering.
+        lines = law.prompt_lines(a_brand(), cta='Protect')
+        self.assertFalse([line for line in lines if 'MUST use exactly one of' in line])
+        self.assertTrue(
+            [line for line in lines if '"Protect"' in line and 'no other DM keyword' in line],
+            lines,
+        )
+        self.assertTrue([
+            line for line in law.prompt_lines(a_brand(), cta='Shop now')
+            if 'MUST use exactly one of' in line
+        ])
+
     def test_compliant_copy_raises_nothing(self):
         payload = {
             'postTitle': 'Precision protection',

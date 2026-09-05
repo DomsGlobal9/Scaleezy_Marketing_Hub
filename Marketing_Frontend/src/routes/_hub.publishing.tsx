@@ -107,6 +107,20 @@ const EMPTY_BRIEF_TARGETS: Record<BriefAutoKey, string> = {
   location: "",
   brandTone: "",
 };
+/** Parser key -> the name the backend's brief parser gives the same field. */
+const BRIEF_BACKEND_KEYS: Record<BriefAutoKey, string> = {
+  offer: "offer",
+  occasion: "occasion",
+  campaignName: "campaign_name",
+  product: "product",
+  audience: "target_audience",
+  location: "location",
+  brandTone: "brand_tone",
+};
+/** Stable DOM ids for an auto-fillable input and the "From your brief" pill that describes it. */
+const briefFieldId = (key: BriefAutoKey) =>
+  `studio-${key.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}`;
+const briefPillId = (key: BriefAutoKey) => `${briefFieldId(key)}-from-brief`;
 
 export const Route = createFileRoute("/_hub/publishing")({
   head: () => ({
@@ -821,9 +835,16 @@ function PublishingPage() {
     return () => window.clearTimeout(timer);
   }, [creativeBrief, applyBriefFields]);
 
+  // The input carries a stable id and, while the pill is shown, points
+  // aria-describedby at it; the pill is a status region so its appearance
+  // is announced.
+  const briefFieldProps = (key: BriefAutoKey, value: string) => ({
+    id: briefFieldId(key),
+    "aria-describedby": value && briefAuto[key] === value ? briefPillId(key) : undefined,
+  });
   const fromBrief = (key: BriefAutoKey, value: string) =>
     value && briefAuto[key] === value ? (
-      <p className="text-[11px] text-muted-foreground">
+      <p id={briefPillId(key)} role="status" className="text-[11px] text-muted-foreground">
         <span className="rounded-full border border-primary/50 bg-primary/15 px-2 py-0.5 font-medium text-foreground">
           From your brief
         </span>{" "}
@@ -1381,6 +1402,18 @@ function PublishingPage() {
 
       const requestedCampaignName =
         pending?.campaignName ?? (inspiration?.inspirationTitle || campaignName);
+      // A brief-filled field the user then emptied stays empty on the server
+      // too: the backend re-parses the same brief and would fill it again
+      // unless told which of the brief's current values were dismissed here.
+      // Decided at submit time from the brief as it is now — the debounced
+      // pick-up may not have run since the field was cleared.
+      const briefNow = extractBriefFields(creativeBrief);
+      const fieldNow = briefTargets.current;
+      const briefFieldsDismissed = BRIEF_AUTO_KEYS.filter((key) => {
+        const value = briefNow[key];
+        if (!value || fieldNow[key].trim()) return false;
+        return briefDismissedRef.current[key] === value || briefAutoRef.current[key] === value;
+      }).map((key) => BRIEF_BACKEND_KEYS[key]);
       const generationPayload = inspiration
         ? {
             creativeMode: requestedMode,
@@ -1419,6 +1452,7 @@ function PublishingPage() {
             offer,
             brandTone,
             instruction: creativeBrief,
+            briefFieldsDismissed,
             featureAmbassador: featureModel && (ambassadors?.length ?? 0) > 0,
             platform: requestedContentType === "poster" ? posterPlatform : "",
             imageQuality: requestedContentType === "poster" ? imageQuality : "",
@@ -2537,7 +2571,12 @@ function PublishingPage() {
                 ) : null}
                 <div className="mt-4 space-y-4">
                   <div className="space-y-2">
-                    <Label className="text-xs tracking-wide uppercase">Occasion</Label>
+                    <Label
+                      htmlFor={briefFieldId("occasion")}
+                      className="text-xs tracking-wide uppercase"
+                    >
+                      Occasion
+                    </Label>
                     <div className="flex flex-wrap gap-1.5">
                       {[
                         "Diwali",
@@ -2564,6 +2603,7 @@ function PublishingPage() {
                       ))}
                     </div>
                     <Input
+                      {...briefFieldProps("occasion", occasion)}
                       value={occasion}
                       onChange={(e) => setOccasion(e.target.value)}
                       placeholder="…or type your own occasion"
@@ -2571,7 +2611,12 @@ function PublishingPage() {
                     {fromBrief("occasion", occasion)}
                   </div>
                   <div className="space-y-2">
-                    <Label className="text-xs tracking-wide uppercase">Offer</Label>
+                    <Label
+                      htmlFor={briefFieldId("offer")}
+                      className="text-xs tracking-wide uppercase"
+                    >
+                      Offer
+                    </Label>
                     <div className="flex flex-wrap gap-1.5">
                       {["10% off", "20% off", "Buy 1 Get 1", "Free styling session"].map(
                         (chip) => (
@@ -2593,6 +2638,7 @@ function PublishingPage() {
                       )}
                     </div>
                     <Input
+                      {...briefFieldProps("offer", offer)}
                       value={offer}
                       onChange={(e) => setOffer(e.target.value)}
                       placeholder="…or type the exact offer"
@@ -2608,31 +2654,50 @@ function PublishingPage() {
                     </summary>
                     <div className="mt-4 grid gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
-                        <Label>Campaign / promotion name</Label>
+                        <Label htmlFor={briefFieldId("campaignName")}>
+                          Campaign / promotion name
+                        </Label>
                         <Input
+                          {...briefFieldProps("campaignName", campaignName)}
                           value={campaignName}
                           onChange={(e) => setCampaignName(e.target.value)}
                         />
                         {fromBrief("campaignName", campaignName)}
                       </div>
                       <div className="space-y-2">
-                        <Label>Product or collection</Label>
-                        <Input value={product} onChange={(e) => setProduct(e.target.value)} />
+                        <Label htmlFor={briefFieldId("product")}>Product or collection</Label>
+                        <Input
+                          {...briefFieldProps("product", product)}
+                          value={product}
+                          onChange={(e) => setProduct(e.target.value)}
+                        />
                         {fromBrief("product", product)}
                       </div>
                       <div className="space-y-2">
-                        <Label>Target audience</Label>
-                        <Input value={audience} onChange={(e) => setAudience(e.target.value)} />
+                        <Label htmlFor={briefFieldId("audience")}>Target audience</Label>
+                        <Input
+                          {...briefFieldProps("audience", audience)}
+                          value={audience}
+                          onChange={(e) => setAudience(e.target.value)}
+                        />
                         {fromBrief("audience", audience)}
                       </div>
                       <div className="space-y-2">
-                        <Label>Location</Label>
-                        <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+                        <Label htmlFor={briefFieldId("location")}>Location</Label>
+                        <Input
+                          {...briefFieldProps("location", location)}
+                          value={location}
+                          onChange={(e) => setLocation(e.target.value)}
+                        />
                         {fromBrief("location", location)}
                       </div>
                       <div className="space-y-2 sm:col-span-2">
-                        <Label>Brand tone</Label>
-                        <Input value={brandTone} onChange={(e) => setBrandTone(e.target.value)} />
+                        <Label htmlFor={briefFieldId("brandTone")}>Brand tone</Label>
+                        <Input
+                          {...briefFieldProps("brandTone", brandTone)}
+                          value={brandTone}
+                          onChange={(e) => setBrandTone(e.target.value)}
+                        />
                         {fromBrief("brandTone", brandTone)}
                       </div>
                     </div>
