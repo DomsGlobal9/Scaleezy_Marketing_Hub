@@ -554,10 +554,11 @@ def _repair_missing_image(request, brief, brand):
             for key in ('composition_archetype', 'scene_variant')
             if isinstance(stored.get(key), str) and stored[key]
         }
+        retry_trace = {}
         image = retry_image(
             request.workspace, item.brand,
             {**brief, **fixed, 'headline': item.headline},
-            instruction=brief.get('instruction', ''),
+            instruction=brief.get('instruction', ''), trace=retry_trace,
         )
         with transaction.atomic():
             locked = ContentItem.objects.select_for_update().get(pk=item.pk)
@@ -589,6 +590,11 @@ def _repair_missing_image(request, brief, brand):
                 capabilities = dict(trace.get('capabilities') or {})
                 capabilities['IMAGE'] = {'status': 'OK', 'provider': image.get('provider', '')}
                 trace['capabilities'] = capabilities
+                # What the text check read off the repaired picture (see
+                # `_gate_image_text`), and only that: the variety keys the
+                # retry reports back are the fixed ones already stored.
+                if isinstance(retry_trace.get('image_text'), dict):
+                    trace['image_text'] = retry_trace['image_text']
                 config['generation_trace'] = trace
                 locked.layout_config = config
                 locked.save(update_fields=['asset', 'preview_url', 'layout_config', 'updated_at'])

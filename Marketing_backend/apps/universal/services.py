@@ -80,35 +80,39 @@ def quality_settings_for(workspace):
     )
 
 
+def _quality_state(row):
+    return {
+        'critique': row.critique_enabled,
+        'focus_crop': row.focus_crop_enabled,
+        'variety': row.variety_enabled,
+        'image_text_check': row.image_text_check_enabled,
+    }
+
+
 def set_client_quality(workspace, *, critique_enabled=None, focus_crop_enabled=None,
-                       variety_enabled=None, by=None):
+                       variety_enabled=None, image_text_check_enabled=None, by=None):
     """Turn quality-engine passes on or off for one client. Audited."""
     from apps.audit.models import record_platform_event
 
     row, _ = ClientQualitySettings.objects.get_or_create(workspace=workspace)
-    before = {
-        'critique': row.critique_enabled,
-        'focus_crop': row.focus_crop_enabled,
-        'variety': row.variety_enabled,
-    }
+    before = _quality_state(row)
     if critique_enabled is not None:
         row.critique_enabled = bool(critique_enabled)
     if focus_crop_enabled is not None:
         row.focus_crop_enabled = bool(focus_crop_enabled)
     if variety_enabled is not None:
         row.variety_enabled = bool(variety_enabled)
+    if image_text_check_enabled is not None:
+        row.image_text_check_enabled = bool(image_text_check_enabled)
     row.save(update_fields=[
-        'critique_enabled', 'focus_crop_enabled', 'variety_enabled', 'updated_at',
+        'critique_enabled', 'focus_crop_enabled', 'variety_enabled',
+        'image_text_check_enabled', 'updated_at',
     ])
 
     record_platform_event(
         actor=by, action='CLIENT_QUALITY_TOGGLED', workspace=workspace,
         target=f'workspace:{workspace.pk}',
-        detail={'before': before, 'after': {
-            'critique': row.critique_enabled,
-            'focus_crop': row.focus_crop_enabled,
-            'variety': row.variety_enabled,
-        }},
+        detail={'before': before, 'after': _quality_state(row)},
     )
     return row
 

@@ -39,7 +39,7 @@ class GeminiAdapter(AIProviderAdapter):
     #: analyze_image briefs whose response_schema must be honoured via the
     #: structured JSON path. Every other task keeps the legacy
     #: analyze_reference_image behaviour, unchanged.
-    STRUCTURED_IMAGE_TASKS = ('INSPIRATION_ANALYSIS', 'SUBJECT_FOCUS')
+    STRUCTURED_IMAGE_TASKS = ('INSPIRATION_ANALYSIS', 'SUBJECT_FOCUS', 'IMAGE_TEXT_AUDIT')
 
     @staticmethod
     def _structured_config(brief):

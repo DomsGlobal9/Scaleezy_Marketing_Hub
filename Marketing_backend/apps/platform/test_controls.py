@@ -243,6 +243,7 @@ class PlatformControlsTests(TenantFixtureMixin, TestCase):
             'critique_enabled': True,
             'focus_crop_enabled': True,
             'variety_enabled': True,
+            'image_text_check_enabled': True,
         })
         self.assertFalse(
             ClientQualitySettings.objects.filter(workspace=self.workspace).exists()
@@ -257,17 +258,22 @@ class PlatformControlsTests(TenantFixtureMixin, TestCase):
             'critique_enabled': True,
             'focus_crop_enabled': False,
             'variety_enabled': True,
+            'image_text_check_enabled': True,
         })
         row = ClientQualitySettings.objects.get(workspace=self.workspace)
         self.assertTrue(row.critique_enabled)
         self.assertFalse(row.focus_crop_enabled)
         self.assertTrue(row.variety_enabled)
+        self.assertTrue(row.image_text_check_enabled)
         entry = PlatformAuditLog.objects.get(action='CLIENT_QUALITY_TOGGLED')
         self.assertEqual(entry.actor, self.staff)
         self.assertEqual(entry.workspace, self.workspace)
         self.assertEqual(
             entry.detail['after'],
-            {'critique': True, 'focus_crop': False, 'variety': True},
+            {
+                'critique': True, 'focus_crop': False, 'variety': True,
+                'image_text_check': True,
+            },
         )
 
         response = self.post('quality', {'critique': 'false', 'variety': 'true'})
@@ -275,6 +281,14 @@ class PlatformControlsTests(TenantFixtureMixin, TestCase):
         row.refresh_from_db()
         self.assertFalse(row.critique_enabled)
         self.assertFalse(row.focus_crop_enabled)
+        self.assertTrue(row.variety_enabled)
+        self.assertTrue(row.image_text_check_enabled)
+
+        response = self.post('quality', {'image_text_check': False})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(response.json()['data']['image_text_check_enabled'])
+        row.refresh_from_db()
+        self.assertFalse(row.image_text_check_enabled)
         self.assertTrue(row.variety_enabled)
 
         # Nothing to change, or garbage, is a 400 — never a silent flip.

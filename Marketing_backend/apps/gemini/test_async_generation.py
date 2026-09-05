@@ -222,10 +222,9 @@ class AsyncGenerationTaskTests(TenantFixtureMixin, TestCase):
         )
         self.assertEqual(trace['scene_variant'], routed['trace']['scene_variant'])
 
-    def test_a_repair_reuses_the_drafts_own_composition_and_scene(self):
-        # A saved partial poster already says which archetype and seed it
-        # is. Repairing its missing image must shoot THAT poster, not draw a
-        # fresh pair the record would then misreport.
+    def a_partial_poster(self):
+        """A saved draft whose copy won and whose image failed, and the
+        queued image-only retry that repairs it."""
         draft = ContentItem.objects.create(
             workspace=self.workspace, brand=self.brand,
             status=ContentItem.Status.DRAFT, content_format=ContentItem.Format.POSTER,
@@ -247,6 +246,13 @@ class AsyncGenerationTaskTests(TenantFixtureMixin, TestCase):
         GeminiGenerationResult.objects.create(
             generation_request=request, metadata={'contentItemId': str(draft.pk)},
         )
+        return draft, request
+
+    def test_a_repair_reuses_the_drafts_own_composition_and_scene(self):
+        # A saved partial poster already says which archetype and seed it
+        # is. Repairing its missing image must shoot THAT poster, not draw a
+        # fresh pair the record would then misreport.
+        draft, request = self.a_partial_poster()
         with patch(
             'apps.context.services.generation.retry_image',
             return_value={
@@ -267,6 +273,46 @@ class AsyncGenerationTaskTests(TenantFixtureMixin, TestCase):
         self.assertEqual(trace['composition_archetype'], 'diagonal_cut')
         self.assertEqual(trace['scene_variant'], 'interior_lounge_seated')
         self.assertEqual(trace['capabilities']['IMAGE']['status'], 'OK')
+
+    def test_a_repair_keeps_what_the_text_check_read(self):
+        # The repaired picture passes the same words-on-the-picture check as
+        # a first buy (`retry_image` reports it into the trace it is handed).
+        # Its record lands in the draft's stored trace next to the draft's
+        # own variety keys - and only that record: the keys the retry echoes
+        # back are the fixed ones already stored, and anything else it might
+        # report has no place there.
+        draft, request = self.a_partial_poster()
+        read = {
+            'verdict': 'headline_altered', 'found': ['ROASTED THIS WEEK ONLY'],
+            'expected': 'Roasted this week', 'retried': True, 'kept': 'second',
+            'final_verdict': 'ok', 'reason': 'the headline reads "ROASTED THIS WEEK ONLY"',
+            'final_found': ['Roasted this week'], 'final_reason': '',
+        }
+
+        def retried(workspace, brand, brief_extra, *, instruction='', trace=None):
+            trace.update({
+                'composition_archetype': brief_extra['composition_archetype'],
+                'scene_variant': brief_extra['scene_variant'],
+                'image_text': dict(read),
+                'stray': 'never stored',
+            })
+            return {
+                'image_url': 'https://storage.test/generated/repaired.png',
+                'file_name': 'repaired.png',
+            }
+
+        with patch(
+            'apps.context.services.generation.retry_image', side_effect=retried,
+        ), patch('apps.layouts.services.compose_generated_poster'):
+            generate_content.func(str(request.pk))
+
+        draft.refresh_from_db()
+        trace = draft.layout_config['generation_trace']
+        self.assertEqual(trace['image_text'], read)
+        self.assertEqual(trace['capabilities']['IMAGE']['status'], 'OK')
+        self.assertEqual(trace['composition_archetype'], 'diagonal_cut')
+        self.assertEqual(trace['scene_variant'], 'interior_lounge_seated')
+        self.assertNotIn('stray', trace)
 
 
 class StuckGenerationSweepTests(TenantFixtureMixin, TestCase):

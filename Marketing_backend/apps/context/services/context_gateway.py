@@ -400,8 +400,12 @@ NO_TEXT_LINE = (
 #: call's MUST line, with `{cta}` / `{offer}` filled from the archetype's own
 #: phrases only when the brief carries a CTA / offer, so nothing is invented.
 #: `step1` is how the copy model is told to describe the composition in its
-#: imagePrompt. The first entry is the legacy recipe, verbatim, and the
-#: fallback wherever no archetype was picked.
+#: imagePrompt, with `{cta}` / `{offer}` filled from `step1_cta` /
+#: `step1_offer` the same conditional way (see `step1_line`): a copy model
+#: told to keep an edge clear for an offer that does not exist describes
+#: one, and the image model then invents its wording. The first entry is
+#: the legacy recipe, verbatim, and the fallback wherever no archetype was
+#: picked.
 COMPOSITION_ARCHETYPES = (
     {
         'key': 'framed_panel',
@@ -416,9 +420,10 @@ COMPOSITION_ARCHETYPES = (
         'step1': (
             'a framed border, a centred photo panel, and a big, bold, uppercase '
             'headline overlaid on the photo with high contrast and generous '
-            'margins, plus room for a small call-to-action pill and an offer line '
-            'set vertically along one edge'
+            'margins{cta}{offer}'
         ),
+        'step1_cta': ', plus room for a small call-to-action pill',
+        'step1_offer': ' and an offer line set vertically along one edge',
     },
     {
         'key': 'full_bleed_band',
@@ -432,10 +437,11 @@ COMPOSITION_ARCHETYPES = (
         'offer': ', with the offer line set vertically along one side edge of the photo',
         'step1': (
             'a full-bleed photograph filling the whole frame, with a solid '
-            'brand-colour band across the bottom third reserved for the headline '
-            'and a small call-to-action pill, and one side edge kept clear for an '
-            'offer line set vertically'
+            'brand-colour band across the bottom third reserved for the '
+            'headline{cta}{offer}'
         ),
+        'step1_cta': ' and a small call-to-action pill',
+        'step1_offer': ', and one side edge kept clear for an offer line set vertically',
     },
     {
         'key': 'split_vertical',
@@ -449,25 +455,30 @@ COMPOSITION_ARCHETYPES = (
         'offer': ', the offer line set vertically along the outer edge of the colour half',
         'step1': (
             'a vertical split - the photograph on one half, a flat brand-colour '
-            'half on the other with the headline stacked in large type above a '
-            'small call-to-action pill, and the outer edge kept clear for a '
-            'vertical offer line'
+            'half on the other with the headline stacked in large '
+            'type{cta}{offer}'
         ),
+        'step1_cta': ' above a small call-to-action pill',
+        'step1_offer': ', and the outer edge kept clear for a vertical offer line',
     },
     {
         'key': 'magazine_cover',
         'label': 'Magazine cover',
         'composition': (
             'Compose a magazine-cover poster: a full-bleed portrait photograph with '
-            'the headline set as a masthead across the top of the frame{cta}{offer}.'
+            'the headline set as ONE bold title across the top of the frame - the '
+            'only title on the poster, no cover lines or secondary headlines'
+            '{cta}{offer}.'
         ),
         'cta': ', a small CTA pill in a bottom corner',
-        'offer': ', the offer line set vertically along one edge like a cover strapline',
+        'offer': ', the offer line set vertically along one edge',
         'step1': (
-            'a full-bleed portrait photograph with the headline as a masthead '
-            'across the top, a small call-to-action pill in a bottom corner, and '
-            'one edge kept clear for a vertical offer strapline'
+            'a full-bleed portrait photograph with the headline as one bold '
+            'title across the top - the only title on the poster, no cover '
+            'lines or secondary headlines{cta}{offer}'
         ),
+        'step1_cta': ', a small call-to-action pill in a bottom corner',
+        'step1_offer': ', and one edge kept clear for a vertical offer line',
     },
     {
         'key': 'minimal_centred',
@@ -481,10 +492,10 @@ COMPOSITION_ARCHETYPES = (
         'offer': ', the offer line set vertically along one edge in small type',
         'step1': (
             'generous negative space on a calm ground, a smaller centred '
-            'photograph with the headline beneath it and a small call-to-action '
-            'pill under that, and one edge kept clear for a small vertical offer '
-            'line'
+            'photograph with the headline beneath it{cta}{offer}'
         ),
+        'step1_cta': ' and a small call-to-action pill under that',
+        'step1_offer': ', and one edge kept clear for a small vertical offer line',
     },
     {
         'key': 'diagonal_cut',
@@ -497,10 +508,11 @@ COMPOSITION_ARCHETYPES = (
         'cta': ' with a CTA pill beneath it',
         'offer': ', the offer line set vertically along the edge of the wedge',
         'step1': (
-            'a photograph clipped on a bold diagonal, with the flat brand-colour '
-            'wedge left for the headline, a small call-to-action pill beneath it, '
-            "and a vertical offer line along the wedge's edge"
+            'a photograph clipped on a bold diagonal, with the flat '
+            'brand-colour wedge left for the headline{cta}{offer}'
         ),
+        'step1_cta': ', a small call-to-action pill beneath it',
+        'step1_offer': ", and a vertical offer line along the wedge's edge",
     },
     {
         'key': 'type_first',
@@ -516,10 +528,10 @@ COMPOSITION_ARCHETYPES = (
         'step1': (
             'a giant headline as the background element with the photographed '
             'subject placed beside or beneath it - overlapping at most the '
-            'descender space, never covering the letters - a small call-to-action '
-            'pill in a lower corner, and one edge kept clear for a vertical offer '
-            'line'
+            'descender space, never covering the letters{cta}{offer}'
         ),
+        'step1_cta': ' - a small call-to-action pill in a lower corner',
+        'step1_offer': ', and one edge kept clear for a vertical offer line',
     },
     {
         'key': 'polaroid_card',
@@ -533,10 +545,10 @@ COMPOSITION_ARCHETYPES = (
         'offer': ', the offer line set vertically along the far edge',
         'step1': (
             'a slightly tilted polaroid-style photo card on a textured '
-            'brand-colour ground with the headline set beside it, a small '
-            'call-to-action pill below the headline, and the far edge kept clear '
-            'for a vertical offer line'
+            'brand-colour ground with the headline set beside it{cta}{offer}'
         ),
+        'step1_cta': ', a small call-to-action pill below the headline',
+        'step1_offer': ', and the far edge kept clear for a vertical offer line',
     },
 )
 
@@ -621,6 +633,31 @@ def scene_variant(key):
         if row['key'] == wanted:
             return row
     return None
+
+
+def brief_cta_and_offer(brief):
+    """The CTA keyword and offer wording a brief carries, each '' when absent.
+
+    One reading for the image call's text lines and for Step 1's composition
+    sentence, so neither describes a pill or an offer line the other does
+    not know about.
+    """
+    identity = (brief.get('structured') or {}).get('identity') or {}
+    cta = ' '.join(str(identity.get('cta_keyword') or '').split())
+    offer = ' '.join(str(brief.get('offer') or '').split())
+    return cta, offer
+
+
+def step1_line(archetype, cta, offer):
+    """How Step 1 describes the composition: the archetype's own words, with
+    the CTA pill and the vertical offer line mentioned ONLY when the brief
+    carries them. Live, a poster whose brief had no offer came back with an
+    invented strapline in the edge Step 1 had told the model to keep clear
+    for one."""
+    return archetype['step1'].format(
+        cta=archetype['step1_cta'] if cta else '',
+        offer=archetype['step1_offer'] if offer else '',
+    )
 
 
 def _composition_line(archetype, cta, offer):
@@ -722,9 +759,7 @@ def on_image_text_lines(brief, headline):
     if not headline or not poster_renders_its_own_text(brief):
         return [NO_TEXT_LINE]
 
-    identity = (brief.get('structured') or {}).get('identity') or {}
-    cta = ' '.join(str(identity.get('cta_keyword') or '').split())
-    offer = ' '.join(str(brief.get('offer') or '').split())
+    cta, offer = brief_cta_and_offer(brief)
     direction = _direction(brief)
 
     # Template mode: the template's own typography IS the spec. The founder's
@@ -796,9 +831,11 @@ def on_image_text_lines(brief, headline):
         # longer hard-wires every poster into the framed panel.
         lines.append(
             "MUST: Mirror the reference's typographic hierarchy and text "
-            'treatment - headline weight, CTA styling, vertical offer text - '
-            "while using this brand's own colour palette and the composition "
-            'below.'
+            'treatment - headline weight'
+            + (', CTA styling' if cta else '')
+            + (', vertical offer text' if offer else '')
+            + " - while using this brand's own colour palette and the "
+            'composition below.'
         )
     lines.append(
         _composition_line(

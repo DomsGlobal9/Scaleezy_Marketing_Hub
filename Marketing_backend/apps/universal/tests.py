@@ -143,6 +143,7 @@ class ClientQualityTests(UniversalBase):
         self.assertTrue(quality.critique_enabled)
         self.assertTrue(quality.focus_crop_enabled)
         self.assertTrue(quality.variety_enabled)
+        self.assertTrue(quality.image_text_check_enabled)
         self.assertFalse(
             ClientQualitySettings.objects.filter(workspace=self.workspace).exists()
         )
@@ -153,13 +154,21 @@ class ClientQualityTests(UniversalBase):
         self.assertTrue(row.critique_enabled)
         self.assertFalse(row.focus_crop_enabled)
         self.assertTrue(row.variety_enabled)
+        self.assertTrue(row.image_text_check_enabled)
 
         set_client_quality(self.workspace, critique_enabled=False, by=self.user)
         row.refresh_from_db()
         self.assertFalse(row.critique_enabled)
         self.assertFalse(row.focus_crop_enabled)
         self.assertTrue(row.variety_enabled)
+        self.assertTrue(row.image_text_check_enabled)
         self.assertEqual(quality_settings_for(self.workspace).pk, row.pk)
+
+        set_client_quality(self.workspace, image_text_check_enabled=False, by=self.user)
+        row.refresh_from_db()
+        self.assertFalse(row.image_text_check_enabled)
+        self.assertFalse(row.critique_enabled)
+        self.assertTrue(row.variety_enabled)
 
 
 class GatewayIntegrationTests(UniversalBase):

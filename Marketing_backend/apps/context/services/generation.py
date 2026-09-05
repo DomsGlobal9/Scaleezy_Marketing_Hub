@@ -36,6 +36,7 @@ from .context_gateway import (
     CONTEXT_SCHEMA_VERSION,
     TaskType,
     _has_brand_template,
+    brief_cta_and_offer,
     build_generation_context,
     context_as_brief,
     on_image_text_lines,
@@ -158,6 +159,20 @@ def _reference_pixels(brand, brief_extra) -> dict:
     return pixels
 
 
+def _paints_brand_template(brief) -> bool:
+    """Whether this brief recreates the brand's own poster design: a
+    BRAND_TEMPLATE selection at EXACT fidelity (the default). The template's
+    pixels ride in the brief, so it owns its layout - only the scene varies
+    (see `_variety_seed`) - and its own text slots, which the model fills
+    with words no judge was told about (see `_gate_image_text`). INSPIRED
+    fidelity attaches no pixels and takes neither allowance."""
+    direction = brief.get('creative_direction')
+    return (
+        _has_brand_template(direction if isinstance(direction, dict) else {})
+        and str(brief.get('template_fidelity') or 'EXACT').upper() != 'INSPIRED'
+    )
+
+
 def _variety_seed(workspace, brand, brief) -> dict:
     """The per-brand variety keys this poster generation rides on:
     `composition_archetype` (delegated designs that are not a brand
@@ -176,15 +191,11 @@ def _variety_seed(workspace, brand, brief) -> dict:
 
     if brand is None or not poster_renders_its_own_text(brief):
         return {}
-    direction = brief.get('creative_direction')
     wanted = ('composition_archetype', 'scene_variant')
     # An EXACT template owns its own layout, so only the scene varies.
     # INSPIRED keeps both dials — varying the composition is what that
     # fidelity level is for.
-    if (
-        _has_brand_template(direction if isinstance(direction, dict) else {})
-        and str(brief.get('template_fidelity') or 'EXACT').upper() != 'INSPIRED'
-    ):
+    if _paints_brand_template(brief):
         wanted = ('scene_variant',)
     seed = {key: brief[key] for key in wanted if brief.get(key)}
     if len(seed) < len(wanted):
@@ -559,14 +570,181 @@ def _headline_of(text):
 def _with_on_image_text(brief, headline):
     """An IMAGE brief with its words-in-the-picture directive appended to the
     brand-context lines every adapter carries: the exact headline (and the
-    CTA/offer) for a delegated poster, the no-text line everywhere else."""
-    return {
+    CTA/offer) for a delegated poster, the no-text line everywhere else.
+
+    Wherever the lines paint the headline, the brief also carries it as
+    `headline` (whitespace-collapsed) - the contract with a provider whose
+    image call re-runs its own copy step (Gemini's `generate_image` runs
+    `generate_marketing_content`, whose Step 1 writes a fresh title): with
+    the key present it paints THESE words, never its new ones. Every painted
+    brief passes through here - the first buy, the text gate's re-buy,
+    `retry_image`'s - so no picture can carry a headline the copy never
+    settled on. With nothing to paint the key is left as the caller had it.
+    """
+    headline = ' '.join(str(headline or '').split())
+    painted = {
         **brief,
         'brand_context': [
             *(brief.get('brand_context') or []),
             *on_image_text_lines(brief, headline),
         ],
     }
+    if headline and poster_renders_its_own_text(brief):
+        painted['headline'] = headline
+    return painted
+
+
+#: What the trace keeps of the words read off a picture: at most this many
+#: entries, each cut to this many characters.
+IMAGE_TEXT_TRACE_FOUND = 12
+IMAGE_TEXT_TRACE_CHARS = 120
+
+#: How badly a verdict fails, so a re-bought picture can be judged against
+#: the one it would replace: the second ships only when it reads no worse.
+IMAGE_TEXT_RANK = {
+    'ok': 0, 'skipped': 0, 'extra_text': 1, 'headline_altered': 2, 'headline_missing': 3,
+}
+TEMPLATE_SLOTS_TOLERATED = 'template slots tolerated'
+
+
+def _skipped_image_text(headline, reason):
+    return {'verdict': 'skipped', 'found': [], 'expected': headline, 'reason': reason}
+
+
+def _check_image_text(workspace, brand, image, *, brief, headline):
+    """One read of the words on a finished picture, against the headline it
+    was told to paint. Never raises: the checker is imported lazily (a build
+    without it reads as skipped) and any crash inside it is a skipped verdict
+    carrying the reason - a poster is never lost to its own inspection."""
+    try:
+        from .image_text import check_image_text
+    except ImportError:
+        return _skipped_image_text(headline, 'image text check unavailable')
+    # The same two reads the on-image directive made, so the judge expects
+    # exactly the pill and the offer line the picture was told to carry.
+    cta, offer = brief_cta_and_offer(brief)
+    try:
+        verdict = check_image_text(
+            workspace, image, headline=headline, cta=cta, offer=offer,
+            brand_name=str(getattr(brand, 'name', '') or ''),
+        )
+    except Exception as exc:
+        logger.exception('Image text check crashed for workspace %s', workspace.pk)
+        return _skipped_image_text(headline, f'{type(exc).__name__}: {exc}'[:300])
+    if not isinstance(verdict, dict) or not verdict.get('verdict'):
+        return _skipped_image_text(headline, 'image text check returned no verdict')
+    return verdict
+
+
+def _found_words(verdict):
+    found = verdict.get('found') or []
+    return [
+        str(row)[:IMAGE_TEXT_TRACE_CHARS]
+        for row in list(found)[:IMAGE_TEXT_TRACE_FOUND]
+    ]
+
+
+def _gate_image_text(workspace, brand, image, *, brief, headline, rebuy, trace=None):
+    """The text check on a finished poster, with its one automatic re-buy.
+
+    Only a poster that paints its own words is checked: `on_image_text_lines`
+    put the headline INTO the picture, and live the image model has rendered
+    a longer headline than the saved copy plus a strapline nobody wrote. The
+    no-text line, or no headline at all, means there is nothing to read.
+
+    A failing verdict - the headline missing or altered, words the brief
+    never asked for - buys the picture ONCE more through `rebuy()` (the same
+    brief, so the same headline, composition, scene and reference pixels).
+    Both pictures are persisted; the one that reads better ships, the second
+    on a tie (`IMAGE_TEXT_RANK`): a re-draw that lost the headline never
+    replaces a picture that merely added a word, and a poster is always
+    better than no poster. A re-buy that fails, or persists badly, keeps the
+    first. Never raises.
+
+    A brand template is the exception to `extra_text`: the model fills the
+    template's own text slots ("Free shipping across India") with words no
+    judge could be told about, so that verdict is tolerated there - the
+    picture ships as `ok` - and only a missing or altered headline re-buys.
+
+    When `trace` is a dict, `trace['image_text']` records the first verdict
+    and the words found, whether a re-buy happened and which picture was
+    kept (`kept`: 'first' | 'second'), and the verdict of the picture that
+    ships (`final_verdict`; with its own `final_found` / `final_reason` when
+    the second ships, `rebuy_verdict` / `rebuy_reason` when it lost to the
+    first, or `rebuy_error` when the re-buy failed). Keeping the first also
+    restores its own `trace['capabilities'][IMAGE]` record, which the
+    re-buy's dispatch overwrote.
+    """
+    headline = ' '.join(str(headline or '').split())
+    if image is None or not headline or not poster_renders_its_own_text(brief):
+        return image
+
+    tolerant = _paints_brand_template(brief)
+
+    def read(picture):
+        """(verdict as read, verdict as judged, reason, words found)."""
+        verdict = _check_image_text(workspace, brand, picture, brief=brief, headline=headline)
+        kind = str(verdict.get('verdict') or 'skipped')
+        if tolerant and kind == 'extra_text':
+            return kind, 'ok', TEMPLATE_SLOTS_TOLERATED, _found_words(verdict)
+        return kind, kind, str(verdict.get('reason') or '')[:300], _found_words(verdict)
+
+    def rank(kind):
+        return IMAGE_TEXT_RANK.get(kind, max(IMAGE_TEXT_RANK.values()))
+
+    raw, judged, reason, found = read(image)
+    record = {
+        'verdict': raw,
+        'found': found,
+        'expected': headline,
+        'retried': False,
+        'final_verdict': judged,
+        'reason': reason,
+    }
+    if isinstance(trace, dict):
+        trace['image_text'] = record
+    if judged in ('ok', 'skipped'):
+        return image
+
+    record['retried'] = True
+    record['kept'] = 'first'
+    # The first picture's own capability record, restored whenever the first
+    # picture is what ships: the re-buy's dispatch writes its own over it.
+    capabilities = trace.get('capabilities') if isinstance(trace, dict) else None
+    if not isinstance(capabilities, dict):
+        capabilities = None
+    before = None
+    if capabilities is not None:
+        before = dict(capabilities.get(Capability.IMAGE) or {'status': 'OK'})
+
+    def keep_first():
+        if capabilities is not None:
+            capabilities[Capability.IMAGE] = before
+        return image
+
+    try:
+        second = rebuy()
+        if second is None:
+            raise OutputRejected('The image re-buy returned nothing.')
+    except Exception as exc:
+        logger.warning(
+            'Image text re-buy failed for workspace %s; keeping the first picture: %s',
+            workspace.pk, exc,
+        )
+        record['rebuy_error'] = f'{type(exc).__name__}: {exc}'[:300]
+        return keep_first()
+
+    _, again, again_reason, again_found = read(second)
+    if rank(again) <= rank(judged):
+        record['kept'] = 'second'
+        record['final_verdict'] = again
+        record['final_found'] = again_found
+        record['final_reason'] = again_reason
+        return second
+    # The re-draw read worse than the picture it was meant to replace.
+    record['rebuy_verdict'] = again
+    record['rebuy_reason'] = again_reason
+    return keep_first()
 
 
 #: (TEXT result key, payload key) — the two shapes one copy travels in.
@@ -688,8 +866,9 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction='',
     provider paints the poster inside its own call, inside that call — it
     rides in the brief as `pre_image_hook`, a plain `hook(copy) -> copy` the
     provider pipeline invokes between its text and image steps. The
-    generation still buys at most one image; the gate's copy-only rewrite is
-    the only retry.
+    generation buys one image, and one re-buy may follow a failed text check
+    on the finished picture (see `_gate_image_text`); the gate's copy-only
+    rewrite is the only retry of the words.
 
     Task-specific contexts are cut per capability (copy does not carry the
     layout grid; the image does not carry the objection list); both come from
@@ -843,6 +1022,31 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction='',
                 'error_type': type(exc).__name__,
             }
             image = None
+
+    if image is not None:
+        # The words on the finished picture, read back against the headline
+        # the copy settled on. A poster whose image model painted something
+        # else is bought once more with the very same brief (see
+        # `_gate_image_text`); the check and the re-buy can never cost the
+        # poster that already exists, and the gate restores the first
+        # picture's own capability record whenever the first one ships.
+        headline = _headline_of(text)
+
+        def rebuy():
+            bought = run(
+                Capability.IMAGE,
+                _with_on_image_text(image_brief, headline),
+                image_context,
+            )
+            if bought is None:
+                failed = trace['capabilities'].get(Capability.IMAGE) or {}
+                raise OutputRejected(failed.get('error') or 'The image re-buy failed.')
+            return persist_generated_image(workspace, bought)
+
+        image = _gate_image_text(
+            workspace, brand, image, brief=image_brief, headline=headline,
+            rebuy=rebuy, trace=trace,
+        )
 
     if text is None:
         failure = trace['capabilities'].get(Capability.TEXT, {})
@@ -1175,8 +1379,10 @@ def generate_marketing_payload(
     runs after the fact only where nothing precedes an image: video and
     carousel copy (the judge skips those formats anyway) and a route whose
     provider did not honour the hook. Either way it runs exactly once —
-    ``trace['critique']`` is the marker — and the generation buys at most
-    one image; the copy-only rewrite stays the only retry.
+    ``trace['critique']`` is the marker. The generation buys one image, and
+    one re-buy may follow a failed text check on the finished picture
+    (``trace['image_text']``, see `_gate_image_text`); the copy-only rewrite
+    stays the only retry of the words.
     """
     from apps.brands.models import Brand
     from apps.brands.services import guardrails as guardrail_law
@@ -1461,16 +1667,27 @@ def retry_image(workspace, brand, brief_extra, *, instruction='', trace=None):
     variety = _variety_seed(workspace, brand, brief_extra)
     if trace is not None:
         trace.update(variety)
+    headline = brief_extra.get('headline') or brief_extra.get('previous_headline') or ''
     brief = _with_on_image_text(
-        {**context_as_brief(context), **brief_extra, **variety},
-        brief_extra.get('headline') or brief_extra.get('previous_headline') or '',
+        {**context_as_brief(context), **brief_extra, **variety}, headline,
     )
-    try:
-        result = AIRouter(workspace).dispatch(Capability.IMAGE, brief)
+    router = AIRouter(workspace)
+
+    def buy():
+        result = router.dispatch(Capability.IMAGE, brief)
         validate_output(Capability.IMAGE, result, context)
         return persist_generated_image(workspace, result)
+
+    try:
+        image = buy()
     except NoProviderAvailable as exc:
         raise NoProviderConfigured(str(exc)) from exc
+    # The same words-on-the-picture check the first buy gets, with the same
+    # one re-buy on the same brief; `trace['image_text']` says what it read.
+    return _gate_image_text(
+        workspace, brand, image, brief=brief, headline=headline,
+        rebuy=buy, trace=trace,
+    )
 
 
 def generate_copy_only(workspace, brand, brief_extra, *, instruction=''):

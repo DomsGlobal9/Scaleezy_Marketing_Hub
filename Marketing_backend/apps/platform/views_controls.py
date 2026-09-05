@@ -208,12 +208,14 @@ def _quality_flags(row):
         'critique_enabled': row.critique_enabled,
         'focus_crop_enabled': row.focus_crop_enabled,
         'variety_enabled': row.variety_enabled,
+        'image_text_check_enabled': row.image_text_check_enabled,
     }
 
 
 class ClientQualityView(ClientControlView):
-    """GET .../quality/ — the three switches, defaults when no row exists.
-    POST .../quality/  {critique?: bool, focus_crop?: bool, variety?: bool}
+    """GET .../quality/ — the four switches, defaults when no row exists.
+    POST .../quality/  {critique?: bool, focus_crop?: bool, variety?: bool,
+                        image_text_check?: bool}
     """
 
     def get(self, request, workspace_id):
@@ -235,21 +237,26 @@ class ClientQualityView(ClientControlView):
             critique = _as_bool(request.data.get('critique'))
             focus_crop = _as_bool(request.data.get('focus_crop'))
             variety = _as_bool(request.data.get('variety'))
+            image_text_check = _as_bool(request.data.get('image_text_check'))
         except ValueError:
             return _bad_request(
-                "critique, focus_crop and variety must be true or false.",
+                "critique, focus_crop, variety and image_text_check must be true or false.",
                 code='INVALID_TOGGLE',
             )
-        if critique is None and focus_crop is None and variety is None:
+        if (
+            critique is None and focus_crop is None and variety is None
+            and image_text_check is None
+        ):
             return _bad_request(
-                "Send at least one of critique / focus_crop / variety.",
+                "Send at least one of critique / focus_crop / variety / image_text_check.",
                 code='NOTHING_TO_CHANGE',
             )
 
         # set_client_quality audits itself (CLIENT_QUALITY_TOGGLED).
         row = set_client_quality(
             workspace, critique_enabled=critique, focus_crop_enabled=focus_crop,
-            variety_enabled=variety, by=request.user,
+            variety_enabled=variety, image_text_check_enabled=image_text_check,
+            by=request.user,
         )
         return APIResponse(
             success=True, message="Quality engine updated.", data=_quality_flags(row),
