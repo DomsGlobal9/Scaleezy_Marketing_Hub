@@ -582,6 +582,27 @@ function PublishingPage() {
     };
   }, [brandId, templatesAttempt]);
 
+  // Templates, model and product photos are uploaded in Brand Master — often
+  // in another tab. This page holds its own copy of those lists, fetched once
+  // on mount, with no channel back from the upload: a Create Studio opened
+  // before the upload kept an honest-at-the-time empty list and "Your
+  // templates" stayed disabled until the page was left and re-entered. Ask
+  // again whenever this document comes back into view. The old list stays on
+  // screen until the answer lands, so nothing flickers.
+  useEffect(() => {
+    const refetch = () => {
+      if (document.visibilityState === "visible") {
+        setTemplatesAttempt((current) => current + 1);
+      }
+    };
+    document.addEventListener("visibilitychange", refetch);
+    window.addEventListener("focus", refetch);
+    return () => {
+      document.removeEventListener("visibilitychange", refetch);
+      window.removeEventListener("focus", refetch);
+    };
+  }, []);
+
   // Founder directive: with no uploaded templates, AI original is the default
   // direction rather than an unmade choice.
   useEffect(() => {
