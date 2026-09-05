@@ -193,17 +193,36 @@ class JudgeTests(SimpleTestCase):
             self.verdict(['Woven For Celebrations', 'Sale ends 20 Oct']), 'extra_text',
         )
 
-    def test_a_link_or_handle_is_decoration_but_a_mixed_hashtag_row_is_not(self):
+    def test_a_link_or_handle_is_decoration_with_a_short_caption(self):
+        # A website or handle is dressing, and so is the word or two beside
+        # it; a row of hashtags is not a licence for the copy in front.
+        self.assertEqual(self.verdict(['Woven For Celebrations', 'Visit www.sumaya.in']), 'ok')
         self.assertEqual(
-            self.verdict(['Woven For Celebrations', 'Visit us at www.sumaya.in']), 'ok',
+            self.verdict(['Woven For Celebrations', 'Follow us @sumaya.silks']), 'ok',
         )
-        self.assertEqual(
-            self.verdict(['Woven For Celebrations', 'Follow @sumaya.silks for more']), 'ok',
-        )
-        # Only a row that is ALL hashtags is a hashtag row.
         self.assertEqual(
             self.verdict(['Woven For Celebrations', 'Shop now today #sumaya #silk']),
             'extra_text',
+        )
+
+    def test_a_link_or_handle_excuses_only_itself(self):
+        # Reviewer probes: each row was tolerated whole because a website or
+        # a handle sat somewhere on it. The dressing tokens are dropped and
+        # what is left is judged like any other row.
+        for row in (
+            'Diwali sale ends Sunday, visit www.sumaya.in',
+            'Celebrate the season with us @sumaya',
+            'Every saree hand woven by master weavers sumaya.com',
+        ):
+            self.assertEqual(self.verdict(['Woven For Celebrations', row]), 'extra_text', row)
+        # A row that is nothing but dressing is still free.
+        self.assertEqual(
+            self.verdict(['Woven For Celebrations', 'www.sumaya.in @sumaya #silk']), 'ok',
+        )
+        # Three words of caption beside the link are a line of text: this
+        # is where the same rule draws its line.
+        self.assertEqual(
+            self.verdict(['Woven For Celebrations', 'Visit us at www.sumaya.in']), 'extra_text',
         )
 
     def test_approved_copy_inside_a_stray_block_excuses_only_itself(self):
@@ -216,6 +235,38 @@ class JudgeTests(SimpleTestCase):
             ),
             'extra_text',
         )
+
+    def test_a_clean_headline_block_wins_over_a_row_that_repeats_its_words(self):
+        # Reviewer probes: the headline IS painted right on its own block;
+        # the row that borrows its words is a stray, judged by the stray
+        # rule, never an alteration of the headline.
+        self.assertEqual(
+            self.verdict(['SALE', 'Shop the sale now'], 'Sale', cta='Shop now'), 'extra_text',
+        )
+        verdict, reason = judge_texts(
+            ['Diwali Sale', 'Free shipping on all Diwali Sale orders'], 'Diwali Sale',
+            brand_name='Sumaya',
+        )
+        self.assertEqual(verdict, 'extra_text')
+        self.assertIn('Free shipping on all Diwali Sale orders', reason)
+        # A short enough stray leaves the poster simply fine.
+        self.assertEqual(self.verdict(['Sale', 'Sale ends Sunday'], 'Sale'), 'ok')
+        # With no clean block anywhere, the glued one is the altered headline.
+        self.assertEqual(
+            self.verdict(['Free shipping on all Diwali Sale orders'], 'Diwali Sale'),
+            'headline_altered',
+        )
+
+    def test_a_slash_bar_or_bullet_between_words_is_a_space(self):
+        # Reviewer probes: the separators a poster sets between words.
+        for read in ('Woven/For/Celebrations', 'Woven | For | Celebrations',
+                     'Woven • For · Celebrations'):
+            self.assertEqual(self.verdict([read]), 'ok', read)
+
+    def test_an_ampersand_reads_as_and_either_way_round(self):
+        # Reviewer probe: '&' and "and" are the same word on both sides.
+        self.assertEqual(self.verdict(['Silk and Gold'], 'Silk & Gold'), 'ok')
+        self.assertEqual(self.verdict(['Silk & Gold'], 'Silk and Gold'), 'ok')
 
     def test_whole_words_only(self):
         # "new" inside "renewal" is not the word "new".

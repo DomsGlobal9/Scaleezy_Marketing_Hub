@@ -891,6 +891,11 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction='',
     # image provider on the main path. Campaign fields only exist in
     # brief_extra, so they survive.
     text_brief = {**brief_extra, **context_as_brief(text_context)}
+    # A fixed `headline` belongs to painted IMAGE briefs only (see
+    # `_with_on_image_text`): on the TEXT brief a combined provider would
+    # paint it and the judge would never see the title Step 1 wrote. No
+    # caller sends one today; this keeps it that way.
+    text_brief.pop('headline', None)
     image_brief = {**brief_extra, **context_as_brief(image_context)}
 
     # The matched template's design and the brand ambassador's face ride in

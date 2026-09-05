@@ -34,8 +34,9 @@ ANALYSIS_MAX_EDGE = 1024
 #: A fragment with this many alphabetic words or fewer ("New", "2026",
 #: "Size XL", "Rs. 4,999", "15 - 20 Oct") is tolerated as decoration rather
 #: than reported as extra text, so the check never re-buys a poster over a
-#: badge. Counted on what is left once approved copy is taken out, and on
-#: words only: a number, a lone letter or a bare symbol is never a word.
+#: badge. Counted on what is left once approved copy is taken out and any
+#: website, handle or hashtag dropped, and on words only: a number, a lone
+#: letter or a bare symbol is never a word.
 SHORT_FRAGMENT_WORDS = 2
 
 #: Caps on what travels back to the caller (and into the trace).
@@ -74,8 +75,10 @@ INSTRUCTION = (
 _QUOTES = re.compile(r"[\'\"‘’“”`]")
 #: '%' is here because the reader drops it ("Flat 50 Off" for "Flat 50%
 #: Off"); stripping it on both sides keeps that from reading as a rewrite.
-_PUNCTUATION = re.compile(r"[.,:;!?%\-–—…()]")
-#: What a website, an e-mail or a social handle looks like in a transcript.
+#: '/', '|' and the bullets are the separators a poster sets between words
+#: ("Woven | For | Celebrations"), so they must read as spaces too.
+_PUNCTUATION = re.compile(r"[.,:;!?%\-–—…()/|•·]")
+#: What a website, an e-mail or a social handle looks like in one token.
 _LINK = re.compile(r"www\.|https?:|\.com\b|\.in\b|\.co\b|@")
 
 
@@ -84,9 +87,10 @@ def _norm(text):
 
     Quotes and apostrophes vanish without a trace ("Sumaya's" -> "sumayas")
     so a word keeps its identity; other punctuation becomes a space so
-    "Celebrations: Kanjivaram" splits into two words.
+    "Celebrations: Kanjivaram" splits into two words; '&' becomes "and" so
+    "Silk & Gold" and "Silk and Gold" are the same headline.
     """
-    value = _QUOTES.sub('', str(text or '').casefold())
+    value = _QUOTES.sub('', str(text or '').casefold()).replace('&', ' and ')
     value = _PUNCTUATION.sub(' ', value)
     return ' '.join(value.split())
 
@@ -110,20 +114,24 @@ def _strip(normalised, texts):
 
 
 def _alpha_words(normalised):
-    """How many tokens read as words: two or more letters. "Rs", "Oct" and
-    "#silk" are words; "4", "999", "15" and "-" are not."""
+    """How many tokens read as words: two or more letters. "Rs" and "Oct"
+    are words; "4", "999", "15" and "-" are not."""
     return sum(
         1 for token in normalised.split()
         if sum(1 for char in token if char.isalpha()) >= 2
     )
 
 
-def _decoration(raw):
-    """A website, handle or a row of hashtags is dressing, never copy."""
-    tokens = str(raw).casefold().split()
-    return bool(tokens) and (
-        bool(_LINK.search(' '.join(tokens)))
-        or all(token.startswith('#') for token in tokens)
+def _undressed(raw):
+    """`raw` with every website, e-mail, handle and hashtag token dropped.
+
+    Dressing is never copy, but it excuses only itself: the words beside it
+    ("Diwali sale ends Sunday, visit www.sumaya.in") are judged like any
+    other row, and a row that is nothing but dressing is left empty.
+    """
+    return ' '.join(
+        token for token in str(raw).split()
+        if not (token.startswith('#') or _LINK.search(token.casefold()))
     )
 
 
@@ -142,12 +150,15 @@ def judge_texts(found, headline, cta='', offer='', brand_name=''):
     headline_altered > extra_text > ok, because a wrong headline is the
     failure the founder saw and the one a re-buy is for.
 
-    Casing and punctuation never matter. The block carrying the headline
-    must be exactly the headline plus approved copy (cta, offer, brand), any
-    number of times over. Any other block is fine when it is approved copy,
-    sits inside approved copy, reads as decoration (a website, a handle, a
-    row of hashtags), or keeps at most `SHORT_FRAGMENT_WORDS` words of its
-    own once approved copy is taken out.
+    Casing, punctuation and word separators never matter, and '&' reads as
+    "and". One block that is exactly the headline plus approved copy (cta,
+    offer, brand), any number of times over, proves the headline is painted
+    right; the headline is altered only when every block carrying it has
+    something else glued on. Every other block is fine when it is approved
+    copy, sits inside approved copy, or keeps at most `SHORT_FRAGMENT_WORDS`
+    words of its own once approved copy is taken out and any website,
+    handle or hashtag dropped — so a row of dressing costs nothing, and the
+    copy beside a website is judged like any other row.
     """
     expected = _norm(headline)
     if not expected:
@@ -180,27 +191,34 @@ def judge_texts(found, headline, cta='', offer='', brand_name=''):
     allowed = [text for text in (_norm(cta), _norm(offer), _norm(brand_name)) if text]
     approved = [expected, *allowed]
 
-    # The headline is there. Its block must be exactly the headline plus
-    # approved copy: a CTA sharing the headline's line is a layout choice,
-    # and the headline read twice is the reader's doing, but one word the
-    # customer never approved glued on ("...: KANJIVARAM UNVEILED!", "by
-    # Sumaya the house of silk") is the live failure — even when a CTA or
-    # the brand name sits somewhere inside the same block.
-    for raw, normalised in fragments:
-        if _contains(normalised, expected) and _alpha_words(_strip(normalised, approved)):
-            return (
-                'headline_altered',
-                f'Headline reads "{raw}" on the image, not "{headline_shown}".',
-            )
+    # The headline is there. A block that is exactly the headline plus
+    # approved copy is the headline painted right: a CTA sharing its line
+    # is a layout choice, and the headline read twice is the reader's
+    # doing. One such block settles it, and any other block that happens
+    # to repeat the headline's words ("Free shipping on all Diwali Sale
+    # orders") is a stray, judged below. Only when every block carrying
+    # the headline has a word the customer never approved glued on
+    # ("...: KANJIVARAM UNVEILED!", "by Sumaya the house of silk") is the
+    # headline itself altered — the live failure — even when a CTA or the
+    # brand name sits somewhere inside that block.
+    carrying = [
+        (raw, normalised) for raw, normalised in fragments if _contains(normalised, expected)
+    ]
+    exact = any(not _alpha_words(_strip(normalised, approved)) for _raw, normalised in carrying)
+    if carrying and not exact:
+        return (
+            'headline_altered',
+            f'Headline reads "{carrying[0][0]}" on the image, not "{headline_shown}".',
+        )
 
-    # Every other block is a stray when, with the approved copy taken out,
-    # it still reads as a line of text: three or more words. A price, a
-    # date, a size, a website, a handle or a row of hashtags never does.
+    # Every block is a stray when, with the approved copy taken out and any
+    # website, handle or hashtag dropped, it still reads as a line of text:
+    # three or more words. A price, a date, a size, a row of dressing or
+    # the headline block itself never does; the copy beside a website does.
     strays = [
         raw for raw, normalised in fragments
-        if not _decoration(raw)
-        and not any(_contains(text, normalised) for text in approved)
-        and _alpha_words(_strip(normalised, approved)) > SHORT_FRAGMENT_WORDS
+        if not any(_contains(text, normalised) for text in approved)
+        and _alpha_words(_strip(_norm(_undressed(raw)), approved)) > SHORT_FRAGMENT_WORDS
     ]
     if strays:
         return 'extra_text', f'Text on the image that is not in the copy: {_quoted(strays)}.'

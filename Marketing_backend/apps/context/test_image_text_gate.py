@@ -336,6 +336,25 @@ class ImageTextGateTests(TenantFixtureMixin, TestCase):
         self.assertEqual(trace['image_text']['kept'], 'first')
         self.assertEqual(trace['image_text']['final_verdict'], 'extra_text')
 
+    def test_a_caller_supplied_headline_never_reaches_the_text_brief(self):
+        # A combined provider paints whatever `headline` its brief carries,
+        # so a stray one on the TEXT brief would pin Step 1's title to words
+        # nobody judged. The IMAGE brief still ends up with the judged one.
+        router, checker = Router([FIRST]), Checker([OK])
+        outcome = self.generate(router, checker, poster_brief(headline='User typed line'))
+
+        text_briefs = [
+            c['brief'] for c in router.calls
+            if c['capability'] == Capability.TEXT
+            and str(c['brief'].get('task') or '').upper() != 'EXTRACT'
+        ]
+        self.assertTrue(text_briefs)
+        for brief in text_briefs:
+            self.assertNotIn('headline', brief)
+        (image_brief,) = router.image_briefs()
+        self.assertEqual(image_brief['headline'], HEADLINE)
+        self.assertEqual(outcome['text']['headline'], HEADLINE)
+
     def test_every_painted_brief_carries_the_headline_it_paints(self):
         """The contract with a provider whose image call re-runs its own
         copy step (Gemini's `generate_image` runs Step 1 again and would
