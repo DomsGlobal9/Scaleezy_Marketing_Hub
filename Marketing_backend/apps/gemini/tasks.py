@@ -1058,6 +1058,14 @@ def regenerate_revision(revision_id: str):
             )
             if asset is not None:
                 revision.asset = asset
+                # The re-bought poster IS the preview until the compose below
+                # dresses it - and for a delegated design it never does, so
+                # without this line the review card kept showing the parent's
+                # picture the reviewer had just sent back.
+                revision.preview_url = (
+                    str(getattr(asset, 'file_url', '') or '')[:1000]
+                    or revision.preview_url
+                )
                 # A new photograph replaces the parent's; the compose below
                 # decides the preview — and re-detects the focal point,
                 # which described the old photograph.

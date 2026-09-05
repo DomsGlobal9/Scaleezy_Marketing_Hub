@@ -883,6 +883,35 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
 
         self.assertIs(self.rebuy_brief()['feature_ambassador'], True)
 
+    def test_image_edits_show_the_new_picture_on_the_card(self):
+        # Live finding, 2026-09-05: the re-bought asset landed on the revision
+        # but the preview still pointed at the parent's picture, because a
+        # delegated design is never composed and nothing else set it.
+        # A delegated design: no dress, so the compose is a no-op and the
+        # raw re-bought poster must become the card's picture itself.
+        self.with_inherited_look()
+        old_preview = 'https://storage.test/generated/original.png'
+        self.revision.layout_plugin = ''
+        self.revision.preview_url = old_preview
+        self.revision.layout_config = {
+            'regenerating': True,
+            'creative_direction': {'mode': 'AI_ORIGINAL', 'selections': []},
+        }
+        self.revision.save()
+        parent_preview = self.parent.preview_url
+
+        self.rebuy_brief()
+
+        self.revision.refresh_from_db()
+        self.assertEqual(
+            self.revision.preview_url, 'https://storage.test/generated/new-photo.png',
+        )
+        self.assertNotEqual(self.revision.preview_url, old_preview)
+        self.assertEqual(self.revision.asset.file_url, self.revision.preview_url)
+        # The parent keeps its own picture: the edit opened a new version.
+        self.parent.refresh_from_db()
+        self.assertEqual(self.parent.preview_url, parent_preview)
+
     def with_inherited_trace(self, **trace):
         """The generation_trace the parent's persisted poster recorded.
 
