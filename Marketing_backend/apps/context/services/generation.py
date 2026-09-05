@@ -83,6 +83,38 @@ def _ambassador_image(brand) -> str:
         return ''
 
 
+def _logo_image(brand) -> str:
+    """The brand's own logo as a data URL, or ''.
+
+    The logo lives on the Brand (Brand Master's upload), not as an
+    inspiration row, and the poster switch is the brand's own
+    `show_logo_on_posters` — the same one the studio's logo chip toggles.
+    Delegated posters paint everything into the image, so the switch is
+    honoured HERE, at the image step, rather than by the retired dressing
+    pass. Best effort like its siblings: no logo, switch off, or
+    unreachable storage runs the paid generation without it.
+    """
+    if brand is None or not getattr(brand, 'show_logo_on_posters', False):
+        return ''
+    url = str(getattr(brand, 'logo_url', '') or '')
+    if not url:
+        return ''
+    import mimetypes
+    from types import SimpleNamespace
+
+    from apps.inspirations.analysis import _stored_media_data
+
+    mime = (
+        mimetypes.guess_type(str(brand.logo_file_name or '') or url)[0]
+        or 'image/png'
+    )
+    try:
+        return _stored_media_data(SimpleNamespace(file_url=url, mime_type=mime))
+    except Exception as exc:
+        logger.warning('Brand logo unavailable for generation: %s', exc)
+        return ''
+
+
 def _template_image(direction) -> str:
     """The chosen BRAND_TEMPLATE's pixels, as the data URL the image step
     attaches, or '' when this generation has no usable template.
@@ -195,6 +227,12 @@ def _reference_pixels(brand, brief_extra) -> dict:
         product_data_url = _product_image(brand, brief_extra.get('product_image_id'))
         if product_data_url:
             pixels['product_image_base64'] = product_data_url
+    # The brand's own logo, when Brand Master's poster switch is on. Words
+    # cannot spell a logotype; only the artwork itself can (see `_logo_image`).
+    if 'logo_image_base64' not in brief_extra:
+        logo_data_url = _logo_image(brand)
+        if logo_data_url:
+            pixels['logo_image_base64'] = logo_data_url
     return pixels
 
 
