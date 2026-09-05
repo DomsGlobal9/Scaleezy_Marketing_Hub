@@ -484,6 +484,9 @@ function PublishingPage() {
   const [imageQuality, setImageQuality] = useState("4K");
   const [templateFidelity, setTemplateFidelity] = useState<"EXACT" | "INSPIRED">("EXACT");
   const [captionLanguage, setCaptionLanguage] = useState("english");
+  // A/B twins: two deliberately different designs of the same brief, both
+  // billed. Off by default — it is a spend choice, not a convenience.
+  const [abVariants, setAbVariants] = useState(false);
 
   // The brand's model/ambassador photos. null = loading; the toggle defaults
   // ON — the founder's rule is that the model fronts every creative.
@@ -1301,6 +1304,7 @@ function PublishingPage() {
             platform: requestedContentType === "poster" ? posterPlatform : "",
             imageQuality: requestedContentType === "poster" ? imageQuality : "",
             captionLanguage: requestedContentType === "poster" ? captionLanguage : "",
+            abVariants: requestedContentType === "poster" ? abVariants : false,
             templateFidelity,
             productImageId: requestedContentType === "poster" ? productImageId : "",
             referenceImageBase64: requestedMode === "REFERENCE" ? referenceImageBase64 : "",
@@ -2179,6 +2183,26 @@ function PublishingPage() {
                     The caption and a few hashtags speak this language. The headline on the
                     poster stays in English.
                   </p>
+                  <div className="mt-4 flex items-start gap-2">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={abVariants}
+                      onClick={() => setAbVariants((v) => !v)}
+                      className={cn(
+                        "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                        abVariants
+                          ? "border-primary bg-black text-white"
+                          : "border-border bg-background text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      A/B: two variants
+                    </button>
+                    <p className="pt-1.5 text-[0.6875rem] text-muted-foreground">
+                      Two deliberately different designs of this brief, so you pick the
+                      winner. Uses double the generation units.
+                    </p>
+                  </div>
                 </div>
               ) : null}
 

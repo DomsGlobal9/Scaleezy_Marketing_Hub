@@ -943,6 +943,42 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
         if blocked:
             return blocked
 
+        from uuid import UUID, uuid4
+
+        try:
+            generation_id = UUID(str(data.get('requestId'))) if data.get('requestId') else uuid4()
+        except (ValueError, TypeError, AttributeError):
+            return APIResponse(success=False, message='Invalid generation request id.', status=400)
+
+        # A/B twins: the client opted into TWO variants of this brief — two
+        # image buys, clearly priced in the studio. The variety engine's LRU
+        # is a pure function of history, so two concurrent picks would
+        # converge on the same design; both briefs are picked HERE, the
+        # twin's with its sibling's keys excluded, so the pair is guaranteed
+        # to genuinely differ.
+        twin_brief = None
+        twin_id = None
+        if (
+            bool(data.get('abVariants', data.get('ab_variants', False)))
+            and content_type.casefold() in ('', 'poster')
+            and brand is not None
+        ):
+            from apps.context.services.creative_direction import pick_variety
+
+            twin_id = uuid4()
+            face_safe = bool(brief.get('feature_ambassador', True))
+            first_picks = pick_variety(
+                workspace, brand, generation_id, face_safe=face_safe,
+            )
+            brief.update(first_picks)
+            twin_brief = {
+                **brief,
+                **pick_variety(
+                    workspace, brand, twin_id,
+                    face_safe=face_safe, exclude=first_picks,
+                ),
+            }
+
         generation_defaults = dict(
             workspace=workspace,
             user=request.user if request.user.is_authenticated else None,
@@ -960,12 +996,6 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
 
         from apps.gemini.tasks import generate_content
         from django.db import transaction
-        from uuid import UUID, uuid4
-
-        try:
-            generation_id = UUID(str(data.get('requestId'))) if data.get('requestId') else uuid4()
-        except (ValueError, TypeError, AttributeError):
-            return APIResponse(success=False, message='Invalid generation request id.', status=400)
 
         try:
             # Client retries after an uncertain HTTP response reuse this ID.
@@ -1000,6 +1030,29 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        # The twin is best-effort AFTER the first is safely queued: a client
+        # retry reusing the requestId finds created=False and never spawns a
+        # second pair, and a twin that cannot queue costs nothing — the first
+        # variant stands alone and the response says so.
+        twin_payload = None
+        if twin_brief is not None and created:
+            try:
+                with transaction.atomic():
+                    twin, _ = GeminiGenerationRequest.objects.get_or_create(
+                        pk=twin_id,
+                        defaults={
+                            **generation_defaults,
+                            'prompt_data': json.dumps(twin_brief),
+                        },
+                    )
+                    generate_content.enqueue(str(twin.id))
+                twin_payload = {
+                    'generationId': str(twin.id),
+                    'pollUrl': f"/api/marketing/ai-generation/{twin.id}/",
+                }
+            except Exception:
+                logger.exception('A/B twin %s could not be queued', twin_id)
+
         return APIResponse(
             success=True,
             data={
@@ -1007,6 +1060,7 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                 'taskId': task_result.id if task_result else None,
                 'status': generation.status,
                 'pollUrl': f"/api/marketing/ai-generation/{generation.id}/",
+                'twin': twin_payload,
             },
             status=status.HTTP_202_ACCEPTED,
         )
