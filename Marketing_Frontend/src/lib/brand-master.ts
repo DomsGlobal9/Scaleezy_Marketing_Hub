@@ -572,6 +572,28 @@ export const uploadBrandAmbassador = (brandId: string, file: File) =>
     focus_areas: [],
   });
 
+/** Real product photographs — attached at generation so the creative shows
+ * the purchasable item itself, never an invented lookalike. */
+export const BRAND_PRODUCT_TYPE = "BRAND_PRODUCT";
+
+export const isBrandProduct = (row: Inspiration) =>
+  row.inspiration_type === BRAND_PRODUCT_TYPE;
+
+export const fetchBrandProducts = async (brandId: string) =>
+  (await fetchInspirations(brandId)).filter(
+    (row) => isBrandProduct(row) && row.lifecycle_status !== "ARCHIVED",
+  );
+
+export const uploadBrandProduct = (brandId: string, file: File) =>
+  uploadInspiration(brandId, file, {
+    inspiration_type: BRAND_PRODUCT_TYPE,
+    title: file.name,
+    annotation: "Product photo",
+    external_platform: "",
+    usage_scope: "FULL_REFERENCE",
+    focus_areas: [],
+  });
+
 export const analyzeInspiration = (inspirationId: string) =>
   api(`/api/marketing/inspirations/${inspirationId}/analyze/`, { method: "POST" });
 

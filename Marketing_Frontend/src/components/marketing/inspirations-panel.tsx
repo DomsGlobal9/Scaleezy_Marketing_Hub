@@ -54,6 +54,7 @@ import {
   fetchSignals,
   humanize,
   isBrandAmbassador,
+  isBrandProduct,
   isBrandTemplate,
   rejectSignal,
   uploadInspiration,
@@ -120,7 +121,7 @@ export function InspirationsPanel({
   // Brand templates and ambassador photos ride the same API but live on
   // their own surfaces; showing them here would list every upload twice.
   const rows = (inspirations.data ?? []).filter(
-    (i) => !isBrandTemplate(i) && !isBrandAmbassador(i),
+    (i) => !isBrandTemplate(i) && !isBrandAmbassador(i) && !isBrandProduct(i),
   );
   const active = rows.filter((i) => i.lifecycle_status !== "ARCHIVED");
   const archived = rows.filter((i) => i.lifecycle_status === "ARCHIVED");

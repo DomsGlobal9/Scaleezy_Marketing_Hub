@@ -538,6 +538,18 @@ Return ONLY a valid JSON object with these exact keys:
                 "faithfully is overridden: compose a FRESH layout for this "
                 "brief and do not reproduce the template's structure.\n"
             )
+        # Product mode: the real, purchasable item is attached at the image
+        # step. Step 1 must build the scene AROUND it, not describe an
+        # imagined product the attachment will then contradict.
+        product_block = ''
+        if request_data.get('product_image_base64'):
+            product_block = (
+                "\n\nREAL PRODUCT: the creative features the brand's actual "
+                "product, which the image model receives as an attached "
+                "photograph. The `imagePrompt` must describe the scene, "
+                "styling and mood AROUND that product - never invent or "
+                "describe a different product's design, colours or details.\n"
+            )
         creative_direction = request_data.get('creative_direction') or {}
         creative_lines = creative_direction.get('instructions') or []
         creative_block = ''
@@ -579,7 +591,7 @@ For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just 
 
 {cls._rules_block(brand_rules)}{guardrail_block}
 {variety_block}
-{creative_block}{template_block}{ambassador_block}{platform_block}
+{creative_block}{template_block}{ambassador_block}{product_block}{platform_block}
 Respond ONLY with a valid JSON object (no markdown, no code fences, no extra text):
 {{
   "postTitle": "A catchy, short title (max 10 words)",
@@ -658,6 +670,7 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                               api_key: str = '', text_lines=None,
                               template_image_base64: str = "",
                               ambassador_image_base64: str = "",
+                              product_image_base64: str = "",
                               aspect_ratio: str = '4:5',
                               image_size: str = '4K') -> str:
         """
@@ -730,6 +743,20 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                 "photorealistic and flattering. Never substitute a different "
                 "model, and never render more than the people the composition "
                 "needs."
+            )
+        product_mime, product_bytes = cls._parse_base64_image(product_image_base64)
+        if product_mime and product_bytes:
+            image_parts.append(
+                types.Part.from_bytes(data=product_bytes, mime_type=product_mime)
+            )
+            preamble.append(
+                f"ATTACHED IMAGE {len(image_parts)} IS THE BRAND'S ACTUAL "
+                "PRODUCT. The product featured in the creative must be THIS "
+                "EXACT item: the same design, pattern, colours, materials, "
+                "embellishments and details, faithfully reproduced in the new "
+                "scene (worn or presented as the brief suggests). Never "
+                "substitute a similar product and never redesign it — the "
+                "customer must be able to buy exactly what they see."
             )
         if image_parts:
             contents = [*image_parts, "\n\n".join([*preamble, directive])]
@@ -861,6 +888,7 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                     ),
                     template_image_base64=request_data.get('template_image_base64', ''),
                     ambassador_image_base64=request_data.get('ambassador_image_base64', ''),
+                    product_image_base64=request_data.get('product_image_base64', ''),
                 )
         except Exception as e:
             print(f"[Gemini] Step 2 failed: {e}")

@@ -116,6 +116,39 @@ def _template_image(direction) -> str:
         return ''
 
 
+def _product_image(brand, product_image_id) -> str:
+    """The named BRAND_PRODUCT photo as a data URL, or ''.
+
+    The id arrives straight from the request payload, so the query is scoped
+    to THIS brand and the product type — an id from another tenant, an
+    archived row, or any other inspiration kind resolves to nothing. Best
+    effort like its siblings: a missing file never fails the paid run.
+    """
+    raw = str(product_image_id or '').strip()
+    if not raw or brand is None:
+        return ''
+    from apps.inspirations.analysis import _stored_media_data
+    from apps.inspirations.models import BrandInspiration
+
+    try:
+        row = (
+            BrandInspiration.objects.filter(
+                pk=raw,
+                brand=brand,
+                inspiration_type=BrandInspiration.InspirationType.BRAND_PRODUCT,
+                lifecycle_status=BrandInspiration.LifecycleStatus.ACTIVE,
+            )
+            .exclude(file_url='')
+            .first()
+        )
+        if row is None:
+            return ''
+        return _stored_media_data(row)
+    except Exception as exc:
+        logger.warning('Product photo unavailable for generation: %s', exc)
+        return ''
+
+
 def _reference_pixels(brand, brief_extra) -> dict:
     """The reference pixels a generation attaches at its image step, as the
     brief keys to merge in: `template_image_base64`, the chosen
@@ -155,6 +188,12 @@ def _reference_pixels(brand, brief_extra) -> dict:
         ambassador_data_url = _ambassador_image(brand)
         if ambassador_data_url:
             pixels['ambassador_image_base64'] = ambassador_data_url
+    # The actual product this creative sells, when the generation named one.
+    # An invented lookalike cannot be bought.
+    if 'product_image_base64' not in brief_extra:
+        product_data_url = _product_image(brand, brief_extra.get('product_image_id'))
+        if product_data_url:
+            pixels['product_image_base64'] = product_data_url
     return pixels
 
 

@@ -56,11 +56,13 @@ import {
   asList,
   createInspiration,
   fetchBrandAmbassadors,
+  fetchBrandProducts,
   fetchBrandTemplates,
   fetchCurrentBrand,
   type Inspiration,
   type InspirationInput,
   uploadBrandAmbassador,
+  uploadBrandProduct,
   uploadInspiration,
 } from "@/lib/brand-master";
 import { api, apiFetch, apiPost, ApiError } from "@/lib/api";
@@ -478,6 +480,12 @@ function PublishingPage() {
   const [featureModel, setFeatureModel] = useState(true);
   const [ambassadorUploading, setAmbassadorUploading] = useState(false);
   const ambassadorInputRef = useRef<HTMLInputElement>(null);
+  // Real product photos. One can be picked per creative — none by default,
+  // because the wrong product on a poster is worse than an invented scene.
+  const [productPhotos, setProductPhotos] = useState<Inspiration[] | null>(null);
+  const [productImageId, setProductImageId] = useState("");
+  const [productUploading, setProductUploading] = useState(false);
+  const productInputRef = useRef<HTMLInputElement>(null);
   const [inspirationFlowError, setInspirationFlowError] = useState<string | null>(null);
   const [activeInspirationGeneration, setActiveInspirationGeneration] =
     useState<InspirationGenerationOptions | null>(null);
@@ -561,6 +569,13 @@ function PublishingPage() {
       .catch(() => {
         // The toggle simply stays hidden; generation runs without the photo.
         if (!cancelled) setAmbassadors([]);
+      });
+    fetchBrandProducts(brandId)
+      .then((rows) => {
+        if (!cancelled) setProductPhotos(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setProductPhotos([]);
       });
     return () => {
       cancelled = true;
@@ -1272,6 +1287,7 @@ function PublishingPage() {
             platform: requestedContentType === "poster" ? posterPlatform : "",
             imageQuality: requestedContentType === "poster" ? imageQuality : "",
             templateFidelity,
+            productImageId: requestedContentType === "poster" ? productImageId : "",
             referenceImageBase64: requestedMode === "REFERENCE" ? referenceImageBase64 : "",
             inspirationSelections:
               requestedMode === "REFERENCE"
@@ -2126,9 +2142,99 @@ function PublishingPage() {
                 </div>
               ) : null}
 
-              {/* MODEL & LOGO — the two brand assets that ride every poster,
-                  as live controls rather than settings buried elsewhere. */}
-              <div className="mb-8 grid gap-3 sm:grid-cols-2">
+              {/* MODEL, PRODUCT & LOGO — the brand assets that ride the
+                  poster, as live controls rather than settings buried
+                  elsewhere. */}
+              <div className="mb-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <div className="rounded-xl border border-border p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <Images className="size-4 shrink-0 text-primary" />
+                      <h3 className="truncate text-sm font-semibold text-foreground">
+                        Your product
+                      </h3>
+                    </div>
+                    {productImageId ? (
+                      <button
+                        type="button"
+                        onClick={() => setProductImageId("")}
+                        className="shrink-0 rounded-full border border-primary bg-primary px-3 py-1 text-xs font-semibold text-black"
+                      >
+                        In this creative
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="mt-3 flex items-center gap-2 overflow-x-auto pb-1">
+                    {(productPhotos ?? []).map((row) => (
+                      <button
+                        key={row.id}
+                        type="button"
+                        title={row.title}
+                        aria-pressed={productImageId === row.id}
+                        onClick={() =>
+                          setProductImageId(productImageId === row.id ? "" : row.id)
+                        }
+                        className="shrink-0"
+                      >
+                        <img
+                          src={row.file_url ?? ""}
+                          alt={row.title}
+                          className={cn(
+                            "size-12 rounded-lg border-2 object-cover",
+                            productImageId === row.id
+                              ? "border-primary"
+                              : "border-border opacity-70 hover:opacity-100",
+                          )}
+                        />
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      disabled={productUploading || !brandId}
+                      onClick={() => productInputRef.current?.click()}
+                      className="grid size-12 shrink-0 place-items-center rounded-lg border-2 border-dashed border-border text-muted-foreground transition-colors hover:border-primary hover:text-foreground disabled:opacity-50"
+                      aria-label="Add a product photo"
+                    >
+                      {productUploading ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <Plus className="size-4" />
+                      )}
+                    </button>
+                    <input
+                      ref={productInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (!file || !brandId) return;
+                        setProductUploading(true);
+                        uploadBrandProduct(brandId, file)
+                          .then((row) => {
+                            const added = row as Inspiration;
+                            setProductPhotos((prev) => [added, ...(prev ?? [])]);
+                            setProductImageId(added.id);
+                            toast.success("Product photo added and selected.");
+                          })
+                          .catch((err: unknown) =>
+                            toast.error(
+                              err instanceof Error
+                                ? err.message
+                                : "The photo could not be saved.",
+                            ),
+                          )
+                          .finally(() => setProductUploading(false));
+                      }}
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {productImageId
+                      ? "The creative features this exact item — customers see what they can buy."
+                      : "Tap a photo to feature the real product in this creative. None selected = AI composes the scene."}
+                  </p>
+                </div>
                 <div className="rounded-xl border border-border p-4">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-2">
