@@ -735,7 +735,9 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                 "NEW photograph inside the photo area - a different subject pose, "
                 "framing, setting and styling; never reproduce the template's "
                 "photo, model, scene or props. Do NOT invent a new composition, "
-                "style or palette."
+                "style or palette. One exception to exactness: when the template "
+                "shows more than one call-to-action (a button plus a text link, "
+                "say), the new poster keeps only the most prominent one."
             )
         if template_mime and template_bytes and aspect_ratio != '4:5':
             preamble.append(

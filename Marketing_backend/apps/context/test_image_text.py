@@ -57,6 +57,60 @@ class JudgeTests(SimpleTestCase):
             'headline_altered',
         )
 
+    def test_the_second_live_failure_is_a_duplicated_cta(self):
+        # Sumaya again, revision 66c92f20: the brand template itself carries
+        # a booking line AND a shopping link, and the poster came back with
+        # both painted. Template mode tolerates extra_text (its own slots),
+        # so the duplication needs its own name — and it outranks the stray
+        # kicker line, which the founder is happy to keep.
+        self.assertEqual(
+            self.verdict([
+                'TIMELESS SILHOUETTES, WOVEN IN ELEGANCE.',
+                'Ruby Radiance: Bridal Edit is Live!',
+                'Book a styling session',
+                'SHOP THE COLLECTION',
+            ], headline='Ruby Radiance: Bridal Edit is Live!'),
+            'cta_duplicated',
+        )
+
+    def test_the_same_pill_twice_is_a_duplicated_cta(self):
+        self.assertEqual(
+            self.verdict([HEADLINE, 'Shop Now', 'Shop Now'], cta='Shop Now'),
+            'cta_duplicated',
+        )
+
+    def test_one_cta_beside_a_verb_led_offer_is_not_a_duplication(self):
+        # "Get 20% Off" is the deal, not the button; the kicker's full stop
+        # keeps a sentence from reading as a CTA.
+        self.assertEqual(
+            self.verdict(
+                [HEADLINE, 'Shop Now', 'Get 20% Off'],
+                cta='Shop Now', offer='Get 20% Off',
+            ),
+            'ok',
+        )
+
+    def test_a_verb_led_headline_is_the_headline_not_a_cta(self):
+        self.assertEqual(
+            self.verdict(
+                ['Shop The Ruby Edit', 'Shop Now'],
+                headline='Shop The Ruby Edit', cta='Shop Now',
+            ),
+            'ok',
+        )
+
+    def test_a_kicker_sentence_is_a_stray_not_a_cta(self):
+        # One CTA plus a wordy kicker: extra_text (which template mode
+        # forgives), never cta_duplicated (which it would not).
+        self.assertEqual(
+            self.verdict(
+                [HEADLINE, 'Discover the artistry of handloom weaving',
+                 'Shop Now'],
+                cta='Shop Now',
+            ),
+            'extra_text',
+        )
+
     def test_exact_headline_is_ok(self):
         self.assertEqual(self.verdict(['Woven For Celebrations.']), 'ok')
 

@@ -641,7 +641,8 @@ IMAGE_TEXT_TRACE_CHARS = 120
 #: How badly a verdict fails, so a re-bought picture can be judged against
 #: the one it would replace: the second ships only when it reads no worse.
 IMAGE_TEXT_RANK = {
-    'ok': 0, 'skipped': 0, 'extra_text': 1, 'headline_altered': 2, 'headline_missing': 3,
+    'ok': 0, 'skipped': 0, 'extra_text': 1, 'cta_duplicated': 1,
+    'headline_altered': 2, 'headline_missing': 3,
 }
 TEMPLATE_SLOTS_TOLERATED = 'template slots tolerated'
 
@@ -704,6 +705,9 @@ def _gate_image_text(workspace, brand, image, *, brief, headline, rebuy, trace=N
     template's own text slots ("Free shipping across India") with words no
     judge could be told about, so that verdict is tolerated there - the
     picture ships as `ok` - and only a missing or altered headline re-buys.
+    A duplicated call-to-action is NOT a slot: a template whose design
+    carries a booking line and a shopping link shipped with both painted,
+    so `cta_duplicated` re-buys even in template mode.
 
     When `trace` is a dict, `trace['image_text']` records the first verdict
     and the words found, whether a re-buy happened and which picture was

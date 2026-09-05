@@ -130,7 +130,7 @@ class OnImageTextDirectiveTests(SimpleTestCase):
         self.assertIn('CAPITALISATION STYLE', joined)
         self.assertIn('do not force uppercase', joined)
         self.assertNotIn('call-to-action pill/button reading', joined)
-        self.assertIn('never render the same call-to-action twice', joined)
+        self.assertIn('EXACTLY ONE call-to-action element in total', joined)
         # The brand CTA and campaign offer are offered as slot wording, not
         # as new elements.
         self.assertIn('call-to-action wording: "MORE INFO"', joined)
