@@ -636,14 +636,20 @@ def scene_variant(key):
 
 
 def brief_cta_and_offer(brief):
-    """The CTA keyword and offer wording a brief carries, each '' when absent.
+    """The CTA wording and offer wording a brief carries, each '' when absent.
 
-    One reading for the image call's text lines and for Step 1's composition
-    sentence, so neither describes a pill or an offer line the other does
-    not know about.
+    The CTA is the brief's own (`brief['cta']`, typed into the studio's
+    brief as "CTA: Shop the collection" - see `brief_fields`) when it has
+    one, else the brand identity's `cta_keyword`. One reading for the image
+    call's text lines, the finished picture's text check and Step 1's
+    composition sentence, so none describes a pill or an offer line the
+    others do not know about.
     """
     identity = (brief.get('structured') or {}).get('identity') or {}
-    cta = ' '.join(str(identity.get('cta_keyword') or '').split())
+    cta = (
+        ' '.join(str(brief.get('cta') or '').split())
+        or ' '.join(str(identity.get('cta_keyword') or '').split())
+    )
     offer = ' '.join(str(brief.get('offer') or '').split())
     return cta, offer
 
@@ -741,9 +747,10 @@ def on_image_text_lines(brief, headline):
     headline over the photo, a CTA pill, the offer set vertically along an
     edge, framed border, small social icons, dotted accents. The headline is
     quoted verbatim so the model has an exact string to spell, never a
-    paraphrase; the CTA is the brand's own keyword and the offer the
-    campaign's, each only when present. Text stops there: no paragraphs on
-    the image.
+    paraphrase; the CTA is the brief's own when typed, else the brand's
+    keyword, and the offer the campaign's (typed or chip alike, see
+    `brief_cta_and_offer`), each only when present. Text stops there: no
+    paragraphs on the image.
 
     With no headline there is nothing to render and inventing words is worse
     than none, so the no-text line applies - as it does wherever the compose

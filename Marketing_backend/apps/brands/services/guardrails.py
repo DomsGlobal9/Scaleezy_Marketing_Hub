@@ -96,6 +96,28 @@ def _pattern(term):
     return re.compile(r'(?<!\w)' + re.escape(term) + r'(?!\w)', re.IGNORECASE)
 
 
+def _normal_term(text):
+    return ' '.join(str(text or '').split()).casefold()
+
+
+def approved_ctas(brand):
+    """The DM keywords this brand's law allows as its call to action, [] when
+    it wrote none."""
+    return _for_brand(brand)['approved_ctas']
+
+
+def is_approved_cta(brand, cta):
+    """Whether `cta` IS one of the brand's approved DM keywords - compared
+    case-insensitively with whitespace collapsed, never as a substring.
+    False for a brand with no approved list: there is nothing to approve by.
+    A CTA typed into the studio's brief is held to this before it becomes
+    the poster's on-image call to action (see `brief_fields`)."""
+    wanted = _normal_term(cta)
+    return bool(wanted) and any(
+        _normal_term(term) == wanted for term in approved_ctas(brand)
+    )
+
+
 def preflight_fields(brief):
     """The human-authored text of a brief, labelled for readable refusals."""
     fields = {}
@@ -181,14 +203,17 @@ def copy_violations(brand, payload):
     return messages
 
 
-def enforce(brand, payload):
+def enforce(brand, payload, *, cta=''):
     """Deterministic, silent fixes. Returns (payload, notes).
 
     Only what can be fixed without judgement is fixed here: banned hashtags
     are removed, required lines are appended verbatim, and a missing CTA
-    keyword gets a plain "DM <keyword>" line. Banned words in prose are NOT
-    rewritten — deleting words changes meaning, so those stay violations for
-    the retry (and the trace) instead.
+    keyword gets a plain "DM <keyword>" line - unless `cta`, the poster's
+    own call to action (typed into the brief, painted on the image), is
+    itself an approved keyword: one CTA per poster, so the caption gets no
+    second line. Banned words in prose are NOT rewritten — deleting words
+    changes meaning, so those stay violations for the retry (and the trace)
+    instead.
     """
     g = _for_brand(brand)
     payload = dict(payload) if isinstance(payload, dict) else {}
@@ -217,9 +242,9 @@ def enforce(brand, payload):
             description = (description + '\n' + required).strip()
             notes.append(f'Appended the required line "{required}".')
 
-    if g['approved_ctas']:
+    if g['approved_ctas'] and not is_approved_cta(brand, cta):
         prose = ' '.join((str(payload.get('postTitle') or ''), description))
-        if not any(_pattern(cta).search(prose) for cta in g['approved_ctas']):
+        if not any(_pattern(term).search(prose) for term in g['approved_ctas']):
             description = (description + f"\nDM {g['approved_ctas'][0]}").strip()
             notes.append(f'Appended the CTA keyword "{g["approved_ctas"][0]}".')
 

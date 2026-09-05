@@ -329,6 +329,43 @@ class CreativeCommandTests(TenantFixtureMixin, TestCase):
             str(own.pk),
         )
 
+    def test_async_request_queues_a_multi_line_instruction_line_by_line(self):
+        # A brief typed one field per line must reach the worker's parser
+        # (`apps.context.services.brief_fields`) still one field per line:
+        # CRLF becomes '\n', runs of spaces and tabs collapse within a line,
+        # blank lines drop. Flattening it to one line glued every typed
+        # field into the headline.
+        typed = (
+            'Poster for sarees\r\nHeadline:\tWoven   For Celebrations\r\n\r\n'
+            'Offer: 20% off\nCTA: Shop  '
+        )
+        queued_task = SimpleNamespace(
+            enqueue=lambda _request_id: SimpleNamespace(id='task-1')
+        )
+        with patch('apps.gemini.tasks.generate_content', new=queued_task):
+            response = self.client.post(
+                GENERATE_ASYNC_URL, self.payload([], instruction=typed),
+                format='json', **workspace_header(self.workspace),
+            )
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED, response.content)
+        request = GeminiGenerationRequest.objects.get(
+            pk=response.json()['data']['generationId']
+        )
+        brief = json.loads(request.prompt_data)
+        self.assertEqual(
+            brief['instruction'],
+            'Poster for sarees\nHeadline: Woven For Celebrations\nOffer: 20% off\nCTA: Shop',
+        )
+
+        # The length gate is unchanged: counted after tidying, newlines included.
+        with patch('apps.gemini.tasks.generate_content', new=queued_task):
+            response = self.client.post(
+                GENERATE_ASYNC_URL, self.payload([], instruction='x\n' * 600),
+                format='json', **workspace_header(self.workspace),
+            )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.content)
+        self.assertEqual(response.json()['error']['code'], 'INVALID_INSTRUCTION')
+
     def test_platform_library_can_be_browsed_without_a_fifty_item_dead_end(self):
         for index in range(52):
             self.platform_reference(title=f'Platform reference {index}')

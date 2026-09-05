@@ -32,6 +32,7 @@ from apps.ai.endpoint_security import validate_public_https_endpoint
 from apps.ai.models import Capability
 from apps.ai.router import AIRouter, NoProviderAvailable
 
+from .brief_fields import with_brief_fields
 from .context_gateway import (
     CONTEXT_SCHEMA_VERSION,
     TaskType,
@@ -649,6 +650,26 @@ def _headline_of(text):
     return str(text.get('headline') or raw.get('postTitle') or '')
 
 
+def _with_requested_headline(brief):
+    """A TEXT brief with the headline the user typed into the brief pinned as
+    a MUST line ("Headline: Woven For Celebrations", read by `brief_fields`
+    into `requested_headline`), appended to the brand-context lines every
+    adapter carries - the very lines the critique judge grades against, so
+    the judge reads the request too and never rewrites those words for
+    tone. No line without a request."""
+    headline = ' '.join(str(brief.get('requested_headline') or '').split())
+    if not headline:
+        return brief
+    return {
+        **brief,
+        'brand_context': [
+            *(brief.get('brand_context') or []),
+            f'MUST: Use this exact headline, word for word: "{headline}". '
+            'Do not rewrite it for tone.',
+        ],
+    }
+
+
 def _with_on_image_text(brief, headline):
     """An IMAGE brief with its words-in-the-picture directive appended to the
     brand-context lines every adapter carries: the exact headline (and the
@@ -991,6 +1012,9 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction='',
     # paint it and the judge would never see the title Step 1 wrote. No
     # caller sends one today; this keeps it that way.
     text_brief.pop('headline', None)
+    # A headline the user typed INTO the brief is a different thing: a MUST
+    # line for the copy model (and the judge), never a painted key.
+    text_brief = _with_requested_headline(text_brief)
     image_brief = {**brief_extra, **context_as_brief(image_context)}
 
     # The matched template's design and the brand ambassador's face ride in
@@ -1219,7 +1243,7 @@ def generate_video_and_copy(workspace, brand, brief_extra, *, instruction='', pr
     else:
         text = router.dispatch(
             Capability.TEXT,
-            {**context_as_brief(text_context), **brief_extra},
+            _with_requested_headline({**context_as_brief(text_context), **brief_extra}),
         )
         validate_output(Capability.TEXT, text, text_context)
         text = _compact_text_result(text)
@@ -1313,7 +1337,7 @@ def generate_carousel_and_copy(
     else:
         text = router.dispatch(
             Capability.TEXT,
-            {**context_as_brief(text_context), **brief_extra},
+            _with_requested_headline({**context_as_brief(text_context), **brief_extra}),
         )
         validate_output(Capability.TEXT, text, text_context)
         text = _compact_text_result(text)
@@ -1497,6 +1521,14 @@ def generate_marketing_payload(
         resolved = (
             Brand.objects.filter(workspace=workspace).order_by('-is_default').first()
         )
+    # The fields typed into the studio's brief ("Offer: 20% off launch week.
+    # CTA: Shop the collection."), read here - once, for every route that
+    # reaches this boundary - so a typed offer, CTA or headline counts like
+    # a chip. A key is filled only where the brief's own value is empty, and
+    # a typed CTA only when the brand's law approves it; what was filled (or
+    # refused) is recorded into the trace below.
+    brief, instruction, brief_fields = with_brief_fields(brief, instruction, brand=resolved)
+
     lines = guardrail_law.prompt_lines(resolved)
     if lines and 'guardrail_rules' not in brief:
         brief = {**brief, 'guardrail_rules': lines}
@@ -1532,7 +1564,9 @@ def generate_marketing_payload(
                         "Guardrail copy retry failed for workspace %s; keeping first copy",
                         workspace.pk,
                     )
-            payload, fixed = guardrail_law.enforce(resolved, payload)
+            payload, fixed = guardrail_law.enforce(
+                resolved, payload, cta=str(brief.get('cta') or ''),
+            )
             if caught:
                 # Recomputed AFTER enforce: a hashtag the strip removed or a
                 # CTA the append supplied is resolved, and must not be
@@ -1567,6 +1601,7 @@ def generate_marketing_payload(
             guardrail_lines=list(brief.get('guardrail_rules') or []),
             content_format=str(brief.get('contentType') or ''),
             rewrite=rewrite_copy,
+            requested_headline=str(brief.get('requested_headline') or ''),
         )
         return payload
 
@@ -1577,10 +1612,14 @@ def generate_marketing_payload(
 
     payload = routed.get('payload')
     copy_brief_context = routed.pop('copy_brief_context', None) or []
+    trace = routed.get('trace')
+    if brief_fields and isinstance(trace, dict):
+        # What the typed brief supplied, so the item's generation_trace says
+        # where its offer, CTA or headline came from.
+        trace['brief_fields'] = brief_fields
     if resolved is None or not isinstance(payload, dict):
         return routed
 
-    trace = routed.get('trace')
     if isinstance(trace, dict) and 'critique' not in trace:
         # Not settled before an image: video/carousel, or a poster route
         # whose provider did not honour the hook. The same gate, after the
@@ -1753,6 +1792,12 @@ def retry_image(workspace, brand, brief_extra, *, instruction='', trace=None):
     """
     _require_spend_approved(workspace)
     brief_extra = _with_guardrail_lines(brand, brief_extra)
+    # The repair and request-edits paths hand this the stored brief directly,
+    # never through `generate_marketing_payload`: the typed offer and CTA
+    # must reach the re-bought picture the same way they reached the first.
+    brief_extra, instruction, filled = with_brief_fields(
+        brief_extra, instruction, brand=brand,
+    )
     # Attached before the variety pick below: with the ambassador in the
     # brief no scene seed that would crop the face is drawn. A carousel
     # slide is the exception: its siblings were bought by
@@ -1770,6 +1815,8 @@ def retry_image(workspace, brand, brief_extra, *, instruction='', trace=None):
     variety = _variety_seed(workspace, brand, brief_extra)
     if trace is not None:
         trace.update(variety)
+        if filled:
+            trace['brief_fields'] = filled
     headline = brief_extra.get('headline') or brief_extra.get('previous_headline') or ''
     brief = _with_on_image_text(
         {**context_as_brief(context), **brief_extra, **variety}, headline,
@@ -1810,13 +1857,21 @@ def generate_copy_only(workspace, brand, brief_extra, *, instruction=''):
 
     _require_spend_approved(workspace)
     brief_extra = _with_guardrail_lines(brand, brief_extra)
+    # A no-op on the rewrite path (the shared boundary already read the
+    # typed brief); here for a direct caller's brief, the same as
+    # `retry_image`.
+    brief_extra, instruction, _filled = with_brief_fields(
+        brief_extra, instruction, brand=brand,
+    )
     context = build_generation_context(
         workspace, brand, TaskType.COPY, instruction=instruction,
     )
     # copy_only tells a combined provider (Gemini serves TEXT and IMAGE from
     # one pipeline) to skip its image step: nobody here will use a poster,
     # and paying for one to discard it is the waste this path exists to avoid.
-    brief = {**brief_extra, **context_as_brief(context), 'copy_only': True}
+    brief = _with_requested_headline(
+        {**brief_extra, **context_as_brief(context), 'copy_only': True},
+    )
     try:
         result = AIRouter(workspace).dispatch(Capability.TEXT, brief)
         validate_output(Capability.TEXT, result, context)
@@ -1833,5 +1888,7 @@ def generate_copy_only(workspace, brand, brief_extra, *, instruction=''):
     # caption would fabricate a truthy boilerplate caption that callers'
     # keep-the-old-copy guards would then wrongly adopt.
     if str(payload.get('postDescription') or '').strip():
-        payload, _fixed = guardrail_law.enforce(brand, payload)
+        payload, _fixed = guardrail_law.enforce(
+            brand, payload, cta=str(brief_extra.get('cta') or ''),
+        )
     return payload

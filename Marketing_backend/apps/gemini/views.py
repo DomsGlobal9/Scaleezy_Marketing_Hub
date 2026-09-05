@@ -68,12 +68,23 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
 
     @staticmethod
     def _generation_instruction(data):
+        """The typed brief, one tidy line per typed line.
+
+        A field typed on its own line ("Headline: Woven") must still open a
+        line when the worker reads it back (`brief_fields`), so newlines are
+        kept - CRLF normalised - while runs of spaces and tabs collapse
+        within a line and blank lines drop.
+        """
         raw = data.get('instruction', '')
         if raw in (None, ''):
             return ''
         if not isinstance(raw, str):
             raise ValueError('instruction must be text.')
-        cleaned = ' '.join(raw.split())
+        lines = (
+            ' '.join(line.split())
+            for line in raw.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+        )
+        cleaned = '\n'.join(line for line in lines if line)
         if len(cleaned) > MAX_GENERATION_INSTRUCTION_CHARS:
             raise ValueError(
                 f'instruction must be {MAX_GENERATION_INSTRUCTION_CHARS} characters or fewer.'
