@@ -743,6 +743,26 @@ class BriefFieldsGenerationTests(TenantFixtureMixin, TestCase):
         (judged,) = router.judge_inputs()
         self.assertEqual(judged['brand_guardrails'], rules)
 
+    def test_the_stand_down_needs_a_poster_that_paints_its_own_cta(self):
+        # A catalogue-template poster (like a video or a carousel) paints no
+        # words of its own, so an approved typed CTA sits on no media at
+        # all: the caption still owes the brand's keyword, and the law's
+        # demand stays in the prompt line the generator and the judge read.
+        self.brand.guardrails = {'approved_ctas': ['PROTECT']}
+        self.brand.save(update_fields=['guardrails'])
+        router = Router()
+        result = self.generate(router, studio_brief(
+            instruction='Poster for sarees. CTA: Protect',
+            creative_direction={
+                'mode': 'CATALOG_TEMPLATE', 'layout': 'agency_column', 'selections': [],
+            },
+        ))
+        self.assertEqual(result['trace']['brief_fields'], {'cta': 'Protect'})
+        self.assertIn('DM PROTECT', result['payload']['postDescription'])
+        first_text = router.text_briefs()[0]
+        rules = first_text['guardrail_rules']
+        self.assertTrue([line for line in rules if 'MUST use exactly one of' in line], rules)
+
     def test_a_typed_headline_is_a_must_line_for_the_copy_and_a_constraint_for_the_judge(self):
         # The judge fails the first draft once, so the copy-only rewrite
         # runs too: it must carry the same MUST line.

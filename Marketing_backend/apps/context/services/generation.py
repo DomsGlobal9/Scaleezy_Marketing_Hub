@@ -1532,8 +1532,12 @@ def generate_marketing_payload(
     # law's DM-keyword demand stands down for it in the prompt line, the
     # copy check and the deterministic fix alike - one CTA per poster, so
     # the one free copy rewrite is never spent on a keyword the caption
-    # does not owe.
-    typed_cta = str(brief.get('cta') or '')
+    # does not owe. Only where the picture paints its own words, though: a
+    # video, a carousel or a catalogue-template poster carries no CTA on the
+    # media, so there the caption still owes the keyword.
+    typed_cta = (
+        str(brief.get('cta') or '') if poster_renders_its_own_text(brief) else ''
+    )
 
     lines = guardrail_law.prompt_lines(resolved, cta=typed_cta)
     if lines and 'guardrail_rules' not in brief:
