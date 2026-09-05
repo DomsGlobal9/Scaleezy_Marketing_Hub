@@ -23,7 +23,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { FeedbackTagPicker, useFeedbackElements } from "@/components/marketing/feedback-tags";
 import { PosterStudio, useLayoutCatalogue } from "@/components/marketing/poster-studio";
 import { EmptyState, PageHeader, StatusBadge } from "@/components/marketing/primitives";
 import { api, apiPost } from "@/lib/api";
@@ -292,12 +291,9 @@ function ReviewPage() {
   const statusButtons = useRef<Record<string, HTMLButtonElement | null>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
-  const [fixes, setFixes] = useState<Record<string, string>>({});
-  const [tags, setTags] = useState<Record<string, string[]>>({});
   const [report, setReport] = useState<TrainingReport | null>(null);
   const [studio, setStudio] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<ContentItem | null>(null);
-  const { groups, provisional } = useFeedbackElements();
   const { layouts, sizes } = useLayoutCatalogue();
 
   // Mirrors the backend gate exactly (apps/content/views.py `_review`:
@@ -308,23 +304,6 @@ function ReviewPage() {
   const { workspaces, selectedId } = useWorkspaces();
   const role = workspaces.find((w) => w.id === selectedId)?.role ?? null;
   const canReview = role === null || ["MANAGER", "ADMIN", "OWNER"].includes(role);
-
-  // The issues this brand raises most, offered as one-tap tags on every
-  // pending card — the reviewer should recognise, not re-describe.
-  const suggestions = useMemo(
-    () =>
-      (report?.top_elements ?? [])
-        .slice(0, 6)
-        .map((e) => ({ key: e.key, label: e.label, count: e.count })),
-    [report],
-  );
-
-  // Element key -> the rule already learned for it, so tagging a known
-  // problem needs no typed explanation at all.
-  const ruleFor = useMemo(
-    () => new Map((report?.rules ?? []).map((rule) => [rule.element, rule.text])),
-    [report],
-  );
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -485,73 +464,37 @@ function ReviewPage() {
     };
   }, [hasRegeneratingRevision, load]);
 
-  const toggleTag = (id: string, key: string) =>
-    setTags((prev) => {
-      const current = prev[id] ?? [];
-      return {
-        ...prev,
-        [id]: current.includes(key) ? current.filter((k) => k !== key) : [...current, key],
-      };
-    });
-
   const act = async (id: string, verb: "approve" | "reject" | "request-edits") => {
-    const selected = tags[id] ?? [];
-    if (verb !== "approve" && selected.length === 0) {
-      toast.error("Select at least one issue so Scaleezy can learn the correction.");
+    // The reviewer's own words are the whole interface: they drive the
+    // regeneration verbatim, and the training tags are parsed from them
+    // server-side. Nobody taps a vocabulary.
+    if (verb === "request-edits" && !(notes[id] ?? "").trim()) {
+      toast.error("Say what to change — one sentence in your own words is enough.");
       return;
     }
-    if (verb !== "approve" && !(notes[id] ?? "").trim() && !(fixes[id] ?? "").trim()) {
-      toast.error("Explain the problem or how it should be fixed.");
+    if (verb === "reject" && !(notes[id] ?? "").trim()) {
+      toast.error("Say what was wrong, so the next one is better.");
       return;
     }
 
     setBusy(id);
     try {
-      const reportWasLoaded = report !== null;
-      const previousOccurrences = new Map(
-        (report?.rules ?? []).map((rule) => [rule.element, rule.occurrences]),
-      );
       const result = await apiPost<{ regeneration_queued?: boolean }>(
         `/api/marketing/content/${id}/${verb}/`,
-        {
-          note: notes[id] ?? "",
-          elements: selected,
-          fix_request: fixes[id] ?? "",
-        },
+        { note: notes[id] ?? "" },
       );
-      const [, nextReport] = await Promise.all([load(), loadReport()]);
+      await Promise.all([load(), loadReport()]);
 
-      const regenNote =
-        verb === "request-edits"
-          ? result?.regeneration_queued
-            ? " Scaleezy is regenerating it from your feedback."
-            : " A new version was opened."
-          : "";
       if (verb === "approve") {
         toast.success("Approved — ready to publish.");
+      } else if (verb === "request-edits") {
+        toast.success(
+          result?.regeneration_queued
+            ? "Got it — Scaleezy is remaking it from your words."
+            : "Got it — a new version was opened with your feedback.",
+        );
       } else {
-        const learningVerified =
-          reportWasLoaded &&
-          nextReport !== null &&
-          nextReport.brain_current &&
-          selected.length > 0 &&
-          selected.every((element) => {
-            const next = nextReport.rules.find((rule) => rule.element === element);
-            return (next?.occurrences ?? 0) > (previousOccurrences.get(element) ?? 0);
-          });
-        if (learningVerified) {
-          toast.success(
-            verb === "reject"
-              ? "Rejected — the next generation has learned this correction."
-              : `Sent back for edits — the correction is active for the next generation.${regenNote}`,
-          );
-        } else if (selected.length > 0) {
-          toast.warning(
-            `Review saved, but immediate learning could not be verified. Check Brand Master → Attention.${regenNote}`,
-          );
-        } else {
-          toast.success(verb === "reject" ? "Rejected." : `Sent back for edits.${regenNote}`);
-        }
+        toast.success("Rejected — Scaleezy will learn from your note.");
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Action failed.");
@@ -636,11 +579,6 @@ function ReviewPage() {
             </p>
           ) : null}
 
-          {provisional ? (
-            <p className="mt-3 text-[0.6875rem] text-muted-foreground">
-              Feedback tags are a provisional vocabulary, pending the final element list.
-            </p>
-          ) : null}
         </div>
       ) : null}
 
@@ -906,51 +844,18 @@ function ReviewPage() {
                         Only a marketing manager can approve or reject content.
                       </p>
                     ) : null}
+                    {/* The whole feedback interface: one box, your words.
+                        Tags are parsed from them server-side — nobody needs
+                        to know what "composition balance" means. */}
                     <Textarea
-                      aria-label={`Reviewer note for ${item.headline || "Untitled content"}`}
+                      aria-label={`Feedback for ${item.headline || "Untitled content"}`}
                       rows={2}
                       className="mt-4"
-                      placeholder="Optional note for the creator…"
+                      placeholder='Want something different? Just say it — "make the headline smaller and show the red saree"'
                       value={notes[item.id] ?? ""}
                       disabled={!canReview}
                       onChange={(e) => setNotes((prev) => ({ ...prev, [item.id]: e.target.value }))}
                     />
-
-                    <FeedbackTagPicker
-                      groups={groups}
-                      selected={tags[item.id] ?? []}
-                      onToggle={(key) => toggleTag(item.id, key)}
-                      disabled={busy === item.id || !canReview}
-                      suggestions={suggestions}
-                    />
-
-                    {(tags[item.id] ?? []).length > 0 ? (
-                      <>
-                        {(tags[item.id] ?? [])
-                          .filter((key) => ruleFor.has(key))
-                          .slice(0, 2)
-                          .map((key) => (
-                            <p
-                              key={key}
-                              className="mt-2 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-[0.6875rem] text-muted-foreground"
-                            >
-                              <span className="font-medium text-foreground">Already learned:</span>{" "}
-                              {ruleFor.get(key)} — tagging it again strengthens the rule, no note
-                              needed.
-                            </p>
-                          ))}
-                        <Textarea
-                          aria-label={`Correction for ${item.headline || "Untitled content"}`}
-                          rows={2}
-                          className="mt-2"
-                          placeholder="How should it be fixed next time? This becomes the rule."
-                          value={fixes[item.id] ?? ""}
-                          onChange={(e) =>
-                            setFixes((prev) => ({ ...prev, [item.id]: e.target.value }))
-                          }
-                        />
-                      </>
-                    ) : null}
 
                     <div className="mt-3 flex flex-wrap gap-2">
                       <Button
@@ -958,15 +863,22 @@ function ReviewPage() {
                         disabled={busy === item.id || !canReview}
                         onClick={() => act(item.id, "approve")}
                       >
-                        <CheckCircle2 className="size-4" /> Approve
+                        <CheckCircle2 className="size-4" /> Love it
                       </Button>
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={busy === item.id || !canReview}
+                        disabled={
+                          busy === item.id || !canReview || !(notes[item.id] ?? "").trim()
+                        }
+                        title={
+                          (notes[item.id] ?? "").trim()
+                            ? undefined
+                            : "Type what to change first — one sentence is enough."
+                        }
                         onClick={() => act(item.id, "request-edits")}
                       >
-                        <Edit3 className="size-4" /> Request edits
+                        <Edit3 className="size-4" /> Change it
                       </Button>
                       <Button
                         size="sm"
@@ -975,9 +887,13 @@ function ReviewPage() {
                         disabled={busy === item.id || !canReview}
                         onClick={() => act(item.id, "reject")}
                       >
-                        <XCircle className="size-4" /> Reject
+                        <XCircle className="size-4" /> Start over
                       </Button>
                     </div>
+                    <p className="mt-2 text-[0.6875rem] text-muted-foreground">
+                      Scaleezy reads your words, remakes the creative, and remembers for next
+                      time.
+                    </p>
                   </>
                 ) : null}
               </div>

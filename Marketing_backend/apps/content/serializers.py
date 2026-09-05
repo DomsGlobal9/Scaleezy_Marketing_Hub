@@ -80,23 +80,18 @@ class ReviewActionSerializer(serializers.Serializer):
         if not self.context.get('requires_learning_signal'):
             return attrs
 
-        if not attrs.get('elements'):
-            raise serializers.ValidationError(
-                {
-                    'elements': (
-                        'Select at least one issue so Scaleezy can learn from this correction.'
-                    )
-                }
-            )
-
+        # The reviewer's own words are a full learning signal: element keys
+        # are parsed from them in the worker (apps.feedback.nl), so nobody
+        # has to know the vocabulary to teach the engine. Tapped tags remain
+        # accepted for callers that still send them.
         note = str(attrs.get('note') or '').strip()
         fix_request = str(attrs.get('fix_request') or '').strip()
-        if not note and not fix_request:
+        if not attrs.get('elements') and not note and not fix_request:
             raise serializers.ValidationError(
                 {
                     'non_field_errors': (
-                        'Explain the problem or how it should be fixed so the '
-                        'learned rule is actionable.'
+                        'Say what is wrong in your own words — one sentence is '
+                        'enough for Scaleezy to fix it and learn from it.'
                     )
                 }
             )

@@ -69,9 +69,33 @@ def capture(
     record_feedback_event_safely(feedback)
 
     if learn:
-        try:
-            TrainingEngine(feedback).learn()
-        except Exception:
-            logger.exception("Training pass failed for feedback %s", feedback.pk)
+        # A corrective verdict that arrives with words but no tapped tags is
+        # the new normal: the element keys are parsed FROM the words in the
+        # worker, and the training pass runs there, once, with the keys in
+        # hand. Everything else learns immediately, exactly as before.
+        defer_to_parse = (
+            not feedback.element_keys
+            and (feedback.feedback_text or feedback.fix_request)
+            and verdict in (Feedback.Verdict.NEEDS_EDITS, Feedback.Verdict.REJECT)
+        )
+        if defer_to_parse:
+            try:
+                from .tasks import parse_feedback_elements_task
+
+                parse_feedback_elements_task.enqueue(str(feedback.pk))
+            except Exception:
+                logger.exception(
+                    "Could not queue feedback parse for %s; learning from text only",
+                    feedback.pk,
+                )
+                try:
+                    TrainingEngine(feedback).learn()
+                except Exception:
+                    logger.exception("Training pass failed for feedback %s", feedback.pk)
+        else:
+            try:
+                TrainingEngine(feedback).learn()
+            except Exception:
+                logger.exception("Training pass failed for feedback %s", feedback.pk)
 
     return feedback
