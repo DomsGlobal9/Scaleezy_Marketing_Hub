@@ -20,12 +20,23 @@ MAX_PARSED_ELEMENTS = 6
 
 PARSE_INSTRUCTION = (
     "You map one reviewer's feedback about a marketing creative onto a fixed "
-    "vocabulary of feedback elements. Respond with ONLY a JSON array of "
-    "element keys (strings) from the vocabulary below that the feedback "
-    "clearly refers to, most relevant first, at most {cap}. Respond with [] "
-    "if nothing clearly matches. Never invent keys, never explain.\n\n"
+    "vocabulary of feedback elements. Respond with ONLY a JSON object "
+    '{{"elements": [...]}} whose array holds element keys (strings) from the '
+    "vocabulary below that the feedback clearly refers to, most relevant "
+    'first, at most {cap}. Respond with {{"elements": []}} if nothing '
+    "clearly matches. Never invent keys, never explain.\n\n"
     "VOCABULARY (key: meaning):\n{vocab}"
 )
+
+# The EXTRACT adapter demands a JSON object and, given a schema, forces
+# application/json output — a bare array is rejected before coercion runs.
+PARSE_RESPONSE_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'elements': {'type': 'array', 'items': {'type': 'string'}},
+    },
+    'required': ['elements'],
+}
 
 
 def _coerce_keys(payload):
@@ -73,6 +84,7 @@ def parse_elements(feedback) -> list:
             ),
             'brand_context': [f"Reviewer feedback: {text}"],
             'structured': {'feedback': text},
+            'response_schema': PARSE_RESPONSE_SCHEMA,
         },
         internal=True,
     )
