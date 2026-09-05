@@ -1222,3 +1222,136 @@ def _persist(request, brief, result_data, routed, *, brand=None):
         return None
 
     return item
+
+
+@task
+def adapt_platform(item_id: str):
+    """Recompose an approved poster for a different platform's canvas.
+
+    "One design, every platform": generating per platform produced three
+    DIFFERENT designs (the variety engine's job), but a client who approved
+    a creative wants THAT creative as a story, a LinkedIn banner, an X card.
+    The approved poster's own pixels ride in as the reference — the same
+    machinery that matches a brand template, pointed at the brand's own
+    finished work — with `format_adaptation` switching every prompt layer
+    from "make something new" to "change nothing but the frame". The copy is
+    already won and is not re-bought; one image buy, gated by the same text
+    audit as any other poster.
+
+    Best-effort like its siblings: any failure leaves the adapted draft as
+    an editable copy of the approved creative.
+    """
+    from apps.billing.quota import QuotaExceeded, enforce
+    from apps.content.models import ContentItem
+    from apps.context.services.generation import (
+        create_generated_asset,
+        intelligence_in_force,
+        retry_image,
+    )
+
+    item = (
+        ContentItem.objects.select_related('workspace', 'brand', 'parent')
+        .filter(pk=item_id, status=ContentItem.Status.DRAFT)
+        .first()
+    )
+    if item is None or item.parent_id is None:
+        logger.info("Adaptation %s gone or already moved on; nothing to do", item_id)
+        return {'item': str(item_id), 'status': 'MISSING'}
+
+    def finish(status, **updates):
+        config = dict(item.layout_config or {})
+        config.pop('regenerating', None)
+        config.update(updates)
+        item.layout_config = config
+        item.save(update_fields=['layout_config', 'updated_at'])
+        return {'item': str(item_id), 'status': status}
+
+    try:
+        enforce(item.workspace)
+    except QuotaExceeded:
+        logger.info("Adaptation %s left unadapted: quota exhausted", item_id)
+        return finish('QUOTA')
+
+    config = dict(item.layout_config or {})
+    platform = str(config.get('adapted_platform') or '').strip().lower()
+    parent = item.parent
+    source_url = str(
+        getattr(getattr(parent, 'asset', None), 'file_url', '')
+        or parent.preview_url or ''
+    )
+    if not platform or not source_url:
+        return finish('FAILED')
+
+    # The approved creative's own pixels, through the same trusted door the
+    # brand logo uses.
+    from types import SimpleNamespace
+
+    from apps.inspirations.analysis import _stored_media_data
+
+    try:
+        source_data_url = _stored_media_data(SimpleNamespace(
+            file_url=source_url,
+            mime_type=str(
+                getattr(getattr(parent, 'asset', None), 'mime_type', '')
+                or 'image/jpeg'
+            ),
+        ))
+    except Exception:
+        logger.exception("Adaptation %s could not read the approved creative", item_id)
+        return finish('FAILED')
+
+    parent_config = parent.layout_config if isinstance(parent.layout_config, dict) else {}
+    brief = {
+        'headline': item.headline or '',
+        'campaign_name': (item.headline or '')[:255],
+        'platform': platform,
+        'image_quality': str(config.get('image_quality') or '4K'),
+        'format_adaptation': True,
+        'template_image_base64': source_data_url,
+        # The creative already carries its logo; attaching it again risks a
+        # second mark. The ambassador still rides for face fidelity.
+        'logo_image_base64': '',
+        'feature_ambassador': bool(parent_config.get('feature_ambassador', True)),
+        # A template-shaped direction so the image step treats the attached
+        # creative as the binding design.
+        'creative_direction': {
+            'mode': 'REFERENCE',
+            'selections': [{
+                'kind': 'BRAND_TEMPLATE', 'title': 'Approved creative',
+                'direction': 'USE', 'role': 'PRIMARY',
+            }],
+        },
+        'contentType': 'poster',
+    }
+    instruction = (
+        'Adapt the attached approved creative to the '
+        f'{platform.replace("_", " ")} format. Same design, same photograph, '
+        'same words - only the canvas changes.'
+    )
+
+    trace = {}
+    try:
+        image = retry_image(
+            item.workspace, item.brand, brief, instruction=instruction, trace=trace,
+        )
+    except Exception:
+        logger.exception("Adaptation failed for item %s; left as a copy", item_id)
+        return finish('FAILED')
+
+    asset = create_generated_asset(
+        item.workspace, {'metadata': {'generated_image': image or {}}},
+        user=item.created_by,
+    )
+    if asset is None:
+        return finish('FAILED')
+    item.asset = asset
+    item.preview_url = str(getattr(asset, 'file_url', '') or '')[:1000]
+    item.save(update_fields=['asset', 'preview_url', 'updated_at'])
+    brain_version = str(getattr(item.brand, 'brain_version', '') or '')
+    return finish('DONE', generation_trace={
+        'brain_version': brain_version,
+        'adapted_from': str(parent.pk),
+        'adapted_platform': platform,
+        **trace,
+        **intelligence_in_force(item.brand, brain_version),
+    })

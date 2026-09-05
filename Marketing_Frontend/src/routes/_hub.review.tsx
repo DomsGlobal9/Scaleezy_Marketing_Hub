@@ -503,6 +503,28 @@ function ReviewPage() {
     }
   };
 
+  // One design, every platform: the approved creative itself is recomposed
+  // for another canvas — same photograph, same words, new frame.
+  const adapt = async (item: ContentItem, platform: string, label: string) => {
+    setBusy(item.id);
+    try {
+      const result = await apiPost<{ adaptation_queued?: boolean }>(
+        `/api/marketing/content/${item.id}/adapt/`,
+        { platform },
+      );
+      await load();
+      toast.success(
+        result?.adaptation_queued
+          ? `Adapting this creative for ${label} — it will appear in the review queue.`
+          : `A ${label} copy was opened, but the adaptation could not be queued.`,
+      );
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Adaptation failed.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const updateDraft = (
     id: string,
     patch: Partial<Pick<ContentItem, "headline" | "caption" | "hashtags">>,
@@ -800,6 +822,36 @@ function ReviewPage() {
                       </p>
                     </>
                   )
+                ) : null}
+
+                {item.status === "APPROVED" &&
+                item.content_format === "POSTER" &&
+                item.preview_url ? (
+                  <div className="mt-2">
+                    <p className="text-[0.6875rem] text-muted-foreground">
+                      Same design, another platform:
+                    </p>
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      {(
+                        [
+                          ["instagram_story", "Story 9:16"],
+                          ["linkedin", "LinkedIn 16:9"],
+                          ["x", "X 16:9"],
+                        ] as const
+                      ).map(([platform, label]) => (
+                        <Button
+                          key={platform}
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-xs"
+                          disabled={busy === item.id}
+                          onClick={() => void adapt(item, platform, label)}
+                        >
+                          {label}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
                 ) : null}
 
                 {item.status === "DRAFT" && layouts.length > 0 ? (

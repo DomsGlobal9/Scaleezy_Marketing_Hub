@@ -306,6 +306,94 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             },
         )
 
+    @action(detail=True, methods=['post'], url_path='adapt')
+    def adapt(self, request, pk=None):
+        """One design, every platform: recompose an APPROVED poster for a
+        different platform's canvas.
+
+        Generating per platform produces deliberately different designs (the
+        variety engine's job); a client who approved a creative wants THAT
+        creative as a story or a LinkedIn banner. The adaptation opens a new
+        draft carrying the approved copy verbatim and queues one image buy
+        with the approved poster's own pixels as the binding reference — it
+        lands in the review queue like any other draft.
+        """
+        item = self.get_object()
+        if item.status != ContentItem.Status.APPROVED:
+            return APIResponse(
+                success=False,
+                message="Only an approved creative can be adapted to another platform.",
+                error={"code": "INVALID_CONTENT_TRANSITION", "message": item.get_status_display()},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if item.content_format != ContentItem.Format.POSTER or not (
+            item.asset_id or item.preview_url
+        ):
+            return APIResponse(
+                success=False,
+                message="Only a finished poster can be adapted.",
+                error={"code": "CONTENT_FORMAT", "message": item.content_format},
+                status=status.HTTP_409_CONFLICT,
+            )
+        from apps.gemini.services.generator import GeminiGeneratorService
+
+        platform = str(request.data.get('platform') or '').strip().lower()
+        if platform not in GeminiGeneratorService.PLATFORM_ASPECTS:
+            return APIResponse(
+                success=False,
+                message="Choose a platform to adapt this creative for.",
+                error={
+                    "code": "INVALID_PLATFORM",
+                    "message": ', '.join(sorted(GeminiGeneratorService.PLATFORM_ASPECTS)),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        parent_config = item.layout_config if isinstance(item.layout_config, dict) else {}
+        adapted = ContentItem.objects.create(
+            workspace=item.workspace,
+            brand=item.brand,
+            asset=item.asset,
+            content_format=item.content_format,
+            status=ContentItem.Status.DRAFT,
+            version=1,
+            parent=item,
+            headline=item.headline,
+            caption=item.caption,
+            cta=item.cta,
+            hashtags=item.hashtags,
+            preview_url=item.preview_url,
+            layout_plugin='',
+            layout_config={
+                'adapted_platform': platform,
+                'feature_ambassador': bool(
+                    parent_config.get('feature_ambassador', True)
+                ),
+            },
+            created_by=request.user,
+        )
+
+        queued = False
+        try:
+            from apps.brands.services.approval import enforce_spend_approved
+            from apps.gemini.tasks import adapt_platform
+
+            enforce_spend_approved(item.workspace)
+            adapted.layout_config = {**adapted.layout_config, 'regenerating': True}
+            adapted.save(update_fields=['layout_config', 'updated_at'])
+            adapt_platform.enqueue(str(adapted.pk))
+            queued = True
+        except Exception:
+            logger.info("Adaptation %s not queued; draft left as a copy", adapted.pk)
+
+        return APIResponse(
+            success=True,
+            data={
+                "adapted": ContentItemSerializer(adapted).data,
+                "adaptation_queued": queued,
+            },
+        )
+
     @action(detail=True, methods=['post'], url_path='regenerate-slide')
     def regenerate_slide(self, request, pk=None):
         """Retry one carousel image without regenerating copy or other slides."""
