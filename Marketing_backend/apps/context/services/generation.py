@@ -752,8 +752,12 @@ def _gate_image_text(workspace, brand, image, *, brief, headline, rebuy, trace=N
     no-text line, or no headline at all, means there is nothing to read.
 
     A failing verdict - the headline missing or altered, words the brief
-    never asked for - buys the picture ONCE more through `rebuy()` (the same
-    brief, so the same headline, composition, scene and reference pixels).
+    never asked for, a second call-to-action - buys the picture ONCE more
+    through `rebuy(complaint)`: the same brief (the same headline,
+    composition, scene and reference pixels) plus ONE corrective line naming
+    exactly what the first picture got wrong. Live, a re-buy on the bare
+    brief painted the same doubled CTA twice in a row - a second chance is
+    only worth buying when it knows what the first one failed at.
     Both pictures are persisted; the one that reads better ships, the second
     on a tie (`IMAGE_TEXT_RANK`): a re-draw that lost the headline never
     replaces a picture that merely added a word, and a poster is always
@@ -824,8 +828,13 @@ def _gate_image_text(workspace, brand, image, *, brief, headline, rebuy, trace=N
             capabilities[Capability.IMAGE] = before
         return image
 
+    complaint = (
+        'MUST: A previous attempt at this exact poster failed its text audit '
+        f'- {reason} Correct precisely that failure this time; keep every '
+        'other aspect of the design unchanged.'
+    )
     try:
-        second = rebuy()
+        second = rebuy(complaint)
         if second is None:
             raise OutputRejected('The image re-buy returned nothing.')
     except Exception as exc:
@@ -1136,18 +1145,21 @@ def generate_copy_and_image(workspace, brand, brief_extra, *, instruction='',
     if image is not None:
         # The words on the finished picture, read back against the headline
         # the copy settled on. A poster whose image model painted something
-        # else is bought once more with the very same brief (see
-        # `_gate_image_text`); the check and the re-buy can never cost the
-        # poster that already exists, and the gate restores the first
-        # picture's own capability record whenever the first one ships.
+        # else is bought once more with the same brief plus one corrective
+        # line naming the first failure (see `_gate_image_text`); the check
+        # and the re-buy can never cost the poster that already exists, and
+        # the gate restores the first picture's own capability record
+        # whenever the first one ships.
         headline = _headline_of(text)
 
-        def rebuy():
-            bought = run(
-                Capability.IMAGE,
-                _with_on_image_text(image_brief, headline),
-                image_context,
-            )
+        def rebuy(complaint=''):
+            painted = _with_on_image_text(image_brief, headline)
+            if complaint:
+                painted = {
+                    **painted,
+                    'brand_context': [*painted['brand_context'], complaint],
+                }
+            bought = run(Capability.IMAGE, painted, image_context)
             if bought is None:
                 failed = trace['capabilities'].get(Capability.IMAGE) or {}
                 raise OutputRejected(failed.get('error') or 'The image re-buy failed.')
@@ -1801,8 +1813,14 @@ def retry_image(workspace, brand, brief_extra, *, instruction='', trace=None):
     )
     router = AIRouter(workspace)
 
-    def buy():
-        result = router.dispatch(Capability.IMAGE, brief)
+    def buy(complaint=''):
+        painted = brief
+        if complaint:
+            painted = {
+                **brief,
+                'brand_context': [*(brief.get('brand_context') or []), complaint],
+            }
+        result = router.dispatch(Capability.IMAGE, painted)
         validate_output(Capability.IMAGE, result, context)
         return persist_generated_image(workspace, result)
 
@@ -1811,7 +1829,8 @@ def retry_image(workspace, brand, brief_extra, *, instruction='', trace=None):
     except NoProviderAvailable as exc:
         raise NoProviderConfigured(str(exc)) from exc
     # The same words-on-the-picture check the first buy gets, with the same
-    # one re-buy on the same brief; `trace['image_text']` says what it read.
+    # one re-buy on the same brief plus the corrective line naming what the
+    # first picture failed at; `trace['image_text']` says what it read.
     return _gate_image_text(
         workspace, brand, image, brief=brief, headline=headline,
         rebuy=buy, trace=trace,

@@ -454,6 +454,21 @@ class ImageTextGateTests(TenantFixtureMixin, TestCase):
         self.assertEqual(record['kept'], 'second')
         self.assertEqual(record['final_verdict'], 'ok')
 
+        # The re-buy knows what the first picture failed at: live, a bare
+        # re-buy painted the same doubled CTA twice in a row. The corrective
+        # line rides only on the second brief.
+        first_brief, second_brief = router.image_briefs()
+        complaints = [
+            line for line in second_brief.get('brand_context') or []
+            if 'failed its text audit' in str(line)
+        ]
+        self.assertEqual(len(complaints), 1)
+        self.assertIn(CTA_DUP['reason'], complaints[0])
+        self.assertFalse(any(
+            'failed its text audit' in str(line)
+            for line in first_brief.get('brand_context') or []
+        ))
+
         # A re-buy that still doubles the CTA ties and ships as the second
         # picture, recorded honestly.
         router, checker = Router([FIRST, SECOND]), Checker([CTA_DUP, CTA_DUP])
