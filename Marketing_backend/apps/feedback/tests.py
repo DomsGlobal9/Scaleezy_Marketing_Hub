@@ -245,8 +245,15 @@ class TrainingEngineTests(Base):
         self.assertEqual(rules_for_prompt(self.brand), [])
 
     def test_untagged_repeat_wording_is_evidence_but_not_an_actionable_rule(self):
+        # Untagged wordy corrections now defer learning to the worker's parse
+        # task; running it with the parse yielding nothing reproduces the
+        # original untagged scenario end to end.
+        from unittest.mock import patch
+
+        from apps.feedback.tasks import parse_feedback_elements_task
+
         note = 'the logo sits right over the product and hides it'
-        capture(
+        first = capture(
             content_item=self.item(), user=self.manager,
             verdict=Feedback.Verdict.REJECT, feedback_text=note,
         )
@@ -254,6 +261,10 @@ class TrainingEngineTests(Base):
             content_item=self.item(), user=self.manager,
             verdict=Feedback.Verdict.REJECT, feedback_text=note,
         )
+        with patch('apps.feedback.nl.parse_elements', return_value=[]):
+            parse_feedback_elements_task.func(str(first.pk))
+            parse_feedback_elements_task.func(str(second.pk))
+        second.refresh_from_db()
         self.assertEqual(second.pattern_extracted['occurrences'], 2)
         self.assertGreaterEqual(
             second.pattern_extracted['similar_feedback'][0]['similarity'], 0.55

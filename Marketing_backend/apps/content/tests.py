@@ -186,7 +186,10 @@ class ContentReviewTests(APITestCase):
         self.assertEqual(revision.layout_config.get('photo_focus'), focus_dict)
         self.assertEqual(revision.layout_config.get('source_asset'), str(self.asset.id))
 
-    def test_reject_requires_an_active_feedback_tag(self):
+    def test_reject_accepts_plain_words_as_the_learning_signal(self):
+        # The 56-chip vocabulary is no longer the price of a correction: a
+        # sentence in the reviewer's own words is enough — the element keys
+        # are parsed from it in the worker (apps.feedback.nl).
         self.as_(self.manager)
 
         response = self.client.post(
@@ -195,13 +198,27 @@ class ContentReviewTests(APITestCase):
             format='json',
         )
 
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.status, ContentItem.Status.REJECTED)
+        feedback = Feedback.objects.get()
+        self.assertEqual(feedback.feedback_text, 'Off-brand colours')
+        self.assertEqual(feedback.element_keys, [])
+
+    def test_a_correction_with_nothing_at_all_is_still_refused(self):
+        self.as_(self.manager)
+
+        response = self.client.post(
+            f'/api/marketing/content/{self.item.id}/reject/', {}, format='json',
+        )
+
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('elements', response.data)
+        self.assertIn('non_field_errors', response.data)
         self.item.refresh_from_db()
         self.assertEqual(self.item.status, ContentItem.Status.PENDING_REVIEW)
         self.assertFalse(Feedback.objects.exists())
 
-    def test_request_edits_requires_actionable_guidance(self):
+    def test_request_edits_accepts_tapped_tags_alone_for_legacy_callers(self):
         self.as_(self.manager)
 
         response = self.client.post(
@@ -210,12 +227,12 @@ class ContentReviewTests(APITestCase):
             format='json',
         )
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('non_field_errors', response.data)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.item.refresh_from_db()
-        self.assertEqual(self.item.status, ContentItem.Status.PENDING_REVIEW)
-        self.assertFalse(ContentItem.objects.filter(parent=self.item).exists())
-        self.assertFalse(Feedback.objects.exists())
+        self.assertEqual(self.item.status, ContentItem.Status.NEEDS_EDITS)
+        self.assertTrue(ContentItem.objects.filter(parent=self.item).exists())
+        feedback = Feedback.objects.get()
+        self.assertEqual(feedback.element_keys, [self.feedback_element.key])
 
     def test_reject_accepts_fix_request_as_actionable_guidance(self):
         self.as_(self.manager)
