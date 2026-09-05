@@ -46,6 +46,51 @@ class NoteOnlyIsALearningSignalTests(TestCase):
         self.assertIn('your own words', str(serializer.errors))
 
 
+class ParseSpeaksTheAdapterContractTests(TestCase):
+    """The EXTRACT adapter rejects anything but a JSON object — seen live as
+    'Gemini returned invalid structured extraction output' when the parse
+    asked for a bare array. The brief must demand {"elements": [...]}."""
+
+    def test_the_dispatch_brief_demands_an_object_and_the_reply_is_filtered(self):
+        from apps.brands.models import Brand
+        from apps.content.models import ContentItem
+        from apps.feedback.models import FeedbackElement
+
+        workspace = MarketingWorkspace.objects.create(
+            customer_id='nl1', workspace_name='NL'
+        )
+        brand = Brand.objects.create(
+            workspace=workspace, name='Acme', status=Brand.Status.ACTIVE
+        )
+        item = ContentItem.objects.create(
+            workspace=workspace, brand=brand, headline='Poster'
+        )
+        FeedbackElement.objects.get_or_create(
+            key='headline', defaults={'label': 'Headline', 'group': 'COPY'}
+        )
+        feedback = Feedback.objects.create(
+            workspace=workspace, content_item=item,
+            verdict=Feedback.Verdict.NEEDS_EDITS,
+            feedback_text='Headline is shouting, calm it down.',
+        )
+
+        from apps.feedback.nl import parse_elements
+
+        with patch('apps.ai.router.AIRouter') as router:
+            router.return_value.dispatch.return_value = {
+                'raw': {'elements': ['headline', 'not_a_real_key']}
+            }
+            keys = parse_elements(feedback)
+
+        self.assertEqual(keys, ['headline'])
+        brief = router.return_value.dispatch.call_args.args[1]
+        self.assertEqual(brief['task'], 'EXTRACT')
+        schema = brief['response_schema']
+        self.assertEqual(schema['type'], 'object')
+        self.assertEqual(schema['required'], ['elements'])
+        self.assertIn('"elements"', brief['instruction'])
+
+
 class CaptureDefersToParseTests(TestCase):
     def setUp(self):
         from apps.brands.models import Brand
