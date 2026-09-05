@@ -404,6 +404,103 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             },
         )
 
+    @action(detail=True, methods=['post'], url_path='pick-twin')
+    def pick_twin(self, request, pk=None):
+        """A/B compare-and-pick: THIS variant wins, its twin loses.
+
+        One decision, two honest transitions: the winner is approved (with
+        the reviewer's note, when they typed one) and the twin is rejected
+        with a note naming the pick — so the loss is a learning signal, not
+        an orphaned draft. Only an undecided pair can be picked; a pair
+        someone already reviewed by hand is left to the normal flow.
+        """
+        item = self.get_object()
+
+        membership = getattr(request, 'workspace_membership', None)
+        if membership is None or not membership.has_at_least(WorkspaceMember.Role.MANAGER):
+            return APIResponse(
+                success=False,
+                message="Only a marketing manager can pick an A/B winner.",
+                error={"code": "FORBIDDEN", "message": "Manager role required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        config = item.layout_config if isinstance(item.layout_config, dict) else {}
+        group = str(config.get('ab_group') or '')
+        undecided = {ContentItem.Status.DRAFT, ContentItem.Status.PENDING_REVIEW}
+        if not group:
+            return APIResponse(
+                success=False,
+                message="This creative is not part of an A/B pair.",
+                error={"code": "NOT_A_TWIN", "message": str(item.pk)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        sibling = (
+            ContentItem.objects.filter(
+                workspace=item.workspace, layout_config__ab_group=group,
+            )
+            .exclude(pk=item.pk)
+            .first()
+        )
+        if (
+            item.status not in undecided
+            or sibling is None
+            or sibling.status not in undecided
+        ):
+            return APIResponse(
+                success=False,
+                message="This pair is already decided — review the remaining draft normally.",
+                error={"code": "PAIR_DECIDED", "message": str(item.pk)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if not (item.asset_id or item.preview_url):
+            return APIResponse(
+                success=False,
+                message="The winning variant has no finished media yet.",
+                error={"code": "CONTENT_MEDIA_REQUIRED", "message": str(item.pk)},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        note = str(request.data.get('note') or '').strip()
+        now = timezone.now()
+        item.status = ContentItem.Status.APPROVED
+        item.review_note = note
+        item.reviewed_by = request.user
+        item.reviewed_at = now
+        item.save(update_fields=[
+            'status', 'review_note', 'reviewed_by', 'reviewed_at', 'updated_at',
+        ])
+        self._capture_feedback(
+            request, item, ContentItem.Status.APPROVED, {'note': note},
+        )
+
+        loser_note = (
+            f'A/B pick: the other variant ({config.get("ab_slot") or "?"}) was '
+            'chosen over this one.' + (f' Reviewer: {note}' if note else '')
+        )
+        sibling.status = ContentItem.Status.REJECTED
+        sibling.review_note = loser_note
+        sibling.reviewed_by = request.user
+        sibling.reviewed_at = now
+        sibling.save(update_fields=[
+            'status', 'review_note', 'reviewed_by', 'reviewed_at', 'updated_at',
+        ])
+        self._capture_feedback(
+            request, sibling, ContentItem.Status.REJECTED, {'note': loser_note},
+        )
+        logger.info(
+            "A/B pick: %s approved over %s by user %s",
+            item.pk, sibling.pk, request.user.pk,
+        )
+
+        return APIResponse(
+            success=True,
+            data={
+                "winner": ContentItemSerializer(item).data,
+                "loser": ContentItemSerializer(sibling).data,
+            },
+        )
+
     @action(detail=True, methods=['post'], url_path='regenerate-slide')
     def regenerate_slide(self, request, pk=None):
         """Retry one carousel image without regenerating copy or other slides."""

@@ -65,6 +65,16 @@ interface ContentItem {
   created_at: string;
 }
 
+/** A/B twins carry their pair's id and slot letter in layout_config. */
+function abMeta(item: ContentItem): { group: string; slot: string } {
+  const group = item.layout_config?.["ab_group"];
+  const slot = item.layout_config?.["ab_slot"];
+  return {
+    group: typeof group === "string" ? group : "",
+    slot: typeof slot === "string" ? slot : "",
+  };
+}
+
 function isContentItem(value: unknown): value is ContentItem {
   return (
     isRecord(value) &&
@@ -503,6 +513,43 @@ function ReviewPage() {
     }
   };
 
+  // A/B pairs still waiting for their pick: both twins undecided. One
+  // decision approves the winner and rejects the twin with a note, so the
+  // loss teaches the engine too.
+  const abPairs = useMemo(() => {
+    const groups = new Map<string, ContentItem[]>();
+    for (const item of all) {
+      const { group } = abMeta(item);
+      if (!group) continue;
+      if (item.status !== "DRAFT" && item.status !== "PENDING_REVIEW") continue;
+      groups.set(group, [...(groups.get(group) ?? []), item]);
+    }
+    return [...groups.values()]
+      .filter((pair) => pair.length === 2)
+      .map((pair) =>
+        [...pair].sort((x, y) => abMeta(x).slot.localeCompare(abMeta(y).slot)),
+      );
+  }, [all]);
+  const [pickNotes, setPickNotes] = useState<Record<string, string>>({});
+
+  const pickTwin = async (item: ContentItem) => {
+    const { group, slot } = abMeta(item);
+    setBusy(item.id);
+    try {
+      await apiPost(`/api/marketing/content/${item.id}/pick-twin/`, {
+        note: (pickNotes[group] ?? "").trim(),
+      });
+      await Promise.all([load(), loadReport()]);
+      toast.success(
+        `Variant ${slot} kept — the twin was rejected, and both taught the engine.`,
+      );
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "The pick failed.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   // One design, every platform: the approved creative itself is recomposed
   // for another canvas — same photograph, same words, new frame.
   const adapt = async (item: ContentItem, platform: string, label: string) => {
@@ -665,6 +712,66 @@ function ReviewPage() {
         <p role="status" className="mb-4 text-sm text-muted-foreground">
           Refreshing content…
         </p>
+      ) : null}
+      {hasLoaded && abPairs.length > 0 ? (
+        <section className="mb-6">
+          <p className="label-eyebrow text-primary">A/B — PICK THE WINNER</p>
+          {abPairs.map((pair) => {
+            const group = pair[0] ? abMeta(pair[0]).group : "";
+            return (
+              <div key={group} className="mt-3 rounded-2xl border border-border p-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {pair.map((variant) => (
+                    <div key={variant.id} className="rounded-xl border border-border p-3">
+                      <p className="text-xs font-semibold text-muted-foreground">
+                        Variant {abMeta(variant).slot || "?"}
+                      </p>
+                      {variant.preview_url ? (
+                        <img
+                          src={variant.preview_url}
+                          alt={`Variant ${abMeta(variant).slot}: ${variant.headline}`}
+                          className="mt-2 aspect-[4/5] w-full rounded-lg object-cover"
+                        />
+                      ) : (
+                        <div className="mt-2 flex aspect-[4/5] w-full items-center justify-center rounded-lg bg-muted text-xs text-muted-foreground">
+                          Still generating…
+                        </div>
+                      )}
+                      <p className="mt-2 line-clamp-2 text-sm font-medium">{variant.headline}</p>
+                      {canReview ? (
+                        <Button
+                          className="mt-3 w-full"
+                          disabled={busy !== null || !variant.preview_url}
+                          onClick={() => void pickTwin(variant)}
+                        >
+                          {busy === variant.id ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : null}
+                          Keep this one
+                        </Button>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+                {canReview ? (
+                  <Textarea
+                    rows={1}
+                    className="mt-3"
+                    placeholder="Why this one? (optional — one sentence teaches the engine)"
+                    value={pickNotes[group] ?? ""}
+                    onChange={(e) =>
+                      setPickNotes((current) => ({ ...current, [group]: e.target.value }))
+                    }
+                  />
+                ) : (
+                  <p className="mt-3 text-[0.6875rem] text-muted-foreground">
+                    Picking the winner needs a marketing manager.
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </section>
       ) : null}
       {loading && !hasLoaded ? (
         <div role="status" className="flex items-center gap-2 py-16 text-sm text-muted-foreground">
