@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import {
   fetchInspirations,
   isBrandAmbassador,
+  isBrandProduct,
   isBrandTemplate,
   type Inspiration,
   SIGNAL_CATEGORIES,
@@ -204,7 +205,8 @@ export function CreativeCommand({
             (row) =>
               row.retrieval_eligibility?.eligible !== false &&
               !isBrandTemplate(row) &&
-              !isBrandAmbassador(row),
+              !isBrandAmbassador(row) &&
+              !isBrandProduct(row),
           ),
         );
       })

@@ -172,6 +172,40 @@ class PosterImageTemplateTests(TestCase):
             )
         self.assertNotIn('FORMAT ADAPTATION', fake.models.calls[0]['contents'][-1])
 
+    def test_all_three_references_ride_together_numbered(self):
+        fake = SimpleNamespace(models=FakeModels())
+        with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
+            GeminiGeneratorService.generate_poster_image(
+                'A scene.', api_key='k',
+                template_image_base64=DATA_URL,
+                ambassador_image_base64=DATA_URL,
+                product_image_base64=DATA_URL,
+            )
+        contents = fake.models.calls[0]['contents']
+        self.assertEqual(len(contents), 4)
+        directive = contents[3]
+        self.assertIn('ATTACHED IMAGE 1 IS THIS BRAND', directive)
+        self.assertIn("ATTACHED IMAGE 2 IS THE BRAND'S MODEL/AMBASSADOR", directive)
+        self.assertIn("ATTACHED IMAGE 3 IS THE BRAND'S ACTUAL PRODUCT", directive)
+        self.assertIn('buy exactly what they see', directive)
+
+    def test_the_product_photo_works_alone_too(self):
+        fake = SimpleNamespace(models=FakeModels())
+        with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
+            GeminiGeneratorService.generate_poster_image(
+                'A scene.', api_key='k', product_image_base64=DATA_URL,
+            )
+        contents = fake.models.calls[0]['contents']
+        self.assertEqual(len(contents), 2)
+        self.assertIn("ATTACHED IMAGE 1 IS THE BRAND'S ACTUAL PRODUCT", contents[1])
+
+    def test_product_photos_are_uploadable(self):
+        from apps.inspirations.serializers import IMAGE_INSPIRATION_TYPES
+
+        self.assertIn(
+            BrandInspiration.InspirationType.BRAND_PRODUCT, IMAGE_INSPIRATION_TYPES,
+        )
+
     def test_a_garbage_template_payload_degrades_to_text_only(self):
         fake = SimpleNamespace(models=FakeModels())
         with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):
@@ -266,6 +300,32 @@ class TemplateImageResolutionTests(TenantFixtureMixin, TestCase):
             BrandInspiration.InspirationType.BRAND_AMBASSADOR,
             IMAGE_INSPIRATION_TYPES,
         )
+
+    def test_a_product_photo_resolves_only_within_its_own_brand(self):
+        from apps.context.services.generation import _product_image
+
+        product = BrandInspiration.objects.create(
+            workspace=self.workspace, brand=self.brand, title='Silk hamper',
+            inspiration_type=BrandInspiration.InspirationType.BRAND_PRODUCT,
+            file_url='https://storage.test/products/hamper.jpg',
+            mime_type='image/jpeg',
+        )
+        with patch(
+            'apps.inspirations.analysis._stored_media_data', return_value=DATA_URL,
+        ):
+            self.assertEqual(_product_image(self.brand, str(product.pk)), DATA_URL)
+            # Another brand's id, a non-product row, and garbage all resolve
+            # to nothing — the id comes straight from the request payload.
+            other_brand = Brand.objects.create(
+                workspace=self.workspace, name='Other', status=Brand.Status.ACTIVE,
+            )
+            self.assertEqual(_product_image(other_brand, str(product.pk)), '')
+            self.assertEqual(_product_image(self.brand, str(self.template.pk)), '')
+            self.assertEqual(_product_image(self.brand, 'not-a-uuid'), '')
+            self.assertEqual(_product_image(self.brand, ''), '')
+        product.lifecycle_status = BrandInspiration.LifecycleStatus.ARCHIVED
+        product.save(update_fields=['lifecycle_status'])
+        self.assertEqual(_product_image(self.brand, str(product.pk)), '')
 
     def test_no_ambassador_or_archived_only_means_no_photo(self):
         self.assertEqual(_ambassador_image(self.brand), '')

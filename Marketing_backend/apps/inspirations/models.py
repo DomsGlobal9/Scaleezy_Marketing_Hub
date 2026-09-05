@@ -116,6 +116,10 @@ class BrandInspiration(models.Model):
         # creative. Uploaded once, then generation attaches the photo so the
         # image model features THIS person rather than inventing a face.
         BRAND_AMBASSADOR = 'BRAND_AMBASSADOR', 'Brand ambassador'
+        # An actual product photograph. When a generation names one, its
+        # pixels are attached so the creative features THE purchasable
+        # product — an invented lookalike cannot be bought.
+        BRAND_PRODUCT = 'BRAND_PRODUCT', 'Product photo'
         OTHER = 'OTHER', 'Other'
 
     class UsageScope(models.TextChoices):

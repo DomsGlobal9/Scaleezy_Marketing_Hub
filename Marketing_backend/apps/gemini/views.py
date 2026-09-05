@@ -917,6 +917,11 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
                 ).upper() == 'INSPIRED'
                 else 'EXACT'
             ),
+            # The BRAND_PRODUCT photo this creative features, resolved (and
+            # tenancy-checked) at the worker like the template and ambassador.
+            'product_image_id': str(
+                data.get('productImageId', data.get('product_image_id', '')) or ''
+            ).strip()[:64],
         }
 
         # The whole point of written guardrails: refuse BEFORE a request row
