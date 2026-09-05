@@ -404,6 +404,125 @@ class ContentItemViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             },
         )
 
+    @action(detail=True, methods=['post'], url_path='pick-twin')
+    def pick_twin(self, request, pk=None):
+        """A/B compare-and-pick: THIS variant wins, its twin loses.
+
+        One decision, two honest transitions: the winner is approved (with
+        the reviewer's note, when they typed one) and the twin is rejected
+        with a note naming the pick — so the loss is a learning signal, not
+        an orphaned draft. Only an undecided pair can be picked; a pair
+        someone already reviewed by hand is left to the normal flow.
+        """
+        item = self.get_object()
+
+        membership = getattr(request, 'workspace_membership', None)
+        if membership is None or not membership.has_at_least(WorkspaceMember.Role.MANAGER):
+            return APIResponse(
+                success=False,
+                message="Only a marketing manager can pick an A/B winner.",
+                error={"code": "FORBIDDEN", "message": "Manager role required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        config = item.layout_config if isinstance(item.layout_config, dict) else {}
+        group = str(config.get('ab_group') or '')
+        undecided = {ContentItem.Status.DRAFT, ContentItem.Status.PENDING_REVIEW}
+        if not group:
+            return APIResponse(
+                success=False,
+                message="This creative is not part of an A/B pair.",
+                error={"code": "NOT_A_TWIN", "message": str(item.pk)},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        from django.db import transaction
+
+        note = str(request.data.get('note') or '').strip()
+        now = timezone.now()
+        # Both rows locked and re-read inside ONE transaction, guard
+        # re-checked under the lock: two managers picking opposite twins
+        # must serialize into one winner and one PAIR_DECIDED, never both
+        # succeeding into contradictory verdicts. Join-free by design —
+        # registered as content.pick_twin in probe_pg_locks.
+        with transaction.atomic():
+            members = list(
+                ContentItem.objects.select_for_update().filter(
+                    workspace=item.workspace, layout_config__ab_group=group,
+                )
+            )
+            locked = {row.pk: row for row in members}
+            item = locked.get(item.pk)
+            siblings = [row for row in members if row.pk != getattr(item, 'pk', None)]
+            # Exactly two members: the pairing is server-written, and a
+            # group that is anything else is not a pair this endpoint may
+            # decide.
+            if item is None or len(members) != 2:
+                return APIResponse(
+                    success=False,
+                    message="This creative is not part of an intact A/B pair.",
+                    error={"code": "NOT_A_TWIN", "message": str(pk)},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            sibling = siblings[0]
+            if item.status not in undecided or sibling.status not in undecided:
+                return APIResponse(
+                    success=False,
+                    message="This pair is already decided — review the remaining draft normally.",
+                    error={"code": "PAIR_DECIDED", "message": str(item.pk)},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            if not (item.asset_id or item.preview_url):
+                return APIResponse(
+                    success=False,
+                    message="The winning variant has no finished media yet.",
+                    error={"code": "CONTENT_MEDIA_REQUIRED", "message": str(item.pk)},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            item.status = ContentItem.Status.APPROVED
+            item.review_note = note
+            item.reviewed_by = request.user
+            item.reviewed_at = now
+            item.save(update_fields=[
+                'status', 'review_note', 'reviewed_by', 'reviewed_at', 'updated_at',
+            ])
+            loser_note = (
+                'A/B pick: the other variant '
+                f'({(item.layout_config or {}).get("ab_slot") or "?"}) was '
+                'chosen over this one.'
+            )
+            sibling.status = ContentItem.Status.REJECTED
+            sibling.review_note = loser_note
+            sibling.reviewed_by = request.user
+            sibling.reviewed_at = now
+            sibling.save(update_fields=[
+                'status', 'review_note', 'reviewed_by', 'reviewed_at', 'updated_at',
+            ])
+            # The winner's note is real reviewer language about the winner —
+            # a correct positive signal. The loser's rejection is captured
+            # VERDICT-ONLY: its machine note (and the reviewer's praise of
+            # the OTHER creative) must never reach the NL parser as if a
+            # reviewer had criticised this one.
+            self._capture_feedback(
+                request, item, ContentItem.Status.APPROVED, {'note': note},
+            )
+            self._capture_feedback(
+                request, sibling, ContentItem.Status.REJECTED, {'note': ''},
+            )
+        logger.info(
+            "A/B pick: %s approved over %s by user %s",
+            item.pk, sibling.pk, request.user.pk,
+        )
+
+        return APIResponse(
+            success=True,
+            data={
+                "winner": ContentItemSerializer(item).data,
+                "loser": ContentItemSerializer(sibling).data,
+            },
+        )
+
     @action(detail=True, methods=['post'], url_path='regenerate-slide')
     def regenerate_slide(self, request, pk=None):
         """Retry one carousel image without regenerating copy or other slides."""

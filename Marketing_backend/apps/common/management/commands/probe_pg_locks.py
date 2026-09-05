@@ -94,6 +94,13 @@ def _probes():
         # apps/gemini polling/claim paths lock the request row directly
         ('gemini.request_claim', lambda: GeminiGenerationRequest.objects.select_for_update(
         ).filter(pk=missing).first()),
+        # apps/content/views.py pick_twin — both halves of an A/B pair,
+        # join-free by design.
+        ('content.pick_twin', lambda: list(__import__(
+            'apps.content.models', fromlist=['ContentItem']
+        ).ContentItem.objects.select_for_update().filter(
+            layout_config__ab_group=str(missing)
+        ))),
     ]
 
 

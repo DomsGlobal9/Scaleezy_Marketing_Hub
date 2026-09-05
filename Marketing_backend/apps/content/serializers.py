@@ -10,9 +10,12 @@ class ContentItemSerializer(serializers.ModelSerializer):
         model = ContentItem
         fields = '__all__'
         # workspace is server-assigned; status only moves through the review
-        # actions, never by a direct PATCH.
+        # actions, never by a direct PATCH. layout_config is the engine's
+        # ledger (generation traces, A/B pairing, per-item choices) — a
+        # client-writable pairing authority would let any editor graft
+        # ab_group onto arbitrary items and have a pick auto-reject them.
         read_only_fields = [
-            'id', 'workspace', 'status', 'version', 'parent',
+            'id', 'workspace', 'status', 'version', 'parent', 'layout_config',
             'reviewed_by', 'reviewed_at', 'created_by', 'created_at', 'updated_at',
         ]
 
