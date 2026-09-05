@@ -106,6 +106,15 @@ def recording_router(calls):
 class ArchetypeCatalogueTests(SimpleTestCase):
     """Eight distinct compositions, each complete, the legacy one first."""
 
+    def test_the_face_belongs_in_the_main_photograph_and_polaroid_has_one_card(self):
+        # Live, 2026-09-05: a polaroid poster put the face in a small second
+        # card and a headless torso in the main one.
+        self.assertIn('main photograph', FACE_VISIBLE_LINE)
+        self.assertIn('never only in a smaller inset', FACE_VISIBLE_LINE)
+        row = composition_archetype('polaroid_card')
+        self.assertIn('ONE photograph', row['composition'])
+        self.assertIn('no second card or inset', row['composition'])
+
     def test_magazine_cover_asks_for_one_title_and_no_cover_lines(self):
         # Live, 2026-09-05: the masthead/strapline wording came back with a
         # second headline glued on and an invented strapline.
