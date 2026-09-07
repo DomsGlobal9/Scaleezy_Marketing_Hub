@@ -8,10 +8,14 @@
  * dashboard from an effect after hydration instead of from `beforeLoad`, which
  * would run on the server as "signed out" and never re-evaluate on the client.
  *
- * Every claim on this page is one the code actually supports. The five
- * channels below are the five with real publish paths in
- * apps/publishing/services.py — TikTok and Google Business exist in the
- * platform enum but have no adapter, so they are not advertised here.
+ * This page is the overview; each section links to the page that covers it
+ * properly. It carries the site-level Organization and SoftwareApplication
+ * schema, which is defined here once rather than repeated on every page.
+ *
+ * Every claim is one the code actually supports. The five channels are the five
+ * with real publish paths in apps/publishing/services.py — TikTok and Google
+ * Business exist in the platform enum but have no adapter, so they are not
+ * advertised anywhere on this site.
  */
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import {
@@ -30,35 +34,45 @@ import {
   Twitter,
   Youtube,
 } from "lucide-react";
-import { useEffect, type ReactNode } from "react";
+import { useEffect } from "react";
 
-import { ScaleezyLogo } from "@/components/marketing/brand-logo";
-import { SiteFooter } from "@/components/marketing/site-footer";
+import {
+  ClosingCta,
+  Container,
+  Eyebrow,
+  JsonLd,
+  MarketingShell,
+  Section,
+  SectionHead,
+} from "@/components/marketing/marketing-shell";
 import { Button } from "@/components/ui/button";
+import {
+  marketingHead,
+  organizationSchema,
+  softwareApplicationSchema,
+  webPageSchema,
+} from "@/lib/seo";
+
+const SEO = {
+  title: "Scaleezy — AI social media marketing that knows your brand",
+  description:
+    "Scaleezy learns your brand from your own documents, drafts posters, carousels and video with the AI models you choose, and publishes to Instagram, Facebook, LinkedIn, X and YouTube only after a person approves.",
+  path: "/",
+  keywords: [
+    "AI social media marketing platform",
+    "AI content generation for brands",
+    "brand voice AI",
+    "social media approval workflow",
+    "multi-channel social publishing",
+    "AI marketing automation",
+    "social media management software",
+  ],
+} as const;
 
 export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "Scaleezy — social marketing that knows your brand" },
-      {
-        name: "description",
-        content:
-          "Scaleezy learns your brand from your own material, drafts campaigns with the AI models you choose, and publishes only what a person has approved.",
-      },
-      { property: "og:title", content: "Scaleezy Marketing Hub" },
-      {
-        property: "og:description",
-        content:
-          "Brand intelligence, governed AI generation, human approval and multi-channel publishing in one loop.",
-      },
-    ],
-  }),
+  head: () => marketingHead(SEO),
   component: LandingPage,
 });
-
-/* ------------------------------------------------------------------ */
-/* Content                                                             */
-/* ------------------------------------------------------------------ */
 
 const LOOP = [
   {
@@ -145,80 +159,8 @@ const TRUST = [
 ] as const;
 
 /* ------------------------------------------------------------------ */
-/* Layout primitives                                                   */
-/* ------------------------------------------------------------------ */
-
-/** One page-width column. Matches the hub's 1400px editorial measure. */
-function Container({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return (
-    <div className={`mx-auto w-full max-w-[1200px] px-5 sm:px-8 lg:px-12 ${className}`}>
-      {children}
-    </div>
-  );
-}
-
-function Eyebrow({ children, dark = false }: { children: ReactNode; dark?: boolean }) {
-  return (
-    <p
-      className={`text-[0.6875rem] font-semibold tracking-[0.18em] uppercase ${
-        dark ? "text-primary" : "text-muted-foreground"
-      }`}
-    >
-      {children}
-    </p>
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /* Sections                                                            */
 /* ------------------------------------------------------------------ */
-
-function Header() {
-  return (
-    // Dark, like every other navigation shell in the product. Not a style
-    // preference: the wordmark asset is white and lime on transparency, so on
-    // a light bar the "scale" half disappears into the background entirely.
-    <header className="sticky top-0 z-40 border-b border-white/10 bg-brand-dark/95 text-white backdrop-blur-md">
-      <Container className="flex h-[72px] items-center gap-6">
-        <Link to="/" aria-label="Scaleezy home" className="shrink-0">
-          <ScaleezyLogo className="w-[8.5rem] sm:w-[9.75rem]" priority />
-        </Link>
-
-        <nav aria-label="Sections" className="ml-auto hidden items-center gap-8 lg:flex">
-          {[
-            { href: "#how-it-works", label: "How it works" },
-            { href: "#capabilities", label: "Capabilities" },
-            { href: "#trust", label: "Trust" },
-          ].map((item) => (
-            <a
-              key={item.href}
-              href={item.href}
-              className="text-sm font-medium text-white/65 transition-colors hover:text-white"
-            >
-              {item.label}
-            </a>
-          ))}
-        </nav>
-
-        <div className="ml-auto flex items-center gap-2 lg:ml-0">
-          <Button
-            asChild
-            variant="ghost"
-            size="sm"
-            className="text-white/70 hover:bg-white/10 hover:text-white"
-          >
-            <Link to="/login" search={{ redirect: undefined }}>
-              Sign in
-            </Link>
-          </Button>
-          <Button asChild size="sm">
-            <Link to="/signup">Get started</Link>
-          </Button>
-        </div>
-      </Container>
-    </header>
-  );
-}
 
 function Hero() {
   return (
@@ -246,9 +188,7 @@ function Hero() {
               </Link>
             </Button>
             <Button asChild variant="outline" size="lg" className="w-full sm:w-auto">
-              <Link to="/login" search={{ redirect: undefined }}>
-                Sign in
-              </Link>
+              <Link to="/how-it-works">See how it works</Link>
             </Button>
           </div>
 
@@ -316,161 +256,126 @@ function LoopDiagram() {
   );
 }
 
+/** A "read the full page" link, used to close each overview section. */
+function MoreLink({
+  to,
+  children,
+}: {
+  to: "/how-it-works" | "/capabilities" | "/trust";
+  children: string;
+}) {
+  return (
+    <Link
+      to={to}
+      className="mt-10 inline-flex items-center gap-2 text-sm font-semibold text-brand-link underline-offset-4 hover:underline"
+    >
+      {children} <ArrowRight className="size-4" />
+    </Link>
+  );
+}
+
 function HowItWorks() {
   return (
-    <section id="how-it-works" className="scroll-mt-24 bg-brand-dark py-20 text-white sm:py-28">
-      <Container>
-        <div className="max-w-[42rem]">
-          <Eyebrow dark>How it works</Eyebrow>
-          <h2 className="mt-5 text-3xl leading-[1.1] font-bold tracking-[-0.02em] text-balance sm:text-4xl lg:text-[3.25rem]">
-            One loop, end to end.
-          </h2>
-          <p className="mt-5 text-lg text-pretty text-white/65">
-            Most tools hand you a blank prompt box and a scheduler. Scaleezy connects what your
-            brand knows to what it ships, and feeds the result back in.
-          </p>
-        </div>
+    <Section id="how-it-works" tone="dark">
+      <SectionHead
+        dark
+        eyebrow="How it works"
+        title="One loop, end to end."
+        lede="Most tools hand you a blank prompt box and a scheduler. Scaleezy connects what your brand knows to what it ships, and feeds the result back in."
+      />
 
-        <ol className="mt-14 grid gap-px overflow-hidden rounded-2xl border border-white/12 bg-white/12 sm:grid-cols-2 lg:grid-cols-5">
-          {LOOP.map((item) => (
-            <li key={item.step} className="bg-brand-dark p-6 lg:p-7">
-              <span className="text-sm font-semibold text-primary tabular-nums">{item.step}</span>
-              <h3 className="mt-4 text-xl font-semibold">{item.title}</h3>
-              <p className="mt-3 text-sm leading-relaxed text-white/60">{item.body}</p>
-            </li>
-          ))}
-        </ol>
-      </Container>
-    </section>
+      <ol className="mt-14 grid gap-px overflow-hidden rounded-2xl border border-white/12 bg-white/12 sm:grid-cols-2 lg:grid-cols-5">
+        {LOOP.map((item) => (
+          <li key={item.step} className="bg-brand-dark p-6 lg:p-7">
+            <span className="text-sm font-semibold text-primary tabular-nums">{item.step}</span>
+            <h3 className="mt-4 text-xl font-semibold">{item.title}</h3>
+            <p className="mt-3 text-sm leading-relaxed text-white/60">{item.body}</p>
+          </li>
+        ))}
+      </ol>
+
+      <Link
+        to="/how-it-works"
+        className="mt-10 inline-flex items-center gap-2 text-sm font-semibold text-primary underline-offset-4 hover:underline"
+      >
+        Read the full walkthrough <ArrowRight className="size-4" />
+      </Link>
+    </Section>
   );
 }
 
 function Capabilities() {
   return (
-    <section id="capabilities" className="scroll-mt-24 py-20 sm:py-28">
-      <Container>
-        <div className="max-w-[42rem]">
-          <Eyebrow>Capabilities</Eyebrow>
-          <h2 className="mt-5 text-3xl leading-[1.1] font-bold tracking-[-0.02em] text-balance sm:text-4xl lg:text-[3.25rem]">
-            Built for work you have to stand behind.
-          </h2>
-        </div>
+    <Section id="capabilities">
+      <SectionHead eyebrow="Capabilities" title="Built for work you have to stand behind." />
 
-        <div className="mt-14 grid gap-x-10 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
-          {CAPABILITIES.map((item) => (
-            <div key={item.title}>
-              <span className="grid size-11 place-items-center rounded-xl border border-border bg-secondary">
-                <item.icon className="size-5" strokeWidth={1.75} />
-              </span>
-              <h3 className="mt-5 text-lg font-semibold text-balance">{item.title}</h3>
-              <p className="mt-2.5 leading-relaxed text-pretty text-muted-foreground">
-                {item.body}
-              </p>
-            </div>
-          ))}
-        </div>
-      </Container>
-    </section>
+      <div className="mt-14 grid gap-x-10 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
+        {CAPABILITIES.map((item) => (
+          <article key={item.title}>
+            <span className="grid size-11 place-items-center rounded-xl border border-border bg-secondary">
+              <item.icon className="size-5" strokeWidth={1.75} />
+            </span>
+            <h3 className="mt-5 text-lg font-semibold text-balance">{item.title}</h3>
+            <p className="mt-2.5 leading-relaxed text-pretty text-muted-foreground">{item.body}</p>
+          </article>
+        ))}
+      </div>
+
+      <MoreLink to="/capabilities">See every capability</MoreLink>
+    </Section>
   );
 }
 
 function Channels() {
   return (
-    <section className="border-y border-border bg-secondary/60 py-16 sm:py-20">
-      <Container>
-        <div className="flex flex-col items-center gap-10 text-center lg:flex-row lg:justify-between lg:gap-16 lg:text-left">
-          <div className="max-w-[26rem]">
-            <Eyebrow>Channels</Eyebrow>
-            <h2 className="mt-4 text-2xl font-bold tracking-[-0.02em] text-balance sm:text-3xl">
-              Five channels, one approved post.
-            </h2>
-            <p className="mt-3 text-pretty text-muted-foreground">
-              Connect an account once. Publishing fans out per channel, so one failure never takes
-              the rest down with it — and only the failed channel is retried.
-            </p>
-          </div>
-
-          {/* Wraps freely on small screens; held to a single row from lg, where
-              breaking one channel onto a line of its own just looks like an
-              afterthought. */}
-          <ul className="flex flex-wrap items-center justify-center gap-2.5 sm:gap-3 lg:flex-nowrap">
-            {CHANNELS.map((channel) => (
-              <li
-                key={channel.label}
-                className="flex items-center gap-2 rounded-xl border border-border bg-card px-3.5 py-2.5 shadow-card"
-              >
-                <channel.icon className="size-[1.125rem] shrink-0" strokeWidth={1.75} />
-                <span className="text-sm font-semibold whitespace-nowrap">{channel.label}</span>
-              </li>
-            ))}
-          </ul>
+    <Section tone="muted" className="py-16 sm:py-20">
+      <div className="flex flex-col items-center gap-10 text-center lg:flex-row lg:justify-between lg:gap-16 lg:text-left">
+        <div className="max-w-[26rem]">
+          <Eyebrow>Channels</Eyebrow>
+          <h2 className="mt-4 text-2xl font-bold tracking-[-0.02em] text-balance sm:text-3xl">
+            Five channels, one approved post.
+          </h2>
+          <p className="mt-3 text-pretty text-muted-foreground">
+            Connect an account once. Publishing fans out per channel, so one failure never takes the
+            rest down with it — and only the failed channel is retried.
+          </p>
         </div>
-      </Container>
-    </section>
+
+        {/* Wraps freely on small screens; held to a single row from lg, where
+            breaking one channel onto a line of its own just looks like an
+            afterthought. */}
+        <ul className="flex flex-wrap items-center justify-center gap-2.5 sm:gap-3 lg:flex-nowrap">
+          {CHANNELS.map((channel) => (
+            <li
+              key={channel.label}
+              className="flex items-center gap-2 rounded-xl border border-border bg-card px-3.5 py-2.5 shadow-card"
+            >
+              <channel.icon className="size-[1.125rem] shrink-0" strokeWidth={1.75} />
+              <span className="text-sm font-semibold whitespace-nowrap">{channel.label}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </Section>
   );
 }
 
 function Trust() {
   return (
-    <section id="trust" className="scroll-mt-24 py-20 sm:py-28">
-      <Container>
-        <div className="max-w-[42rem]">
-          <Eyebrow>Trust</Eyebrow>
-          <h2 className="mt-5 text-3xl leading-[1.1] font-bold tracking-[-0.02em] text-balance sm:text-4xl lg:text-[3.25rem]">
-            An honest system beats a confident one.
-          </h2>
-        </div>
+    <Section id="trust">
+      <SectionHead eyebrow="Trust" title="An honest system beats a confident one." />
 
-        <div className="mt-14 grid gap-px overflow-hidden rounded-2xl border border-border bg-border sm:grid-cols-3">
-          {TRUST.map((item) => (
-            <div key={item.title} className="bg-card p-7 lg:p-8">
-              <h3 className="text-lg font-semibold text-balance">{item.title}</h3>
-              <p className="mt-3 leading-relaxed text-pretty text-muted-foreground">{item.body}</p>
-            </div>
-          ))}
-        </div>
-      </Container>
-    </section>
-  );
-}
-
-function ClosingCta() {
-  return (
-    <section className="pb-20 sm:pb-28">
-      <Container>
-        <div className="relative overflow-hidden rounded-3xl bg-brand-dark px-6 py-16 text-center text-white sm:px-12 sm:py-20">
-          <div
-            aria-hidden
-            className="pointer-events-none absolute -bottom-32 left-1/2 h-80 w-[42rem] -translate-x-1/2 rounded-full bg-primary/25 blur-[100px]"
-          />
-          <div className="relative mx-auto max-w-[36rem]">
-            <h2 className="text-3xl leading-[1.1] font-bold tracking-[-0.02em] text-balance sm:text-[2.75rem]">
-              Teach it once. Ship every week.
-            </h2>
-            <p className="mt-5 text-lg text-pretty text-white/65">
-              Start with one brand and one channel. Add the rest when it has earned your trust.
-            </p>
-            <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
-              <Button asChild size="lg" className="w-full sm:w-auto">
-                <Link to="/signup">
-                  Create an account <ArrowRight className="size-4" />
-                </Link>
-              </Button>
-              <Button
-                asChild
-                variant="outline"
-                size="lg"
-                className="w-full border-white/25 bg-transparent text-white hover:border-white hover:bg-white hover:text-brand-dark sm:w-auto"
-              >
-                <Link to="/login" search={{ redirect: undefined }}>
-                  Sign in
-                </Link>
-              </Button>
-            </div>
+      <div className="mt-14 grid gap-px overflow-hidden rounded-2xl border border-border bg-border sm:grid-cols-3">
+        {TRUST.map((item) => (
+          <div key={item.title} className="bg-card p-7 lg:p-8">
+            <h3 className="text-lg font-semibold text-balance">{item.title}</h3>
+            <p className="mt-3 leading-relaxed text-pretty text-muted-foreground">{item.body}</p>
           </div>
-        </div>
-      </Container>
-    </section>
+        ))}
+      </div>
+
+      <MoreLink to="/trust">How your data is kept separate</MoreLink>
+    </Section>
   );
 }
 
@@ -493,17 +398,14 @@ function LandingPage() {
   }, [auth, navigate]);
 
   return (
-    <div className="min-h-screen bg-background">
-      <Header />
-      <main>
-        <Hero />
-        <HowItWorks />
-        <Capabilities />
-        <Channels />
-        <Trust />
-        <ClosingCta />
-      </main>
-      <SiteFooter />
-    </div>
+    <MarketingShell>
+      <JsonLd data={[organizationSchema(), softwareApplicationSchema(), webPageSchema(SEO)]} />
+      <Hero />
+      <HowItWorks />
+      <Capabilities />
+      <Channels />
+      <Trust />
+      <ClosingCta />
+    </MarketingShell>
   );
 }

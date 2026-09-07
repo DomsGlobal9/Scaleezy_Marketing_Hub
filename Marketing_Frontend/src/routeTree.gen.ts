@@ -11,11 +11,14 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as HubRouteImport } from './routes/_hub'
+import { Route as CapabilitiesRouteImport } from './routes/capabilities'
+import { Route as HowItWorksRouteImport } from './routes/how-it-works'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PlatformRouteImport } from './routes/platform'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as TermsRouteImport } from './routes/terms'
+import { Route as TrustRouteImport } from './routes/trust'
 import { Route as HubAccountsRouteImport } from './routes/_hub.accounts'
 import { Route as HubAdminRouteImport } from './routes/_hub.admin'
 import { Route as HubAnalyticsRouteImport } from './routes/_hub.analytics'
@@ -49,6 +52,16 @@ const HubRoute = HubRouteImport.update({
   id: '/_hub',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CapabilitiesRoute = CapabilitiesRouteImport.update({
+  id: '/capabilities',
+  path: '/capabilities',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HowItWorksRoute = HowItWorksRouteImport.update({
+  id: '/how-it-works',
+  path: '/how-it-works',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
@@ -72,6 +85,11 @@ const SignupRoute = SignupRouteImport.update({
 const TermsRoute = TermsRouteImport.update({
   id: '/terms',
   path: '/terms',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TrustRoute = TrustRouteImport.update({
+  id: '/trust',
+  path: '/trust',
   getParentRoute: () => rootRouteImport,
 } as any)
 const HubAccountsRoute = HubAccountsRouteImport.update({
@@ -193,11 +211,14 @@ const SocialYoutubeCallbackRoute = SocialYoutubeCallbackRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/capabilities': typeof CapabilitiesRoute
+  '/how-it-works': typeof HowItWorksRoute
   '/login': typeof LoginRoute
   '/platform': typeof PlatformRouteWithChildren
   '/privacy': typeof PrivacyRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
+  '/trust': typeof TrustRoute
   '/accounts': typeof HubAccountsRoute
   '/admin': typeof HubAdminRoute
   '/analytics': typeof HubAnalyticsRoute
@@ -224,10 +245,13 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/capabilities': typeof CapabilitiesRoute
+  '/how-it-works': typeof HowItWorksRoute
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
+  '/trust': typeof TrustRoute
   '/accounts': typeof HubAccountsRoute
   '/admin': typeof HubAdminRoute
   '/analytics': typeof HubAnalyticsRoute
@@ -256,11 +280,14 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_hub': typeof HubRouteWithChildren
+  '/capabilities': typeof CapabilitiesRoute
+  '/how-it-works': typeof HowItWorksRoute
   '/login': typeof LoginRoute
   '/platform': typeof PlatformRouteWithChildren
   '/privacy': typeof PrivacyRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
+  '/trust': typeof TrustRoute
   '/_hub/accounts': typeof HubAccountsRoute
   '/_hub/admin': typeof HubAdminRoute
   '/_hub/analytics': typeof HubAnalyticsRoute
@@ -289,11 +316,14 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/capabilities'
+    | '/how-it-works'
     | '/login'
     | '/platform'
     | '/privacy'
     | '/signup'
     | '/terms'
+    | '/trust'
     | '/accounts'
     | '/admin'
     | '/analytics'
@@ -320,10 +350,13 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/capabilities'
+    | '/how-it-works'
     | '/login'
     | '/privacy'
     | '/signup'
     | '/terms'
+    | '/trust'
     | '/accounts'
     | '/admin'
     | '/analytics'
@@ -351,11 +384,14 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/_hub'
+    | '/capabilities'
+    | '/how-it-works'
     | '/login'
     | '/platform'
     | '/privacy'
     | '/signup'
     | '/terms'
+    | '/trust'
     | '/_hub/accounts'
     | '/_hub/admin'
     | '/_hub/analytics'
@@ -384,11 +420,14 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   HubRoute: typeof HubRouteWithChildren
+  CapabilitiesRoute: typeof CapabilitiesRoute
+  HowItWorksRoute: typeof HowItWorksRoute
   LoginRoute: typeof LoginRoute
   PlatformRoute: typeof PlatformRouteWithChildren
   PrivacyRoute: typeof PrivacyRoute
   SignupRoute: typeof SignupRoute
   TermsRoute: typeof TermsRoute
+  TrustRoute: typeof TrustRoute
   OauthCallbackRoute: typeof OauthCallbackRoute
   SocialLinkedinCallbackRoute: typeof SocialLinkedinCallbackRoute
   SocialMetaCallbackRoute: typeof SocialMetaCallbackRoute
@@ -409,6 +448,20 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof HubRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/capabilities': {
+      id: '/capabilities'
+      path: '/capabilities'
+      fullPath: '/capabilities'
+      preLoaderRoute: typeof CapabilitiesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/how-it-works': {
+      id: '/how-it-works'
+      path: '/how-it-works'
+      fullPath: '/how-it-works'
+      preLoaderRoute: typeof HowItWorksRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -444,6 +497,13 @@ declare module '@tanstack/react-router' {
       path: '/terms'
       fullPath: '/terms'
       preLoaderRoute: typeof TermsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/trust': {
+      id: '/trust'
+      path: '/trust'
+      fullPath: '/trust'
+      preLoaderRoute: typeof TrustRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_hub/accounts': {
@@ -679,11 +739,14 @@ const PlatformRouteWithChildren = PlatformRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   HubRoute: HubRouteWithChildren,
+  CapabilitiesRoute: CapabilitiesRoute,
+  HowItWorksRoute: HowItWorksRoute,
   LoginRoute: LoginRoute,
   PlatformRoute: PlatformRouteWithChildren,
   PrivacyRoute: PrivacyRoute,
   SignupRoute: SignupRoute,
   TermsRoute: TermsRoute,
+  TrustRoute: TrustRoute,
   OauthCallbackRoute: OauthCallbackRoute,
   SocialLinkedinCallbackRoute: SocialLinkedinCallbackRoute,
   SocialMetaCallbackRoute: SocialMetaCallbackRoute,
