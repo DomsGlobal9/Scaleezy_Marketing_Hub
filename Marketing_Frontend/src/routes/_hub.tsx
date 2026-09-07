@@ -71,7 +71,7 @@ export const Route = createFileRoute("/_hub")({
 });
 
 const NAV = [
-  { to: "/", label: "Overview", icon: LayoutDashboard, adminOnly: false },
+  { to: "/overview", label: "Overview", icon: LayoutDashboard, adminOnly: false },
   { to: "/brand-master", label: "Brand Master", icon: Brain, adminOnly: false },
   { to: "/accounts", label: "Social Media Accounts", icon: Share2, adminOnly: false },
   { to: "/publishing", label: "Publishing", icon: Send, adminOnly: false },
@@ -278,7 +278,7 @@ function NavList({
         <Link
           key={item.to}
           to={item.to}
-          activeOptions={{ exact: item.to === "/" }}
+          activeOptions={{ exact: false }}
           onClick={onNavigate}
           className={cn(
             "group relative flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-white/65 transition-colors hover:bg-white/8 hover:text-white data-[status=active]:bg-white/6 data-[status=active]:text-primary",

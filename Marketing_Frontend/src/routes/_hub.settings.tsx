@@ -173,7 +173,7 @@ function SettingsPage() {
         eyebrow="Marketing Hub"
         title="Settings"
         subtitle="Workspace, plan usage and security. Brand identity and intelligence live in Brand Master."
-        backTo="/"
+        backTo="/overview"
       />
 
       <div className="grid gap-6 xl:grid-cols-2">

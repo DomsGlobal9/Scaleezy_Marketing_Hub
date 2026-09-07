@@ -331,7 +331,7 @@ function AccountsPage() {
         eyebrow="Marketing Hub"
         title="Social Media Accounts"
         subtitle="Connect your social accounts securely and publish approved marketing content from Scaleezy."
-        backTo="/"
+        backTo="/overview"
         actions={
           <Button onClick={showPlatformChooser}>
             <Plus className="size-4" /> Connect Account

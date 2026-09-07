@@ -45,7 +45,7 @@ export const Route = createFileRoute("/platform")({
       if (preload) return;
       // Not a platform admin: back to the hub, silently. The server would 403
       // every console request anyway; this just saves the empty page.
-      throw redirect({ to: "/", replace: true });
+      throw redirect({ to: "/overview", replace: true });
     }
   },
   head: () => ({
@@ -169,7 +169,7 @@ function TopBar({ onOpenMenu }: { onOpenMenu?: () => void }) {
         </div>
         <ModeBadge />
         <Link
-          to="/"
+          to="/overview"
           className="hidden items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-xs font-semibold text-white/70 transition-colors hover:border-primary/60 hover:text-primary sm:inline-flex"
         >
           <ArrowLeft className="size-3.5" /> Back to hub
@@ -264,7 +264,7 @@ function ConsoleLayout() {
               className="w-full justify-start text-white/60 hover:bg-white/8 hover:text-white"
               asChild
             >
-              <Link to="/" onClick={() => setOpen(false)}>
+              <Link to="/overview" onClick={() => setOpen(false)}>
                 <ArrowLeft className="size-4" /> Back to hub
               </Link>
             </Button>

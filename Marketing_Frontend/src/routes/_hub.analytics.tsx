@@ -447,7 +447,7 @@ function AnalyticsPage() {
         eyebrow="Performance"
         title="Performance & revenue"
         subtitle="Every number has a source. Follow content from generation through engagement, lead and revenue."
-        backTo="/"
+        backTo="/overview"
       />
       {error ? (
         <div

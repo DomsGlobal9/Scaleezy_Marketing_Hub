@@ -9,13 +9,13 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as IndexRouteImport } from './routes/index'
 import { Route as HubRouteImport } from './routes/_hub'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PlatformRouteImport } from './routes/platform'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as TermsRouteImport } from './routes/terms'
-import { Route as HubIndexRouteImport } from './routes/_hub.index'
 import { Route as HubAccountsRouteImport } from './routes/_hub.accounts'
 import { Route as HubAdminRouteImport } from './routes/_hub.admin'
 import { Route as HubAnalyticsRouteImport } from './routes/_hub.analytics'
@@ -23,6 +23,7 @@ import { Route as HubAutopilotRouteImport } from './routes/_hub.autopilot'
 import { Route as HubBrandMasterRouteImport } from './routes/_hub.brand-master'
 import { Route as HubGrowthRouteImport } from './routes/_hub.growth'
 import { Route as HubOnboardingRouteImport } from './routes/_hub.onboarding'
+import { Route as HubOverviewRouteImport } from './routes/_hub.overview'
 import { Route as HubPublishingRouteImport } from './routes/_hub.publishing'
 import { Route as HubReviewRouteImport } from './routes/_hub.review'
 import { Route as HubSettingsRouteImport } from './routes/_hub.settings'
@@ -39,6 +40,11 @@ import { Route as SocialLinkedinCallbackRouteImport } from './routes/social.link
 import { Route as SocialMetaCallbackRouteImport } from './routes/social.meta.callback'
 import { Route as SocialYoutubeCallbackRouteImport } from './routes/social.youtube.callback'
 
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const HubRoute = HubRouteImport.update({
   id: '/_hub',
   getParentRoute: () => rootRouteImport,
@@ -67,11 +73,6 @@ const TermsRoute = TermsRouteImport.update({
   id: '/terms',
   path: '/terms',
   getParentRoute: () => rootRouteImport,
-} as any)
-const HubIndexRoute = HubIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => HubRoute,
 } as any)
 const HubAccountsRoute = HubAccountsRouteImport.update({
   id: '/accounts',
@@ -106,6 +107,11 @@ const HubGrowthRoute = HubGrowthRouteImport.update({
 const HubOnboardingRoute = HubOnboardingRouteImport.update({
   id: '/onboarding',
   path: '/onboarding',
+  getParentRoute: () => HubRoute,
+} as any)
+const HubOverviewRoute = HubOverviewRouteImport.update({
+  id: '/overview',
+  path: '/overview',
   getParentRoute: () => HubRoute,
 } as any)
 const HubPublishingRoute = HubPublishingRouteImport.update({
@@ -186,7 +192,7 @@ const SocialYoutubeCallbackRoute = SocialYoutubeCallbackRouteImport.update({
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof HubIndexRoute
+  '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/platform': typeof PlatformRouteWithChildren
   '/privacy': typeof PrivacyRoute
@@ -199,6 +205,7 @@ export interface FileRoutesByFullPath {
   '/brand-master': typeof HubBrandMasterRoute
   '/growth': typeof HubGrowthRoute
   '/onboarding': typeof HubOnboardingRoute
+  '/overview': typeof HubOverviewRoute
   '/publishing': typeof HubPublishingRoute
   '/review': typeof HubReviewRoute
   '/settings': typeof HubSettingsRoute
@@ -216,6 +223,7 @@ export interface FileRoutesByFullPath {
   '/social/youtube/callback': typeof SocialYoutubeCallbackRoute
 }
 export interface FileRoutesByTo {
+  '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
   '/signup': typeof SignupRoute
@@ -227,6 +235,7 @@ export interface FileRoutesByTo {
   '/brand-master': typeof HubBrandMasterRoute
   '/growth': typeof HubGrowthRoute
   '/onboarding': typeof HubOnboardingRoute
+  '/overview': typeof HubOverviewRoute
   '/publishing': typeof HubPublishingRoute
   '/review': typeof HubReviewRoute
   '/settings': typeof HubSettingsRoute
@@ -237,7 +246,6 @@ export interface FileRoutesByTo {
   '/platform/patterns': typeof PlatformPatternsRoute
   '/platform/signups': typeof PlatformSignupsRoute
   '/platform/standards': typeof PlatformStandardsRoute
-  '/': typeof HubIndexRoute
   '/platform': typeof PlatformIndexRoute
   '/platform/clients/$workspaceId': typeof PlatformClientsWorkspaceIdRoute
   '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
@@ -246,6 +254,7 @@ export interface FileRoutesByTo {
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
+  '/': typeof IndexRoute
   '/_hub': typeof HubRouteWithChildren
   '/login': typeof LoginRoute
   '/platform': typeof PlatformRouteWithChildren
@@ -259,6 +268,7 @@ export interface FileRoutesById {
   '/_hub/brand-master': typeof HubBrandMasterRoute
   '/_hub/growth': typeof HubGrowthRoute
   '/_hub/onboarding': typeof HubOnboardingRoute
+  '/_hub/overview': typeof HubOverviewRoute
   '/_hub/publishing': typeof HubPublishingRoute
   '/_hub/review': typeof HubReviewRoute
   '/_hub/settings': typeof HubSettingsRoute
@@ -269,7 +279,6 @@ export interface FileRoutesById {
   '/platform/patterns': typeof PlatformPatternsRoute
   '/platform/signups': typeof PlatformSignupsRoute
   '/platform/standards': typeof PlatformStandardsRoute
-  '/_hub/': typeof HubIndexRoute
   '/platform/': typeof PlatformIndexRoute
   '/platform/clients/$workspaceId': typeof PlatformClientsWorkspaceIdRoute
   '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
@@ -292,6 +301,7 @@ export interface FileRouteTypes {
     | '/brand-master'
     | '/growth'
     | '/onboarding'
+    | '/overview'
     | '/publishing'
     | '/review'
     | '/settings'
@@ -309,6 +319,7 @@ export interface FileRouteTypes {
     | '/social/youtube/callback'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/'
     | '/login'
     | '/privacy'
     | '/signup'
@@ -320,6 +331,7 @@ export interface FileRouteTypes {
     | '/brand-master'
     | '/growth'
     | '/onboarding'
+    | '/overview'
     | '/publishing'
     | '/review'
     | '/settings'
@@ -330,7 +342,6 @@ export interface FileRouteTypes {
     | '/platform/patterns'
     | '/platform/signups'
     | '/platform/standards'
-    | '/'
     | '/platform'
     | '/platform/clients/$workspaceId'
     | '/social/linkedin/callback'
@@ -338,6 +349,7 @@ export interface FileRouteTypes {
     | '/social/youtube/callback'
   id:
     | '__root__'
+    | '/'
     | '/_hub'
     | '/login'
     | '/platform'
@@ -351,6 +363,7 @@ export interface FileRouteTypes {
     | '/_hub/brand-master'
     | '/_hub/growth'
     | '/_hub/onboarding'
+    | '/_hub/overview'
     | '/_hub/publishing'
     | '/_hub/review'
     | '/_hub/settings'
@@ -361,7 +374,6 @@ export interface FileRouteTypes {
     | '/platform/patterns'
     | '/platform/signups'
     | '/platform/standards'
-    | '/_hub/'
     | '/platform/'
     | '/platform/clients/$workspaceId'
     | '/social/linkedin/callback'
@@ -370,6 +382,7 @@ export interface FileRouteTypes {
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
+  IndexRoute: typeof IndexRoute
   HubRoute: typeof HubRouteWithChildren
   LoginRoute: typeof LoginRoute
   PlatformRoute: typeof PlatformRouteWithChildren
@@ -384,6 +397,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_hub': {
       id: '/_hub'
       path: ''
@@ -425,13 +445,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/terms'
       preLoaderRoute: typeof TermsRouteImport
       parentRoute: typeof rootRouteImport
-    }
-    '/_hub/': {
-      id: '/_hub/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof HubIndexRouteImport
-      parentRoute: typeof HubRoute
     }
     '/_hub/accounts': {
       id: '/_hub/accounts'
@@ -480,6 +493,13 @@ declare module '@tanstack/react-router' {
       path: '/onboarding'
       fullPath: '/onboarding'
       preLoaderRoute: typeof HubOnboardingRouteImport
+      parentRoute: typeof HubRoute
+    }
+    '/_hub/overview': {
+      id: '/_hub/overview'
+      path: '/overview'
+      fullPath: '/overview'
+      preLoaderRoute: typeof HubOverviewRouteImport
       parentRoute: typeof HubRoute
     }
     '/_hub/publishing': {
@@ -598,10 +618,10 @@ interface HubRouteChildren {
   HubBrandMasterRoute: typeof HubBrandMasterRoute
   HubGrowthRoute: typeof HubGrowthRoute
   HubOnboardingRoute: typeof HubOnboardingRoute
+  HubOverviewRoute: typeof HubOverviewRoute
   HubPublishingRoute: typeof HubPublishingRoute
   HubReviewRoute: typeof HubReviewRoute
   HubSettingsRoute: typeof HubSettingsRoute
-  HubIndexRoute: typeof HubIndexRoute
 }
 
 const HubRouteChildren: HubRouteChildren = {
@@ -612,10 +632,10 @@ const HubRouteChildren: HubRouteChildren = {
   HubBrandMasterRoute: HubBrandMasterRoute,
   HubGrowthRoute: HubGrowthRoute,
   HubOnboardingRoute: HubOnboardingRoute,
+  HubOverviewRoute: HubOverviewRoute,
   HubPublishingRoute: HubPublishingRoute,
   HubReviewRoute: HubReviewRoute,
   HubSettingsRoute: HubSettingsRoute,
-  HubIndexRoute: HubIndexRoute,
 }
 
 const HubRouteWithChildren = HubRoute._addFileChildren(HubRouteChildren)
@@ -657,6 +677,7 @@ const PlatformRouteWithChildren = PlatformRoute._addFileChildren(
 )
 
 const rootRouteChildren: RootRouteChildren = {
+  IndexRoute: IndexRoute,
   HubRoute: HubRouteWithChildren,
   LoginRoute: LoginRoute,
   PlatformRoute: PlatformRouteWithChildren,

@@ -22,7 +22,7 @@ export const Route = createFileRoute("/signup")({
   ssr: false,
   beforeLoad: ({ context }) => {
     if (context.auth.isAuthenticated()) {
-      throw redirect({ to: "/", replace: true });
+      throw redirect({ to: "/overview", replace: true });
     }
   },
   head: () => ({

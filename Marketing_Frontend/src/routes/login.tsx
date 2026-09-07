@@ -19,7 +19,7 @@ export const Route = createFileRoute("/login")({
   }),
   beforeLoad: ({ context, search }) => {
     if (context.auth.isAuthenticated()) {
-      throw redirect({ to: search.redirect ?? "/", replace: true });
+      throw redirect({ to: search.redirect ?? "/overview", replace: true });
     }
   },
   head: () => ({
@@ -59,7 +59,7 @@ function LoginPage() {
       auth.signIn(session);
       // Re-runs beforeLoad everywhere so the guard sees the new session.
       await router.invalidate();
-      await navigate({ to: search.redirect ?? "/", replace: true });
+      await navigate({ to: search.redirect ?? "/overview", replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not sign in. Please try again.");
       setSubmitting(false);

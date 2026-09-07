@@ -588,8 +588,7 @@ function PublishingPage() {
     if (!brandId) return;
     try {
       const saved = JSON.parse(localStorage.getItem(studioDefaultsKey(brandId)) || "{}");
-      if (POSTER_PLATFORMS.some((p) => p.id === saved.platform))
-        setPosterPlatform(saved.platform);
+      if (POSTER_PLATFORMS.some((p) => p.id === saved.platform)) setPosterPlatform(saved.platform);
       if (QUALITY_TIERS.some((q) => q.id === saved.quality)) setImageQuality(saved.quality);
       if (saved.fidelity === "INSPIRED" || saved.fidelity === "EXACT")
         setTemplateFidelity(saved.fidelity);
@@ -804,7 +803,15 @@ function PublishingPage() {
   // field the user had just cleared.
   const briefTargets = useRef<Record<BriefAutoKey, string>>(EMPTY_BRIEF_TARGETS);
   useEffect(() => {
-    briefTargets.current = { offer, occasion, campaignName, product, audience, location, brandTone };
+    briefTargets.current = {
+      offer,
+      occasion,
+      campaignName,
+      product,
+      audience,
+      location,
+      brandTone,
+    };
   });
   const briefAutoRef = useRef<BriefAutoFields>({});
   // A brief-filled field the user then emptied (cleared, or its chip tapped
@@ -2010,7 +2017,7 @@ function PublishingPage() {
         eyebrow="Marketing Hub"
         title="Create Studio"
         subtitle="Describe the outcome, choose the creative direction, and let Scaleezy build it with your Brand Brain."
-        backTo="/"
+        backTo="/overview"
       />
 
       <div className="grid gap-6">
@@ -2159,8 +2166,8 @@ function PublishingPage() {
                 <div className="mb-8">
                   <Label className="text-xs tracking-wide uppercase">Where will it run?</Label>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Sets the shape and the caption's manners. Every other size still exports
-                    from the result.
+                    Sets the shape and the caption's manners. Every other size still exports from
+                    the result.
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {POSTER_PLATFORMS.map((p) => (
@@ -2269,9 +2276,7 @@ function PublishingPage() {
                 </div>
                 {creativeMode === "BRAND_TEMPLATE" ? (
                   <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-medium text-muted-foreground">
-                      How closely?
-                    </span>
+                    <span className="text-xs font-medium text-muted-foreground">How closely?</span>
                     {(
                       [
                         ["EXACT", "Match it exactly"],
@@ -2334,8 +2339,8 @@ function PublishingPage() {
                     ))}
                   </div>
                   <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
-                    Better quality uses more of your plan: Ultra counts as 2 generation units
-                    and takes a little longer. Standard and High count as 1.
+                    Better quality uses more of your plan: Ultra counts as 2 generation units and
+                    takes a little longer. Standard and High count as 1.
                   </p>
                   <Label className="mt-4 block text-xs tracking-wide uppercase">
                     Caption language
@@ -2359,8 +2364,8 @@ function PublishingPage() {
                     ))}
                   </div>
                   <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
-                    The caption and a few hashtags speak this language. The headline on the
-                    poster stays in English.
+                    The caption and a few hashtags speak this language. The headline on the poster
+                    stays in English.
                   </p>
                   <div className="mt-4 flex items-start gap-2">
                     <button
@@ -2378,8 +2383,8 @@ function PublishingPage() {
                       A/B: two variants
                     </button>
                     <p className="pt-1.5 text-[0.6875rem] text-muted-foreground">
-                      Two deliberately different designs of this brief, so you pick the
-                      winner. Uses double the generation units.
+                      Two deliberately different designs of this brief, so you pick the winner. Uses
+                      double the generation units.
                     </p>
                   </div>
                 </div>
@@ -2414,9 +2419,7 @@ function PublishingPage() {
                         type="button"
                         title={row.title}
                         aria-pressed={productImageId === row.id}
-                        onClick={() =>
-                          setProductImageId(productImageId === row.id ? "" : row.id)
-                        }
+                        onClick={() => setProductImageId(productImageId === row.id ? "" : row.id)}
                         className="shrink-0"
                       >
                         <img
@@ -2463,9 +2466,7 @@ function PublishingPage() {
                           })
                           .catch((err: unknown) =>
                             toast.error(
-                              err instanceof Error
-                                ? err.message
-                                : "The photo could not be saved.",
+                              err instanceof Error ? err.message : "The photo could not be saved.",
                             ),
                           )
                           .finally(() => setProductUploading(false));
@@ -2482,9 +2483,7 @@ function PublishingPage() {
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-2">
                       <UserRound className="size-4 shrink-0 text-primary" />
-                      <h3 className="truncate text-sm font-semibold text-foreground">
-                        Your model
-                      </h3>
+                      <h3 className="truncate text-sm font-semibold text-foreground">Your model</h3>
                     </div>
                     {(ambassadors?.length ?? 0) > 0 ? (
                       <button
@@ -2622,8 +2621,8 @@ function PublishingPage() {
               <div className="mb-2 rounded-xl border border-border bg-secondary/20 p-4">
                 <h3 className="text-sm font-semibold text-foreground">Campaign details</h3>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Optional — tap what fits, type what doesn't. Anything left blank is filled
-                  from Brand Master.
+                  Optional — tap what fits, type what doesn't. Anything left blank is filled from
+                  Brand Master.
                 </p>
                 {briefHints.requestedHeadline || briefHints.cta ? (
                   <p className="mt-2 text-xs text-foreground" aria-live="polite">
@@ -2690,24 +2689,22 @@ function PublishingPage() {
                       Offer
                     </Label>
                     <div className="flex flex-wrap gap-1.5">
-                      {["10% off", "20% off", "Buy 1 Get 1", "Free styling session"].map(
-                        (chip) => (
-                          <button
-                            key={chip}
-                            type="button"
-                            aria-pressed={offer === chip}
-                            onClick={() => setOffer(offer === chip ? "" : chip)}
-                            className={cn(
-                              "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                              offer === chip
-                                ? "border-primary bg-primary text-black"
-                                : "border-border bg-background text-muted-foreground hover:text-foreground",
-                            )}
-                          >
-                            {chip}
-                          </button>
-                        ),
-                      )}
+                      {["10% off", "20% off", "Buy 1 Get 1", "Free styling session"].map((chip) => (
+                        <button
+                          key={chip}
+                          type="button"
+                          aria-pressed={offer === chip}
+                          onClick={() => setOffer(offer === chip ? "" : chip)}
+                          className={cn(
+                            "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                            offer === chip
+                              ? "border-primary bg-primary text-black"
+                              : "border-border bg-background text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          {chip}
+                        </button>
+                      ))}
                     </div>
                     <Input
                       {...briefFieldProps("offer", offer)}
@@ -3201,8 +3198,8 @@ function PublishingPage() {
                 <p className="label-eyebrow text-primary">CONTENT PREVIEW</p>
                 {asset.twinGenerationId ? (
                   <div className="mt-4 rounded-xl border border-border bg-muted/40 p-4 text-sm">
-                    <strong>This is variant A of your A/B pair.</strong> Variant B is
-                    generating with a deliberately different design — both land in your{" "}
+                    <strong>This is variant A of your A/B pair.</strong> Variant B is generating
+                    with a deliberately different design — both land in your{" "}
                     <Link to="/review" className="underline underline-offset-2">
                       Content library
                     </Link>{" "}

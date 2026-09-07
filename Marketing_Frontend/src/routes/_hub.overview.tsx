@@ -57,7 +57,7 @@ const brandOverviewQuery = () =>
     staleTime: OVERVIEW_STALE_MS,
   });
 
-export const Route = createFileRoute("/_hub/")({
+export const Route = createFileRoute("/_hub/overview")({
   head: () => ({
     meta: [
       { title: "Overview — Scaleezy Marketing Hub" },
