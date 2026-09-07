@@ -5,10 +5,13 @@
  * that is not built is not on this page, and the two platforms that exist in
  * the Platform enum without an adapter (TikTok, Google Business) are named
  * nowhere on the site.
+ *
+ * Five groups, each opening with a definition sentence. The definitions are
+ * deliberate: they are the lines an answer engine can lift whole, and they
+ * give a reader who knows the category nothing to decode.
  */
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import {
-  ArrowRight,
   BarChart3,
   Brain,
   CalendarClock,
@@ -27,18 +30,24 @@ import {
 import {
   BrandBrainIllustration,
   FanOutIllustration,
+  LineageIllustration,
   RoutingIllustration,
 } from "@/components/marketing/illustrations";
 import {
+  ArrowLink,
   ClosingCta,
+  Eyebrow,
   Faq,
+  FeatureRow,
   JsonLd,
   MarketingShell,
+  MediaPanel,
   PageHero,
   Section,
-  SectionHead,
+  SectionHeading,
+  StatementBand,
 } from "@/components/marketing/marketing-shell";
-import { Button } from "@/components/ui/button";
+import { Reveal, Underlined } from "@/components/marketing/motion";
 import {
   breadcrumbSchema,
   faqSchema,
@@ -75,7 +84,7 @@ const GROUPS = [
     eyebrow: "Brand intelligence",
     title: "A brand memory, not a prompt you retype.",
     lede: "A brand knowledge base is a structured record of what is true about a business and what its work should feel like, kept separately from the words any model wrote.",
-    illustration: "brand" as const,
+    Figure: BrandBrainIllustration,
     items: [
       {
         icon: FileText,
@@ -104,7 +113,7 @@ const GROUPS = [
     eyebrow: "Generation",
     title: "Your models, routed per capability.",
     lede: "Provider routing means each kind of work — copy, images, video, embeddings — is sent to whichever configured AI provider you chose for that job, independently of the others.",
-    illustration: "routing" as const,
+    Figure: RoutingIllustration,
     items: [
       {
         icon: Layers,
@@ -133,7 +142,7 @@ const GROUPS = [
     eyebrow: "Review and governance",
     title: "Approval is a wall, not a suggestion.",
     lede: "An approval gate is a rule that no content reaches a public channel until a named person has approved that specific piece of work.",
-    illustration: null,
+    Figure: LineageIllustration,
     items: [
       {
         icon: CheckCircle2,
@@ -162,7 +171,7 @@ const GROUPS = [
     eyebrow: "Distribution and engagement",
     title: "Five channels, and the conversations after.",
     lede: "Publishing fans an approved post out to each connected channel as an independent job, so channels succeed or fail on their own.",
-    illustration: "fanout" as const,
+    Figure: FanOutIllustration,
     items: [
       {
         icon: Send,
@@ -191,7 +200,7 @@ const GROUPS = [
     eyebrow: "Measurement",
     title: "Numbers that can name their source.",
     lede: "Attribution links a published post to the model, cost, references and approval that produced it, so performance can be explained rather than only reported.",
-    illustration: null,
+    Figure: LineageIllustration,
     items: [
       {
         icon: BarChart3,
@@ -262,86 +271,59 @@ function CapabilitiesPage() {
 
       <PageHero
         eyebrow="Capabilities"
-        title="Everything between a brand document and a measured post."
-        lede="Scaleezy is one system covering brand intelligence, governed AI generation, human review, multi-channel publishing, engagement and attribution. This page lists what it does — and only what it does."
-      >
-        <nav aria-label="On this page" className="mt-12 flex flex-wrap gap-2">
-          {GROUPS.map((group) => (
-            <a
-              key={group.id}
-              href={`#${group.id}`}
-              className="rounded-full border border-border bg-card px-4 py-2 text-sm font-medium shadow-card transition-colors hover:border-foreground"
-            >
-              {group.eyebrow}
-            </a>
-          ))}
-        </nav>
-      </PageHero>
-
-      {GROUPS.map((group, i) => (
-        <Section key={group.id} id={group.id} tone={i % 2 === 1 ? "muted" : "light"}>
-          <SectionHead eyebrow={group.eyebrow} title={group.title} lede={group.lede} />
-
-          {group.illustration && (
-            <div className="mt-12 rounded-2xl border border-border bg-card p-6 shadow-card sm:p-10">
-              {group.illustration === "brand" && (
-                <BrandBrainIllustration className="mx-auto max-w-[34rem] text-foreground" />
-              )}
-              {group.illustration === "routing" && (
-                <RoutingIllustration className="mx-auto max-w-[34rem] text-foreground" />
-              )}
-              {group.illustration === "fanout" && (
-                <FanOutIllustration className="mx-auto max-w-[34rem] text-foreground" />
-              )}
-            </div>
-          )}
-
-          <div className="mt-12 grid gap-x-10 gap-y-11 sm:grid-cols-2">
-            {group.items.map((item) => (
-              <article key={item.title}>
-                <span className="grid size-11 place-items-center rounded-xl border border-border bg-card">
-                  <item.icon className="size-5" strokeWidth={1.75} />
-                </span>
-                <h3 className="mt-5 text-lg font-semibold text-balance">{item.title}</h3>
-                <p className="mt-2.5 leading-relaxed text-pretty text-muted-foreground">
-                  {item.body}
-                </p>
-              </article>
-            ))}
-          </div>
-        </Section>
-      ))}
-
-      <Section tone="dark">
-        <SectionHead
-          dark
-          eyebrow="Common questions"
-          title="What it does, precisely."
-          lede="Short answers to the questions that decide whether a tool fits your workflow."
-        />
-        <Faq entries={FAQ} tone="dark" />
-      </Section>
+        title={
+          <>
+            Everything between a brand document and a measured <Underlined>post</Underlined>
+          </>
+        }
+        lede="One system covering brand intelligence, governed AI generation, human review, multi-channel publishing, engagement and attribution. This page lists what it does — and only what it does."
+      />
 
       <Section>
-        <div className="rounded-2xl border border-border bg-card p-8 sm:p-10">
-          <h2 className="text-2xl font-bold tracking-[-0.02em] text-balance">Keep reading</h2>
-          <p className="mt-3 text-muted-foreground">
-            Capabilities are only half the question. The other half is what the system does when
-            something goes wrong.
-          </p>
-          <div className="mt-7 flex flex-wrap gap-3">
-            <Button asChild variant="outline">
-              <Link to="/how-it-works">
-                How it works <ArrowRight className="size-4" />
-              </Link>
-            </Button>
-            <Button asChild variant="outline">
-              <Link to="/trust">
-                Trust and security <ArrowRight className="size-4" />
-              </Link>
-            </Button>
-          </div>
+        <div className="grid gap-32 lg:gap-44">
+          {GROUPS.map((group, i) => (
+            <div key={group.id} id={group.id} className="scroll-mt-28">
+              <FeatureRow
+                eyebrow={group.eyebrow}
+                title={group.title}
+                body={group.lede}
+                flip={i % 2 === 1}
+                figure={
+                  <MediaPanel tone={i % 2 === 1 ? "plain" : "tint"}>
+                    <group.Figure className="w-full text-foreground" />
+                  </MediaPanel>
+                }
+              />
+              <div className="mt-16 grid gap-x-12 gap-y-12 sm:grid-cols-2">
+                {group.items.map((item, j) => (
+                  <Reveal as="article" key={item.title} delay={(j % 2) * 70}>
+                    <item.icon className="size-6 text-foreground" strokeWidth={1.5} />
+                    <h3 className="mt-5 text-lg font-semibold text-balance">{item.title}</h3>
+                    <p className="mt-2.5 leading-relaxed text-pretty text-muted-foreground">
+                      {item.body}
+                    </p>
+                  </Reveal>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
+      </Section>
+
+      <StatementBand footnote="Anything not built is not on this page. Two platforms exist in the code without a publishing adapter, and neither is named anywhere on this site.">
+        Only what it actually does.
+      </StatementBand>
+
+      <Section>
+        <Reveal>
+          <Eyebrow>Common questions</Eyebrow>
+          <SectionHeading className="mt-5 max-w-[18ch]">What it does, precisely.</SectionHeading>
+        </Reveal>
+        <Faq entries={FAQ} />
+        <Reveal className="mt-14 flex flex-wrap gap-x-10 gap-y-4">
+          <ArrowLink to="/how-it-works">How it works, stage by stage</ArrowLink>
+          <ArrowLink to="/trust">How your data stays separate</ArrowLink>
+        </Reveal>
       </Section>
 
       <ClosingCta

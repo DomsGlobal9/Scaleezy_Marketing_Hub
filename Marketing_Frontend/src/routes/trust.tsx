@@ -4,11 +4,10 @@
  * The claims here are the ones the codebase actually enforces. Where something
  * is a design rule rather than a certification, it is written as a design rule:
  * this page deliberately claims no audit, standard or compliance badge the
- * product does not hold.
+ * product does not hold, and says so in the last question.
  */
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
-  ArrowRight,
   Eye,
   FileSearch,
   KeyRound,
@@ -19,17 +18,27 @@ import {
   UserCheck,
 } from "lucide-react";
 
-import { IsolationIllustration, LineageIllustration } from "@/components/marketing/illustrations";
 import {
+  ApprovalGateIllustration,
+  IsolationIllustration,
+  LineageIllustration,
+  RoutingIllustration,
+} from "@/components/marketing/illustrations";
+import {
+  ArrowLink,
   ClosingCta,
+  Eyebrow,
   Faq,
+  FeatureRow,
   JsonLd,
   MarketingShell,
+  MediaPanel,
   PageHero,
   Section,
-  SectionHead,
+  SectionHeading,
+  StatementBand,
 } from "@/components/marketing/marketing-shell";
-import { Button } from "@/components/ui/button";
+import { Reveal, Underlined } from "@/components/marketing/motion";
 import { breadcrumbSchema, faqSchema, marketingHead, webPageSchema } from "@/lib/seo";
 
 const SEO = {
@@ -59,7 +68,7 @@ const PILLARS = [
     eyebrow: "Isolation",
     title: "One client's work never reaches another's.",
     lede: "Tenant isolation means every record belongs to exactly one workspace, and access is re-checked on every request rather than assumed from a previous one.",
-    illustration: "isolation" as const,
+    Figure: IsolationIllustration,
     items: [
       {
         icon: Lock,
@@ -88,7 +97,7 @@ const PILLARS = [
     eyebrow: "Credentials",
     title: "We never ask for a social password.",
     lede: "Every channel connection is authorised on the platform's own OAuth page, so Scaleezy receives a scoped token rather than a password.",
-    illustration: null,
+    Figure: RoutingIllustration,
     items: [
       {
         icon: KeyRound,
@@ -117,7 +126,7 @@ const PILLARS = [
     eyebrow: "Provenance",
     title: "Every output can name where it came from.",
     lede: "Provenance is the ability to trace a published post backwards through its approval, the model that drafted it, and the brand material it drew on.",
-    illustration: "lineage" as const,
+    Figure: LineageIllustration,
     items: [
       {
         icon: FileSearch,
@@ -146,7 +155,7 @@ const PILLARS = [
     eyebrow: "Operational honesty",
     title: "Nothing is recorded as finished when it is not.",
     lede: "A state is honest when it reflects what actually happened: queued is not processing, processing is not ready, and a failure stays visible until someone deals with it.",
-    illustration: null,
+    Figure: ApprovalGateIllustration,
     items: [
       {
         icon: ShieldCheck,
@@ -221,83 +230,68 @@ function TrustPage() {
 
       <PageHero
         eyebrow="Trust"
-        title="An honest system beats a confident one."
-        lede="Software that publishes in your brand's name has to be trustworthy in a specific way: it must keep clients apart, protect credentials, explain where output came from, and admit when something failed. Here is how each is handled."
-      >
-        <div className="mt-12 grid gap-3 sm:grid-cols-4">
-          {PILLARS.map((pillar) => (
-            <a
-              key={pillar.id}
-              href={`#${pillar.id}`}
-              className="rounded-xl border border-border bg-card p-4 shadow-card transition-colors hover:border-foreground"
-            >
-              <p className="text-sm font-semibold">{pillar.eyebrow}</p>
-            </a>
-          ))}
-        </div>
-      </PageHero>
-
-      {PILLARS.map((pillar, i) => (
-        <Section key={pillar.id} id={pillar.id} tone={i % 2 === 1 ? "muted" : "light"}>
-          <SectionHead eyebrow={pillar.eyebrow} title={pillar.title} lede={pillar.lede} />
-
-          {pillar.illustration && (
-            <div className="mt-12 rounded-2xl border border-border bg-card p-6 shadow-card sm:p-10">
-              {pillar.illustration === "isolation" && (
-                <IsolationIllustration className="mx-auto max-w-[34rem] text-foreground" />
-              )}
-              {pillar.illustration === "lineage" && (
-                <LineageIllustration className="mx-auto max-w-[34rem] text-foreground" />
-              )}
-            </div>
-          )}
-
-          <div className="mt-12 grid gap-x-10 gap-y-11 sm:grid-cols-2">
-            {pillar.items.map((item) => (
-              <article key={item.title}>
-                <span className="grid size-11 place-items-center rounded-xl border border-border bg-card">
-                  <item.icon className="size-5" strokeWidth={1.75} />
-                </span>
-                <h3 className="mt-5 text-lg font-semibold text-balance">{item.title}</h3>
-                <p className="mt-2.5 leading-relaxed text-pretty text-muted-foreground">
-                  {item.body}
-                </p>
-              </article>
-            ))}
-          </div>
-        </Section>
-      ))}
-
-      <Section tone="dark">
-        <SectionHead
-          dark
-          eyebrow="Common questions"
-          title="Security and governance, answered."
-          lede="Including the question most vendor pages avoid."
-        />
-        <Faq entries={FAQ} tone="dark" />
-      </Section>
+        title={
+          <>
+            An honest system beats a <Underlined>confident</Underlined> one
+          </>
+        }
+        lede="Software that publishes in your brand's name has to be trustworthy in a specific way: it must keep clients apart, protect credentials, explain where output came from, and admit when something failed."
+        figure={
+          <MediaPanel tone="tint">
+            <IsolationIllustration className="w-full text-foreground" />
+          </MediaPanel>
+        }
+      />
 
       <Section>
-        <div className="rounded-2xl border border-border bg-card p-8 sm:p-10">
-          <h2 className="text-2xl font-bold tracking-[-0.02em] text-balance">Keep reading</h2>
-          <p className="mt-3 text-muted-foreground">
-            These rules exist to protect a specific workflow. Read how that workflow runs, and what
-            the product can do inside it.
-          </p>
-          <div className="mt-7 flex flex-wrap gap-3">
-            <Button asChild variant="outline">
-              <Link to="/how-it-works">
-                How it works <ArrowRight className="size-4" />
-              </Link>
-            </Button>
-            <Button asChild variant="outline">
-              <Link to="/capabilities">
-                Capabilities <ArrowRight className="size-4" />
-              </Link>
-            </Button>
-          </div>
-          <p className="mt-8 text-sm text-muted-foreground">
+        <div className="grid gap-32 lg:gap-44">
+          {PILLARS.map((pillar, i) => (
+            <div key={pillar.id} id={pillar.id} className="scroll-mt-28">
+              <FeatureRow
+                eyebrow={pillar.eyebrow}
+                title={pillar.title}
+                body={pillar.lede}
+                flip={i % 2 === 1}
+                figure={
+                  <MediaPanel tone={i % 2 === 1 ? "plain" : "tint"}>
+                    <pillar.Figure className="w-full text-foreground" />
+                  </MediaPanel>
+                }
+              />
+              <div className="mt-16 grid gap-x-12 gap-y-12 sm:grid-cols-2">
+                {pillar.items.map((item, j) => (
+                  <Reveal as="article" key={item.title} delay={(j % 2) * 70}>
+                    <item.icon className="size-6 text-foreground" strokeWidth={1.5} />
+                    <h3 className="mt-5 text-lg font-semibold text-balance">{item.title}</h3>
+                    <p className="mt-2.5 leading-relaxed text-pretty text-muted-foreground">
+                      {item.body}
+                    </p>
+                  </Reveal>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      <StatementBand footnote="Work that did not finish is never recorded as finished. A provider outage, a failed upload or a rejected post stays visible and retryable.">
+        Queued is not ready.
+      </StatementBand>
+
+      <Section>
+        <Reveal>
+          <Eyebrow>Common questions</Eyebrow>
+          <SectionHeading className="mt-5 max-w-[20ch]">
+            Security and governance, answered.
+          </SectionHeading>
+        </Reveal>
+        <Faq entries={FAQ} />
+        <Reveal className="mt-14 flex flex-wrap gap-x-10 gap-y-4">
+          <ArrowLink to="/how-it-works">How it works, stage by stage</ArrowLink>
+          <ArrowLink to="/capabilities">See every capability</ArrowLink>
+        </Reveal>
+        <Reveal className="mt-12">
+          <p className="text-sm text-muted-foreground">
             Our{" "}
             <Link to="/privacy" className="lime-link">
               Privacy Policy
@@ -308,7 +302,7 @@ function TrustPage() {
             </Link>{" "}
             set out the contractual side of the above.
           </p>
-        </div>
+        </Reveal>
       </Section>
 
       <ClosingCta
