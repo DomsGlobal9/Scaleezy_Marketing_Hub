@@ -41,13 +41,7 @@ const ANALYSIS_LINE: Record<string, string> = {
   FAILED: "Analysis failed. Retry it.",
 };
 
-export function TemplatesPanel({
-  brandId,
-  onChanged,
-}: {
-  brandId: string;
-  onChanged: () => void;
-}) {
+export function TemplatesPanel({ brandId, onChanged }: { brandId: string; onChanged: () => void }) {
   const templates = useSlice<Inspiration[]>(() => fetchBrandTemplates(brandId), true);
   const [uploading, setUploading] = useState(false);
   const [title, setTitle] = useState("");
@@ -57,9 +51,7 @@ export function TemplatesPanel({
   // template is being analysed so the status line tells the truth.
   useEffect(() => {
     if (
-      !(templates.data ?? []).some((row) =>
-        ["QUEUED", "PROCESSING"].includes(row.analysis_status),
-      )
+      !(templates.data ?? []).some((row) => ["QUEUED", "PROCESSING"].includes(row.analysis_status))
     )
       return;
     const timer = window.setInterval(() => templates.reload(), 3000);
@@ -107,9 +99,8 @@ export function TemplatesPanel({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="max-w-2xl">
           <p className="text-sm text-muted-foreground">
-            Upload the poster designs your brand already uses. In Create Studio they appear as
-            “Your templates”, and generations match the one you choose instead of a built-in
-            pattern.
+            Upload the poster designs your brand already uses. In Create Studio they appear as “Your
+            templates”, and generations match the one you choose instead of a built-in pattern.
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
             JPEG, PNG or WebP. Archived templates leave Create Studio but stay on record.
@@ -183,13 +174,7 @@ export function TemplatesPanel({
   );
 }
 
-function TemplateCard({
-  template,
-  onChanged,
-}: {
-  template: Inspiration;
-  onChanged: () => void;
-}) {
+function TemplateCard({ template, onChanged }: { template: Inspiration; onChanged: () => void }) {
   const [busy, setBusy] = useState<"analyze" | "archive" | null>(null);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const analysing = ["QUEUED", "PROCESSING"].includes(template.analysis_status);

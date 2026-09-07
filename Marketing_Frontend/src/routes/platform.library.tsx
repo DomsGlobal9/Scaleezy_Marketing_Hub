@@ -97,7 +97,11 @@ const isImageFile = (f: File) => f.type.startsWith("image/");
 
 /** The entry's title comes from the note — nobody should have to invent one. */
 const titleFromNote = (note: string) => {
-  const firstLine = note.trim().split(/[\n.!?]/, 1)[0]?.trim() ?? "";
+  const firstLine =
+    note
+      .trim()
+      .split(/[\n.!?]/, 1)[0]
+      ?.trim() ?? "";
   if (firstLine.length <= 64) return firstLine || "Inspiration";
   const cut = firstLine.slice(0, 64);
   return cut.slice(0, Math.max(cut.lastIndexOf(" "), 40)) + "…";
@@ -317,7 +321,11 @@ function QuickAddSheet({
             />
           </Field>
 
-          <Field label="Channel" id="quick-channel" hint="Where this style belongs. Any = everywhere.">
+          <Field
+            label="Channel"
+            id="quick-channel"
+            hint="Where this style belongs. Any = everywhere."
+          >
             <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Channel">
               {["", ...CHANNELS].map((value) => (
                 <button
@@ -355,8 +363,8 @@ function QuickAddSheet({
               {busy ?? "Add to library"}
             </Button>
             <p className="text-center text-[0.6875rem] text-muted-foreground">
-              Published instantly to every client's gallery (unless they opted out). Uploaded
-              files are publicly reachable by their link.
+              Published instantly to every client's gallery (unless they opted out). Uploaded files
+              are publicly reachable by their link.
             </p>
           </div>
 

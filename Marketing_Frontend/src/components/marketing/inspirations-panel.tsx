@@ -230,7 +230,11 @@ const typeFromUrl = (url: string): string => {
 
 /** The title comes from the note — nobody should have to invent one. */
 const titleFromNote = (note: string) => {
-  const firstLine = note.trim().split(/[\n.!?]/, 1)[0]?.trim() ?? "";
+  const firstLine =
+    note
+      .trim()
+      .split(/[\n.!?]/, 1)[0]
+      ?.trim() ?? "";
   if (firstLine.length <= 64) return firstLine || "Inspiration";
   const cut = firstLine.slice(0, 64);
   return cut.slice(0, Math.max(cut.lastIndexOf(" "), 40)) + "…";

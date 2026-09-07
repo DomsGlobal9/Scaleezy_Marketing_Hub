@@ -541,8 +541,7 @@ export const archiveInspiration = (inspirationId: string) =>
  */
 export const BRAND_TEMPLATE_TYPE = "BRAND_TEMPLATE";
 
-export const isBrandTemplate = (row: Inspiration) =>
-  row.inspiration_type === BRAND_TEMPLATE_TYPE;
+export const isBrandTemplate = (row: Inspiration) => row.inspiration_type === BRAND_TEMPLATE_TYPE;
 
 // Asked for by type so the answer is the templates themselves, not whatever
 // survives a client-side sift of every reference the brand owns. The filter
@@ -587,8 +586,7 @@ export const uploadBrandAmbassador = (brandId: string, file: File) =>
  * the purchasable item itself, never an invented lookalike. */
 export const BRAND_PRODUCT_TYPE = "BRAND_PRODUCT";
 
-export const isBrandProduct = (row: Inspiration) =>
-  row.inspiration_type === BRAND_PRODUCT_TYPE;
+export const isBrandProduct = (row: Inspiration) => row.inspiration_type === BRAND_PRODUCT_TYPE;
 
 export const fetchBrandProducts = async (brandId: string) =>
   (await fetchInspirations(brandId)).filter(

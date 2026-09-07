@@ -431,7 +431,9 @@ function ReviewPage() {
         const rows = await fetchInspirations(brand.id);
         if (cancelled) return;
         setReferences(
-          new Map(rows.map((row) => [row.id, { title: row.title, template: isBrandTemplate(row) }])),
+          new Map(
+            rows.map((row) => [row.id, { title: row.title, template: isBrandTemplate(row) }]),
+          ),
         );
       } catch {
         // Attribution is a read-out, not a dependency of reviewing.
@@ -526,9 +528,7 @@ function ReviewPage() {
     }
     return [...groups.values()]
       .filter((pair) => pair.length === 2)
-      .map((pair) =>
-        [...pair].sort((x, y) => abMeta(x).slot.localeCompare(abMeta(y).slot)),
-      );
+      .map((pair) => [...pair].sort((x, y) => abMeta(x).slot.localeCompare(abMeta(y).slot)));
   }, [all]);
   const [pickNotes, setPickNotes] = useState<Record<string, string>>({});
 
@@ -540,9 +540,7 @@ function ReviewPage() {
         note: (pickNotes[group] ?? "").trim(),
       });
       await Promise.all([load(), loadReport()]);
-      toast.success(
-        `Variant ${slot} kept — the twin was rejected, and both taught the engine.`,
-      );
+      toast.success(`Variant ${slot} kept — the twin was rejected, and both taught the engine.`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "The pick failed.");
     } finally {
@@ -647,7 +645,6 @@ function ReviewPage() {
               it.
             </p>
           ) : null}
-
         </div>
       ) : null}
 
@@ -734,8 +731,8 @@ function ReviewPage() {
                         />
                       ) : (
                         <div className="mt-2 flex aspect-[4/5] w-full items-center justify-center rounded-lg bg-muted p-4 text-center text-xs text-muted-foreground">
-                          No picture on this variant — if it stays empty, its image
-                          failed. Open its card below to retry or review it normally.
+                          No picture on this variant — if it stays empty, its image failed. Open its
+                          card below to retry or review it normally.
                         </div>
                       )}
                       <p className="mt-2 line-clamp-2 text-sm font-medium">{variant.headline}</p>
@@ -745,9 +742,7 @@ function ReviewPage() {
                           disabled={busy !== null || !variant.preview_url}
                           onClick={() => void pickTwin(variant)}
                         >
-                          {busy === variant.id ? (
-                            <Loader2 className="size-4 animate-spin" />
-                          ) : null}
+                          {busy === variant.id ? <Loader2 className="size-4 animate-spin" /> : null}
                           Keep this one
                         </Button>
                       ) : null}
@@ -1028,9 +1023,7 @@ function ReviewPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={
-                          busy === item.id || !canReview || !(notes[item.id] ?? "").trim()
-                        }
+                        disabled={busy === item.id || !canReview || !(notes[item.id] ?? "").trim()}
                         title={
                           (notes[item.id] ?? "").trim()
                             ? undefined
@@ -1051,8 +1044,7 @@ function ReviewPage() {
                       </Button>
                     </div>
                     <p className="mt-2 text-[0.6875rem] text-muted-foreground">
-                      Scaleezy reads your words, remakes the creative, and remembers for next
-                      time.
+                      Scaleezy reads your words, remakes the creative, and remembers for next time.
                     </p>
                   </>
                 ) : null}
