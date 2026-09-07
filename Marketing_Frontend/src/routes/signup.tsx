@@ -1,5 +1,5 @@
-import { createFileRoute, Link, redirect, useNavigate, useRouter } from "@tanstack/react-router";
-import { AlertCircle, Loader2, UserPlus } from "lucide-react";
+import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
+import { AlertCircle, CheckCircle2, Clock, Loader2, UserPlus } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,8 @@ interface SignupResult extends Session {
   workspace_id: string;
   brand_id: string;
   brand_status: string;
+  /** The short id a person quotes on a support call, e.g. SCZ-K4M2R9TB. */
+  client_code?: string;
 }
 
 export const Route = createFileRoute("/signup")({
@@ -83,8 +85,98 @@ function normaliseWebsite(value: string): string {
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 
+/**
+ * Shown once the account exists, before the hub.
+ *
+ * A new brand is held at PENDING until Scaleezy approves it: knowledge and
+ * inspirations can be added immediately, but calibration and generation stay
+ * locked. Saying so here — rather than letting the person discover it when
+ * generation refuses — is the difference between a known wait and a bug report.
+ */
+function SignupConfirmation({
+  result,
+  onContinue,
+}: {
+  result: SignupResult;
+  onContinue: () => void | Promise<void>;
+}) {
+  const pending = result.brand_status === "PENDING";
+  const [leaving, setLeaving] = useState(false);
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-brand-dark px-4 py-10">
+      <div className="w-full max-w-lg">
+        <div className="mb-8 flex flex-col items-center text-center">
+          <ScaleezyLogo className="w-[12rem]" priority />
+          <p className="mt-3 text-[0.625rem] tracking-[0.18em] text-white/45 uppercase">
+            Marketing Hub
+          </p>
+        </div>
+
+        <div className="surface-card p-6 sm:p-8">
+          <span className="grid size-11 place-items-center rounded-full bg-primary/15 text-brand-link">
+            <CheckCircle2 className="size-5" strokeWidth={2} />
+          </span>
+
+          <h2 className="mt-5 text-lg font-semibold tracking-tight text-foreground">
+            Your account is created
+          </h2>
+
+          {pending ? (
+            <p
+              role="status"
+              className="mt-4 flex items-start gap-2.5 rounded-xl border border-gold/40 bg-gold/10 px-3.5 py-3 text-sm"
+            >
+              <Clock className="mt-0.5 size-4 shrink-0 text-gold" />
+              <span className="min-w-0">
+                <span className="font-medium text-foreground">
+                  Your brand is awaiting Scaleezy approval.
+                </span>{" "}
+                <span className="text-muted-foreground">
+                  Calibration and generation unlock once it is approved. Until then you can add
+                  knowledge, inspirations and templates — none of that work is lost.
+                </span>
+              </span>
+            </p>
+          ) : (
+            <p className="mt-4 text-sm text-muted-foreground">
+              Everything is ready. You can start teaching Scaleezy about your brand straight away.
+            </p>
+          )}
+
+          {result.client_code ? (
+            <div className="mt-5 border-t border-border pt-5">
+              <dl className="flex items-baseline gap-3 text-sm">
+                <dt className="text-muted-foreground">Client code</dt>
+                <dd className="font-mono font-semibold tracking-wide text-foreground">
+                  {result.client_code}
+                </dd>
+              </dl>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Quote this if you contact us about the account.
+              </p>
+            </div>
+          ) : null}
+
+          <Button
+            className="mt-7 w-full"
+            size="lg"
+            disabled={leaving}
+            onClick={() => {
+              setLeaving(true);
+              void onContinue();
+            }}
+          >
+            {leaving ? <Loader2 className="size-4 animate-spin" /> : null}
+            {leaving ? "Opening…" : "Start teaching Scaleezy"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SignupPage() {
-  const router = useRouter();
   const navigate = useNavigate();
   const { auth } = Route.useRouteContext();
 
@@ -101,6 +193,14 @@ function SignupPage() {
   const [error, setError] = useState<string | null>(null);
   const [fieldError, setFieldError] = useState<Partial<Record<FieldKey, string>>>({});
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * Set once the account exists. The server holds a new brand at PENDING until
+   * Scaleezy approves it, and previously nothing said so: the person was signed
+   * in and dropped into Brand Master as though fully set up, and only met the
+   * hold later when generation refused. This is that state, acknowledged before
+   * they walk in.
+   */
+  const [created, setCreated] = useState<SignupResult | null>(null);
 
   const canSubmit =
     legalName.trim().length > 0 &&
@@ -148,10 +248,11 @@ function SignupPage() {
       }
 
       auth.signIn({ access: result.access, refresh: result.refresh });
-      // Re-runs beforeLoad everywhere so the guard sees the new session; the
-      // hub then discovers the one workspace this signup created.
-      await router.invalidate();
-      await navigate({ to: "/brand-master", search: { tab: "teach" }, replace: true });
+      // Deliberately no router.invalidate() here: this route's beforeLoad
+      // bounces an authenticated caller to /overview, so invalidating now
+      // would throw the confirmation away the moment the session is written.
+      // Both happen in `enterHub`, once the person has read it.
+      setCreated(result);
     } catch (err) {
       const fields = fieldErrors(err);
       setFieldError(fields);
@@ -163,6 +264,24 @@ function SignupPage() {
       setSubmitting(false);
     }
   };
+
+  /**
+   * Leaves the confirmation for the hub.
+   *
+   * Navigation only, with no router.invalidate(): invalidating while this
+   * route is still matched re-runs its own beforeLoad, which redirects an
+   * authenticated caller to /overview — so the two navigations race and the
+   * reader can see the wrong page flash past. Nothing needs invalidating
+   * anyway; /brand-master is not currently matched, so its beforeLoad and the
+   * hub's both run fresh on arrival and read the session this page just wrote.
+   */
+  const enterHub = async () => {
+    await navigate({ to: "/brand-master", search: { tab: "teach" }, replace: true });
+  };
+
+  if (created) {
+    return <SignupConfirmation result={created} onContinue={enterHub} />;
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-brand-dark px-4 py-10">
