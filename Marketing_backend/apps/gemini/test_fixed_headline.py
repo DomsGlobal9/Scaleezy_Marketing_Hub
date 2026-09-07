@@ -28,7 +28,13 @@ def brief(**overrides):
     return data
 
 
-@override_settings(GEMINI_API_KEY='server-key')
+# GEMINI_MOCK_MODE is pinned off, not merely assumed off. It is read from
+# the environment and stays honoured under the test runner, so a developer
+# whose local .env switches it on short-circuits generate_marketing_content
+# at its first line and Step 2 never runs - these tests then fail on the
+# machine rather than on the code. Every other test that drives this
+# pipeline pins it the same way; PR0-003 in docs/CTO_REVIEW_LOG.md.
+@override_settings(GEMINI_API_KEY='server-key', GEMINI_MOCK_MODE=False)
 class FixedHeadlineTests(SimpleTestCase):
     def run_pipeline(self, request_data):
         painted = {}

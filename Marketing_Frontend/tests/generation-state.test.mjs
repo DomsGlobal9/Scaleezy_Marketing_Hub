@@ -30,14 +30,16 @@ test("image recovery success requires a durable ready image, not partial complet
   );
 });
 
+// Mirrors the argument _hub.publishing.tsx actually passes. The creative
+// modes are AI_ORIGINAL | BRAND_TEMPLATE | REFERENCE, and the template a
+// BRAND_TEMPLATE generation paints is named by `templateId`.
 const brief = {
   awaitingApproval: false,
   pending: false,
   mode: "AI_ORIGINAL",
   brief: ["Launch"],
   hasReference: false,
-  layout: "",
-  catalogueReady: true,
+  templateId: "",
 };
 
 test("request failure remains owned while the worker retry is pending", () => {
@@ -75,18 +77,9 @@ test("blank brief and unselected direction cannot enable generation", () => {
 });
 
 test("template mode requires an explicit loaded selection", () => {
-  assert.equal(canCreateGeneration({ ...brief, mode: "CATALOG_TEMPLATE" }), false);
+  assert.equal(canCreateGeneration({ ...brief, mode: "BRAND_TEMPLATE" }), false);
   assert.equal(
-    canCreateGeneration({
-      ...brief,
-      mode: "CATALOG_TEMPLATE",
-      layout: "editorial",
-      catalogueReady: false,
-    }),
-    false,
-  );
-  assert.equal(
-    canCreateGeneration({ ...brief, mode: "CATALOG_TEMPLATE", layout: "editorial" }),
+    canCreateGeneration({ ...brief, mode: "BRAND_TEMPLATE", templateId: "tpl-1" }),
     true,
   );
 });
