@@ -81,6 +81,35 @@ def _lock_generation_references(*, reference_ids, workspace, brand):
     return references
 
 
+def _brief_brand(request, brief, *, default):
+    """The brand a queued brief names in `brand_id` - an autopilot policy's
+    own brand - when it is this workspace's and ACTIVE; otherwise `default`
+    (the workspace default, which the studio's briefs, carrying no key,
+    always get), with the substitution logged. Without this a policy on a
+    second brand generated with the default's context, ambassador and logo
+    and stamped the draft with the wrong brand.
+    """
+    from django.core.exceptions import ValidationError
+
+    from apps.brands.models import Brand
+
+    wanted = str(brief.get('brand_id') or '')
+    try:
+        named = Brand.objects.filter(
+            workspace=request.workspace, pk=wanted, status=Brand.Status.ACTIVE,
+        ).first()
+    except (ValueError, ValidationError):
+        named = None
+    if named is not None:
+        return named
+    logger.warning(
+        "Generation %s names brand %s, which is not an active brand of workspace "
+        "%s; falling back to the default brand",
+        request.pk, wanted, request.workspace_id,
+    )
+    return default
+
+
 @task
 def generate_content(request_id: str):
     """Runs one generation and records the outcome on the request row."""
@@ -172,6 +201,8 @@ def generate_content(request_id: str):
         from apps.brands.models import Brand
 
         brand = Brand.objects.filter(workspace=request.workspace).order_by('-is_default').first()
+        if brief.get('brand_id'):
+            brand = _brief_brand(request, brief, default=brand)
         if brief.get('retry_image_only'):
             brand = Brand.objects.filter(workspace=request.workspace, pk=brief.get('retry_brand_id')).first()
         if brand is None or brand.status != Brand.Status.ACTIVE:
@@ -304,10 +335,12 @@ def generate_content(request_id: str):
             brief,
             instruction=brief.get('instruction', ''),
             progress=checkpoint,
-            # A governed inspiration job must keep the exact brand whose
-            # Brain/reference was validated, even if the default changes
-            # while providers are working. Legacy jobs retain default lookup.
-            brand=brand if preprocessing_ids else None,
+            # The brand resolved above - the brief's own when it names one,
+            # else the workspace default - rides in explicitly for every
+            # mode, so the brand whose law and references were validated is
+            # the one that generates, even if the default changes while
+            # providers are working.
+            brand=brand,
         )
         result_data = routed['payload']
         if preprocessing_ids:
@@ -381,7 +414,7 @@ def generate_content(request_id: str):
                 brief,
                 result_data,
                 routed,
-                brand=brand if preprocessing_ids else None,
+                brand=brand,
             )
             if content_item is None:
                 raise RuntimeError("Generated content could not be saved.")

@@ -156,39 +156,64 @@ def _enforce_policy(policy, run):
             )
 
 
+#: What an autopilot run can turn into today, by the brief's contentType. A
+#: CAROUSEL brief has no slides to hand the worker - it failed AFTER the copy
+#: was bought (OutputRejected, slides=[]) - so the rotation skips it honestly
+#: (FORMAT_UNSUPPORTED, before any row or spend) instead of paying to fail.
+PRODUCIBLE_FORMATS = {'POSTER': 'poster', 'VIDEO': 'video'}
+
+
+def _campaign_instruction(raw):
+    """The policy's campaign brief as the brief's `instruction` - the key the
+    studio's typed brief travels under, so the worker reads its labelled
+    fields ("Offer: 10% off this week" becomes the poster's offer, see
+    `brief_fields`) and the copy model reads the rest as the creation
+    request. Tidied the way the studio tidies (`_generation_instruction`):
+    CRLF normalised, whitespace collapsed within a line, blank lines
+    dropped. A brief past the studio's cap is cut rather than refused - a
+    scheduled run has nobody to show a validation error to.
+    """
+    from apps.gemini.views import MAX_GENERATION_INSTRUCTION_CHARS
+
+    lines = (
+        ' '.join(line.split())
+        for line in str(raw or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    )
+    return '\n'.join(line for line in lines if line)[:MAX_GENERATION_INSTRUCTION_CHARS]
+
+
 def _queue_generation(run, policy):
     formats = policy.allowed_formats or ['POSTER']
     previous = AutopilotRun.objects.filter(
         policy=policy, created_at__lt=run.created_at
     ).exclude(error_code='QUEUE_ENQUEUE_FAILED').count()
     chosen = str(formats[previous % len(formats)]).upper()
-    content_type = {'POSTER': 'poster', 'CAROUSEL': 'carousel', 'VIDEO': 'video'}[chosen]
+    content_type = PRODUCIBLE_FORMATS.get(chosen)
+    if content_type is None:
+        # This run still counts in the rotation above, so the policy's next
+        # run moves past the format rather than landing on it again.
+        raise AutopilotBlocked(
+            'FORMAT_UNSUPPORTED',
+            f'Autopilot cannot produce {chosen} yet. Remove it from this '
+            "policy's allowed formats.",
+        )
 
     # An autopilot mission states no per-run creative choice, so it follows
     # the same brand default as manual generation: a brand with uploaded
     # templates gets REFERENCE mode against one (rotated least-recently-used,
     # with the full analyze-before-generation/lock machinery in the worker);
     # a brand without any keeps the raw AI_ORIGINAL composition. Poster runs
-    # only — a poster template is not a style reference for video/carousel.
-    from apps.brands.models import Brand
+    # only — a poster template is not a style reference for video. The
+    # worker resolves the policy's own brand from brief['brand_id'], so a
+    # second brand's templates are as reachable as the default's.
     from apps.context.services.creative_direction import (
         next_brand_template,
         template_selection_row,
     )
+    from apps.gemini.views import DEFAULT_IMAGE_QUALITY
 
-    # The generation worker validates preprocessing references against the
-    # workspace's DEFAULT brand (its own brand lookup). Default to a template
-    # only when the policy's brand IS that brand, or the worker would refuse
-    # a reference the policy legitimately owns.
-    default_brand = (
-        Brand.objects.filter(workspace=run.workspace).order_by('-is_default').first()
-    )
     template = (
-        next_brand_template(run.workspace, policy.brand)
-        if chosen == 'POSTER'
-        and default_brand is not None
-        and default_brand.pk == policy.brand_id
-        else None
+        next_brand_template(run.workspace, policy.brand) if chosen == 'POSTER' else None
     )
     if template is not None:
         creative_direction = {
@@ -209,25 +234,38 @@ def _queue_generation(run, policy):
             'instructions': [],
         }
         analyze_ids = []
+    instruction = _campaign_instruction(policy.campaign_brief)
     brief = {
         'campaign_name': policy.name,
         'product': policy.objective,
         'target_audience': policy.brand.audience,
         'location': policy.brand.location,
         'occasion': '',
-        'offer': policy.brand.cta_keyword,
+        # No offer unless the campaign brief types one ("Offer: ..."), which
+        # the worker reads into this key. The brand's cta_keyword is NOT an
+        # offer: the CTA comes from the brand identity on its own
+        # (`brief_cta_and_offer`), and the keyword here painted it twice -
+        # CTA pill plus vertical offer line - in a way the image-text audit
+        # cannot flag, its offer carve-out hiding the second copy.
+        'offer': '',
         'brand_tone': policy.brand.brand_tone,
+        'instruction': instruction,
+        # The policy's own brand, for the worker: without it the workspace
+        # default generated (and was stamped on) a second brand's posters.
+        'brand_id': str(policy.brand_id),
         'contentType': content_type,
         'slides': [],
         'brand_rules': [],
         'creative_direction': creative_direction,
         'analyze_before_generation_ids': analyze_ids,
         'layout': '',
+        # The studio's default tier (posters only, as the studio sends it):
+        # absent, the generator rendered its 4K default while billing 1 unit.
+        'image_quality': DEFAULT_IMAGE_QUALITY if content_type == 'poster' else '',
         'autopilot': {
             'run_id': str(run.pk),
             'policy_id': str(policy.pk),
             'objective': policy.objective,
-            'campaign_brief': policy.campaign_brief,
             'target_channels': [
                 connection.platform for connection in policy.social_connections.all()
             ],
@@ -241,7 +279,7 @@ def _queue_generation(run, policy):
         product=policy.objective[:255],
         target_audience=policy.brand.audience[:255],
         location=policy.brand.location[:255],
-        offer=policy.brand.cta_keyword[:255],
+        offer='',
         brand_tone=policy.brand.brand_tone[:255],
         content_format=content_type,
     )

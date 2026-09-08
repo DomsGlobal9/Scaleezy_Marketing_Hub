@@ -1203,3 +1203,63 @@ class RevisionRegenerationTests(TenantFixtureMixin, TestCase):
         revision = ContentItem.objects.get(parent=pending)
         task_mock.enqueue.assert_called_once_with(str(revision.pk))
         self.assertTrue(revision.layout_config.get('regenerating'))
+
+
+class BriefBrandResolutionTests(TenantFixtureMixin, TestCase):
+    """`brief['brand_id']`: the brand a queued brief names (an autopilot
+    policy's own) is the brand that generates and is stamped on the draft.
+    The studio's briefs carry no key and keep the workspace default."""
+
+    def setUp(self):
+        self.workspace = self.make_workspace('Acme', 'c1')
+        self.user, _ = self.authenticate_as(
+            self.workspace, WorkspaceMember.Role.EDITOR, 'editor@acme.test'
+        )
+        self.default = Brand.objects.create(
+            workspace=self.workspace, name='Acme Coffee', is_default=True,
+            status=Brand.Status.ACTIVE,
+        )
+        self.second = Brand.objects.create(
+            workspace=self.workspace, name='Acme Tea', status=Brand.Status.ACTIVE,
+        )
+
+    def run_with(self, **brief):
+        request = GeminiGenerationRequest.objects.create(
+            workspace=self.workspace, user=self.user,
+            prompt_data=json.dumps({'campaign_name': 'Launch', 'contentType': 'poster', **brief}),
+            status=GeminiGenerationRequest.Status.PENDING,
+        )
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload',
+            return_value=dict(ROUTED),
+        ) as dispatched:
+            generate_content.func(str(request.pk))
+        request.refresh_from_db()
+        self.assertEqual(request.status, GeminiGenerationRequest.Status.COMPLETED)
+        item = ContentItem.objects.get(pk=request.result.metadata['contentItemId'])
+        return dispatched.call_args.kwargs.get('brand'), item
+
+    def test_a_brief_naming_a_brand_generates_and_persists_with_it(self):
+        brand, item = self.run_with(brand_id=str(self.second.pk))
+        self.assertEqual(brand, self.second)
+        self.assertEqual(item.brand, self.second)
+
+    def test_a_brief_without_the_key_keeps_the_workspace_default(self):
+        brand, item = self.run_with()
+        self.assertEqual(brand, self.default)
+        self.assertEqual(item.brand, self.default)
+
+    def test_a_foreign_inactive_or_malformed_brand_id_falls_back_with_a_warning(self):
+        foreign = Brand.objects.create(
+            workspace=self.make_workspace('Other', 'c2'), name='Other', is_default=True,
+        )
+        archived = Brand.objects.create(
+            workspace=self.workspace, name='Old', status=Brand.Status.ARCHIVED,
+        )
+        for bad in (str(foreign.pk), str(archived.pk), 'not-a-uuid'):
+            with self.subTest(brand_id=bad):
+                with self.assertLogs('apps.gemini.tasks', level='WARNING') as logs:
+                    brand, item = self.run_with(brand_id=bad)
+                self.assertEqual(brand, self.default)
+                self.assertEqual(item.brand, self.default)
+                self.assertIn('falling back to the default brand', '\n'.join(logs.output))
