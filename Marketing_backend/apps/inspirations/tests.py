@@ -468,6 +468,62 @@ class InspirationInputValidationTests(InspirationTestBase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         upload.assert_not_called()
 
+    @patch('apps.marketing.services.storage.SupabaseStorageService.upload_and_describe')
+    def test_a_webp_wearing_a_jpg_name_is_accepted_as_what_it_is(self, upload):
+        """Images saved from search results and chat apps routinely carry a
+        .jpg name around WebP bytes. Pillow proves the content is a supported
+        image, so the upload succeeds — recorded under its sniffed type, not
+        the filename's claim. (This exact case used to 400 with "contents do
+        not match the declared image type", live, on the founder's uploads.)"""
+        import io as _io
+
+        buffer = _io.BytesIO()
+        Image.new('RGB', (4, 4), '#123456').save(buffer, format='WEBP')
+        upload.return_value = {
+            'url': 'https://storage.test/inspirations/ref.webp',
+            'path': 'inspirations/ref.webp',
+        }
+        response = self.client1.post(
+            f'{INSPIRATIONS_URL}upload/',
+            {
+                'brand': str(self.brand1.pk),
+                'file': SimpleUploadedFile(
+                    'saved-from-google.jpg', buffer.getvalue(), content_type='image/jpeg'
+                ),
+            },
+            format='multipart',
+            **self.ws1(),
+        )
+        self.assertEqual(
+            response.status_code, status.HTTP_201_CREATED, response.content[:300]
+        )
+        upload.assert_called_once()
+        inspiration = BrandInspiration.objects.get()
+        self.assertEqual(inspiration.mime_type, 'image/webp')
+
+    @patch('apps.marketing.services.storage.SupabaseStorageService.upload_and_describe')
+    def test_a_sniffed_unsupported_format_is_still_rejected(self, upload):
+        """Trusting the bytes is not trusting everything: a real image in a
+        format the analysis path cannot use (GIF) is refused by its content."""
+        import io as _io
+
+        buffer = _io.BytesIO()
+        Image.new('RGB', (4, 4), '#123456').save(buffer, format='GIF')
+        response = self.client1.post(
+            f'{INSPIRATIONS_URL}upload/',
+            {
+                'brand': str(self.brand1.pk),
+                'file': SimpleUploadedFile(
+                    'sneaky.png', buffer.getvalue(), content_type='image/png'
+                ),
+            },
+            format='multipart',
+            **self.ws1(),
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        upload.assert_not_called()
+        self.assertFalse(BrandInspiration.objects.exists())
+
     def test_public_link_requires_https_and_no_credentials(self):
         for unsafe in (
             'http://example.com/reference',
