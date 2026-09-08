@@ -15,7 +15,9 @@ from rest_framework.test import APITestCase
 
 from apps.brands.models import Brand
 from apps.content.models import ContentItem
-from apps.layouts import export, focus, fonts, images, registry, services, variants
+from apps.layouts import (
+    contrast, export, focus, fonts, images, registry, services, variants,
+)
 from apps.layouts.patterns.base import LayoutPattern, Spec
 from apps.layouts.render import compose, compose_at, spec_from
 from apps.marketing.models import MarketingAsset
@@ -155,6 +157,112 @@ class StyleVariantTests(APITestCase):
             spec = variants.apply(base_spec(), variants.coerce({'paper': paper}))
             value = spec.palette['light']
             self.assertRegex(value, r'^#[0-9a-fA-F]{6}$')
+
+    def test_no_variant_ships_invisible_text(self):
+        """The regression this whole module exists to prevent.
+
+        Every scheme x paper combination, measured on the four text pairs the
+        six patterns actually draw. Before `contrast.legible_palette` all four
+        schemes failed at least one pair on the shipping default palette --
+        `classic` scored 1.11:1 for accent-on-paper (the tagline, the CTA and
+        the offer line drawn pale-green on near-white) and `mono` scored
+        1.00:1 for ink-on-accent, which is the offer bar and the phone bar
+        lettering themselves in their own fill colour.
+        """
+        for scheme in variants.PALETTES:
+            for paper_option in variants.PAPERS:
+                spec = variants.apply(
+                    base_spec(),
+                    variants.coerce({'palette': scheme, 'paper': paper_option}),
+                )
+                ink = spec.palette['primary']
+                paper = spec.palette['light']
+                accent = spec.palette['accent']
+                where = f"{scheme}/{paper_option}"
+                # Read at body size.
+                self.assertGreaterEqual(
+                    contrast.contrast_ratio(ink, paper),
+                    contrast.TEXT_MIN, f"ink on paper, {where}",
+                )
+                # Tagline eyebrow, CTA and offer, drawn straight onto paper.
+                self.assertGreaterEqual(
+                    contrast.contrast_ratio(accent, paper),
+                    contrast.DISPLAY_MIN, f"accent on paper, {where}",
+                )
+                # Both directions of the filled-panel pair: ink inside an
+                # accent offer bar, and accent inside the ink phone bar.
+                self.assertGreaterEqual(
+                    contrast.contrast_ratio(ink, accent),
+                    contrast.DISPLAY_MIN, f"ink on accent, {where}",
+                )
+
+    def test_repaired_palettes_stay_valid_hex(self):
+        for scheme in variants.PALETTES:
+            spec = variants.apply(base_spec(), variants.coerce({'palette': scheme}))
+            for role in ('primary', 'light', 'accent'):
+                self.assertRegex(
+                    spec.palette[role], r'^#[0-9a-fA-F]{6}$', f"{scheme}/{role}",
+                )
+
+
+class ContrastTests(APITestCase):
+    def test_known_ratios(self):
+        self.assertAlmostEqual(
+            contrast.contrast_ratio('#000000', '#FFFFFF'), 21.0, places=2,
+        )
+        self.assertAlmostEqual(
+            contrast.contrast_ratio('#FFFFFF', '#FFFFFF'), 1.0, places=2,
+        )
+        # Order does not matter.
+        self.assertAlmostEqual(
+            contrast.contrast_ratio('#221F3C', '#FDFFE9'),
+            contrast.contrast_ratio('#FDFFE9', '#221F3C'), places=6,
+        )
+
+    def test_already_legible_palette_is_returned_unchanged(self):
+        """A designer's palette is never 'corrected' on their behalf.
+
+        The accent here clears BOTH of its constraints — 4.40:1 against the
+        paper and 3.96:1 against the ink. A darker orange that looks just as
+        reasonable (`#B23A00`) does not: it scores 2.90:1 against this ink,
+        so the offer bar's lettering would be the pair that fails. That is
+        the whole reason the accent is solved against two grounds instead of
+        eyeballed against one.
+        """
+        chosen = {'primary': '#1A1A1A', 'light': '#FFFFFF', 'accent': '#C25A20'}
+        self.assertEqual(contrast.legible_palette(chosen), chosen)
+
+    def test_repair_preserves_hue_family(self):
+        """A pale green is deepened, not swapped for a stock colour."""
+        repaired = contrast.legible_palette(
+            {'primary': '#221F3C', 'light': '#FDFFE9', 'accent': '#D2FFAA'}
+        )
+        red, green, blue = (
+            int(repaired['accent'].lstrip('#')[i:i + 2], 16) for i in (0, 2, 4)
+        )
+        self.assertGreater(green, red)
+        self.assertGreater(green, blue)
+
+    def test_unparseable_values_pass_through(self):
+        """Malformed hex is the pattern validation's problem, not ours."""
+        junk = {'primary': 'rebeccapurple', 'light': '#FDFFE9', 'accent': None}
+        self.assertEqual(contrast.legible_palette(junk), junk)
+        self.assertEqual(contrast.legible_palette('not-a-dict'), 'not-a-dict')
+
+    def test_unknown_roles_survive(self):
+        repaired = contrast.legible_palette(
+            {'primary': '#D2FFAA', 'light': '#FDFFE9', 'accent': '#D2FFAA',
+             'brand_secondary': '#123456'}
+        )
+        self.assertEqual(repaired['brand_secondary'], '#123456')
+
+    def test_paper_is_the_fixed_point(self):
+        """Repair moves ink and accent; the ground the photo is graded
+        against is never restated underneath it."""
+        repaired = contrast.legible_palette(
+            {'primary': '#D2FFAA', 'light': '#FDFFE9', 'accent': '#FDFFE9'}
+        )
+        self.assertEqual(repaired['light'], '#FDFFE9')
 
 
 class ComposeTests(APITestCase):

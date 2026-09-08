@@ -267,6 +267,69 @@ class PosterImageTemplateTests(TestCase):
             self.assertFalse(_scope_for_revision(feedback, dressed)['image'])
             self.assertFalse(_scope_for_revision(feedback, carousel)['image'])
 
+    def test_typography_complaints_rebuy_the_image_when_the_type_lives_in_it(self):
+        """A typography complaint on an undressed poster used to be a no-op.
+
+        TYPOGRAPHY, LOGO and LAYOUT scope to `restyle` because normally the
+        compose pass can re-dress the same photograph for nothing. An
+        undressed poster has no dress: that branch clears the inherited
+        plugin and stops, so a reviewer flagging "Legibility" or "Text
+        hierarchy" got a byte-identical poster back — on precisely the
+        posters whose type is baked into the pixels. Buying another image is
+        the only way to change type that only exists inside one.
+
+        A dressed poster and a carousel keep the free restyle: there the
+        complaint really is about a dress, and re-buying would be spend that
+        changes nothing the reviewer asked about.
+        """
+        from apps.content.models import ContentItem
+        from apps.gemini.tasks import _scope_for_revision
+
+        feedback = SimpleNamespace(element_keys=['text_legibility'])
+        undressed = SimpleNamespace(
+            content_format=ContentItem.Format.POSTER,
+            layout_plugin='',
+            Format=ContentItem.Format,
+        )
+        dressed = SimpleNamespace(
+            content_format=ContentItem.Format.POSTER,
+            layout_plugin='agency_column',
+            Format=ContentItem.Format,
+        )
+        carousel = SimpleNamespace(
+            content_format=ContentItem.Format.CAROUSEL,
+            layout_plugin='',
+            Format=ContentItem.Format,
+        )
+        with patch(
+            'apps.gemini.tasks._regeneration_scope',
+            side_effect=lambda f: {'copy': False, 'image': False, 'restyle': True},
+        ):
+            self.assertTrue(_scope_for_revision(feedback, undressed)['image'])
+            self.assertFalse(_scope_for_revision(feedback, dressed)['image'])
+            self.assertFalse(_scope_for_revision(feedback, carousel)['image'])
+
+    def test_every_typography_element_reaches_an_undressed_posters_image(self):
+        """End to end through the real group mapping, not a patched scope:
+        all eight TYPOGRAPHY elements must re-buy on an undressed poster."""
+        from apps.content.models import ContentItem
+        from apps.feedback.models import FeedbackElement
+        from apps.gemini.tasks import _scope_for_revision
+
+        undressed = SimpleNamespace(
+            content_format=ContentItem.Format.POSTER,
+            layout_plugin='',
+            Format=ContentItem.Format,
+        )
+        keys = list(
+            FeedbackElement.objects.filter(group='TYPOGRAPHY')
+            .values_list('key', flat=True)
+        )
+        self.assertTrue(keys, 'no TYPOGRAPHY elements seeded')
+        for key in keys:
+            scope = _scope_for_revision(SimpleNamespace(element_keys=[key]), undressed)
+            self.assertTrue(scope['image'], key)
+
     def test_a_garbage_template_payload_degrades_to_text_only(self):
         fake = SimpleNamespace(models=FakeModels())
         with patch.object(GeminiGeneratorService, '_get_client', return_value=fake):

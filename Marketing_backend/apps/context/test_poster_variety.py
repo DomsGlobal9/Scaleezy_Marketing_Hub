@@ -86,10 +86,25 @@ def poster_brief(**overrides):
     return brief
 
 
+#: A template generation as production assembles one: the direction AND the
+#: template's pixels, which `_reference_pixels` attaches before the brief is
+#: built. The template MUST lines speak of "the template's own text slots",
+#: so they are gated on the pixels actually being there — a brief carrying
+#: the direction alone is the degraded path (see
+#: `test_a_template_that_cannot_be_fetched_falls_back_to_an_archetype`), not
+#: this one.
+A_TEMPLATE = 'data:image/png;base64,AAAA'
+
+
 def template_brief(**overrides):
-    return poster_brief(creative_direction={
-        'mode': '', 'selections': [{'kind': 'BRAND_TEMPLATE', 'title': 'Diwali'}],
-    }, **overrides)
+    defaults = {
+        'creative_direction': {
+            'mode': '', 'selections': [{'kind': 'BRAND_TEMPLATE', 'title': 'Diwali'}],
+        },
+        'template_image_base64': A_TEMPLATE,
+    }
+    defaults.update(overrides)
+    return poster_brief(**defaults)
 
 
 def recording_router(calls):
@@ -608,10 +623,15 @@ class VarietyInTheGenerationTests(TenantFixtureMixin, TestCase):
         )
 
     def test_a_brand_template_seeds_a_scene_but_owns_its_own_layout(self):
-        outcome, calls = self.generate(creative_direction={
-            'mode': 'REFERENCE',
-            'selections': [{'kind': 'BRAND_TEMPLATE', 'title': 'Diwali', 'direction': 'USE'}],
-        })
+        outcome, calls = self.generate(
+            creative_direction={
+                'mode': 'REFERENCE',
+                'selections': [
+                    {'kind': 'BRAND_TEMPLATE', 'title': 'Diwali', 'direction': 'USE'},
+                ],
+            },
+            template_image_base64=A_TEMPLATE,
+        )
         trace = outcome['trace']
         self.assertIn(trace['scene_variant'], SCENE_KEYS)
         self.assertNotIn('composition_archetype', trace)
@@ -619,6 +639,36 @@ class VarietyInTheGenerationTests(TenantFixtureMixin, TestCase):
         self.assertIn(NEW_PHOTO_RULE, image_lines)
         self.assertIn(SCENE_LINE, image_lines)
         self.assertNotIn(FRAMED_LINE, image_lines)
+
+    def test_a_template_that_cannot_be_fetched_falls_back_to_an_archetype(self):
+        """The degraded path: the direction asks for a template whose pixels
+        never arrive (a deleted row, an unreachable file — `_template_image`
+        is best effort and returns '').
+
+        Trusting the direction alone used to strand the poster: it was told
+        to fill the slots of a design the model cannot see, while the
+        template allowance suppressed its composition archetype, so it had
+        neither a reference nor a layout. It must degrade to an ordinary
+        archetype poster instead.
+        """
+        outcome, calls = self.generate(creative_direction={
+            'mode': 'REFERENCE',
+            'selections': [
+                {'kind': 'BRAND_TEMPLATE', 'title': 'Diwali', 'direction': 'USE'},
+            ],
+        })
+        trace = outcome['trace']
+        self.assertIn(trace['composition_archetype'], ARCHETYPE_KEYS)
+        image_lines = '\n'.join(calls[1]['brief']['brand_context'])
+        self.assertNotIn('template_image_base64', calls[1]['brief'])
+        # No line may claim a design the model was never shown.
+        self.assertNotIn("template's own text slots", image_lines)
+        self.assertNotIn('CAPITALISATION STYLE', image_lines)
+        # And it is a real poster: some archetype composed it.
+        self.assertTrue(
+            any(opening(row) in image_lines for row in COMPOSITION_ARCHETYPES),
+            'the degraded template poster got no composition at all',
+        )
 
     def test_no_variety_where_the_compose_engine_owns_the_words(self):
         outcome, calls = self.generate(
