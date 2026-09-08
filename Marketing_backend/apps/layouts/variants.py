@@ -18,6 +18,8 @@ import uuid
 
 from PIL import Image, ImageEnhance, ImageOps
 
+from . import contrast
+
 #: Axis definitions. Order matters: it is the mixed-radix digit order the
 #: deterministic pick uses, so appending options extends the space without
 #: reshuffling every existing item's variant.
@@ -124,7 +126,14 @@ def apply(spec, variant):
         palette['light'] = _mix(palette.get('light', light), '#B4682F', 0.08)
     elif paper == 'cool_tint':
         palette['light'] = _mix(palette.get('light', light), '#2F58B4', 0.08)
-    spec.palette = palette
+    # Last, after every scheme and tint has had its say, because legibility is
+    # a property of the palette that actually reaches the pattern — not of the
+    # one the brand supplied. Both swapping schemes could produce invisible
+    # text from a perfectly good brand palette: `accent_ink` made a pale accent
+    # the ink over pale paper (1.11:1 on the shipping default), and `mono` set
+    # accent = ink, which is the offer bar and the phone bar drawing their
+    # lettering in their own fill colour. See `contrast.legible_palette`.
+    spec.palette = contrast.legible_palette(palette)
 
     photo = variant.get('photo', 'asis')
     if spec.photo is not None and photo != 'asis':
