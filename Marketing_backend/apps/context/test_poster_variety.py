@@ -110,7 +110,7 @@ class ArchetypeCatalogueTests(SimpleTestCase):
         # Live, 2026-09-05: a polaroid poster put the face in a small second
         # card and a headless torso in the main one.
         self.assertIn('main photograph', FACE_VISIBLE_LINE)
-        self.assertIn('never only in a smaller inset', FACE_VISIBLE_LINE)
+        self.assertIn('never only in a secondary inset', FACE_VISIBLE_LINE)
         row = composition_archetype('polaroid_card')
         self.assertIn('ONE photograph', row['composition'])
         self.assertIn('no second card or inset', row['composition'])

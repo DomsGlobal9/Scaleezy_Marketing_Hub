@@ -618,7 +618,7 @@ SCENE_VARIANTS = (
 #: photograph, not only in an inset.
 FACE_VISIBLE_LINE = (
     "the brand ambassador's face stays fully visible inside the main "
-    "photograph, never only in a smaller inset, card or second frame"
+    "photograph, never only in a secondary inset or a second, smaller frame"
 )
 
 
