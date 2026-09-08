@@ -122,9 +122,16 @@ class OnImageTextDirectiveTests(SimpleTestCase):
         # template's own case treatment and add nothing the template lacks —
         # the founder's title-case template came back ALL CAPS with a second
         # CTA button under the template's own one.
-        brief = poster_brief(creative_direction={
-            'mode': '', 'selections': [{'kind': 'BRAND_TEMPLATE', 'title': 'Diwali'}],
-        })
+        brief = poster_brief(
+            creative_direction={
+                'mode': '',
+                'selections': [{'kind': 'BRAND_TEMPLATE', 'title': 'Diwali'}],
+            },
+            # As production assembles it: these lines reference "the
+            # template's own text slots", so they are emitted only when the
+            # template's pixels are actually in the brief.
+            template_image_base64='data:image/png;base64,AAAA',
+        )
         joined = '\n'.join(on_image_text_lines(brief, HEADLINE))
         self.assertIn(f'"{HEADLINE}"', joined)
         self.assertIn('CAPITALISATION STYLE', joined)
@@ -183,6 +190,64 @@ class OnImageTextDirectiveTests(SimpleTestCase):
         self.assertIn('"Fresh beans, daily!"', joined)
 
 
+class PaletteDirectiveTests(SimpleTestCase):
+    """The archetypes command flat colour areas; this names their colour.
+
+    "a solid brand-colour band across the bottom third" never said WHICH
+    colour, so the model chose the dominant colour block of the poster afresh
+    every run - a magenta band, then a teal wedge, then a mustard half - and
+    the archetype rotation added for variety read instead as an unstable
+    identity.
+    """
+
+    def with_palette(self, palette, **overrides):
+        brief = poster_brief(**overrides)
+        brief['structured'] = {
+            **brief['structured'], 'visual_language': {'palette': palette},
+        }
+        return '\n'.join(on_image_text_lines(brief, HEADLINE))
+
+    def test_the_exact_hexes_are_named_with_their_roles(self):
+        joined = self.with_palette(
+            {'primary': '#221F3C', 'light': '#FDFFE9', 'accent': '#D2FFAA'}
+        )
+        self.assertIn(
+            "MUST: Use this brand's exact colours - ground #FDFFE9, "
+            'ink #221F3C, accent #D2FFAA.',
+            joined,
+        )
+        # Naming them without saying which carries the type just moves the
+        # guesswork, so the contrast requirement rides with them.
+        self.assertIn('must be one of these exact values', joined)
+        self.assertIn('reads clearly against it', joined)
+
+    def test_no_palette_means_no_line(self):
+        self.assertNotIn("exact colours", self.with_palette({}))
+        self.assertNotIn("exact colours", self.with_palette(None))
+        self.assertNotIn("exact colours", self.with_palette('not-a-dict'))
+
+    def test_a_template_poster_is_told_its_colours_too(self):
+        """A template owns its layout, not its palette: the photograph and
+        the hero colour treatment are explicitly re-shot each run."""
+        joined = self.with_palette(
+            {'primary': '#221F3C', 'light': '#FDFFE9', 'accent': '#D2FFAA'},
+            creative_direction={
+                'mode': '',
+                'selections': [{'kind': 'BRAND_TEMPLATE', 'title': 'Diwali'}],
+            },
+            template_image_base64='data:image/png;base64,AAAA',
+        )
+        self.assertIn('ground #FDFFE9', joined)
+
+    def test_a_carousel_slide_gets_no_colour_line(self):
+        """The compose engine still owns those words and their colours."""
+        joined = self.with_palette(
+            {'primary': '#221F3C', 'light': '#FDFFE9', 'accent': '#D2FFAA'},
+            contentType='carousel_slide',
+        )
+        self.assertNotIn("exact colours", joined)
+
+
 class GatewayBriefTests(TenantFixtureMixin, TestCase):
     """The gateway no longer decides the words: the directive is per dispatch."""
 
@@ -204,6 +269,49 @@ class GatewayBriefTests(TenantFixtureMixin, TestCase):
     def test_the_copy_brief_carries_no_image_constraint(self):
         lines = self.brief_lines(TaskType.COPY)
         self.assertFalse(any('lettering' in line for line in lines), lines)
+
+    def test_the_brands_colours_reach_the_prose_image_brief(self):
+        """Without this the sole colour instruction in the whole poster
+        pipeline was the "{brand_tone}" adjective, so the model invented a
+        scheme per run and consecutive drafts of one brand came back
+        different colours.
+
+        The IMAGE brief only: `visual_language` is deliberately outside the
+        COPY task's profile, and the copy call no longer proposes a palette
+        of its own to be reconciled with this one.
+        """
+        self.brand.palette = {
+            'primary': '#221F3C', 'light': '#FDFFE9', 'accent': '#D2FFAA',
+        }
+        self.brand.save(update_fields=['palette'])
+        joined = '\n'.join(self.brief_lines(TaskType.IMAGE))
+        self.assertIn('Brand colours:', joined)
+        self.assertIn('ground #FDFFE9', joined)
+        self.assertIn('ink #221F3C', joined)
+        self.assertIn('accent #D2FFAA', joined)
+        self.assertNotIn(
+            'Brand colours:', '\n'.join(self.brief_lines(TaskType.COPY)),
+        )
+
+    def test_a_brand_with_no_palette_gets_no_colour_line(self):
+        """Inventing a palette for a brand that never chose one would be a
+        rule the brand never agreed to."""
+        self.brand.palette = {}
+        self.brand.save(update_fields=['palette'])
+        joined = '\n'.join(self.brief_lines(TaskType.IMAGE))
+        self.assertNotIn('Brand colours:', joined)
+
+    def test_malformed_swatches_are_dropped_one_by_one(self):
+        """`Brand.palette` is a free-form JSONField validated only as an
+        object, so a bad swatch must cost that swatch and not the line."""
+        self.brand.palette = {
+            'primary': 'rebeccapurple', 'light': '#FDFFE9', 'accent': None,
+        }
+        self.brand.save(update_fields=['palette'])
+        joined = '\n'.join(self.brief_lines(TaskType.IMAGE))
+        self.assertIn('ground #FDFFE9', joined)
+        self.assertNotIn('rebeccapurple', joined)
+        self.assertNotIn('ink', joined.split('Brand colours:')[1].split('\n')[0])
 
 
 class PosterImageBriefTests(TenantFixtureMixin, TestCase):

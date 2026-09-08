@@ -243,11 +243,23 @@ def _paints_brand_template(brief) -> bool:
     pixels ride in the brief, so it owns its layout - only the scene varies
     (see `_variety_seed`) - and its own text slots, which the model fills
     with words no judge was told about (see `_gate_image_text`). INSPIRED
-    fidelity attaches no pixels and takes neither allowance."""
+    fidelity attaches no pixels and takes neither allowance.
+
+    Keyed on the pixels being PRESENT, not merely on the direction asking for
+    them. `_template_image` is best effort - a deleted BrandInspiration row,
+    an empty file_url or an unreachable file all return '' - and in that
+    branch the direction still said BRAND_TEMPLATE. Trusting the direction
+    alone meant a poster whose template could not be fetched was told to fill
+    the slots of a design the model cannot see while `_variety_seed`
+    suppressed its composition archetype: no reference and no direction. With
+    the pixels absent this returns False, so the generation degrades to an
+    ordinary archetype poster instead of an incoherent one.
+    """
     direction = brief.get('creative_direction')
     return (
         _has_brand_template(direction if isinstance(direction, dict) else {})
         and str(brief.get('template_fidelity') or 'EXACT').upper() != 'INSPIRED'
+        and bool(brief.get('template_image_base64'))
     )
 
 

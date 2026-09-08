@@ -111,16 +111,23 @@ def poster_brief(**overrides):
 
 
 def template_brief(**overrides):
-    """A poster that recreates one of the brand's own template designs. The
-    template row points nowhere, so no pixels are fetched - the directive
-    and the gate read the selection, not the file."""
-    return poster_brief(
-        creative_direction={
+    """A poster that recreates one of the brand's own template designs.
+
+    Carries the template's pixels, because the slot tolerance is keyed on
+    them: the gate forgives words the judge cannot know ("Free shipping
+    across India") only when they can actually have come from a design the
+    model was shown. A selection whose file could not be fetched earns no
+    tolerance - those extra words are extra words.
+    """
+    defaults = {
+        'creative_direction': {
             'mode': 'AI_ORIGINAL',
             'selections': [{'kind': 'BRAND_TEMPLATE', 'id': str(uuid.uuid4())}],
         },
-        **overrides,
-    )
+        'template_image_base64': 'data:image/png;base64,AAAA',
+    }
+    defaults.update(overrides)
+    return poster_brief(**defaults)
 
 
 def paints(brief, headline):

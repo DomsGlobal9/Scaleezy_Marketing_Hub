@@ -320,6 +320,19 @@ def context_as_brief(context):
         lines.append(f"Audience: {context['audience']['stated']}")
     if context['voice']['tone']:
         lines.append(f"Voice: {context['voice']['tone']}")
+    # In the prose, not only in `structured`: `brand_context` is the single
+    # carrier every path reads (the sync endpoint, the queued task and every
+    # revision all funnel through it), and the copy model's Step 1 sees only
+    # the prose. Without this the sole colour instruction in the whole poster
+    # pipeline was an adjective, so the palette was re-invented per run.
+    palette_roles_ = _roles_from_palette(
+        (context.get('visual_language') or {}).get('palette')
+    )
+    if palette_roles_:
+        lines.append(
+            'Brand colours: ' + palette_sentence(palette_roles_)
+            + ' - these exact hex values, never an invented palette.'
+        )
     for truth in context['verified_truth']:
         lines.append(f"Verified: {truth}")
     # Whether the words go INTO the image is not the gateway's call: it
@@ -673,6 +686,84 @@ def step1_line(archetype, cta, offer):
     )
 
 
+#: `Brand.palette` role -> the word the prompt uses for it. The stored keys
+#: are the compose engine's ('primary' is ink, 'light' is the paper it prints
+#: on); an image model reads "ground" and "ink" far better than it reads
+#: "primary" and "light", and "primary" in particular invites the model to
+#: treat it as the dominant AREA rather than as the type colour.
+PALETTE_ROLE_WORDS = (('light', 'ground'), ('primary', 'ink'), ('accent', 'accent'))
+
+
+def _is_hex(value):
+    """A `#rgb` or `#rrggbb` string. `Brand.palette` is a free-form JSONField
+    (only validated as an object), so anything at all can be stored in it."""
+    text = str(value or '').strip()
+    if not text.startswith('#') or len(text) not in (4, 7):
+        return False
+    try:
+        int(text[1:], 16)
+    except ValueError:
+        return False
+    return True
+
+
+def _roles_from_palette(palette):
+    """A stored palette as (role word, hex) pairs, worst case ().
+
+    Malformed entries are dropped individually rather than failing the read:
+    a brand that stored one bad swatch still gets the other two named.
+    """
+    if not isinstance(palette, dict):
+        return ()
+    return tuple(
+        (word, str(palette[key]).strip())
+        for key, word in PALETTE_ROLE_WORDS
+        if _is_hex(palette.get(key))
+    )
+
+
+def palette_roles(brief):
+    """This brief's brand colours, read off `structured.visual_language`.
+
+    That is where the Brand Brain already puts them - so this needs no new
+    plumbing and inherits the same brain version and cache key as everything
+    else in the brief.
+    """
+    visual = (brief.get('structured') or {}).get('visual_language') or {}
+    return _roles_from_palette(visual.get('palette'))
+
+
+def palette_sentence(roles):
+    """"ground #FDFFE9, ink #221F3C, accent #D2FFAA" for the prompt."""
+    return ', '.join(f'{word} {value}' for word, value in roles)
+
+
+def _palette_line(brief):
+    """The MUST line that stops the poster's colour being re-rolled per run.
+
+    Without it the only colour instruction anywhere in the poster path was
+    Step 1's "colours that match the {brand_tone} tone" - an adjective - so
+    the model invented a scheme every time and consecutive drafts of one
+    brand came back a different colour. The archetypes made it worse by
+    commanding "a solid brand-colour band" without ever saying which colour
+    that was.
+
+    Stated as exact hex values because that is the only form a model cannot
+    reinterpret, and paired with the contrast requirement: naming the colours
+    without saying which carries the type just moves the guesswork.
+    """
+    roles = palette_roles(brief)
+    if not roles:
+        return []
+    return [
+        "MUST: Use this brand's exact colours - " + palette_sentence(roles)
+        + '. Every flat colour area - band, panel, wedge, field, ground, CTA '
+        'pill - must be one of these exact values, and any text sitting on '
+        'one must be another of them, chosen so the text reads clearly '
+        'against it. Invent no other colour.'
+    ]
+
+
 def _composition_line(archetype, cta, offer):
     return 'MUST: ' + archetype['composition'].format(
         cta=archetype['cta'] if cta else '',
@@ -799,8 +890,16 @@ def on_image_text_lines(brief, headline):
     # INSPIRED fidelity deliberately skips this: no pixels are attached, so
     # "the template's own slots" would reference a design the model cannot
     # see — those generations take the REFERENCE mirror branch below.
+    # `template_image_base64` and not merely the direction: these lines speak
+    # of "the template's own text slots" and "where the template sets its own
+    # headline", which are answerable only by a model that can SEE it. The
+    # attach is best effort (a missing row or an unreachable file yields ''),
+    # so without this a fetch failure produced a poster ordered to match a
+    # design it was never shown. No MUST line may reference pixels the brief
+    # does not carry.
     template_exact = (
         str(brief.get('template_fidelity') or 'EXACT').upper() != 'INSPIRED'
+        and bool(brief.get('template_image_base64'))
     )
     if _has_brand_template(direction) and template_exact:
         available = []
@@ -832,6 +931,11 @@ def on_image_text_lines(brief, headline):
             "MUST: Keep the template's structure; the photograph and scene "
             'must be entirely new - vary pose, setting and hero colour '
             'treatment within the brand palette.',
+            # A template owns its layout, not its palette: the line above
+            # re-shoots the photograph and the hero colour treatment every
+            # run, so "within the brand palette" needs the palette named or
+            # it is the same unanchored instruction the archetypes had.
+            *_palette_line(brief),
             *_scene_line(brief),
         ]
 
@@ -875,5 +979,8 @@ def on_image_text_lines(brief, headline):
             composition_archetype(brief.get('composition_archetype')), cta, offer,
         )
     )
+    # Directly after the composition, because it is the composition that
+    # commands the flat colour areas this line names the colours for.
+    lines.extend(_palette_line(brief))
     lines.extend(_scene_line(brief))
     return lines

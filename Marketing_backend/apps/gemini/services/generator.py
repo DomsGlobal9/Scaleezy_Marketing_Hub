@@ -642,13 +642,15 @@ Campaign Details:
 - Offer: {offer}
 - Brand Tone: {brand_tone}
 
-For the `imagePrompt`, you MUST be wildly creative and imaginative. Do NOT just place text on a plain background. Re-imagine the product in a visually stunning, high-end editorial or cinematic setting. Be extremely detailed about:
-- **Visual Style & Medium**: (e.g., 8k resolution, photorealistic fashion editorial, 3D surrealism, Vogue magazine cover, cinematic lighting).
-- **The Setting/Background**: Place the product in a dynamic, immersive environment (e.g., a glowing enchanted forest, a high-end minimalist marble studio, a neon-lit futuristic street). 
-- **Lighting & Atmosphere**: (e.g., dramatic chiaroscuro, soft golden hour sunlight, moody rim lighting).
-- **Color Palette**: Highly curated colors that perfectly match the "{brand_tone}" tone.
-- **Mood & Emotion**: (e.g., luxurious and mysterious, vibrant and energetic).
-- Make it suitable for Instagram (1080x1350 portrait).
+The `imagePrompt` describes the PHOTOGRAPH at the heart of this poster, and nothing else. The poster's composition, its typography, its exact brand colours and how the shot is framed are all specified in the MUST lines below, and the image model is given your text and those lines TOGETHER. Anything you write that competes with them makes the poster worse, so do not propose a layout, a medium, a colour scheme or a setting of your own, and never describe text, lettering, logos or a frame.
+
+Be specific and editorial about what is genuinely left to you:
+- **The hero subject**: exactly what is photographed - its material, texture, finish, craftsmanship and detail.
+- **Styling and props**: what the subject wears, holds or sits amongst, and what else earns its place in the frame.
+- **Lighting quality**: the character of the light falling on the subject - soft, hard, directional, diffused, its warmth - consistent with any scene the MUST lines name.
+- **Mood & Emotion**: what the finished photograph should make a viewer feel.
+- **Realism**: a real photograph, made on a real camera by a real photographer. Never an illustration, a 3D render or a collage.
+- Shot for Instagram's 1080x1350 portrait frame.
 
 {cls._on_image_text_block(request_data)}
 
@@ -672,7 +674,16 @@ Respond ONLY with a valid JSON object (no markdown, no code fences, no extra tex
                 types.Part.from_bytes(data=img_bytes, mime_type=mime_type)
             )
             # Add an extra instruction for multimodal processing
-            contents[0] += "\n\nIMPORTANT: I have attached a reference image of the product. DO NOT just recreate this image exactly. Your `imagePrompt` MUST radically transform the setting, lighting, and mood. Take the product shown in the reference image and re-imagine it placed within a stunning, professional, high-budget creative campaign environment as described above."
+            contents[0] += (
+                "\n\nIMPORTANT: I have attached a reference image of the "
+                "product. It tells you WHAT the product is - its shape, "
+                "material, colour and detail - so your `imagePrompt` can "
+                "describe it accurately. Do not treat it as the finished "
+                "shot: describe the product as a photographer would stage it "
+                "fresh, and stay inside the scene, framing and colours the "
+                "MUST lines specify rather than inventing an environment of "
+                "your own."
+            )
 
         response = client.models.generate_content(
             model=cls.TEXT_MODEL,
