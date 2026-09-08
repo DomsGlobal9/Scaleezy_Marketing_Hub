@@ -817,13 +817,24 @@ def _scope_for_revision(feedback, revision):
     image still shouting ALL CAPS (seen live, 2026-09-05). Copy complaints on
     an undressed poster therefore re-buy the image too; dressed items
     (layout_plugin set) and carousels keep the surgical copy-only path.
+
+    The same is true of the dress itself, and for the same reason. TYPOGRAPHY,
+    LOGO and LAYOUT scope to `restyle` because normally a compose pass can
+    re-dress the existing photograph for free — but an undressed poster has no
+    dress to change, so that branch clears the inherited plugin and stops.
+    The reviewer got back a byte-identical poster: flagging "Legibility —
+    contrast or placement makes text hard to read" on the exact posters whose
+    type is baked into the pixels was the one complaint the system could not
+    act on. Since the type only exists inside the image, the only way to
+    change it is to buy another image, and the instruction already names the
+    flagged elements, so the re-buy receives the complaint.
     """
     scope = _regeneration_scope(feedback)
     words_live_in_the_image = (
         revision.content_format == revision.Format.POSTER
         and not revision.layout_plugin
     )
-    if scope['copy'] and words_live_in_the_image:
+    if (scope['copy'] or scope['restyle']) and words_live_in_the_image:
         scope['image'] = True
     return scope
 
