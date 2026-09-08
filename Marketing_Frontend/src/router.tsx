@@ -14,6 +14,11 @@ export const getRouter = () => {
     routeTree,
     context: { queryClient, auth },
     scrollRestoration: true,
+    // Fetch and parse a route's chunk on hover/touchstart instead of on the
+    // click itself. Without this, pressing "Create content" downloaded and
+    // compiled the whole Create Studio bundle inside the click — Vercel's
+    // field data flagged that navigation at 200ms+ of blocked input.
+    defaultPreload: "intent",
     defaultPreloadStaleTime: 0,
   });
 
