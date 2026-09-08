@@ -7,7 +7,6 @@ same checks run for the JSON and the multipart path (PR1-007, GLOBAL-010),
 which is why the relation rules live in `validate_reference_graph` rather than
 inside one serializer.
 """
-import mimetypes
 from urllib.parse import urlsplit
 
 from PIL import Image, UnidentifiedImageError
@@ -289,27 +288,6 @@ class BrandInspirationUploadSerializer(serializers.Serializer):
                 'The inspiration file exceeds the 15 MB upload limit.'
             )
 
-        declared = str(getattr(file_obj, 'content_type', '') or '')
-        declared = declared.split(';', 1)[0].strip().casefold()
-        guessed = (mimetypes.guess_type(str(file_obj.name or ''))[0] or '').casefold()
-        if (
-            declared
-            and declared != 'application/octet-stream'
-            and guessed
-            and declared != guessed
-        ):
-            raise serializers.ValidationError('The file type does not match its filename.')
-        mime_type = (
-            declared
-            if declared in SUPPORTED_INSPIRATION_UPLOAD_MIME_TYPES
-            else guessed
-            if declared in ('', 'application/octet-stream')
-            else ''
-        )
-        if mime_type not in SUPPORTED_INSPIRATION_UPLOAD_MIME_TYPES:
-            raise serializers.ValidationError(
-                'Unsupported inspiration file. Upload a JPEG, PNG, or WebP image.'
-            )
         if len(str(file_obj.name or '')) > 255:
             raise serializers.ValidationError('The inspiration filename is too long.')
 
@@ -335,11 +313,19 @@ class BrandInspirationUploadSerializer(serializers.Serializer):
             ) from exc
         finally:
             file_obj.seek(0)
-        if actual_mime != mime_type:
+        # The bytes are the truth. Files saved from image search and chat
+        # apps routinely carry a .jpg name around WebP or PNG bytes; Pillow
+        # has just proven this is a decodable image of a known format. The
+        # old declared-vs-actual comparison ("contents do not match the
+        # declared image type") rejected exactly those legitimate saves while
+        # protecting nothing — an attacker controls both name and header, so
+        # only the sniffed content ever meant anything. Storing the sniffed
+        # type also keeps the served Content-Type honest.
+        if actual_mime not in SUPPORTED_INSPIRATION_UPLOAD_MIME_TYPES:
             raise serializers.ValidationError(
-                'The file contents do not match the declared image type.'
+                'Unsupported inspiration file. Upload a JPEG, PNG, or WebP image.'
             )
-        file_obj.content_type = mime_type
+        file_obj.content_type = actual_mime
         return file_obj
 
     def validate(self, data):
