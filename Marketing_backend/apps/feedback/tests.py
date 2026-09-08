@@ -339,7 +339,8 @@ class FeedbackAPITests(Base):
             res.data['data']['count'],
             FeedbackElement.objects.filter(is_active=True).count(),
         )
-        self.assertTrue(res.data['data']['provisional'])
+        # Migration 0003 promoted the vocabulary: nothing active is a stand-in.
+        self.assertFalse(res.data['data']['provisional'])
 
     def test_training_report(self):
         capture(
@@ -365,16 +366,82 @@ class FeedbackAPITests(Base):
 
 
 class VocabularySeedTests(APITestCase):
-    def test_seed_matches_the_documented_group_counts(self):
-        expected = {
-            'TYPOGRAPHY': 8, 'COPY': 10, 'LINE_BY_LINE': 10, 'LOGO': 6,
-            'VISUAL': 6, 'LAYOUT': 5, 'AUDIO': 3, 'FORMAT': 4, 'STRATEGY': 4,
-        }
-        for group, count in expected.items():
-            self.assertEqual(
-                FeedbackElement.objects.filter(group=group).count(), count, group
-            )
-        self.assertEqual(FeedbackElement.objects.count(), sum(expected.values()))
+    """The promoted production vocabulary (migrations 0002 + 0003)."""
 
-    def test_seeded_rows_are_flagged_provisional(self):
-        self.assertFalse(FeedbackElement.objects.filter(is_provisional=False).exists())
+    ACTIVE_COUNTS = {
+        'TYPOGRAPHY': 8, 'COPY': 10, 'LINE_BY_LINE': 10, 'LOGO': 6,
+        'VISUAL': 6, 'LAYOUT': 5, 'AUDIO': 3, 'FORMAT': 4, 'STRATEGY': 4,
+    }
+
+    def test_active_vocabulary_matches_the_production_group_counts(self):
+        for group, count in self.ACTIVE_COUNTS.items():
+            self.assertEqual(
+                FeedbackElement.objects.filter(group=group, is_active=True).count(),
+                count,
+                group,
+            )
+        self.assertEqual(
+            FeedbackElement.objects.filter(is_active=True).count(),
+            sum(self.ACTIVE_COUNTS.values()),
+        )
+
+    def test_active_vocabulary_is_fully_promoted(self):
+        self.assertFalse(
+            FeedbackElement.objects.filter(
+                is_active=True, is_provisional=True
+            ).exists()
+        )
+
+    def test_production_element_names_are_the_active_labels(self):
+        # The labels a reviewer sees in the console, verbatim.
+        self.assertTrue(
+            FeedbackElement.objects.filter(
+                key='repetitive_scene', label='Repetitive scene', is_active=True
+            ).exists()
+        )
+        self.assertTrue(
+            FeedbackElement.objects.filter(
+                key='looks_ai_fake', label='Looks AI / fake', is_active=True
+            ).exists()
+        )
+
+    def test_key_continuity_for_rows_learned_against_the_placeholders(self):
+        # Rules and feedback recorded before promotion keyed on these rows;
+        # the keys must survive with their identity intact.
+        for key in ('logo_placement', 'font_size', 'tone_of_voice', 'audience_fit'):
+            self.assertTrue(
+                FeedbackElement.objects.filter(
+                    key=key, is_active=True, is_provisional=False
+                ).exists(),
+                key,
+            )
+
+    def test_retired_placeholders_are_deactivated_not_deleted(self):
+        # A fresh database has no placeholders to retire, so stage one: a row
+        # left over from the pre-handover provisional seed.
+        import importlib.util
+        from pathlib import Path
+
+        from django.apps import apps as django_apps
+
+        migration_path = (
+            Path(__file__).parent / 'migrations' / '0003_production_vocabulary.py'
+        )
+        spec = importlib.util.spec_from_file_location(
+            'feedback_0003', migration_path
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        stale = FeedbackElement.objects.create(
+            key='legacy_placeholder', label='Legacy placeholder',
+            group=FeedbackElement.Group.VISUAL, is_provisional=True,
+        )
+        module.promote(django_apps, None)
+        stale.refresh_from_db()
+        self.assertFalse(stale.is_active)
+        self.assertTrue(FeedbackElement.objects.filter(pk=stale.pk).exists())
+
+        module.demote(django_apps, None)
+        stale.refresh_from_db()
+        self.assertTrue(stale.is_active)

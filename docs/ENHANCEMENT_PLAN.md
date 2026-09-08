@@ -375,10 +375,12 @@ Those counts also **sum to 56, not 52**.
 
 This taxonomy is the input to the whole training engine, so it can't be guessed.
 
-**No longer blocking.** Phase 6 shipped against a provisional vocabulary held in the
-`feedback_elements` table and flagged `is_provisional`. Hand over the real list and it
-replaces those rows — no deploy, and nothing already learned is lost. Until then the tag
-labels in the review UI are a stand-in, and the UI says so.
+**Resolved.** The production list arrived with the handover: the real vocabulary is the
+56 elements the review console tags with — the nine documented group counts were the
+truth, and "52" was a stale figure. Migration `feedback/0003_production_vocabulary`
+promotes those rows (`is_provisional=False`), preserving keys that learned rules and
+recorded feedback already reference, and retires the placeholders with no production
+counterpart by deactivating them — never deleting, so old feedback keeps resolving.
 
 ---
 
