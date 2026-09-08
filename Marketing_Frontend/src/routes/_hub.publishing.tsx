@@ -22,7 +22,7 @@ import {
   UserRound,
   Video,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -442,6 +442,31 @@ const canPublishTo = (acc: PublishingAccount, isVideoAsset: boolean): boolean =>
  * dialog could paint (a 208ms INP block measured in production). Owning
  * the state means a click re-renders only this subtree.
  */
+/**
+ * Mounts children only after the first paint, when the main thread is idle.
+ *
+ * The Create Studio used to arrive as ONE commit — the brief form, three
+ * wizard flows AND the publishing-history tables — and Vercel's field data
+ * flagged the navigation click for 200ms+ of blocked input. The history lives
+ * below the fold; its first frame can wait for idle without anyone noticing.
+ */
+function MountWhenIdle({ children }: { children: ReactNode }) {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const win = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (typeof win.requestIdleCallback === "function") {
+      const id = win.requestIdleCallback(() => setReady(true), { timeout: 800 });
+      return () => win.cancelIdleCallback?.(id);
+    }
+    const id = window.setTimeout(() => setReady(true), 120);
+    return () => window.clearTimeout(id);
+  }, []);
+  return ready ? <>{children}</> : null;
+}
+
 function PosterPreviewLightbox({ previewUrl }: { previewUrl: string }) {
   const [open, setOpen] = useState(false);
 
@@ -3609,7 +3634,9 @@ function PublishingPage() {
         )}
       </div>
 
-      {/* PUBLISHING HISTORY */}
+      {/* PUBLISHING HISTORY — deferred past first paint: below the fold, and
+          its two tables were a third of the page's initial mount cost. */}
+      <MountWhenIdle>
       <section className="mt-12">
         <SectionTitle title="RECENT PUBLISHING ACTIVITY" />
         <div className="surface-card overflow-hidden mt-4">
@@ -3759,6 +3786,7 @@ function PublishingPage() {
           ) : null}
         </div>
       </section>
+      </MountWhenIdle>
 
       {/* Hidden file input always available globally */}
       <input
