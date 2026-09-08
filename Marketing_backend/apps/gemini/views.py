@@ -26,7 +26,8 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 MAX_CREATE_FROM_INSPIRATION_IDS = 12
-MAX_GENERATION_INSTRUCTION_CHARS = 1000
+# Shared with the autopilot policy serializer; re-exported here unchanged.
+from .limits import MAX_GENERATION_INSTRUCTION_CHARS  # noqa: E402,F401
 #: The quality tier a poster renders at when the request names none: the
 #: studio's initial `imageQuality` state (_hub.publishing.tsx) and what an
 #: autopilot brief sends, so both render - and bill; 4K is 2 units - alike.

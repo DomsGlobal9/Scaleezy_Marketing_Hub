@@ -10,10 +10,11 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.ai.models import Capability
+from apps.ai.models import AIUsageLog, Capability
 from apps.ai.router import NoProviderAvailable, billable_units
 from apps.brands.models import Brand
 from apps.content.models import ContentItem
+from apps.context.services.brief_fields import extract_brief_fields
 from apps.context.services.generation import generate_marketing_payload
 from apps.gemini.models import GeminiGenerationRequest, GeminiGenerationResult
 from apps.gemini.views import DEFAULT_IMAGE_QUALITY, MAX_GENERATION_INSTRUCTION_CHARS
@@ -455,11 +456,84 @@ class AutopilotTests(TestCase):
         self.assertEqual(text_brief['instruction'], 'Festive launch.')
         self.assertEqual(text_brief['offer'], '10% off this week')
 
-    def test_an_overlong_campaign_brief_is_cut_at_the_studio_cap_not_refused(self):
+    def test_a_legacy_overlong_one_line_brief_is_cut_at_a_sentence_end(self):
+        """A row saved before the serializer refused over-long briefs is cut
+        at run time, not refused - a scheduled run has nobody to show an
+        error to. One long line has no line boundary to keep, so it ends at
+        its last full sentence under the cap, and the brief says so."""
         self.policy.campaign_brief = 'Explain the principle. ' * 100
         self.policy.save(update_fields=['campaign_brief', 'updated_at'])
+        run, brief = self.queued_brief()
+        self.assertLessEqual(len(brief['instruction']), MAX_GENERATION_INSTRUCTION_CHARS)
+        self.assertTrue(brief['instruction'].endswith('Explain the principle.'))
+        self.assertIs(brief['instruction_truncated'], True)
+        self.assertIs(run.steps.get(key='generate').detail['instruction_truncated'], True)
+
+    def test_the_brief_cap_never_cuts_a_labelled_line_in_half(self):
+        """The cap used to slice mid-line, so a straddling "Offer: ..." line
+        yielded a partial offer ("Flat 30% off orders above" - above what?)
+        that was painted and paid for. A line is now whole or dropped."""
+        cap = MAX_GENERATION_INSTRUCTION_CHARS
+        offer = 'Offer: Flat 30% off orders above Rs 2,999'
+        filler = ['Winter launch line %02d for the festive edit.' % n for n in range(1, 23)]
+        text = '\n'.join(filler + [offer, 'CTA: Shop now'])
+        self.assertGreater(len(text), cap)
+        naive = text[:cap].splitlines()[-1]
+        self.assertTrue(naive.startswith('Offer:') and naive != offer, naive)
+
+        self.policy.campaign_brief = text
+        self.policy.save(update_fields=['campaign_brief', 'updated_at'])
+        run, brief = self.queued_brief()
+        self.assertEqual(brief['instruction'], '\n'.join(filler))
+        self.assertIs(brief['instruction_truncated'], True)
+        self.assertIs(run.steps.get(key='generate').detail['instruction_truncated'], True)
+        self.assertEqual(extract_brief_fields(brief['instruction']), {})
+        router, result = self.generate(brief)
+        self.assertNotIn('offer', result['trace'].get('brief_fields') or {})
+        (image_brief,) = router.briefs(Capability.IMAGE)
+        self.assertEqual(image_brief['offer'], '')
+
+        # A labelled line that fits is kept whole, only the straddling
+        # closing line goes.
+        text = '\n'.join(filler[:21] + [offer, 'Closing line ' + 'x' * 60])
+        self.assertGreater(len(text), cap)
+        self.assertLess(text.index(offer) + len(offer), cap)
+        self.policy.campaign_brief = text
+        self.policy.save(update_fields=['campaign_brief', 'updated_at'])
         _run, brief = self.queued_brief()
-        self.assertEqual(len(brief['instruction']), MAX_GENERATION_INSTRUCTION_CHARS)
+        self.assertTrue(brief['instruction'].endswith('\n' + offer))
+        self.assertIs(brief['instruction_truncated'], True)
+        self.assertEqual(
+            extract_brief_fields(brief['instruction']),
+            {'offer': 'Flat 30% off orders above Rs 2,999'},
+        )
+
+    def test_a_brief_under_the_cap_is_not_marked_truncated(self):
+        self.policy.campaign_brief = 'Festive launch.\nOffer: 10% off this week'
+        self.policy.save(update_fields=['campaign_brief', 'updated_at'])
+        run, brief = self.queued_brief()
+        self.assertNotIn('instruction_truncated', brief)
+        self.assertNotIn('instruction_truncated', run.steps.get(key='generate').detail)
+
+    def test_an_overlong_campaign_brief_is_refused_at_save_time(self):
+        url = f'/api/marketing/autopilot/policies/{self.policy.pk}/'
+        response = self.client.patch(
+            url, {'campaign_brief': 'Explain the principle. ' * 50}, format='json', **self.headers,
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        body = response.json()
+        message = f'The campaign brief must be {MAX_GENERATION_INSTRUCTION_CHARS} characters or fewer.'
+        self.assertEqual(body['error'], {'code': 'CAMPAIGN_BRIEF_TOO_LONG', 'message': message})
+        self.assertEqual(body['campaign_brief'], [message])
+        self.policy.refresh_from_db()
+        self.assertEqual(self.policy.campaign_brief, '')
+
+        # The cap is the studio's, judged on the tidied text: whitespace and
+        # blank lines do not count.
+        fits = '   Explain the principle.  \r\n\r\n' * 35
+        self.assertGreater(len(fits), MAX_GENERATION_INSTRUCTION_CHARS)
+        response = self.client.patch(url, {'campaign_brief': fits}, format='json', **self.headers)
+        self.assertEqual(response.status_code, 200, response.content)
 
     def test_a_policy_on_a_second_brand_generates_and_stamps_that_brand(self):
         """The worker used to resolve the workspace default and pass
@@ -559,6 +633,134 @@ class AutopilotTests(TestCase):
 
         _next_run, brief = self.queued_brief()
         self.assertEqual(brief['contentType'], 'poster')
+
+    def test_a_format_autopilot_cannot_produce_is_refused_at_save_time(self):
+        """A carousel-only policy failed every turn and a ['POSTER',
+        'CAROUSEL'] one every other day. The API now refuses the format with
+        the message the Missions panel shows (error.message)."""
+        message = 'Autopilot cannot produce CAROUSEL yet. Choose from: POSTER, VIDEO.'
+        response = self.client.post(
+            '/api/marketing/autopilot/policies/',
+            {
+                'brand': str(self.brand.pk), 'name': 'Slides', 'objective': 'Explain',
+                'enabled': True, 'allowed_formats': ['POSTER', 'CAROUSEL'],
+            },
+            format='json', **self.headers,
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        body = response.json()
+        self.assertEqual(body['error'], {'code': 'FORMAT_UNSUPPORTED', 'message': message})
+        self.assertEqual(body['allowed_formats'], [message])
+        self.assertEqual(AutopilotPolicy.objects.count(), 1)
+
+        response = self.client.patch(
+            f'/api/marketing/autopilot/policies/{self.policy.pk}/',
+            {'allowed_formats': ['carousel']}, format='json', **self.headers,
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json()['error']['code'], 'FORMAT_UNSUPPORTED')
+        self.policy.refresh_from_db()
+        self.assertEqual(self.policy.allowed_formats, ['POSTER', 'VIDEO'])
+
+    def test_a_legacy_carousel_policy_stays_editable_and_fails_its_turns_honestly(self):
+        """Rows saved with CAROUSEL before the API refused it: an unrelated
+        edit (pausing, say) still lands, and the runtime guard still fails
+        the turn before any spend."""
+        AutopilotPolicy.objects.filter(pk=self.policy.pk).update(allowed_formats=['CAROUSEL'])
+        response = self.client.patch(
+            f'/api/marketing/autopilot/policies/{self.policy.pk}/',
+            {'paused': True}, format='json', **self.headers,
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.policy.refresh_from_db()
+        self.assertTrue(self.policy.paused)
+        self.assertEqual(self.policy.allowed_formats, ['CAROUSEL'])
+
+        AutopilotPolicy.objects.filter(pk=self.policy.pk).update(paused=False)
+        run = create_run(self.policy, initiated_by=self.user)
+        execute_run(run.pk)
+        run.refresh_from_db()
+        self.assertEqual(run.error_code, 'FORMAT_UNSUPPORTED')
+        self.assertFalse(GeminiGenerationRequest.objects.exists())
+
+    def test_an_unsupported_turn_does_not_count_against_the_daily_limit(self):
+        """A ['CAROUSEL', 'POSTER'] policy with a limit of 1 spent its whole
+        daily allowance on the carousel turn that bought nothing, so its
+        poster turn came every other day."""
+        self.policy.allowed_formats = ['CAROUSEL', 'POSTER']
+        self.policy.daily_generation_limit = 1
+        self.policy.save(update_fields=['allowed_formats', 'daily_generation_limit', 'updated_at'])
+        run = create_run(self.policy, initiated_by=self.user)
+        execute_run(run.pk)
+        run.refresh_from_db()
+        self.assertEqual(run.error_code, 'FORMAT_UNSUPPORTED')
+
+        _poster_run, brief = self.queued_brief()
+        self.assertEqual(brief['contentType'], 'poster')
+
+        # The poster turn did spend, so the limit now holds.
+        third = create_run(self.policy, initiated_by=self.user)
+        execute_run(third.pk)
+        third.refresh_from_db()
+        self.assertEqual(third.error_code, 'DAILY_AUTOPILOT_LIMIT')
+
+    def test_a_policy_on_an_archived_brand_fails_before_any_spend(self):
+        """The worker used to substitute the workspace default for a brief
+        naming a brand that is not active, so an archived second brand's
+        policy generated - and spent - on the default brand's identity. The
+        run now stops before a generation row exists."""
+        second, policy = self.second_brand_policy()
+        Brand.objects.filter(pk=second.pk).update(status=Brand.Status.ARCHIVED)
+        run = create_run(policy, initiated_by=self.user)
+        result = execute_run(run.pk)
+        run.refresh_from_db()
+        self.assertEqual(result['status'], AutopilotRun.Status.FAILED)
+        self.assertEqual(run.error_code, 'BRAND_INACTIVE')
+        self.assertIn('archived', run.error)
+        self.assertIsNone(run.generation_request)
+        self.assertFalse(GeminiGenerationRequest.objects.exists())
+        self.assertFalse(AIUsageLog.objects.exists())
+        self.assertEqual(run.steps.get(key='finish').status, 'FAILED')
+
+        # It bought nothing, so it does not count against the daily limit
+        # (1 on this policy): the brand restored, the next run generates.
+        Brand.objects.filter(pk=second.pk).update(status=Brand.Status.ACTIVE)
+        _run, brief = self.queued_brief(policy)
+        self.assertEqual(brief['brand_id'], str(second.pk))
+
+    def test_a_brand_archived_while_the_run_waited_fails_the_generation_not_the_default(self):
+        """The queued brief names the policy's brand; if that brand is
+        archived before the worker reaches it, the worker used to generate
+        on the workspace default. Now the request fails before any provider
+        is called and the run records the failure."""
+        second, policy = self.second_brand_policy()
+        run, _brief = self.queued_brief(policy)
+        Brand.objects.filter(pk=second.pk).update(status=Brand.Status.ARCHIVED)
+
+        from apps.gemini.tasks import generate_content
+
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload'
+        ) as routed, patch('apps.autopilot.tasks.execute_autopilot_run'):
+            with self.assertRaisesMessage(ValueError, 'The selected brand is inactive'):
+                generate_content.call(str(run.generation_request_id))
+
+        routed.assert_not_called()
+        generation = run.generation_request
+        generation.refresh_from_db()
+        self.assertEqual(generation.status, GeminiGenerationRequest.Status.FAILED)
+        self.assertEqual(
+            generation.error_message,
+            'The selected brand is inactive. Generation was not started.',
+        )
+        self.assertFalse(AIUsageLog.objects.exists())
+        self.assertFalse(ContentItem.objects.exists())
+
+        execute_run(run.pk)
+        run.refresh_from_db()
+        self.assertEqual(run.status, AutopilotRun.Status.FAILED)
+        self.assertEqual(run.error_code, 'GENERATION_FAILED')
+        self.assertIn('inactive', run.error)
 
     def test_emergency_stop_stops_pending_work(self):
         run = create_run(self.policy, initiated_by=self.user)

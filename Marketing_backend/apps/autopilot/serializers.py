@@ -1,9 +1,22 @@
 from rest_framework import serializers
 
 from apps.common.permissions import get_request_workspace
+from apps.gemini.limits import MAX_GENERATION_INSTRUCTION_CHARS
 from apps.social_accounts.models import SocialConnection
 
 from .models import AutopilotPolicy, AutopilotRun, AutopilotStep
+from .services import PRODUCIBLE_FORMATS, tidy_campaign_brief
+
+
+def _refusal(field, code, message):
+    """A refusal the Missions panel can show. Its client (lib/api.ts) reads
+    `error.message` and `error.code` - the envelope the trigger action
+    answers with - never a DRF field map, so a field-keyed error alone
+    reached the user as "Request failed (400)". The field entry stays for
+    API callers that do read the map."""
+    return serializers.ValidationError({
+        field: [message], 'error': {'code': code, 'message': message},
+    })
 
 
 class AutopilotStepSerializer(serializers.ModelSerializer):
@@ -45,12 +58,31 @@ class AutopilotPolicySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'social_connections': 'Every social account must belong to the selected client.'
             })
-        formats = attrs.get('allowed_formats', getattr(self.instance, 'allowed_formats', []))
-        if not isinstance(formats, list):
-            raise serializers.ValidationError({'allowed_formats': 'Choose a list of formats.'})
-        unknown = set(map(str.upper, map(str, formats))) - {'POSTER', 'CAROUSEL', 'VIDEO'}
-        if unknown:
-            raise serializers.ValidationError({'allowed_formats': f'Unsupported formats: {sorted(unknown)}'})
+        # Only a written allowed_formats is judged: a policy saved with
+        # CAROUSEL before autopilot refused it must stay pausable and
+        # editable, and its runs fail honestly at runtime (FORMAT_UNSUPPORTED)
+        # until the formats are fixed.
+        if 'allowed_formats' in attrs:
+            formats = attrs['allowed_formats']
+            if not isinstance(formats, list):
+                raise serializers.ValidationError({'allowed_formats': 'Choose a list of formats.'})
+            unsupported = sorted(set(map(str.upper, map(str, formats))) - set(PRODUCIBLE_FORMATS))
+            if unsupported:
+                raise _refusal(
+                    'allowed_formats', 'FORMAT_UNSUPPORTED',
+                    f"Autopilot cannot produce {', '.join(unsupported)} yet. "
+                    f"Choose from: {', '.join(PRODUCIBLE_FORMATS)}.",
+                )
+        # The studio's cap, judged on the text the worker will read: a brief
+        # past it was silently cut at run time, and the cut could fall inside
+        # a labelled line ("Offer: ...") that then generated in part.
+        brief = attrs.get('campaign_brief')
+        if brief is not None and len(tidy_campaign_brief(brief)) > MAX_GENERATION_INSTRUCTION_CHARS:
+            raise _refusal(
+                'campaign_brief', 'CAMPAIGN_BRIEF_TOO_LONG',
+                f'The campaign brief must be {MAX_GENERATION_INSTRUCTION_CHARS} '
+                'characters or fewer.',
+            )
         return attrs
 
 

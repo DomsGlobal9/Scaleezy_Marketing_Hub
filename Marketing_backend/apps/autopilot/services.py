@@ -1,6 +1,7 @@
 """Governed manual generation over the existing Context Gateway and AIRouter."""
 import json
 import logging
+import re
 from datetime import timedelta
 from decimal import Decimal
 
@@ -10,6 +11,7 @@ from django.utils import timezone
 
 from apps.ai.models import AIUsageLog
 from apps.billing.quota import enforce as enforce_billing
+from apps.brands.models import Brand
 from apps.brands.services.approval import enforce_spend_approved
 from apps.content.models import ContentItem
 from apps.gemini.models import GeminiGenerationRequest
@@ -120,12 +122,30 @@ def _fail(run, code, message):
     return {'status': run.status, 'error': run.error}
 
 
+#: Failures that bought nothing - no generation row, no provider call - and
+#: so do not count against the policy's daily limit: a policy carrying a
+#: format autopilot cannot make would otherwise burn its daily allowance on
+#: every unsupported turn, and a policy on an archived brand on every run.
+UNSPENT_ERROR_CODES = ('QUEUE_ENQUEUE_FAILED', 'FORMAT_UNSUPPORTED', 'BRAND_INACTIVE')
+
+
 def _enforce_policy(policy, run):
     workspace = policy.workspace
     if not policy.enabled or policy.paused or policy.emergency_stop:
         raise AutopilotBlocked('POLICY_STOPPED', 'This autopilot policy is disabled, paused or stopped.')
     if workspace.status != MarketingWorkspace.Status.ACTIVE:
         raise AutopilotBlocked('WORKSPACE_INACTIVE', 'The client is not active.')
+    # The policy's own brand must be live before anything is bought. The
+    # worker used to fall back to the workspace default when the brief's
+    # brand was not active, so an archived second brand's policy generated
+    # - and spent - on the default brand's identity.
+    brand = policy.brand if policy.brand_id else None
+    if brand is None or brand.status != Brand.Status.ACTIVE:
+        raise AutopilotBlocked(
+            'BRAND_INACTIVE',
+            "This policy's brand is archived. Point the policy at an active "
+            'brand before it runs again.',
+        )
     enforce_spend_approved(workspace)
     enforce_billing(workspace)
 
@@ -135,7 +155,7 @@ def _enforce_policy(policy, run):
     ).exclude(
         status=AutopilotRun.Status.STOPPED
     ).exclude(
-        error_code='QUEUE_ENQUEUE_FAILED'
+        error_code__in=UNSPENT_ERROR_CODES
     ).exclude(pk=run.pk).count()
     if policy.daily_generation_limit and used_today >= policy.daily_generation_limit:
         raise AutopilotBlocked(
@@ -163,23 +183,49 @@ def _enforce_policy(policy, run):
 PRODUCIBLE_FORMATS = {'POSTER': 'poster', 'VIDEO': 'video'}
 
 
+def tidy_campaign_brief(raw):
+    """A campaign brief tidied the way the studio tidies its typed brief
+    (`_generation_instruction`): CRLF normalised, whitespace collapsed
+    within a line, blank lines dropped. Uncapped - the policy serializer
+    judges this text against the studio's cap."""
+    lines = (
+        ' '.join(line.split())
+        for line in str(raw or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    )
+    return '\n'.join(line for line in lines if line)
+
+
+#: Where a single over-long line may be cut: after sentence punctuation that
+#: a space follows.
+_SENTENCE_END = re.compile(r'[.!?](?=\s)')
+
+
 def _campaign_instruction(raw):
     """The policy's campaign brief as the brief's `instruction` - the key the
     studio's typed brief travels under, so the worker reads its labelled
     fields ("Offer: 10% off this week" becomes the poster's offer, see
     `brief_fields`) and the copy model reads the rest as the creation
-    request. Tidied the way the studio tidies (`_generation_instruction`):
-    CRLF normalised, whitespace collapsed within a line, blank lines
-    dropped. A brief past the studio's cap is cut rather than refused - a
-    scheduled run has nobody to show a validation error to.
-    """
-    from apps.gemini.views import MAX_GENERATION_INSTRUCTION_CHARS
+    request. Returns (instruction, truncated).
 
-    lines = (
-        ' '.join(line.split())
-        for line in str(raw or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')
-    )
-    return '\n'.join(line for line in lines if line)[:MAX_GENERATION_INSTRUCTION_CHARS]
+    The serializer refuses a brief past the studio's cap at save time; a
+    row saved before it did is cut here rather than refused - a scheduled
+    run has nobody to show a validation error to. The cut lands on a line
+    boundary, so a labelled line is either whole or dropped: a cap falling
+    inside "Offer: Flat 30% off orders above Rs 2,999" used to leave "Offer:
+    Flat 30% off orders ab" as the offer painted and paid for. A brief
+    typed as one long line has no line to keep and is cut at its last
+    sentence end instead (a hard cut only when it has none).
+    """
+    from apps.gemini.limits import MAX_GENERATION_INSTRUCTION_CHARS as cap
+
+    text = tidy_campaign_brief(raw)
+    if len(text) <= cap:
+        return text, False
+    end = text.rfind('\n', 0, cap + 1)
+    if end <= 0:
+        ends = [match.end() for match in _SENTENCE_END.finditer(text, 0, cap + 1)]
+        end = ends[-1] if ends else cap
+    return text[:end].rstrip(), True
 
 
 def _queue_generation(run, policy):
@@ -234,7 +280,7 @@ def _queue_generation(run, policy):
             'instructions': [],
         }
         analyze_ids = []
-    instruction = _campaign_instruction(policy.campaign_brief)
+    instruction, truncated = _campaign_instruction(policy.campaign_brief)
     brief = {
         'campaign_name': policy.name,
         'product': policy.objective,
@@ -250,6 +296,10 @@ def _queue_generation(run, policy):
         'offer': '',
         'brand_tone': policy.brand.brand_tone,
         'instruction': instruction,
+        # Only when lines were dropped to fit the studio's cap, so the
+        # ledger says why the brief the worker read is shorter than the
+        # policy's.
+        **({'instruction_truncated': True} if truncated else {}),
         # The policy's own brand, for the worker: without it the workspace
         # default generated (and was stamped on) a second brand's posters.
         'brand_id': str(policy.brand_id),
@@ -301,6 +351,7 @@ def _queue_generation(run, policy):
     _step(
         run, 'generate', 'QUEUED', generation_id=str(generation.pk), format=chosen,
         **({'template_id': str(template.pk)} if template is not None else {}),
+        **({'instruction_truncated': True} if truncated else {}),
     )
     return {'status': run.status, 'generation_id': str(generation.pk)}
 

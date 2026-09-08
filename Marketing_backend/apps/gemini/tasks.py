@@ -81,13 +81,15 @@ def _lock_generation_references(*, reference_ids, workspace, brand):
     return references
 
 
-def _brief_brand(request, brief, *, default):
+def _brief_brand(request, brief):
     """The brand a queued brief names in `brand_id` - an autopilot policy's
-    own brand - when it is this workspace's and ACTIVE; otherwise `default`
-    (the workspace default, which the studio's briefs, carrying no key,
-    always get), with the substitution logged. Without this a policy on a
-    second brand generated with the default's context, ambassador and logo
-    and stamped the draft with the wrong brand.
+    own brand - which must be this workspace's and ACTIVE. Anything else
+    (archived since the run was queued, another workspace's, malformed)
+    fails the generation before any provider is paid, exactly as an
+    inactive brand already does. It used to fall back to the workspace
+    default: an archived second brand's policy then generated - and spent -
+    on the default brand's context, ambassador and logo. The studio's
+    briefs carry no key and resolve the default in the caller.
     """
     from django.core.exceptions import ValidationError
 
@@ -100,14 +102,14 @@ def _brief_brand(request, brief, *, default):
         ).first()
     except (ValueError, ValidationError):
         named = None
-    if named is not None:
-        return named
-    logger.warning(
-        "Generation %s names brand %s, which is not an active brand of workspace "
-        "%s; falling back to the default brand",
-        request.pk, wanted, request.workspace_id,
-    )
-    return default
+    if named is None:
+        logger.warning(
+            "Generation %s names brand %s, which is not an active brand of "
+            "workspace %s; failing before any provider spend",
+            request.pk, wanted, request.workspace_id,
+        )
+        raise ValueError('The selected brand is inactive. Generation was not started.')
+    return named
 
 
 @task
@@ -202,7 +204,7 @@ def generate_content(request_id: str):
 
         brand = Brand.objects.filter(workspace=request.workspace).order_by('-is_default').first()
         if brief.get('brand_id'):
-            brand = _brief_brand(request, brief, default=brand)
+            brand = _brief_brand(request, brief)
         if brief.get('retry_image_only'):
             brand = Brand.objects.filter(workspace=request.workspace, pk=brief.get('retry_brand_id')).first()
         if brand is None or brand.status != Brand.Status.ACTIVE:

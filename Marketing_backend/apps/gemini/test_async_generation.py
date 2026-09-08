@@ -1249,17 +1249,35 @@ class BriefBrandResolutionTests(TenantFixtureMixin, TestCase):
         self.assertEqual(brand, self.default)
         self.assertEqual(item.brand, self.default)
 
-    def test_a_foreign_inactive_or_malformed_brand_id_falls_back_with_a_warning(self):
+    def test_a_foreign_inactive_or_malformed_brand_id_fails_before_any_spend(self):
+        """The worker used to substitute the workspace default, so an
+        archived second brand's policy generated - and spent - on the
+        default's identity. The request now fails the way an inactive brand
+        always did, before any provider is called."""
         foreign = Brand.objects.create(
             workspace=self.make_workspace('Other', 'c2'), name='Other', is_default=True,
         )
         archived = Brand.objects.create(
             workspace=self.workspace, name='Old', status=Brand.Status.ARCHIVED,
         )
+        message = 'The selected brand is inactive. Generation was not started.'
         for bad in (str(foreign.pk), str(archived.pk), 'not-a-uuid'):
             with self.subTest(brand_id=bad):
-                with self.assertLogs('apps.gemini.tasks', level='WARNING') as logs:
-                    brand, item = self.run_with(brand_id=bad)
-                self.assertEqual(brand, self.default)
-                self.assertEqual(item.brand, self.default)
-                self.assertIn('falling back to the default brand', '\n'.join(logs.output))
+                request = GeminiGenerationRequest.objects.create(
+                    workspace=self.workspace, user=self.user,
+                    prompt_data=json.dumps({
+                        'campaign_name': 'Launch', 'contentType': 'poster', 'brand_id': bad,
+                    }),
+                    status=GeminiGenerationRequest.Status.PENDING,
+                )
+                with patch(
+                    'apps.context.services.generation.generate_marketing_payload'
+                ) as dispatched, self.assertLogs('apps.gemini.tasks', level='WARNING') as logs:
+                    with self.assertRaisesMessage(ValueError, message):
+                        generate_content.func(str(request.pk))
+                dispatched.assert_not_called()
+                self.assertIn('failing before any provider spend', '\n'.join(logs.output))
+                request.refresh_from_db()
+                self.assertEqual(request.status, GeminiGenerationRequest.Status.FAILED)
+                self.assertEqual(request.error_message, message)
+        self.assertFalse(ContentItem.objects.exists())
