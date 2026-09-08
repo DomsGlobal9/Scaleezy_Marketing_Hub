@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 MAX_CREATE_FROM_INSPIRATION_IDS = 12
 MAX_GENERATION_INSTRUCTION_CHARS = 1000
+#: The quality tier a poster renders at when the request names none: the
+#: studio's initial `imageQuality` state (_hub.publishing.tsx) and what an
+#: autopilot brief sends, so both render - and bill; 4K is 2 units - alike.
+DEFAULT_IMAGE_QUALITY = '4K'
 
 
 # Moved to apps.context.services.generation so the background task records
@@ -948,9 +952,10 @@ class GeminiGenerationViewSet(WorkspaceScopedMixin, viewsets.ReadOnlyModelViewSe
             # Posters only: a carousel or video brief carrying a 4K quality
             # would double-bill slides that never honour it.
             'image_quality': (
-                (lambda q: q if q in ('1K', '2K', '4K') else '4K')(
+                (lambda q: q if q in ('1K', '2K', '4K') else DEFAULT_IMAGE_QUALITY)(
                     str(
-                        data.get('imageQuality', data.get('image_quality', '4K')) or '4K'
+                        data.get('imageQuality', data.get('image_quality', ''))
+                        or DEFAULT_IMAGE_QUALITY
                     ).upper()
                 )
                 if content_type in ('', 'poster') else ''

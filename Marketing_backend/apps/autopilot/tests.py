@@ -10,9 +10,13 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from apps.ai.models import Capability
+from apps.ai.router import NoProviderAvailable, billable_units
 from apps.brands.models import Brand
 from apps.content.models import ContentItem
+from apps.context.services.generation import generate_marketing_payload
 from apps.gemini.models import GeminiGenerationRequest, GeminiGenerationResult
+from apps.gemini.views import DEFAULT_IMAGE_QUALITY, MAX_GENERATION_INSTRUCTION_CHARS
 from apps.social_accounts.models import SocialConnection
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 
@@ -30,6 +34,54 @@ from .services import (
 )
 
 User = get_user_model()
+
+DISPATCH = 'apps.ai.router.AIRouter.dispatch'
+#: The finished picture's text check would fetch the (fake) image; it is not
+#: under test here, so it reads as skipped.
+CHECKER = 'apps.context.services.image_text.check_image_text'
+SKIPPED = {'verdict': 'skipped', 'found': [], 'expected': '', 'reason': 'not under test'}
+COPY = {
+    'headline': 'One Useful Principle', 'caption': 'A clear explanation.',
+    'hashtags': '#operations', 'raw': {}, 'provider': 'OPENAI',
+    'provider_name': 'OpenAI', 'latency_ms': 10,
+}
+IMAGE = {
+    'image_url': 'https://cdn.example.com/poster.png',
+    'provider': 'STABILITY', 'provider_name': 'Stability', 'latency_ms': 20,
+}
+
+
+class RecordingRouter:
+    """The copy generator answers with COPY and the image provider with
+    IMAGE; the copy judge and anything else is unrouted, so the critique
+    reads as skipped. Records every brief a provider was handed."""
+
+    def __init__(self):
+        self.calls = []
+
+    def dispatch(self, capability, brief, content_item_id=None, *, internal=False):
+        self.calls.append({'capability': capability, 'brief': brief})
+        if capability == Capability.IMAGE:
+            return dict(IMAGE)
+        if (
+            capability == Capability.TEXT
+            and brief.get('schema_name') != 'scaleezy_copy_critique'
+            and str(brief.get('task') or '').upper() != 'EXTRACT'
+        ):
+            return dict(COPY)
+        raise NoProviderAvailable(f'No provider routed for {capability}.')
+
+    def briefs(self, capability):
+        return [
+            call['brief'] for call in self.calls
+            if call['capability'] == capability
+            and str(call['brief'].get('task') or '').upper() != 'EXTRACT'
+            and call['brief'].get('schema_name') != 'scaleezy_copy_critique'
+        ]
+
+
+def lines_with(brief, fragment):
+    return [line for line in brief.get('brand_context') or [] if fragment in str(line)]
 
 
 class AutopilotTests(TestCase):
@@ -319,6 +371,194 @@ class AutopilotTests(TestCase):
         generation.refresh_from_db()
         self.assertEqual(generation.status, GeminiGenerationRequest.Status.FAILED)
         self.assertIn('"useful"', generation.error_message)
+
+    # ── the brief autopilot builds, seen from the provider side ──────────
+
+    def queued_brief(self, policy=None):
+        run = create_run(policy or self.policy, initiated_by=self.user)
+        result = execute_run(run.pk)
+        run.refresh_from_db()
+        self.assertEqual(result['status'], AutopilotRun.Status.WAITING_GENERATION, result)
+        return run, json.loads(run.generation_request.prompt_data)
+
+    def generate(self, brief, brand=None):
+        """The worker's call - the queued brief, its own instruction, the
+        policy's brand - with the providers faked and recorded."""
+        router = RecordingRouter()
+
+        def dispatch(_router, capability, brief, content_item_id=None, *, internal=False):
+            return router.dispatch(capability, brief, content_item_id, internal=internal)
+
+        with patch(DISPATCH, dispatch), patch(CHECKER, return_value=dict(SKIPPED)):
+            result = generate_marketing_payload(
+                self.workspace, brief,
+                instruction=brief['instruction'], brand=brand or self.brand,
+            )
+        return router, result
+
+    def second_brand_policy(self, **brand_fields):
+        brand = Brand.objects.create(
+            workspace=self.workspace, name='Second', status=Brand.Status.ACTIVE,
+            audience='Chefs', brand_tone='Warm', **brand_fields,
+        )
+        policy = AutopilotPolicy.objects.create(
+            workspace=self.workspace, brand=brand, name='Second brand',
+            objective='Explain knife care', mode=AutopilotPolicy.Mode.APPROVAL_REQUIRED,
+            allowed_formats=['POSTER'], enabled=True, created_by=self.user,
+        )
+        return brand, policy
+
+    def test_the_brand_keyword_is_the_cta_pill_once_never_an_offer_too(self):
+        """`offer = cta_keyword` painted the keyword twice - CTA pill and
+        vertical offer line - and the image-text audit could not flag it:
+        its offer carve-out (`_cta_blocks`) hid the second copy. The CTA
+        still comes from the brand identity; the brief carries no offer."""
+        self.brand.cta_keyword = 'MORE INFO'
+        self.brand.save(update_fields=['cta_keyword'])
+        run, brief = self.queued_brief()
+        self.assertEqual(brief['offer'], '')
+        self.assertEqual(brief['instruction'], '')
+        self.assertEqual(run.generation_request.offer, '')
+        self.assertNotIn('MORE INFO', run.generation_request.prompt_data)
+
+        router, _ = self.generate(brief)
+        (image_brief,) = router.briefs(Capability.IMAGE)
+        self.assertEqual(image_brief['offer'], '')
+        painted = '\n'.join(image_brief['brand_context'])
+        self.assertEqual(painted.count('"MORE INFO"'), 1, painted)
+        self.assertTrue(
+            lines_with(image_brief, 'a call-to-action pill/button reading "MORE INFO"'),
+            painted,
+        )
+        self.assertFalse(lines_with(image_brief, 'the offer line "'), painted)
+
+    def test_the_campaign_brief_is_the_instruction_the_worker_parses(self):
+        """policy.campaign_brief used to land only in brief['autopilot'],
+        which nothing reads. As `instruction` - the studio's key - its typed
+        fields become the poster's ("Offer: ..." is the offer line) and the
+        copy model reads the rest as the creation request."""
+        self.policy.campaign_brief = 'Festive   launch.\r\n\r\nOffer:  10% off this week'
+        self.policy.save(update_fields=['campaign_brief', 'updated_at'])
+        _run, brief = self.queued_brief()
+        self.assertEqual(brief['instruction'], 'Festive launch.\nOffer: 10% off this week')
+        self.assertEqual(brief['offer'], '')
+
+        router, result = self.generate(brief)
+        (image_brief,) = router.briefs(Capability.IMAGE)
+        self.assertEqual(image_brief['offer'], '10% off this week')
+        self.assertTrue(
+            lines_with(image_brief, 'the offer line "10% off this week"'),
+            image_brief['brand_context'],
+        )
+        self.assertEqual(result['trace']['brief_fields'], {'offer': '10% off this week'})
+        (text_brief,) = router.briefs(Capability.TEXT)
+        self.assertEqual(text_brief['instruction'], 'Festive launch.')
+        self.assertEqual(text_brief['offer'], '10% off this week')
+
+    def test_an_overlong_campaign_brief_is_cut_at_the_studio_cap_not_refused(self):
+        self.policy.campaign_brief = 'Explain the principle. ' * 100
+        self.policy.save(update_fields=['campaign_brief', 'updated_at'])
+        _run, brief = self.queued_brief()
+        self.assertEqual(len(brief['instruction']), MAX_GENERATION_INSTRUCTION_CHARS)
+
+    def test_a_policy_on_a_second_brand_generates_and_stamps_that_brand(self):
+        """The worker used to resolve the workspace default and pass
+        brand=None, so a second brand's policy generated with the default's
+        context, ambassador and logo and stamped the draft with it."""
+        second, policy = self.second_brand_policy()
+        run, brief = self.queued_brief(policy)
+        self.assertEqual(brief['brand_id'], str(second.pk))
+        self.assertEqual(brief['target_audience'], 'Chefs')
+
+        routed = {
+            'provider': 'TEST', 'provider_name': 'Test provider', 'brain_version': '',
+            'trace': {},
+            'payload': {
+                'postTitle': 'Keep the edge', 'postDescription': 'Hone weekly.',
+                'postHashtags': '#knives', 'metadata': {},
+            },
+        }
+        from apps.gemini.tasks import generate_content
+
+        with patch(
+            'apps.context.services.generation.generate_marketing_payload',
+            return_value=routed,
+        ) as dispatched, patch('apps.autopilot.tasks.execute_autopilot_run'):
+            result = generate_content.call(str(run.generation_request_id))
+
+        self.assertEqual(dispatched.call_args.kwargs['brand'], second)
+        self.assertEqual(dispatched.call_args.kwargs['instruction'], brief['instruction'])
+        draft = ContentItem.objects.get(pk=result['content_item'])
+        self.assertEqual(draft.brand, second)
+
+    def test_a_second_brand_policy_follows_its_own_templates(self):
+        """Templates were defaulted only for the workspace's default brand,
+        because the worker validated references against that brand. With
+        the policy's brand resolved in the worker, a second brand's uploaded
+        template is the REFERENCE its posters follow."""
+        from apps.inspirations.models import BrandInspiration
+
+        second, policy = self.second_brand_policy()
+        template = BrandInspiration.objects.create(
+            workspace=self.workspace, brand=second, title='Second house poster',
+            inspiration_type=BrandInspiration.InspirationType.BRAND_TEMPLATE,
+            file_url='https://storage.test/inspirations/second.png',
+            storage_path='inspirations/second.png', mime_type='image/png',
+            file_name='second.png',
+        )
+        _run, brief = self.queued_brief(policy)
+        self.assertEqual(brief['creative_direction']['mode'], 'REFERENCE')
+        self.assertEqual(
+            [row['id'] for row in brief['creative_direction']['selections']],
+            [str(template.pk)],
+        )
+        self.assertEqual(brief['analyze_before_generation_ids'], [str(template.pk)])
+
+    def test_an_autopilot_poster_renders_and_bills_like_a_default_studio_poster(self):
+        """With no image_quality the generator rendered its 4K default while
+        billable_units billed 1; the studio sends its default and pays for
+        it. Autopilot now sends the same default - posters only, as the
+        studio does."""
+        from apps.gemini.services.generator import GeminiGeneratorService
+
+        _run, brief = self.queued_brief()
+        self.assertEqual(brief['contentType'], 'poster')
+        self.assertEqual(brief['image_quality'], DEFAULT_IMAGE_QUALITY)
+        studio_default = {'contentType': 'poster', 'image_quality': DEFAULT_IMAGE_QUALITY}
+        self.assertEqual(
+            billable_units(Capability.IMAGE, None, brief),
+            billable_units(Capability.IMAGE, None, studio_default),
+        )
+        self.assertEqual(
+            GeminiGeneratorService.poster_render_options(brief),
+            GeminiGeneratorService.poster_render_options(studio_default),
+        )
+
+        # The rotation's video turn carries no tier, like a studio video.
+        _video_run, video_brief = self.queued_brief()
+        self.assertEqual(video_brief['contentType'], 'video')
+        self.assertEqual(video_brief['image_quality'], '')
+        self.assertEqual(billable_units(Capability.IMAGE, None, video_brief), 1)
+
+    def test_a_carousel_turn_fails_honestly_before_any_spend(self):
+        """Autopilot builds no slides, so a CAROUSEL brief failed in the
+        worker after the copy was bought (OutputRejected, slides=[]). The
+        run now fails before a generation row exists, names the format, and
+        the next run rotates past it."""
+        self.policy.allowed_formats = ['CAROUSEL', 'POSTER']
+        self.policy.save(update_fields=['allowed_formats', 'updated_at'])
+        run = create_run(self.policy, initiated_by=self.user)
+        result = execute_run(run.pk)
+        run.refresh_from_db()
+        self.assertEqual(result['status'], AutopilotRun.Status.FAILED)
+        self.assertEqual(run.error_code, 'FORMAT_UNSUPPORTED')
+        self.assertIn('CAROUSEL', run.error)
+        self.assertIsNone(run.generation_request)
+        self.assertFalse(GeminiGenerationRequest.objects.exists())
+        self.assertEqual(run.steps.get(key='finish').status, 'FAILED')
+
+        _next_run, brief = self.queued_brief()
+        self.assertEqual(brief['contentType'], 'poster')
 
     def test_emergency_stop_stops_pending_work(self):
         run = create_run(self.policy, initiated_by=self.user)
