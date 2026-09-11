@@ -125,16 +125,16 @@ class ApprovalBypassTests(TestCase):
         self.assertEqual(Brand.objects.filter(workspace=self.workspace).count(), before)
         self.assertEqual(spend_block(self.workspace).code, 'CLIENT_REJECTED')
 
-    def test_a_pending_customer_adding_a_client_gets_a_pending_client(self):
+    def test_a_customer_cannot_add_a_client_at_all(self):
+        # Pending or approved, a customer never opens a second tenant: that is
+        # a Scaleezy platform action. A fresh workspace would otherwise be a
+        # way around the approval gate on the first one.
         response = self.client_api.post(
             WORKSPACES, {'workspace_name': 'Side Co', 'brand_name': 'Side Brand'},
             format='json',
         )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
-        ws = MarketingWorkspace.objects.get(pk=response.json()['data']['id'])
-        self.assertEqual(ws.approval_status, MarketingWorkspace.Approval.PENDING)
-        self.assertEqual(Brand.objects.get(workspace=ws).status, Brand.Status.PENDING)
-        self.assertIsNotNone(spend_block(ws))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN, response.content)
+        self.assertFalse(MarketingWorkspace.objects.filter(workspace_name='Side Co').exists())
 
     def test_approval_flips_the_workspace_and_opens_the_gate(self):
         Plan.objects.get_or_create(key='free', defaults={'name': 'Free', 'is_default': True})
@@ -143,15 +143,12 @@ class ApprovalBypassTests(TestCase):
         self.assertEqual(self.workspace.approval_status, MarketingWorkspace.Approval.APPROVED)
         self.assertIsNone(spend_block(self.workspace))
 
-        # An approved customer's next client is approved too.
+        # Approval does not turn a customer into a client-creator.
         response = self.client_api.post(
             WORKSPACES, {'workspace_name': 'Second Co', 'brand_name': 'Second Brand'},
             format='json',
         )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
-        ws = MarketingWorkspace.objects.get(pk=response.json()['data']['id'])
-        self.assertEqual(ws.approval_status, MarketingWorkspace.Approval.APPROVED)
-        self.assertIsNone(spend_block(ws))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN, response.content)
 
     def test_existing_workspaces_are_approved_by_default(self):
         legacy = MarketingWorkspace.objects.create(customer_id='old', workspace_name='Legacy')

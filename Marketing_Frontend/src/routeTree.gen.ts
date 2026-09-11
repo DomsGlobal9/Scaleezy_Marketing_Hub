@@ -38,6 +38,7 @@ import { Route as PlatformLibraryRouteImport } from './routes/platform.library'
 import { Route as PlatformPatternsRouteImport } from './routes/platform.patterns'
 import { Route as PlatformSignupsRouteImport } from './routes/platform.signups'
 import { Route as PlatformStandardsRouteImport } from './routes/platform.standards'
+import { Route as PlatformLoginRouteImport } from './routes/platform_.login'
 import { Route as PlatformClientsWorkspaceIdRouteImport } from './routes/platform.clients.$workspaceId'
 import { Route as SocialLinkedinCallbackRouteImport } from './routes/social.linkedin.callback'
 import { Route as SocialMetaCallbackRouteImport } from './routes/social.meta.callback'
@@ -187,6 +188,11 @@ const PlatformStandardsRoute = PlatformStandardsRouteImport.update({
   path: '/standards',
   getParentRoute: () => PlatformRoute,
 } as any)
+const PlatformLoginRoute = PlatformLoginRouteImport.update({
+  id: '/platform_/login',
+  path: '/platform/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PlatformClientsWorkspaceIdRoute =
   PlatformClientsWorkspaceIdRouteImport.update({
     id: '/$workspaceId',
@@ -237,6 +243,7 @@ export interface FileRoutesByFullPath {
   '/platform/patterns': typeof PlatformPatternsRoute
   '/platform/signups': typeof PlatformSignupsRoute
   '/platform/standards': typeof PlatformStandardsRoute
+  '/platform/login': typeof PlatformLoginRoute
   '/platform/': typeof PlatformIndexRoute
   '/platform/clients/$workspaceId': typeof PlatformClientsWorkspaceIdRoute
   '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
@@ -270,6 +277,7 @@ export interface FileRoutesByTo {
   '/platform/patterns': typeof PlatformPatternsRoute
   '/platform/signups': typeof PlatformSignupsRoute
   '/platform/standards': typeof PlatformStandardsRoute
+  '/platform/login': typeof PlatformLoginRoute
   '/platform': typeof PlatformIndexRoute
   '/platform/clients/$workspaceId': typeof PlatformClientsWorkspaceIdRoute
   '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
@@ -306,6 +314,7 @@ export interface FileRoutesById {
   '/platform/patterns': typeof PlatformPatternsRoute
   '/platform/signups': typeof PlatformSignupsRoute
   '/platform/standards': typeof PlatformStandardsRoute
+  '/platform_/login': typeof PlatformLoginRoute
   '/platform/': typeof PlatformIndexRoute
   '/platform/clients/$workspaceId': typeof PlatformClientsWorkspaceIdRoute
   '/social/linkedin/callback': typeof SocialLinkedinCallbackRoute
@@ -342,6 +351,7 @@ export interface FileRouteTypes {
     | '/platform/patterns'
     | '/platform/signups'
     | '/platform/standards'
+    | '/platform/login'
     | '/platform/'
     | '/platform/clients/$workspaceId'
     | '/social/linkedin/callback'
@@ -375,6 +385,7 @@ export interface FileRouteTypes {
     | '/platform/patterns'
     | '/platform/signups'
     | '/platform/standards'
+    | '/platform/login'
     | '/platform'
     | '/platform/clients/$workspaceId'
     | '/social/linkedin/callback'
@@ -410,6 +421,7 @@ export interface FileRouteTypes {
     | '/platform/patterns'
     | '/platform/signups'
     | '/platform/standards'
+    | '/platform_/login'
     | '/platform/'
     | '/platform/clients/$workspaceId'
     | '/social/linkedin/callback'
@@ -429,6 +441,7 @@ export interface RootRouteChildren {
   TermsRoute: typeof TermsRoute
   TrustRoute: typeof TrustRoute
   OauthCallbackRoute: typeof OauthCallbackRoute
+  PlatformLoginRoute: typeof PlatformLoginRoute
   SocialLinkedinCallbackRoute: typeof SocialLinkedinCallbackRoute
   SocialMetaCallbackRoute: typeof SocialMetaCallbackRoute
   SocialYoutubeCallbackRoute: typeof SocialYoutubeCallbackRoute
@@ -639,6 +652,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PlatformStandardsRouteImport
       parentRoute: typeof PlatformRoute
     }
+    '/platform_/login': {
+      id: '/platform_/login'
+      path: '/platform/login'
+      fullPath: '/platform/login'
+      preLoaderRoute: typeof PlatformLoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/platform/clients/$workspaceId': {
       id: '/platform/clients/$workspaceId'
       path: '/$workspaceId'
@@ -748,6 +768,7 @@ const rootRouteChildren: RootRouteChildren = {
   TermsRoute: TermsRoute,
   TrustRoute: TrustRoute,
   OauthCallbackRoute: OauthCallbackRoute,
+  PlatformLoginRoute: PlatformLoginRoute,
   SocialLinkedinCallbackRoute: SocialLinkedinCallbackRoute,
   SocialMetaCallbackRoute: SocialMetaCallbackRoute,
   SocialYoutubeCallbackRoute: SocialYoutubeCallbackRoute,

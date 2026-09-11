@@ -5,7 +5,6 @@ import {
   Check,
   CheckCircle2,
   ChevronsUpDown,
-  Landmark,
   LayoutDashboard,
   LogOut,
   MessagesSquare,
@@ -30,7 +29,6 @@ import {
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AddClientDialog } from "@/components/marketing/add-client-dialog";
 import { ScaleezyLogo } from "@/components/marketing/brand-logo";
 import { SiteFooter } from "@/components/marketing/site-footer";
 import { apiPost } from "@/lib/api";
@@ -92,32 +90,6 @@ function Brand() {
   );
 }
 
-/**
- * "+ Add Client" — the trigger only.
- *
- * The dialog itself is a sibling of the DropdownMenu rather than a child of it:
- * Radix unmounts the menu content on close, so a dialog rendered in here would
- * be torn down by the very click that opened it.
- */
-function WorkspaceAddClientSlot({
-  first,
-  onSelected,
-}: {
-  /** No clients at all — the menu has nothing else to say, so say this. */
-  first: boolean;
-  onSelected: () => void;
-}) {
-  return (
-    <>
-      <DropdownMenuSeparator />
-      <DropdownMenuItem onSelect={onSelected}>
-        <Plus aria-hidden />
-        <span>{first ? "Add your first client" : "Add client"}</span>
-      </DropdownMenuItem>
-    </>
-  );
-}
-
 function workspaceLabel(state: ReturnType<typeof useWorkspaces>): string {
   const current = state.workspaces.find((w) => w.id === state.selectedId);
   if (current) return current.name;
@@ -128,11 +100,9 @@ function workspaceLabel(state: ReturnType<typeof useWorkspaces>): string {
 
 function WorkspaceSwitcher({
   onNavigate,
-  onAddClient,
   dark = false,
 }: {
   onNavigate?: () => void;
-  onAddClient: () => void;
   dark?: boolean;
 }) {
   const state = useWorkspaces();
@@ -197,16 +167,6 @@ function WorkspaceSwitcher({
             </DropdownMenuItem>
           ))
         )}
-        <WorkspaceAddClientSlot
-          first={state.workspaces.length === 0}
-          onSelected={() => {
-            // Closes the mobile Sheet first. The dialog lives up in HubLayout
-            // precisely so that closing this menu — or the Sheet holding it —
-            // cannot unmount the wizard mid-creation.
-            onNavigate?.();
-            onAddClient();
-          }}
-        />
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -239,36 +199,28 @@ function WorkspaceSwitchOverlay() {
  * request answers 400 NO_WORKSPACE, so the alternative is six panels each
  * reporting the same failure in its own words. Only shown once the server has
  * actually said the list is empty — "loading" and "error" are not "none".
+ * Clients are opened by Scaleezy, so there is nothing for the person to click.
  */
-function NoClientsYet({ onAddClient }: { onAddClient: () => void }) {
+function NoClientsYet() {
   return (
     <div className="grid min-h-[60vh] place-items-center">
       <div className="max-w-md text-center">
         <span className="mx-auto grid size-12 place-items-center rounded-xl bg-primary/10 text-primary">
           <Sparkles className="size-6" strokeWidth={1.5} />
         </span>
-        <h2 className="mt-4 font-display text-xl font-semibold text-foreground">No clients yet</h2>
+        <h2 className="mt-4 font-display text-xl font-semibold text-foreground">
+          No workspace yet
+        </h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          A client is a workspace of its own — brand, knowledge, content and channels, shared with
-          nothing else. Create one and setup starts straight away.
+          Your account is not attached to a client workspace. Scaleezy sets one up for you — if you
+          signed up recently it is being reviewed; otherwise contact your administrator.
         </p>
-        <Button className="mt-5" onClick={onAddClient}>
-          <Plus className="size-4" /> Add your first client
-        </Button>
       </div>
     </div>
   );
 }
 
-function NavList({
-  isAdmin,
-  isPlatformAdmin,
-  onNavigate,
-}: {
-  isAdmin: boolean;
-  isPlatformAdmin: boolean;
-  onNavigate?: () => void;
-}) {
+function NavList({ isAdmin, onNavigate }: { isAdmin: boolean; onNavigate?: () => void }) {
   return (
     <nav className="space-y-1" aria-label="Marketing Hub">
       <p className="mb-3 px-3 text-[0.625rem] font-semibold tracking-[0.16em] text-white/35 uppercase">
@@ -300,19 +252,6 @@ function NavList({
           </span>
         </Link>
       ))}
-      {isPlatformAdmin ? (
-        <>
-          <p className="label-eyebrow mt-6 mb-3 px-3">Scaleezy staff</p>
-          <Link
-            to="/platform"
-            onClick={onNavigate}
-            className="flex min-h-11 items-center gap-3 rounded-lg border border-white/15 px-3 py-2.5 text-sm font-medium text-white/75 transition-colors hover:border-primary/60 hover:text-primary"
-          >
-            <Landmark className="size-5 shrink-0 text-primary" strokeWidth={1.75} />
-            <span className="truncate">Platform console</span>
-          </Link>
-        </>
-      ) : null}
     </nav>
   );
 }
@@ -389,11 +328,11 @@ function SignOutButton({ onDone, dark = false }: { onDone?: () => void; dark?: b
   );
 }
 
-function DesktopTopBar({ onAddClient }: { onAddClient: () => void }) {
+function DesktopTopBar() {
   return (
     <header className="sticky top-0 z-30 hidden h-[82px] items-center gap-6 border-b border-white/10 bg-brand-dark px-8 text-white lg:flex xl:px-12">
       <div className="w-full max-w-[18rem]">
-        <WorkspaceSwitcher onAddClient={onAddClient} dark />
+        <WorkspaceSwitcher dark />
       </div>
       <span className="flex items-center gap-2 text-xs font-medium text-white/55">
         <span className="size-2 rounded-full bg-primary" aria-hidden /> Active workspace
@@ -411,14 +350,12 @@ function DesktopTopBar({ onAddClient }: { onAddClient: () => void }) {
 
 function HubLayout() {
   const [open, setOpen] = useState(false);
-  const [creating, setCreating] = useState(false);
   const workspaces = useWorkspaces();
   const noClients = workspaces.status === "ready" && workspaces.workspaces.length === 0;
   const activeRole = workspaces.workspaces.find(
     (workspace) => workspace.id === workspaces.selectedId,
   )?.role;
   const isAdmin = activeRole === "OWNER" || activeRole === "ADMIN";
-  const isPlatformAdmin = workspaces.isPlatformAdmin;
 
   return (
     <div className="min-h-screen bg-background">
@@ -427,7 +364,7 @@ function HubLayout() {
           <Brand />
         </div>
         <div className="mt-7 flex-1 overflow-y-auto">
-          <NavList isAdmin={isAdmin} isPlatformAdmin={isPlatformAdmin} />
+          <NavList isAdmin={isAdmin} />
         </div>
         <div className="border-t border-white/12 pt-4">
           <p className="mb-3 px-3 text-[0.625rem] tracking-[0.14em] text-white/35 uppercase">
@@ -456,18 +393,10 @@ function HubLayout() {
             <SheetTitle className="sr-only">Marketing Hub navigation</SheetTitle>
             <Brand />
             <div className="mt-6">
-              <WorkspaceSwitcher
-                onNavigate={() => setOpen(false)}
-                onAddClient={() => setCreating(true)}
-                dark
-              />
+              <WorkspaceSwitcher onNavigate={() => setOpen(false)} dark />
             </div>
             <div className="mt-6">
-              <NavList
-                isAdmin={isAdmin}
-                isPlatformAdmin={isPlatformAdmin}
-                onNavigate={() => setOpen(false)}
-              />
+              <NavList isAdmin={isAdmin} onNavigate={() => setOpen(false)} />
             </div>
             <div className="mt-6 border-t border-white/12 pt-4">
               <SignOutButton dark onDone={() => setOpen(false)} />
@@ -484,14 +413,13 @@ function HubLayout() {
       </header>
 
       <main className="flex min-h-screen flex-col lg:pl-[236px]">
-        <DesktopTopBar onAddClient={() => setCreating(true)} />
+        <DesktopTopBar />
         <div className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-8 sm:px-6 lg:px-12 lg:py-12">
-          {noClients ? <NoClientsYet onAddClient={() => setCreating(true)} /> : <Outlet />}
+          {noClients ? <NoClientsYet /> : <Outlet />}
         </div>
         <SiteFooter />
       </main>
 
-      <AddClientDialog open={creating} onOpenChange={setCreating} onCreated={selectWorkspace} />
       <WorkspaceSwitchOverlay />
     </div>
   );

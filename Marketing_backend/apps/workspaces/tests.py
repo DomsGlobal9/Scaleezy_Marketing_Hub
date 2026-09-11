@@ -20,6 +20,7 @@ from apps.common.permissions import (
 )
 from apps.workspaces.models import MarketingWorkspace, WorkspaceMember
 from apps.ai.models import AIProvider, Capability, WorkspaceAIProvider, WorkspaceAIRoute
+from apps.audit.models import PlatformAdmin
 from apps.brands.models import Brand
 
 User = get_user_model()
@@ -303,6 +304,7 @@ class ClientBootstrapTests(TestCase):
 
         self.client = APIClient()
         self.user = User.objects.create_user(username='owner', password='p')
+        PlatformAdmin.objects.create(user=self.user)
         self.client.force_authenticate(self.user)
         self.provider = AIProvider.objects.update_or_create(
             key='gemini',
@@ -344,6 +346,17 @@ class ClientBootstrapTests(TestCase):
             ).values_list('capability', flat=True)),
             {Capability.TEXT, Capability.IMAGE},
         )
+
+    def test_add_client_is_a_platform_action_not_a_customer_one(self):
+        customer = User.objects.create_user(username='customer', password='p')
+        self.client.force_authenticate(customer)
+
+        response = self.client.post(
+            '/api/marketing/workspaces/', {'workspace_name': 'Second'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(MarketingWorkspace.objects.filter(workspace_name='Second').exists())
 
     def test_add_client_uses_the_requested_brand_name_inside_the_same_transaction(self):
         response = self.client.post(

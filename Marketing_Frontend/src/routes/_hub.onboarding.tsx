@@ -9,14 +9,8 @@
  *
  * The path itself stays routable on purpose:
  *
- *  - old bookmarks and deep links to /onboarding (any ?step= is dropped —
- *    teach re-derives the position from the server) keep landing somewhere
- *    sensible, and
- *  - AddClientDialog rewrites the address bar to /onboarding with
- *    history.replaceState and then reloads, precisely so the fresh document
- *    boots already addressed to the new client. beforeLoad throws before any
- *    component mounts, so that guarantee holds: the first thing to call
- *    /brands/current/ is Brand Master, under the new workspace id.
+ * old bookmarks and deep links to /onboarding (any ?step= is dropped — teach
+ * re-derives the position from the server) keep landing somewhere sensible.
  */
 import { createFileRoute, redirect } from "@tanstack/react-router";
 

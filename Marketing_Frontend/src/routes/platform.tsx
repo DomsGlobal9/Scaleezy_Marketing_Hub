@@ -1,16 +1,16 @@
 /**
  * Scaleezy Platform Console — a separate route tree with its own chrome.
  *
- * A staff member usually also belongs to a client workspace, so the console
- * must never look like the hub: dark slate top bar, its own left nav, and a
- * persistent PLATFORM MODE badge with a link back. The guard here only decides
- * whether to SHOW the console — every /api/platform/ request is re-gated on
- * the server by IsPlatformAdmin, so nothing client-side is a grant.
+ * Its own front door (/platform/login) and its own chrome: dark slate top
+ * bar, its own left nav, and a persistent PLATFORM MODE badge. Nothing links
+ * between the console and the client hub in either direction. The guard here
+ * only decides whether to SHOW the console — every /api/platform/ request is
+ * re-gated on the server by IsPlatformAdmin, so nothing client-side is a
+ * grant.
  */
 import { createFileRoute, Link, Outlet, redirect, useNavigate } from "@tanstack/react-router";
 import {
   Activity,
-  ArrowLeft,
   BookMarked,
   Building2,
   Inbox,
@@ -35,16 +35,16 @@ export const Route = createFileRoute("/platform")({
   // Same reason as /_hub: the session lives in localStorage, which does not
   // exist during SSR.
   ssr: false,
-  beforeLoad: async ({ context, location, preload }) => {
+  beforeLoad: async ({ context, preload }) => {
     if (!context.auth.isAuthenticated()) {
       if (preload) return;
-      throw redirect({ to: "/login", search: { redirect: location.href }, replace: true });
+      throw redirect({ to: "/platform/login", replace: true });
     }
     const me = await fetchMe();
     if (!me?.is_platform_admin) {
       if (preload) return;
-      // Not a platform admin: back to the hub, silently. The server would 403
-      // every console request anyway; this just saves the empty page.
+      // A client session has no business here. The server would 403 every
+      // console request anyway; this just saves the empty page.
       throw redirect({ to: "/overview", replace: true });
     }
   },
@@ -168,12 +168,6 @@ function TopBar({ onOpenMenu }: { onOpenMenu?: () => void }) {
           </p>
         </div>
         <ModeBadge />
-        <Link
-          to="/overview"
-          className="hidden items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-xs font-semibold text-white/70 transition-colors hover:border-primary/60 hover:text-primary sm:inline-flex"
-        >
-          <ArrowLeft className="size-3.5" /> Back to hub
-        </Link>
       </div>
     </header>
   );
@@ -195,7 +189,7 @@ function SignOut({ onDone }: { onDone?: () => void }) {
       clearWorkspaces();
       clearMeCache();
       onDone?.();
-      await navigate({ to: "/login", search: { redirect: undefined }, replace: true });
+      await navigate({ to: "/platform/login", replace: true });
     }
   };
   return (
@@ -258,16 +252,6 @@ function ConsoleLayout() {
           </div>
           <ConsoleNav onNavigate={() => setOpen(false)} pending={pending} />
           <div className="mt-6 space-y-2 border-t border-white/12 pt-4">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="w-full justify-start text-white/60 hover:bg-white/8 hover:text-white"
-              asChild
-            >
-              <Link to="/overview" onClick={() => setOpen(false)}>
-                <ArrowLeft className="size-4" /> Back to hub
-              </Link>
-            </Button>
             <SignOut onDone={() => setOpen(false)} />
           </div>
         </SheetContent>
