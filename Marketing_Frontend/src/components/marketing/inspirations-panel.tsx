@@ -64,6 +64,7 @@ import {
   type SignalSentiment,
 } from "@/lib/brand-master";
 import { cn } from "@/lib/utils";
+import { Why } from "@/components/marketing/why";
 
 const SENTIMENT_COPY: Record<SignalSentiment, { label: string; tone: "user" | "warn" | "soft" }> = {
   LIKED: { label: "Like", tone: "user" },
@@ -399,6 +400,7 @@ function AddInspirationCard({
         <div>
           <Label htmlFor={urlId} className="text-xs tracking-wide uppercase">
             …or paste a link
+            <Why>A post, reel or page you admire. Scaleezy looks at it, never copies it.</Why>
           </Label>
           <Input
             id={urlId}
@@ -413,6 +415,9 @@ function AddInspirationCard({
         <div>
           <Label htmlFor={noteId} className="text-xs tracking-wide uppercase">
             What do you like about it?
+            <Why>
+              Saying what you like teaches Scaleezy your taste far faster than the image alone.
+            </Why>
           </Label>
           <Textarea
             id={noteId}

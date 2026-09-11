@@ -101,7 +101,8 @@ export function ProductsAudienceSection({
       <section>
         <SectionTitle
           title="What you sell, and to whom"
-          description="In your own words. Every post starts from this."
+          description="In your own words."
+          why="Every headline and caption starts from this. The more specific it is, the less generic the posts."
           action={<SavingHint saving={saving} />}
         />
         <div className="mt-4">
@@ -118,7 +119,8 @@ export function ProductsAudienceSection({
       <section>
         <SectionTitle
           title="Who buys from you"
-          description="Optional, but it sharpens every caption."
+          description="Optional."
+          why="Captions are written to this person — their words, their reasons to buy."
         />
         <div className="mt-4">
           <Textarea
@@ -134,7 +136,7 @@ export function ProductsAudienceSection({
       <section>
         <SectionTitle
           title="What is on sale"
-          description="Name the products or services so posts can be specific."
+          why="Lets a post name a real product and price instead of talking around it."
         />
         <div className="mt-4">
           <Field label="Products and services">

@@ -19,22 +19,30 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { Why } from "@/components/marketing/why";
 import type { ProductService } from "@/lib/brand-settings";
 
 export function Field({
   label,
   hint,
+  why,
   className,
   children,
 }: {
   label: string;
+  /** How to fill it in. Shown below the input. */
   hint?: string;
+  /** Why Scaleezy asks. One sentence, behind the "?" beside the label. */
+  why?: string;
   className?: string;
   children: ReactNode;
 }) {
   return (
     <div className={className}>
-      <Label className="text-xs tracking-wide uppercase">{label}</Label>
+      <Label className="text-xs tracking-wide uppercase">
+        {label}
+        {why ? <Why>{why}</Why> : null}
+      </Label>
       <div className="mt-1.5">{children}</div>
       {hint ? <p className="mt-1.5 text-xs text-muted-foreground">{hint}</p> : null}
     </div>

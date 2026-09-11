@@ -73,6 +73,8 @@ export function StatusBadge({
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft } from "lucide-react";
 
+import { Why } from "@/components/marketing/why";
+
 export function PageHeader({
   eyebrow,
   title,
@@ -115,18 +117,24 @@ export function SectionTitle({
   label,
   title,
   description,
+  why,
   action,
 }: {
   label?: string;
   title: string;
   description?: string;
+  /** Why Scaleezy asks for what this section collects. */
+  why?: string;
   action?: ReactNode;
 }) {
   return (
     <div className="mb-4 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
       <div className="min-w-0">
         {label ? <p className="label-eyebrow">{label}</p> : null}
-        <h2 className="mt-1 text-2xl font-bold tracking-[-0.025em] text-foreground">{title}</h2>
+        <h2 className="mt-1 text-2xl font-bold tracking-[-0.025em] text-foreground">
+          {title}
+          {why ? <Why>{why}</Why> : null}
+        </h2>
         {description ? (
           <p className="mt-1 text-sm leading-6 text-muted-foreground">{description}</p>
         ) : null}

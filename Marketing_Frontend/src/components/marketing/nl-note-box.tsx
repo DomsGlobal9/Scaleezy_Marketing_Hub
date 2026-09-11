@@ -22,6 +22,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Chip, InlineError } from "@/components/marketing/brand-master-primitives";
+import { Why } from "@/components/marketing/why";
 import {
   acceptNoteProposal,
   enrichBrandFromSite,
@@ -149,6 +150,10 @@ export function NlNoteBox({ brandId, onChanged }: { brandId: string; onChanged?:
           <div className="min-w-0">
             <h3 className="text-base font-semibold tracking-tight text-foreground">
               Tell Scaleezy about your brand
+              <Why>
+                Anything you would tell a new team member. It becomes facts and preferences every
+                post respects.
+              </Why>
             </h3>
             <p className="mt-0.5 text-sm text-muted-foreground">
               Write it the way you would say it out loud. Scaleezy turns it into cards you can

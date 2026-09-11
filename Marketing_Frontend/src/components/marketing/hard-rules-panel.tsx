@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
+import { Why } from "@/components/marketing/why";
 
 interface Guardrails {
   forbidden_words: string[];
@@ -181,8 +182,10 @@ export function HardRulesPanel({ brandId }: { brandId: string }) {
           <>
             {LISTS.map(({ key, label, hint, placeholder }) => (
               <div key={key}>
-                <p className="text-sm font-medium">{label}</p>
-                <p className="text-xs text-muted-foreground">{hint}</p>
+                <p className="text-sm font-medium">
+                  {label}
+                  <Why>{hint}</Why>
+                </p>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   {rules[key].map((term) => (
                     <span
@@ -229,7 +232,10 @@ export function HardRulesPanel({ brandId }: { brandId: string }) {
               </div>
             ))}
             <div>
-              <p className="text-sm font-medium">Caption language</p>
+              <p className="text-sm font-medium">
+                Caption language
+                <Why>Captions are written only in the language you allow here.</Why>
+              </p>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {(
                   [

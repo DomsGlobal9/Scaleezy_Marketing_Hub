@@ -68,6 +68,7 @@ import {
 } from "@/lib/brand-master";
 import { api, apiFetch, apiPost, ApiError } from "@/lib/api";
 import { readSelectedWorkspaceId } from "@/lib/workspace";
+import { Why } from "@/components/marketing/why";
 import {
   canCreateGeneration,
   canDiscardRejectedDelivery,
@@ -2137,7 +2138,13 @@ function PublishingPage() {
               )}
 
               <div className="mb-8 space-y-2">
-                <Label htmlFor="creative-brief">What should Scaleezy create?</Label>
+                <Label htmlFor="creative-brief">
+                  What should Scaleezy create?
+                  <Why>
+                    The one thing Scaleezy cannot know: what this post is about. Product, occasion,
+                    offer — anything you would tell a designer.
+                  </Why>
+                </Label>
                 <Textarea
                   id="creative-brief"
                   rows={5}
@@ -2167,6 +2174,10 @@ function PublishingPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
                     Format
+                    <Why>
+                      A poster is one picture, a carousel is several slides, a video is a short
+                      clip.
+                    </Why>
                   </span>
                   {CONTENT_TYPES.map((ct) => (
                     <button
@@ -2189,6 +2200,9 @@ function PublishingPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
                       For
+                      <Why>
+                        Sets the size and shape, and how the caption is written for that platform.
+                      </Why>
                     </span>
                     {POSTER_PLATFORMS.map((p) => (
                       <button
@@ -2220,6 +2234,10 @@ function PublishingPage() {
                   <div className="mb-8">
                     <Label className="text-xs tracking-wide uppercase">
                       Choose the creative direction
+                      <Why>
+                        How the design is decided: a fresh design, one of your templates, or a
+                        reference you point at.
+                      </Why>
                     </Label>
                     <p className="mt-1 text-sm text-muted-foreground">
                       Leave it and Scaleezy uses your uploaded templates when you have them, an
@@ -2326,7 +2344,13 @@ function PublishingPage() {
 
                   {contentType === "poster" ? (
                     <div className="mb-8">
-                      <Label className="text-xs tracking-wide uppercase">Image quality</Label>
+                      <Label className="text-xs tracking-wide uppercase">
+                        Image quality
+                        <Why>
+                          Higher quality is sharper for print and large screens, and uses more of
+                          your plan.
+                        </Why>
+                      </Label>
                       <div className="mt-3 flex flex-wrap gap-2">
                         {QUALITY_TIERS.map((tier) => (
                           <button
@@ -2351,6 +2375,10 @@ function PublishingPage() {
                       </p>
                       <Label className="mt-4 block text-xs tracking-wide uppercase">
                         Caption language
+                        <Why>
+                          The caption and hashtags are written in this language; the poster headline
+                          stays in English.
+                        </Why>
                       </Label>
                       <div className="mt-3 flex flex-wrap gap-2">
                         {CAPTION_LANGUAGES.map((lang) => (

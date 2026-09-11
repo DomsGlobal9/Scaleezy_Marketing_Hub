@@ -128,7 +128,7 @@ export function ClientBasicsSection({ editor }: { editor: BrandEditor }) {
         action={<SavingHint saving={saving} />}
       />
       <div className="mt-4 grid gap-5 sm:grid-cols-2">
-        <Field label="Brand name">
+        <Field label="Brand name" why="Appears on posters and in captions exactly as you write it.">
           <Input
             placeholder="Acme Coffee"
             value={settings.name}
@@ -136,7 +136,11 @@ export function ClientBasicsSection({ editor }: { editor: BrandEditor }) {
             onChange={(e) => update({ name: e.target.value })}
           />
         </Field>
-        <Field label="What you do" hint="Your industry, in your words.">
+        <Field
+          label="What you do"
+          hint="Your industry, in your words."
+          why="Scaleezy picks visuals, tone and examples that fit your kind of business."
+        >
           <Input
             placeholder="Specialty coffee"
             value={settings.industry}
@@ -144,7 +148,11 @@ export function ClientBasicsSection({ editor }: { editor: BrandEditor }) {
             onChange={(e) => update({ industry: e.target.value })}
           />
         </Field>
-        <Field label="Website" hint="Optional.">
+        <Field
+          label="Website"
+          hint="Optional."
+          why="Can be printed on posters, and Scaleezy can read it for facts about you."
+        >
           <Input
             type="url"
             placeholder="https://acmecoffee.com"
@@ -153,7 +161,11 @@ export function ClientBasicsSection({ editor }: { editor: BrandEditor }) {
             onChange={(e) => update({ website: e.target.value })}
           />
         </Field>
-        <Field label="Where you are" hint="The city or region you sell in.">
+        <Field
+          label="Where you are"
+          hint="The city or region you sell in."
+          why="Local words, festivals and timing — and it can be printed on posters."
+        >
           <Input
             placeholder="Bengaluru, India"
             value={settings.location}
@@ -177,7 +189,11 @@ export function AdminDetailsSection({ editor }: { editor: BrandEditor }) {
         description="For Scaleezy's records. None of this appears in your posts."
       />
       <div className="mt-4 grid gap-5 sm:grid-cols-2">
-        <Field label="Registered business name" hint="Optional.">
+        <Field
+          label="Registered business name"
+          hint="Optional."
+          why="For invoices and Scaleezy's records only."
+        >
           <Input
             aria-label="Legal business name"
             maxLength={255}
@@ -187,7 +203,11 @@ export function AdminDetailsSection({ editor }: { editor: BrandEditor }) {
             onChange={(e) => update({ legalName: e.target.value })}
           />
         </Field>
-        <Field label="Contact person" hint="Optional.">
+        <Field
+          label="Contact person"
+          hint="Optional."
+          why="Who Scaleezy contacts about this brand."
+        >
           <Input
             aria-label="Contact person"
             maxLength={150}
@@ -197,7 +217,11 @@ export function AdminDetailsSection({ editor }: { editor: BrandEditor }) {
             onChange={(e) => update({ contactPerson: e.target.value })}
           />
         </Field>
-        <Field label="Instagram handle" hint="Optional.">
+        <Field
+          label="Instagram handle"
+          hint="Optional."
+          why="Mentioned in captions so people can find and tag you."
+        >
           <Input
             placeholder="@acmecoffee"
             value={settings.instagramHandle}
@@ -222,7 +246,12 @@ export function VoiceSection({ editor }: { editor: BrandEditor }) {
         action={<SavingHint saving={saving} />}
       />
       <div className="mt-4 grid gap-5 sm:grid-cols-2">
-        <Field label="Tagline" hint="Optional." className="sm:col-span-2">
+        <Field
+          label="Tagline"
+          hint="Optional."
+          why="Can be printed on posters and keeps captions on-message."
+          className="sm:col-span-2"
+        >
           <Input
             placeholder="Roasted this week"
             value={settings.tagline}
@@ -233,6 +262,7 @@ export function VoiceSection({ editor }: { editor: BrandEditor }) {
         <Field
           label="Tone"
           hint="A few words is enough — warm, playful, no-nonsense."
+          why="Sets how every caption and headline sounds."
           className="sm:col-span-2"
         >
           <Input
@@ -245,6 +275,7 @@ export function VoiceSection({ editor }: { editor: BrandEditor }) {
         <Field
           label="What should people do?"
           hint="The one action your posts ask for."
+          why="Every post ends by asking for this, so readers know what to do next."
           className="sm:col-span-2"
         >
           <Input
@@ -307,7 +338,8 @@ export function LogoSection({ editor }: { editor: BrandEditor }) {
     <section>
       <SectionTitle
         title="Logo"
-        description="Goes on every poster. A PNG with a transparent background looks best."
+        description="A PNG with a transparent background looks best."
+        why="Placed on every poster so the work is recognisably yours."
       />
       <div className="mt-4 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-4">
         <div className="grid size-20 shrink-0 place-items-center overflow-hidden rounded-xl border border-border bg-secondary/40">
@@ -371,14 +403,21 @@ export function VisualIdentitySection({ editor }: { editor: BrandEditor }) {
         action={<SavingHint saving={saving} />}
       />
       <div className="mt-4 space-y-6">
-        <Field label="Colours">
+        <Field
+          label="Colours"
+          why="Posters are composed around these so they look like your brand."
+        >
           <PaletteEditor
             value={settings.palette}
             disabled={loading}
             onChange={(palette) => update({ palette })}
           />
         </Field>
-        <Field label="Fonts" hint="Optional. Type a font name, e.g. DM Sans.">
+        <Field
+          label="Fonts"
+          hint="Optional. Type a font name, e.g. DM Sans."
+          why="Used for the text on posters. Left empty, Scaleezy chooses fitting ones."
+        >
           <KeyValueEditor
             value={settings.fonts}
             disabled={loading}
@@ -406,7 +445,10 @@ export function MarketSection({ editor }: { editor: BrandEditor }) {
         action={<SavingHint saving={saving} />}
       />
       <div className="mt-4 space-y-6">
-        <Field label="Brands you do not want to sound like">
+        <Field
+          label="Brands you do not want to sound like"
+          why="Scaleezy steers away from their look and wording."
+        >
           <TagListEditor
             value={settings.competitors}
             disabled={loading}
@@ -415,7 +457,11 @@ export function MarketSection({ editor }: { editor: BrandEditor }) {
             onChange={(competitors) => update({ competitors })}
           />
         </Field>
-        <Field label="Where you already post" hint="Links to your profiles.">
+        <Field
+          label="Where you already post"
+          hint="Links to your profiles."
+          why="Helps Scaleezy see the style you already publish in."
+        >
           <KeyValueEditor
             value={settings.socialLinks}
             disabled={loading}
@@ -451,7 +497,11 @@ export function PosterDefaultsSection({ editor }: { editor: BrandEditor }) {
           disabled={!hasLogo}
           onChange={(v) => update({ showLogoOnPosters: v }, { immediate: true })}
         />
-        <Field label="Phone number" hint="Printed at the bottom when the switch below is on.">
+        <Field
+          label="Phone number"
+          hint="Printed at the bottom when the switch below is on."
+          why="So a poster on its own is enough for someone to reach you."
+        >
           <div className="relative">
             <Phone className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input

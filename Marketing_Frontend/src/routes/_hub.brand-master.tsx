@@ -73,6 +73,7 @@ import {
   type LearningEventRow,
 } from "@/lib/brand-master";
 import { useBrandSettings, type BrandDto } from "@/lib/brand-settings";
+import { Why } from "@/components/marketing/why";
 
 export const Route = createFileRoute("/_hub/brand-master")({
   validateSearch: (
@@ -236,7 +237,12 @@ function RulesTab({ brandId, onChanged }: { brandId: string; onChanged: () => vo
     <div className="space-y-8">
       <Card>
         <CardContent className="space-y-3 pt-6">
-          <Label className="text-xs tracking-wide uppercase">Add a rule in your own words</Label>
+          <Label className="text-xs tracking-wide uppercase">
+            Add a rule in your own words
+            <Why>
+              Always is never broken. Prefer is followed unless a specific brief asks otherwise.
+            </Why>
+          </Label>
           <Input
             placeholder='e.g. "Never mention discounts in the headline."'
             value={text}

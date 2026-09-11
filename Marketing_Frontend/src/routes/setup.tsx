@@ -159,14 +159,18 @@ function BrandStep({ brandId, onNext }: { brandId: string; onNext: () => void })
       />
       {error ? <p className="mt-4 text-sm text-destructive">{error}</p> : null}
       <div className="mt-6 space-y-5">
-        <Field label="Brand name">
+        <Field label="Brand name" why="Appears on posters and in captions exactly as you write it.">
           <Input
             value={settings.name}
             disabled={loading}
             onChange={(e) => update({ name: e.target.value })}
           />
         </Field>
-        <Field label="Industry" hint="Pick the closest — it shapes the first suggestions.">
+        <Field
+          label="Industry"
+          hint="Pick the closest."
+          why="Scaleezy picks visuals, tone and examples that fit your kind of business."
+        >
           <div className="flex flex-wrap gap-2">
             {INDUSTRIES.map((industry) => {
               const on = settings.industry === industry;
@@ -198,7 +202,8 @@ function BrandStep({ brandId, onNext }: { brandId: string; onNext: () => void })
         </Field>
         <Field
           label="What do you sell, and to whom?"
-          hint="Plain words. Every poster Scaleezy makes reads this first."
+          hint="Plain words."
+          why="Every headline and caption starts from this. The more specific it is, the less generic the posts."
         >
           <Textarea
             rows={4}
@@ -208,7 +213,11 @@ function BrandStep({ brandId, onNext }: { brandId: string; onNext: () => void })
             onChange={(e) => update({ description: e.target.value })}
           />
         </Field>
-        <Field label="Website" hint="Optional.">
+        <Field
+          label="Website"
+          hint="Optional."
+          why="Can be printed on posters, and Scaleezy can read it for facts about you."
+        >
           <Input
             type="url"
             placeholder="https://"
@@ -217,7 +226,11 @@ function BrandStep({ brandId, onNext }: { brandId: string; onNext: () => void })
             onChange={(e) => update({ website: e.target.value })}
           />
         </Field>
-        <Field label="Main brand colour" hint="Optional. Posters are composed around it.">
+        <Field
+          label="Main brand colour"
+          hint="Optional."
+          why="Posters are composed around it so they look like your brand."
+        >
           <input
             type="color"
             aria-label="Main brand colour"

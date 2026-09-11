@@ -36,6 +36,7 @@ import {
   useSlice,
 } from "@/components/marketing/brand-master-primitives";
 import { SectionTitle } from "@/components/marketing/primitives";
+import { Why } from "@/components/marketing/why";
 import {
   MEMORY_TYPES,
   SOURCE_TYPES,
@@ -307,6 +308,10 @@ function AddSourceCard({
           <div>
             <Label htmlFor={sourceTypeId} className="text-xs tracking-wide uppercase">
               What is it?
+              <Why>
+                Tells Scaleezy how to read it — a price list and a transcript hold different kinds
+                of facts.
+              </Why>
             </Label>
             <Select value={sourceType} onValueChange={setSourceType}>
               <SelectTrigger id={sourceTypeId} className="mt-1.5 w-full">
@@ -324,6 +329,7 @@ function AddSourceCard({
           <div>
             <Label htmlFor={titleId} className="text-xs tracking-wide uppercase">
               Title{mode === "text" ? "" : " (optional)"}
+              <Why>So you can recognise where a fact came from later.</Why>
             </Label>
             <Input
               id={titleId}
@@ -722,6 +728,7 @@ function AddFactForm({
         <div>
           <Label htmlFor={contentId} className="text-xs tracking-wide uppercase">
             The fact, in one sentence
+            <Why>Used as true in every post — prices, claims, names, promises.</Why>
           </Label>
           <Textarea
             id={contentId}
