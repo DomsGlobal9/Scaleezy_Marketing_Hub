@@ -8,7 +8,6 @@ import {
   MessagesSquare,
   Menu,
   Plus,
-  Send,
   Settings,
   ShieldCheck,
   Share2,
@@ -80,7 +79,7 @@ const NAV = [
   { to: "/overview", label: "Overview", icon: LayoutDashboard, adminOnly: false },
   { to: "/brand-master", label: "Brand Master", icon: Brain, adminOnly: false },
   { to: "/accounts", label: "Social Media Accounts", icon: Share2, adminOnly: false },
-  { to: "/publishing", label: "Publishing", icon: Send, adminOnly: false },
+  { to: "/publishing", label: "Create", icon: Sparkles, adminOnly: false },
   // Named for the object, not for one stage of its lifecycle: this is where
   // every piece of work lives, whatever state it is in.
   { to: "/review", label: "Content", icon: CheckCircle2, adminOnly: false },
