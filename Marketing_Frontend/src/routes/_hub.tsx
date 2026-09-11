@@ -19,6 +19,7 @@ import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/s
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScaleezyLogo } from "@/components/marketing/brand-logo";
+import { BrandSwitcher } from "@/components/marketing/brand-switcher";
 import { SiteFooter } from "@/components/marketing/site-footer";
 import { apiPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -273,6 +274,7 @@ function SignOutButton({ onDone, dark = false }: { onDone?: () => void; dark?: b
 function DesktopTopBar() {
   return (
     <header className="sticky top-0 z-30 hidden h-[82px] items-center gap-6 border-b border-white/10 bg-brand-dark px-8 text-white lg:flex xl:px-12">
+      <BrandSwitcher dark />
       <SignedInAs dark />
       <div className="ml-auto">
         <Button asChild size="lg" className="h-11">
@@ -329,7 +331,8 @@ function HubLayout() {
           >
             <SheetTitle className="sr-only">Marketing Hub navigation</SheetTitle>
             <Brand />
-            <div className="mt-6">
+            <div className="mt-6 space-y-4">
+              <BrandSwitcher dark />
               <SignedInAs dark />
             </div>
             <div className="mt-6">
