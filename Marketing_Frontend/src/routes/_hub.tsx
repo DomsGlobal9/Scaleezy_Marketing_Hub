@@ -24,7 +24,13 @@ import { SiteFooter } from "@/components/marketing/site-footer";
 import { apiPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fetchMe, type Me } from "@/lib/platform";
-import { clearWorkspaces, loadWorkspaces, useWorkspaces } from "@/lib/workspace";
+import { loadSetupState, SETUP_ROLES } from "@/lib/setup";
+import {
+  clearWorkspaces,
+  getSelectedWorkspace,
+  loadWorkspaces,
+  useWorkspaces,
+} from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub")({
   // The guard below reads localStorage, which does not exist during SSR.
@@ -51,6 +57,17 @@ export const Route = createFileRoute("/_hub")({
     // which the backend answers with 400 NO_WORKSPACE. Preloads await it too:
     // the result is cached for the document, so it costs one request.
     await loadWorkspaces();
+
+    // A client that has not finished first-run setup is sent to the wizard
+    // instead of the hub. Read-only roles cannot do the setup, so they pass.
+    // A failed check never locks anyone out of their own hub.
+    if (SETUP_ROLES.has(getSelectedWorkspace()?.role ?? "")) {
+      const setup = await loadSetupState().catch(() => null);
+      if (setup && !setup.done) {
+        if (preload) return;
+        throw redirect({ to: "/setup", search: {}, replace: true });
+      }
+    }
   },
   // Under ssr:false the subtree renders inside a ClientOnly boundary whose
   // fallback is null by default — without this the hub is a blank page on

@@ -16,6 +16,7 @@ import { Route as HowItWorksRouteImport } from './routes/how-it-works'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PlatformRouteImport } from './routes/platform'
 import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as SetupRouteImport } from './routes/setup'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as TrustRouteImport } from './routes/trust'
@@ -76,6 +77,11 @@ const PlatformRoute = PlatformRouteImport.update({
 const PrivacyRoute = PrivacyRouteImport.update({
   id: '/privacy',
   path: '/privacy',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SetupRoute = SetupRouteImport.update({
+  id: '/setup',
+  path: '/setup',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SignupRoute = SignupRouteImport.update({
@@ -222,6 +228,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/platform': typeof PlatformRouteWithChildren
   '/privacy': typeof PrivacyRoute
+  '/setup': typeof SetupRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/trust': typeof TrustRoute
@@ -256,6 +263,7 @@ export interface FileRoutesByTo {
   '/how-it-works': typeof HowItWorksRoute
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
+  '/setup': typeof SetupRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/trust': typeof TrustRoute
@@ -293,6 +301,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/platform': typeof PlatformRouteWithChildren
   '/privacy': typeof PrivacyRoute
+  '/setup': typeof SetupRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/trust': typeof TrustRoute
@@ -330,6 +339,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/platform'
     | '/privacy'
+    | '/setup'
     | '/signup'
     | '/terms'
     | '/trust'
@@ -364,6 +374,7 @@ export interface FileRouteTypes {
     | '/how-it-works'
     | '/login'
     | '/privacy'
+    | '/setup'
     | '/signup'
     | '/terms'
     | '/trust'
@@ -400,6 +411,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/platform'
     | '/privacy'
+    | '/setup'
     | '/signup'
     | '/terms'
     | '/trust'
@@ -437,6 +449,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   PlatformRoute: typeof PlatformRouteWithChildren
   PrivacyRoute: typeof PrivacyRoute
+  SetupRoute: typeof SetupRoute
   SignupRoute: typeof SignupRoute
   TermsRoute: typeof TermsRoute
   TrustRoute: typeof TrustRoute
@@ -496,6 +509,13 @@ declare module '@tanstack/react-router' {
       path: '/privacy'
       fullPath: '/privacy'
       preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/setup': {
+      id: '/setup'
+      path: '/setup'
+      fullPath: '/setup'
+      preLoaderRoute: typeof SetupRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/signup': {
@@ -764,6 +784,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   PlatformRoute: PlatformRouteWithChildren,
   PrivacyRoute: PrivacyRoute,
+  SetupRoute: SetupRoute,
   SignupRoute: SignupRoute,
   TermsRoute: TermsRoute,
   TrustRoute: TrustRoute,
