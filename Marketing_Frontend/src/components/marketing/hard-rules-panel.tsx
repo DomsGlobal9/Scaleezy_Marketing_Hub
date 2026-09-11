@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
+import { Why } from "@/components/marketing/why";
 
 interface Guardrails {
   forbidden_words: string[];
@@ -38,31 +39,31 @@ const LISTS: { key: ListKey; label: string; hint: string; placeholder: string }[
   {
     key: "forbidden_words",
     label: "Never say",
-    hint: "Words that must never appear in any caption or brief. A brief using one is refused before any AI is paid.",
+    hint: "Words that must never appear in a caption or headline.",
     placeholder: "e.g. cheap",
   },
   {
     key: "forbidden_imagery",
     label: "Never show",
-    hint: "Visual motifs that are refused in your briefs and written into the image instructions as banned.",
+    hint: "Things that must never appear in a picture.",
     placeholder: "e.g. butterflies",
   },
   {
     key: "banned_hashtags",
     label: "Banned hashtags",
-    hint: "Stripped automatically if the AI ever writes one.",
+    hint: "Removed if they ever show up.",
     placeholder: "e.g. #sale",
   },
   {
     key: "required_on_every_post",
     label: "On every post",
-    hint: "Lines every caption must carry, verbatim — your website, your tagline. Added automatically when missing.",
+    hint: "A line every caption must include, word for word — your website, your tagline.",
     placeholder: "e.g. yourbrand.com",
   },
   {
     key: "approved_ctas",
-    label: "DM keywords",
-    hint: "The only call-to-action keywords allowed. Every caption gets one.",
+    label: "Reply keywords",
+    hint: "The word people should comment or DM to respond, e.g. PRICE. Every caption gets one.",
     placeholder: "e.g. PROTECT",
   },
 ];
@@ -164,15 +165,12 @@ export function HardRulesPanel({ brandId }: { brandId: string }) {
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
           <ShieldCheck className="size-4 text-primary" />
-          Enforced safeguards
+          Hard limits
           {saving ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" /> : null}
         </CardTitle>
         <p className="text-sm text-muted-foreground">
-          Before AI runs, banned words or imagery named in your brief stop the request. Generated
-          copy is checked: Scaleezy retries banned words, removes banned hashtags, appends required
-          lines, and adds an approved DM keyword when one is missing. Language and visual safeguards
-          are also sent to the provider. The stated and learned rules below are a separate guidance
-          layer. Leave any safeguard empty and it has no effect.
+          Things that must always or never happen. Scaleezy checks every post against these before
+          it reaches you. Leave any of them empty and it simply does not apply.
         </p>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -184,8 +182,10 @@ export function HardRulesPanel({ brandId }: { brandId: string }) {
           <>
             {LISTS.map(({ key, label, hint, placeholder }) => (
               <div key={key}>
-                <p className="text-sm font-medium">{label}</p>
-                <p className="text-xs text-muted-foreground">{hint}</p>
+                <p className="text-sm font-medium">
+                  {label}
+                  <Why>{hint}</Why>
+                </p>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   {rules[key].map((term) => (
                     <span
@@ -232,7 +232,10 @@ export function HardRulesPanel({ brandId }: { brandId: string }) {
               </div>
             ))}
             <div>
-              <p className="text-sm font-medium">Language</p>
+              <p className="text-sm font-medium">
+                Caption language
+                <Why>Captions are written only in the language you allow here.</Why>
+              </p>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {(
                   [

@@ -14,6 +14,7 @@ from apps.common.permissions import (
     get_request_workspace,
 )
 from apps.common.responses import APIResponse
+from apps.platform.permissions import IsPlatformAdmin
 from apps.ai.provisioning import AIProvisioningError, provision_default_ai
 from apps.brands.models import Brand
 from apps.social_accounts.models import SocialAccountAuditLog
@@ -44,9 +45,11 @@ class MarketingWorkspaceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
     required_read_role = WorkspaceMember.Role.VIEWER
 
     def get_permissions(self):
-        # Creating a workspace cannot require membership of one.
+        # Clients are opened by Scaleezy, never by a client. A customer gets
+        # exactly one workspace, created at signup; a second one would be a
+        # way to spend from a fresh, unreviewed tenant.
         if self.action == 'create':
-            return [IsAuthenticated()]
+            return [IsAuthenticated(), IsPlatformAdmin()]
         return super().get_permissions()
 
     def create(self, request, *args, **kwargs):
@@ -55,6 +58,7 @@ class MarketingWorkspaceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         Membership, default brand and AI policy commit together. If platform
         AI is not deploy-ready the request fails honestly and leaves no client
         behind for the user to repair through Settings or an operator shell.
+        Only platform admins reach here, so the client is approved on creation.
         """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -64,24 +68,11 @@ class MarketingWorkspaceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
             or 'My Brand'
         )
 
-        # A new client is approved only when the person creating it already
-        # administers an approved client. Otherwise a pending or rejected
-        # customer could open a second workspace and spend from it.
-        approved_creator = WorkspaceMember.objects.filter(
-            user=request.user,
-            status=WorkspaceMember.Status.ACTIVE,
-            role__in=[WorkspaceMember.Role.OWNER, WorkspaceMember.Role.ADMIN],
-            workspace__approval_status=MarketingWorkspace.Approval.APPROVED,
-            workspace__status=MarketingWorkspace.Status.ACTIVE,
-        ).exists()
-        approval = (
-            MarketingWorkspace.Approval.APPROVED if approved_creator
-            else MarketingWorkspace.Approval.PENDING
-        )
-
         try:
             with transaction.atomic():
-                workspace = serializer.save(approval_status=approval)
+                workspace = serializer.save(
+                    approval_status=MarketingWorkspace.Approval.APPROVED
+                )
                 WorkspaceMember.objects.create(
                     workspace=workspace,
                     user=request.user,
@@ -91,9 +82,7 @@ class MarketingWorkspaceViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
                     workspace=workspace,
                     name=brand_name,
                     is_default=True,
-                    status=(
-                        Brand.Status.ACTIVE if approved_creator else Brand.Status.PENDING
-                    ),
+                    status=Brand.Status.ACTIVE,
                     created_by=request.user,
                 )
                 provision_default_ai(workspace)

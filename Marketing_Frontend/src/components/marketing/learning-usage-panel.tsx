@@ -69,8 +69,8 @@ export function LearningUsagePanel({ brandId }: { brandId: string }) {
     <section>
       <SectionTitle
         label="Learning"
-        title="Is it reaching the work?"
-        description="Every rule and preference, with whether it sits in the compiled Brand Brain — which is exactly what a generation receives — and how often recent generations used it."
+        title="Is it showing up in the posts?"
+        description="Each rule and preference, and how often recent posts actually used it."
         action={
           <Button variant="ghost" size="sm" onClick={report.reload}>
             <RefreshCw className="size-4" /> Refresh
@@ -80,8 +80,8 @@ export function LearningUsagePanel({ brandId }: { brandId: string }) {
 
       {rows.length === 0 ? (
         <Empty
-          title="Nothing learned yet"
-          hint="State a rule, confirm a fact, or review some content — what accumulates here is what generation obeys."
+          title="Nothing to show yet"
+          hint="Add a rule or review a few posts and this fills in."
         />
       ) : (
         <>

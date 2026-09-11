@@ -24,7 +24,7 @@ export const Route = createFileRoute("/_hub/admin")({
     const role = getSelectedWorkspace()?.role;
 
     if (role !== "OWNER" && role !== "ADMIN") {
-      throw redirect({ to: "/", replace: true });
+      throw redirect({ to: "/overview", replace: true });
     }
   },
   head: () => ({
@@ -60,7 +60,7 @@ function AdminPage() {
         eyebrow="Workspace administration"
         title="Admin"
         subtitle="Configure provider credentials, capability routing, failover and redundancy for the selected client."
-        backTo="/"
+        backTo="/overview"
       />
 
       <section className="surface-card p-5 sm:p-6">

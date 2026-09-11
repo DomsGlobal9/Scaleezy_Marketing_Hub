@@ -1,14 +1,37 @@
-User-agent: Googlebot
-Allow: /
-
-User-agent: Bingbot
-Allow: /
-
-User-agent: Twitterbot
-Allow: /
-
-User-agent: facebookexternalhit
-Allow: /
+# One group, deliberately.
+#
+# A crawler obeys only the single most specific user-agent group that matches
+# it and ignores every other group, including "*". So a file that lists
+# "User-agent: Googlebot / Allow: /" above a "*" group carrying Disallow rules
+# tells Googlebot to crawl everything and applies the restrictions to nobody
+# who matters. Search crawlers, social preview fetchers and AI assistants are
+# all welcome on the marketing pages and all excluded from the application, so
+# they share one set of rules rather than one group each.
+#
+# Crawling is not indexing: /login and /signup also send "robots: noindex",
+# which is what actually keeps a URL out of an index. Disallow only stops the
+# fetch.
 
 User-agent: *
 Allow: /
+
+# The product is behind authentication. These paths render an empty shell to an
+# unauthenticated fetch, so crawling them yields thin pages and nothing else.
+Disallow: /login
+Disallow: /signup
+Disallow: /overview
+Disallow: /brand-master
+Disallow: /accounts
+Disallow: /publishing
+Disallow: /review
+Disallow: /growth
+Disallow: /analytics
+Disallow: /settings
+Disallow: /admin
+Disallow: /platform
+Disallow: /onboarding
+Disallow: /autopilot
+Disallow: /oauth/
+Disallow: /social/
+
+Sitemap: https://scaleezy-marketing-hub.vercel.app/sitemap.xml

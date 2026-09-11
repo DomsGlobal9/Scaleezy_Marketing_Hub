@@ -285,7 +285,7 @@ function EngagementPage() {
         eyebrow="Governed customer engagement"
         title="Engagement"
         subtitle={`X mentions and YouTube comments for ${brand?.name || "this client"} — claimed by a person, drafted with routed AI, and sent only after human approval.`}
-        backTo="/"
+        backTo="/overview"
       />
 
       {error ? (

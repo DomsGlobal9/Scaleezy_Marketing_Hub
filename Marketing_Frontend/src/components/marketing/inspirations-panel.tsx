@@ -64,6 +64,7 @@ import {
   type SignalSentiment,
 } from "@/lib/brand-master";
 import { cn } from "@/lib/utils";
+import { Why } from "@/components/marketing/why";
 
 const SENTIMENT_COPY: Record<SignalSentiment, { label: string; tone: "user" | "warn" | "soft" }> = {
   LIKED: { label: "Like", tone: "user" },
@@ -131,13 +132,13 @@ export function InspirationsPanel({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="max-w-2xl">
           <p className="text-sm text-muted-foreground">
-            Show Scaleezy what good looks like — posts, reels, ads, screenshots, competitor work —
-            and say what you like about each. What you state here is treated as your preference and
-            outranks anything Scaleezy infers.
+            Show Scaleezy what good looks like — posts, reels, ads, screenshots, even competitors —
+            and say what you like about each. What you say always counts more than what Scaleezy
+            guesses.
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
-            Analysis runs when you request it. Every AI suggestion waits for your confirmation
-            before it can influence the Brand Brain.
+            Ask Scaleezy to look at a reference and it will tell you what it noticed. You decide
+            what sticks.
           </p>
         </div>
         <Button onClick={() => setAdding((v) => !v)}>
@@ -158,8 +159,8 @@ export function InspirationsPanel({
 
       {active.length === 0 && !adding ? (
         <Empty
-          title="No inspirations yet"
-          hint="Add references — a screenshot, a competitor post, a reel — and say what you like about them."
+          title="Nothing added yet"
+          hint="Drop in a screenshot, a competitor post or a reel, and say what you like about it."
           action={
             <Button variant="outline" onClick={() => setAdding(true)}>
               <Plus className="size-4" /> Add your first reference
@@ -230,7 +231,11 @@ const typeFromUrl = (url: string): string => {
 
 /** The title comes from the note — nobody should have to invent one. */
 const titleFromNote = (note: string) => {
-  const firstLine = note.trim().split(/[\n.!?]/, 1)[0]?.trim() ?? "";
+  const firstLine =
+    note
+      .trim()
+      .split(/[\n.!?]/, 1)[0]
+      ?.trim() ?? "";
   if (firstLine.length <= 64) return firstLine || "Inspiration";
   const cut = firstLine.slice(0, 64);
   return cut.slice(0, Math.max(cut.lastIndexOf(" "), 40)) + "…";
@@ -395,6 +400,7 @@ function AddInspirationCard({
         <div>
           <Label htmlFor={urlId} className="text-xs tracking-wide uppercase">
             …or paste a link
+            <Why>A post, reel or page you admire. Scaleezy looks at it, never copies it.</Why>
           </Label>
           <Input
             id={urlId}
@@ -409,6 +415,9 @@ function AddInspirationCard({
         <div>
           <Label htmlFor={noteId} className="text-xs tracking-wide uppercase">
             What do you like about it?
+            <Why>
+              Saying what you like teaches Scaleezy your taste far faster than the image alone.
+            </Why>
           </Label>
           <Textarea
             id={noteId}
@@ -626,8 +635,8 @@ function InspirationCard({
                       <Loader2 className="size-3.5 animate-spin" />
                     ) : null}
                     {inspiration.analysis_status === "FAILED"
-                      ? "Retry analysis"
-                      : "Analyze with AI"}
+                      ? "Try again"
+                      : "What does Scaleezy see?"}
                   </Button>
                   <Button size="sm" variant="ghost" onClick={() => setConfirmArchive(true)}>
                     <Archive className="size-3.5" /> Archive
@@ -647,7 +656,7 @@ function InspirationCard({
         </div>
 
         <div>
-          <p className="label-eyebrow mb-2">What you told Scaleezy</p>
+          <p className="label-eyebrow mb-2">What you said</p>
           {signalsLoading ? (
             <Loading rows={1} />
           ) : stated.length === 0 ? (
@@ -677,8 +686,8 @@ function InspirationCard({
           {inferred.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               {inspiration.analysis_status === "NOT_ANALYSED"
-                ? "Not analysed yet. Choose Analyze with AI, then approve only the suggestions that fit."
-                : `Analysis state: ${humanize(inspiration.analysis_status)}.`}
+                ? "Ask Scaleezy what it sees here, then keep only the suggestions that fit."
+                : `${humanize(inspiration.analysis_status)}.`}
             </p>
           ) : (
             <ul className="space-y-2">

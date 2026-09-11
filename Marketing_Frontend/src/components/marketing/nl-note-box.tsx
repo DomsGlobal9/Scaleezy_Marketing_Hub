@@ -22,6 +22,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Chip, InlineError } from "@/components/marketing/brand-master-primitives";
+import { Why } from "@/components/marketing/why";
 import {
   acceptNoteProposal,
   enrichBrandFromSite,
@@ -149,10 +150,14 @@ export function NlNoteBox({ brandId, onChanged }: { brandId: string; onChanged?:
           <div className="min-w-0">
             <h3 className="text-base font-semibold tracking-tight text-foreground">
               Tell Scaleezy about your brand
+              <Why>
+                Anything you would tell a new team member. It becomes facts and preferences every
+                post respects.
+              </Why>
             </h3>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              Write it the way you would say it. Scaleezy turns it into cards — facts, preferences,
-              rules — and nothing is saved until you accept a card.
+              Write it the way you would say it out loud. Scaleezy turns it into cards you can
+              accept or dismiss.
             </p>
           </div>
         </div>
@@ -173,9 +178,7 @@ export function NlNoteBox({ brandId, onChanged }: { brandId: string; onChanged?:
               />
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-muted-foreground">
-                Your words are kept as a note; only accepted cards become brand intelligence.
-              </p>
+              <p className="text-xs text-muted-foreground">Only the cards you accept are used.</p>
               <Button onClick={() => void submit()} disabled={submitting || !text.trim()}>
                 {submitting ? (
                   <>
@@ -183,7 +186,7 @@ export function NlNoteBox({ brandId, onChanged }: { brandId: string; onChanged?:
                   </>
                 ) : (
                   <>
-                    <Sparkles className="size-4" /> Propose cards
+                    <Sparkles className="size-4" /> Turn into cards
                   </>
                 )}
               </Button>
@@ -196,7 +199,7 @@ export function NlNoteBox({ brandId, onChanged }: { brandId: string; onChanged?:
             </p>
             {result.proposals.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                Scaleezy did not find anything it could turn into a card. The note itself is kept.
+                Scaleezy could not turn that into a card. Try being more specific.
               </p>
             ) : (
               <ul className="space-y-2">
@@ -266,10 +269,10 @@ export function EnrichFromWebsite({
             <Globe className="size-4.5" strokeWidth={1.75} />
           </span>
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-foreground">Refresh from my website</p>
+            <p className="text-sm font-semibold text-foreground">Read my website</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              One bounded pass over the brand's own site. Pages are captured as sources you can
-              confirm facts from — nothing is added to the profile by itself.
+              Scaleezy reads your site and suggests facts from it. Nothing is used until you confirm
+              it.
             </p>
           </div>
         </div>

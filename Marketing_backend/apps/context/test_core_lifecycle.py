@@ -49,7 +49,7 @@ from .services.generation import generate_with_context
 
 User = get_user_model()
 
-WORKSPACES_URL = '/api/marketing/workspaces/'
+SIGNUP_URL = '/api/auth/signup/'
 BRANDS_URL = '/api/marketing/brands/'
 SOURCES_URL = '/api/marketing/knowledge/sources/'
 INSPIRATIONS_URL = '/api/marketing/inspirations/'
@@ -73,27 +73,36 @@ class CoreProductLifecycleTests(TestCase):
     """Signup through queued publishing, then every record refused to a stranger."""
 
     def setUp(self):
-        self.alice = User.objects.create_user(username='alice', password='pw')
-        self.bob = User.objects.create_user(username='bob', password='pw')
+        # Signup is the only door a customer has into a workspace of their
+        # own; opening a further client is a platform action.
         self.alice_client = APIClient()
-        self.alice_client.force_authenticate(user=self.alice)
+        self.alice = self._sign_up(self.alice_client, 'alice')
         self.bob_client = APIClient()
-        self.bob_client.force_authenticate(user=self.bob)
+        self.bob = self._sign_up(self.bob_client, 'bob')
 
-    def _create_workspace(self, client, name):
-        response = client.post(WORKSPACES_URL, {'workspace_name': name}, format='json')
+    def _sign_up(self, client, name):
+        response = client.post(SIGNUP_URL, {
+            'email': f'{name}@example.test', 'password': 'orbit-lantern-42-quartz',
+            'brand_name': name.title(),
+        }, format='json')
         self.assertEqual(
             response.status_code, status.HTTP_201_CREATED,
-            f'creating {name} failed: {response.content[:300]}',
+            f'signup for {name} failed: {response.content[:300]}',
         )
-        payload = response.json()
-        workspace_data = payload.get('data', payload)
-        return MarketingWorkspace.objects.get(pk=workspace_data['id'])
+        user = User.objects.get(username=f'{name}@example.test')
+        client.force_authenticate(user=user)
+        return user
+
+    def _workspace_of(self, user, name):
+        workspace = MarketingWorkspace.objects.get(members__user=user)
+        workspace.workspace_name = name
+        workspace.save(update_fields=['workspace_name'])
+        return workspace
 
     def test_a_new_tenant_goes_from_signup_to_a_generated_result_unaided(self):
         # --- the two tenants -------------------------------------------------
-        workspace_a = self._create_workspace(self.alice_client, 'Alice Coffee')
-        workspace_b = self._create_workspace(self.bob_client, 'Bob Tea')
+        workspace_a = self._workspace_of(self.alice, 'Alice Coffee')
+        workspace_b = self._workspace_of(self.bob, 'Bob Tea')
         header_a = workspace_header(workspace_a)
         header_b = workspace_header(workspace_b)
 

@@ -2,40 +2,35 @@ import { createFileRoute, Link, Outlet, redirect, useNavigate } from "@tanstack/
 import {
   BarChart3,
   Brain,
-  Check,
   CheckCircle2,
-  ChevronsUpDown,
-  Landmark,
   LayoutDashboard,
   LogOut,
   MessagesSquare,
   Menu,
   Plus,
-  Send,
   Settings,
   ShieldCheck,
   Share2,
   Sparkles,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AddClientDialog } from "@/components/marketing/add-client-dialog";
 import { ScaleezyLogo } from "@/components/marketing/brand-logo";
+import { BrandSwitcher } from "@/components/marketing/brand-switcher";
 import { SiteFooter } from "@/components/marketing/site-footer";
 import { apiPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { clearWorkspaces, loadWorkspaces, selectWorkspace, useWorkspaces } from "@/lib/workspace";
+import { fetchMe, type Me } from "@/lib/platform";
+import { loadSetupState, SETUP_ROLES } from "@/lib/setup";
+import {
+  clearWorkspaces,
+  getSelectedWorkspace,
+  loadWorkspaces,
+  useWorkspaces,
+} from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub")({
   // The guard below reads localStorage, which does not exist during SSR.
@@ -62,6 +57,17 @@ export const Route = createFileRoute("/_hub")({
     // which the backend answers with 400 NO_WORKSPACE. Preloads await it too:
     // the result is cached for the document, so it costs one request.
     await loadWorkspaces();
+
+    // A client that has not finished first-run setup is sent to the wizard
+    // instead of the hub. Read-only roles cannot do the setup, so they pass.
+    // A failed check never locks anyone out of their own hub.
+    if (SETUP_ROLES.has(getSelectedWorkspace()?.role ?? "")) {
+      const setup = await loadSetupState().catch(() => null);
+      if (setup && !setup.done) {
+        if (preload) return;
+        throw redirect({ to: "/setup", search: {}, replace: true });
+      }
+    }
   },
   // Under ssr:false the subtree renders inside a ClientOnly boundary whose
   // fallback is null by default — without this the hub is a blank page on
@@ -71,10 +77,10 @@ export const Route = createFileRoute("/_hub")({
 });
 
 const NAV = [
-  { to: "/", label: "Overview", icon: LayoutDashboard, adminOnly: false },
+  { to: "/overview", label: "Overview", icon: LayoutDashboard, adminOnly: false },
   { to: "/brand-master", label: "Brand Master", icon: Brain, adminOnly: false },
-  { to: "/accounts", label: "Social Media Accounts", icon: Share2, adminOnly: false },
-  { to: "/publishing", label: "Publishing", icon: Send, adminOnly: false },
+  { to: "/accounts", label: "Accounts", icon: Share2, adminOnly: false },
+  { to: "/publishing", label: "Create", icon: Sparkles, adminOnly: false },
   // Named for the object, not for one stage of its lifecycle: this is where
   // every piece of work lives, whatever state it is in.
   { to: "/review", label: "Content", icon: CheckCircle2, adminOnly: false },
@@ -93,142 +99,46 @@ function Brand() {
 }
 
 /**
- * "+ Add Client" — the trigger only.
- *
- * The dialog itself is a sibling of the DropdownMenu rather than a child of it:
- * Radix unmounts the menu content on close, so a dialog rendered in here would
- * be torn down by the very click that opened it.
+ * Who is signed in. The client is implied — a person has one workspace — so
+ * the top bar names the person, not the tenant.
  */
-function WorkspaceAddClientSlot({
-  first,
-  onSelected,
-}: {
-  /** No clients at all — the menu has nothing else to say, so say this. */
-  first: boolean;
-  onSelected: () => void;
-}) {
+function SignedInAs({ dark = false }: { dark?: boolean }) {
+  const [me, setMe] = useState<Me | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchMe().then((value) => {
+      if (!cancelled) setMe(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const name = me ? [me.first_name, me.last_name].filter(Boolean).join(" ") || me.username : "…";
   return (
-    <>
-      <DropdownMenuSeparator />
-      <DropdownMenuItem onSelect={onSelected}>
-        <Plus aria-hidden />
-        <span>{first ? "Add your first client" : "Add client"}</span>
-      </DropdownMenuItem>
-    </>
-  );
-}
-
-function workspaceLabel(state: ReturnType<typeof useWorkspaces>): string {
-  const current = state.workspaces.find((w) => w.id === state.selectedId);
-  if (current) return current.name;
-  if (state.status === "loading" || state.status === "idle") return "Loading clients…";
-  if (state.status === "error") return "Clients unavailable";
-  return "No client yet";
-}
-
-function WorkspaceSwitcher({
-  onNavigate,
-  onAddClient,
-  dark = false,
-}: {
-  onNavigate?: () => void;
-  onAddClient: () => void;
-  dark?: boolean;
-}) {
-  const state = useWorkspaces();
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={`Switch client. Current client: ${workspaceLabel(state)}`}
-          disabled={state.switching}
+    <span className="flex min-w-0 items-center gap-3">
+      <span
+        className={cn(
+          "grid size-9 shrink-0 place-items-center rounded-full text-sm font-semibold",
+          dark ? "bg-primary/20 text-primary" : "bg-primary/10 text-primary",
+        )}
+        aria-hidden
+      >
+        {name.charAt(0).toUpperCase()}
+      </span>
+      <span className="min-w-0">
+        <span
           className={cn(
-            "flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-60",
-            dark
-              ? "border-white/15 bg-white/5 text-white hover:border-primary/60 hover:bg-white/10"
-              : "border-border bg-background text-foreground hover:border-foreground",
+            "block text-[0.625rem] font-semibold tracking-[0.14em] uppercase",
+            dark ? "text-white/45" : "text-muted-foreground",
           )}
         >
-          <span className="min-w-0 flex-1">
-            <span
-              className={cn(
-                "block text-[0.625rem] font-semibold tracking-[0.14em] uppercase",
-                dark ? "text-white/45" : "text-muted-foreground",
-              )}
-            >
-              Client
-            </span>
-            <span
-              className={cn("mt-0.5 block truncate text-sm font-semibold", dark && "text-white")}
-            >
-              {workspaceLabel(state)}
-            </span>
-          </span>
-          <ChevronsUpDown
-            className={cn("size-4 shrink-0", dark ? "text-primary" : "text-muted-foreground")}
-            strokeWidth={1.75}
-            aria-hidden
-          />
-        </button>
-      </DropdownMenuTrigger>
-
-      <DropdownMenuContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
-        <DropdownMenuLabel>Switch client</DropdownMenuLabel>
-        {state.workspaces.length === 0 ? (
-          <DropdownMenuItem disabled>
-            {state.status === "error" ? "Clients unavailable" : "No clients yet"}
-          </DropdownMenuItem>
-        ) : (
-          state.workspaces.map((workspace) => (
-            <DropdownMenuItem
-              key={workspace.id}
-              onSelect={() => {
-                onNavigate?.();
-                selectWorkspace(workspace.id);
-              }}
-            >
-              <Check
-                className={workspace.id === state.selectedId ? "text-gold" : "invisible"}
-                aria-hidden
-              />
-              <span className="truncate">{workspace.name}</span>
-            </DropdownMenuItem>
-          ))
-        )}
-        <WorkspaceAddClientSlot
-          first={state.workspaces.length === 0}
-          onSelected={() => {
-            // Closes the mobile Sheet first. The dialog lives up in HubLayout
-            // precisely so that closing this menu — or the Sheet holding it —
-            // cannot unmount the wizard mid-creation.
-            onNavigate?.();
-            onAddClient();
-          }}
-        />
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-/**
- * Covers the page opaquely between committing a switch and the document being
- * replaced, so the outgoing client's rows cannot be read or clicked while the
- * new tenant loads.
- */
-function WorkspaceSwitchOverlay() {
-  const { switching } = useWorkspaces();
-  if (!switching) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-background"
-      role="status"
-      aria-live="polite"
-    >
-      <p className="text-sm text-muted-foreground">Switching client…</p>
-    </div>
+          Signed in as
+        </span>
+        <span className={cn("block truncate text-sm font-semibold", dark && "text-white")}>
+          {name}
+        </span>
+      </span>
+    </span>
   );
 }
 
@@ -239,36 +149,28 @@ function WorkspaceSwitchOverlay() {
  * request answers 400 NO_WORKSPACE, so the alternative is six panels each
  * reporting the same failure in its own words. Only shown once the server has
  * actually said the list is empty — "loading" and "error" are not "none".
+ * Clients are opened by Scaleezy, so there is nothing for the person to click.
  */
-function NoClientsYet({ onAddClient }: { onAddClient: () => void }) {
+function NoClientsYet() {
   return (
     <div className="grid min-h-[60vh] place-items-center">
       <div className="max-w-md text-center">
         <span className="mx-auto grid size-12 place-items-center rounded-xl bg-primary/10 text-primary">
           <Sparkles className="size-6" strokeWidth={1.5} />
         </span>
-        <h2 className="mt-4 font-display text-xl font-semibold text-foreground">No clients yet</h2>
+        <h2 className="mt-4 font-display text-xl font-semibold text-foreground">
+          No workspace yet
+        </h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          A client is a workspace of its own — brand, knowledge, content and channels, shared with
-          nothing else. Create one and setup starts straight away.
+          Your account is not attached to a client workspace. Scaleezy sets one up for you — if you
+          signed up recently it is being reviewed; otherwise contact your administrator.
         </p>
-        <Button className="mt-5" onClick={onAddClient}>
-          <Plus className="size-4" /> Add your first client
-        </Button>
       </div>
     </div>
   );
 }
 
-function NavList({
-  isAdmin,
-  isPlatformAdmin,
-  onNavigate,
-}: {
-  isAdmin: boolean;
-  isPlatformAdmin: boolean;
-  onNavigate?: () => void;
-}) {
+function NavList({ isAdmin, onNavigate }: { isAdmin: boolean; onNavigate?: () => void }) {
   return (
     <nav className="space-y-1" aria-label="Marketing Hub">
       <p className="mb-3 px-3 text-[0.625rem] font-semibold tracking-[0.16em] text-white/35 uppercase">
@@ -278,7 +180,7 @@ function NavList({
         <Link
           key={item.to}
           to={item.to}
-          activeOptions={{ exact: item.to === "/" }}
+          activeOptions={{ exact: false }}
           onClick={onNavigate}
           className={cn(
             "group relative flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-white/65 transition-colors hover:bg-white/8 hover:text-white data-[status=active]:bg-white/6 data-[status=active]:text-primary",
@@ -290,29 +192,9 @@ function NavList({
             className="size-5 shrink-0 group-data-[status=active]:text-primary"
             strokeWidth={1.75}
           />
-          <span
-            className={cn(
-              "min-w-0 leading-snug",
-              item.to === "/accounts" ? "whitespace-normal" : "truncate",
-            )}
-          >
-            {item.label}
-          </span>
+          <span className="min-w-0 truncate leading-snug">{item.label}</span>
         </Link>
       ))}
-      {isPlatformAdmin ? (
-        <>
-          <p className="label-eyebrow mt-6 mb-3 px-3">Scaleezy staff</p>
-          <Link
-            to="/platform"
-            onClick={onNavigate}
-            className="flex min-h-11 items-center gap-3 rounded-lg border border-white/15 px-3 py-2.5 text-sm font-medium text-white/75 transition-colors hover:border-primary/60 hover:text-primary"
-          >
-            <Landmark className="size-5 shrink-0 text-primary" strokeWidth={1.75} />
-            <span className="truncate">Platform console</span>
-          </Link>
-        </>
-      ) : null}
     </nav>
   );
 }
@@ -389,15 +271,11 @@ function SignOutButton({ onDone, dark = false }: { onDone?: () => void; dark?: b
   );
 }
 
-function DesktopTopBar({ onAddClient }: { onAddClient: () => void }) {
+function DesktopTopBar() {
   return (
     <header className="sticky top-0 z-30 hidden h-[82px] items-center gap-6 border-b border-white/10 bg-brand-dark px-8 text-white lg:flex xl:px-12">
-      <div className="w-full max-w-[18rem]">
-        <WorkspaceSwitcher onAddClient={onAddClient} dark />
-      </div>
-      <span className="flex items-center gap-2 text-xs font-medium text-white/55">
-        <span className="size-2 rounded-full bg-primary" aria-hidden /> Active workspace
-      </span>
+      <BrandSwitcher dark />
+      <SignedInAs dark />
       <div className="ml-auto">
         <Button asChild size="lg" className="h-11">
           <Link to="/publishing">
@@ -411,14 +289,12 @@ function DesktopTopBar({ onAddClient }: { onAddClient: () => void }) {
 
 function HubLayout() {
   const [open, setOpen] = useState(false);
-  const [creating, setCreating] = useState(false);
   const workspaces = useWorkspaces();
   const noClients = workspaces.status === "ready" && workspaces.workspaces.length === 0;
   const activeRole = workspaces.workspaces.find(
     (workspace) => workspace.id === workspaces.selectedId,
   )?.role;
   const isAdmin = activeRole === "OWNER" || activeRole === "ADMIN";
-  const isPlatformAdmin = workspaces.isPlatformAdmin;
 
   return (
     <div className="min-h-screen bg-background">
@@ -427,7 +303,7 @@ function HubLayout() {
           <Brand />
         </div>
         <div className="mt-7 flex-1 overflow-y-auto">
-          <NavList isAdmin={isAdmin} isPlatformAdmin={isPlatformAdmin} />
+          <NavList isAdmin={isAdmin} />
         </div>
         <div className="border-t border-white/12 pt-4">
           <p className="mb-3 px-3 text-[0.625rem] tracking-[0.14em] text-white/35 uppercase">
@@ -455,19 +331,12 @@ function HubLayout() {
           >
             <SheetTitle className="sr-only">Marketing Hub navigation</SheetTitle>
             <Brand />
-            <div className="mt-6">
-              <WorkspaceSwitcher
-                onNavigate={() => setOpen(false)}
-                onAddClient={() => setCreating(true)}
-                dark
-              />
+            <div className="mt-6 space-y-4">
+              <BrandSwitcher dark />
+              <SignedInAs dark />
             </div>
             <div className="mt-6">
-              <NavList
-                isAdmin={isAdmin}
-                isPlatformAdmin={isPlatformAdmin}
-                onNavigate={() => setOpen(false)}
-              />
+              <NavList isAdmin={isAdmin} onNavigate={() => setOpen(false)} />
             </div>
             <div className="mt-6 border-t border-white/12 pt-4">
               <SignOutButton dark onDone={() => setOpen(false)} />
@@ -484,15 +353,12 @@ function HubLayout() {
       </header>
 
       <main className="flex min-h-screen flex-col lg:pl-[236px]">
-        <DesktopTopBar onAddClient={() => setCreating(true)} />
+        <DesktopTopBar />
         <div className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-8 sm:px-6 lg:px-12 lg:py-12">
-          {noClients ? <NoClientsYet onAddClient={() => setCreating(true)} /> : <Outlet />}
+          {noClients ? <NoClientsYet /> : <Outlet />}
         </div>
         <SiteFooter />
       </main>
-
-      <AddClientDialog open={creating} onOpenChange={setCreating} onCreated={selectWorkspace} />
-      <WorkspaceSwitchOverlay />
     </div>
   );
 }

@@ -541,8 +541,7 @@ export const archiveInspiration = (inspirationId: string) =>
  */
 export const BRAND_TEMPLATE_TYPE = "BRAND_TEMPLATE";
 
-export const isBrandTemplate = (row: Inspiration) =>
-  row.inspiration_type === BRAND_TEMPLATE_TYPE;
+export const isBrandTemplate = (row: Inspiration) => row.inspiration_type === BRAND_TEMPLATE_TYPE;
 
 // Asked for by type so the answer is the templates themselves, not whatever
 // survives a client-side sift of every reference the brand owns. The filter
@@ -587,8 +586,7 @@ export const uploadBrandAmbassador = (brandId: string, file: File) =>
  * the purchasable item itself, never an invented lookalike. */
 export const BRAND_PRODUCT_TYPE = "BRAND_PRODUCT";
 
-export const isBrandProduct = (row: Inspiration) =>
-  row.inspiration_type === BRAND_PRODUCT_TYPE;
+export const isBrandProduct = (row: Inspiration) => row.inspiration_type === BRAND_PRODUCT_TYPE;
 
 export const fetchBrandProducts = async (brandId: string) =>
   (await fetchInspirations(brandId)).filter(
@@ -737,49 +735,56 @@ export const READINESS_COPY: Record<ReadinessLevel, { label: string; blurb: stri
 };
 
 /** Brand Master tabs. Kept in the URL so every card and link can target one. */
-export type BrandMasterTab =
-  | "overview"
-  | "basics"
-  | "knowledge"
-  | "inspirations"
-  | "templates"
-  | "rules"
-  | "brain"
-  | "attention"
-  | "teach";
-
-export const BRAND_MASTER_TABS: BrandMasterTab[] = [
-  "overview",
-  "basics",
-  "knowledge",
-  "inspirations",
-  "templates",
-  "rules",
-  "brain",
-  "attention",
-  "teach",
-];
+/** The three tabs. */
+export type BrandMasterTab = "about" | "show" | "rules";
 
 /**
- * Tab keys that no longer exist. Products & Audience folded into Brand
- * profile ("basics") and Learning into Rules & Learning ("rules"); old deep
- * links land on the tab that absorbed them instead of falling back to the
- * overview.
+ * Addressable places inside the tabs — what deep links, readiness hints and
+ * "correct this in…" buttons point at. Each lives on exactly one tab; the
+ * page switches to that tab and scrolls the section into view.
  */
-export const LEGACY_TAB_ALIASES: Record<string, BrandMasterTab> = {
-  products: "basics",
-  learning: "rules",
+export type BrandMasterSection =
+  "basics" | "brain" | "attention" | "knowledge" | "inspirations" | "templates" | "rules";
+
+export const SECTION_TAB: Record<BrandMasterSection, BrandMasterTab> = {
+  basics: "about",
+  brain: "about",
+  attention: "show",
+  knowledge: "show",
+  inspirations: "show",
+  templates: "show",
+  rules: "rules",
 };
 
+export const BRAND_MASTER_TABS: BrandMasterTab[] = ["about", "show", "rules"];
+
+/**
+ * `?tab=` accepts a tab or a section. Old keys from the nine-tab era land
+ * where their content went, so bookmarks and in-app links keep working.
+ */
+export function resolveBrandMasterTarget(
+  raw: string,
+): { tab: BrandMasterTab; section?: BrandMasterSection } | null {
+  const legacy: Record<string, BrandMasterSection> = {
+    overview: "basics",
+    products: "basics",
+    learning: "rules",
+    teach: "knowledge",
+  };
+  const key = legacy[raw] ?? raw;
+  if ((BRAND_MASTER_TABS as string[]).includes(key)) return { tab: key as BrandMasterTab };
+  if (key in SECTION_TAB) {
+    const section = key as BrandMasterSection;
+    return { tab: SECTION_TAB[section], section };
+  }
+  return null;
+}
+
 /** Where the readiness engine's "do this next" actually lives. */
-export function tabForReadinessKey(key: string): BrandMasterTab | "create" {
+export function tabForReadinessKey(key: string): BrandMasterSection | "create" {
   switch (key) {
     case "identity":
     case "voice":
-      return "basics";
-    // What the brand sells and who for lives on the Brand profile tab with
-    // the rest of the first-party record, so the readiness engine's audience
-    // gap points at the fields that close it.
     case "audience":
     case "products":
       return "basics";
@@ -790,13 +795,13 @@ export function tabForReadinessKey(key: string): BrandMasterTab | "create" {
     case "inspirations":
       return "inspirations";
     case "learning":
-      return "teach";
+      return "rules";
     case "resolve_conflicts":
       return "attention";
     case "generate":
       return "create";
     default:
-      return "teach";
+      return "knowledge";
   }
 }
 
