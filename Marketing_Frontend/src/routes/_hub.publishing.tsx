@@ -691,8 +691,6 @@ function PublishingPage() {
   }, [brandTemplates, creativeMode]);
 
   const optionsSummary = [
-    CONTENT_TYPES.find((ct) => ct.id === contentType)?.label ?? contentType,
-    contentType === "poster" ? POSTER_PLATFORMS.find((p) => p.id === posterPlatform)?.label : null,
     creativeMode === "AI_ORIGINAL"
       ? "AI original"
       : creativeMode === "BRAND_TEMPLATE"
@@ -703,6 +701,7 @@ function PublishingPage() {
     contentType === "poster"
       ? (CAPTION_LANGUAGES.find((l) => l.id === captionLanguage)?.label ?? captionLanguage)
       : null,
+    contentType === "poster" && abVariants ? "A/B pair" : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -2150,10 +2149,7 @@ function PublishingPage() {
                   className="resize-y text-base"
                 />
                 <div className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
-                  <p>
-                    Audience, location, tone and product come from Brand Master. Open Options below
-                    only to change format, platform or creative direction.
-                  </p>
+                  <p>Audience, location, tone and product come from Brand Master.</p>
                   <span className="shrink-0 tabular-nums" aria-live="polite">
                     {creativeBrief.length}/{MAX_CREATIVE_BRIEF_CHARS}
                   </span>
@@ -2164,83 +2160,63 @@ function PublishingPage() {
                   the brand template rotation (or AI original), the remembered platform,
                   quality and language. Collapsed so the first thing on the page is the
                   one thing only the person can supply. */}
+              {/* The two choices that change the shape of the result sit in
+                  plain sight as pills. Everything else defaults well and
+                  lives under More options. */}
+              <div className="mb-8 flex flex-wrap items-center gap-x-6 gap-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                    Format
+                  </span>
+                  {CONTENT_TYPES.map((ct) => (
+                    <button
+                      key={ct.id}
+                      type="button"
+                      aria-pressed={contentType === ct.id}
+                      onClick={() => setContentType(ct.id)}
+                      className={cn(
+                        "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                        contentType === ct.id
+                          ? "border-primary bg-black text-white"
+                          : "border-border bg-background text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {ct.label}
+                    </button>
+                  ))}
+                </div>
+                {contentType === "poster" ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                      For
+                    </span>
+                    {POSTER_PLATFORMS.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        aria-pressed={posterPlatform === p.id}
+                        onClick={() => setPosterPlatform(p.id)}
+                        title={p.hint}
+                        className={cn(
+                          "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                          posterPlatform === p.id
+                            ? "border-primary bg-black text-white"
+                            : "border-border bg-background text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+
               <details className="mb-8 rounded-xl border border-border">
                 <summary className="cursor-pointer list-none px-4 py-3 text-sm marker:hidden">
-                  <span className="font-semibold text-foreground">Options</span>
+                  <span className="font-semibold text-foreground">More options</span>
                   <span className="ml-2 text-muted-foreground">{optionsSummary}</span>
                 </summary>
                 <div className="border-t border-border p-4 sm:p-6">
-                  {/* WHAT TO GENERATE */}
-                  <div className="mb-8">
-                    <Label className="text-xs tracking-wide uppercase">
-                      What should we create?
-                    </Label>
-                    <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                      {CONTENT_TYPES.map((ct) => {
-                        const active = contentType === ct.id;
-                        return (
-                          <button
-                            key={ct.id}
-                            type="button"
-                            onClick={() => setContentType(ct.id)}
-                            aria-pressed={active}
-                            className={cn(
-                              "flex items-center gap-3 rounded-xl border p-4 text-left transition-colors",
-                              active
-                                ? "border-primary bg-primary/6"
-                                : "border-border hover:bg-secondary/60",
-                            )}
-                          >
-                            <span
-                              className={cn(
-                                "grid size-10 shrink-0 place-items-center rounded-lg",
-                                active
-                                  ? "bg-primary text-primary-foreground"
-                                  : "bg-secondary text-muted-foreground",
-                              )}
-                            >
-                              <ct.icon className="size-5" />
-                            </span>
-                            <span className="min-w-0">
-                              <span className="block text-sm font-semibold text-foreground">
-                                {ct.label}
-                              </span>
-                              <span className="block text-xs text-muted-foreground">{ct.hint}</span>
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {contentType === "poster" ? (
-                    <div className="mb-8">
-                      <Label className="text-xs tracking-wide uppercase">Where will it run?</Label>
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        Sets the shape and the caption's manners. Every other size still exports
-                        from the result.
-                      </p>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {POSTER_PLATFORMS.map((p) => (
-                          <button
-                            key={p.id}
-                            type="button"
-                            aria-pressed={posterPlatform === p.id}
-                            onClick={() => setPosterPlatform(p.id)}
-                            className={cn(
-                              "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                              posterPlatform === p.id
-                                ? "border-primary bg-black text-white"
-                                : "border-border bg-background text-muted-foreground hover:text-foreground",
-                            )}
-                          >
-                            {p.label} <span className="opacity-60">· {p.hint}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-
                   <div className="mb-8">
                     <Label className="text-xs tracking-wide uppercase">
                       Choose the creative direction
