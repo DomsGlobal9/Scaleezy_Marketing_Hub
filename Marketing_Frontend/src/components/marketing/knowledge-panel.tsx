@@ -125,13 +125,11 @@ export function KnowledgePanel({ brandId, onChanged }: { brandId: string; onChan
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="max-w-2xl">
           <p className="text-sm text-muted-foreground">
-            Transcripts, minutes of meeting, client calls, founder notes, decks, product documents
-            and web pages — anything true about the business. Sources are kept with their
-            provenance; the facts you confirm from them become part of the Brand Brain immediately.
+            Decks, price lists, product pages, meeting notes, call transcripts — anything true about
+            the business. Scaleezy reads it and suggests facts; you tick the ones that are right.
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
-            Ask Scaleezy to read a source, then confirm or reject every suggested fact. Unconfirmed
-            suggestions never enter the Brand Brain.
+            Nothing is used until you confirm it.
           </p>
         </div>
         <Button onClick={() => setAdding((v) => !v)}>
@@ -152,8 +150,8 @@ export function KnowledgePanel({ brandId, onChanged }: { brandId: string; onChan
 
       {active.length === 0 && direct.length === 0 && !adding ? (
         <Empty
-          title="No knowledge yet"
-          hint="Upload a brand deck, paste a meeting transcript or add a product page and Scaleezy keeps it as permanent brand intelligence."
+          title="Nothing added yet"
+          hint="Upload a deck, paste some notes or add a product page. Scaleezy remembers it for every post."
           action={
             <Button variant="outline" onClick={() => setAdding(true)}>
               <Plus className="size-4" /> Add your first source
@@ -175,8 +173,8 @@ export function KnowledgePanel({ brandId, onChanged }: { brandId: string; onChan
 
       <div>
         <SectionTitle
-          title="Facts added directly"
-          description="Things you know are true that do not come from a single document."
+          title="Things you just know"
+          description="Facts that are not written down anywhere — add them here."
         />
         <div className="mt-3 space-y-3">
           <MemoryList
@@ -191,8 +189,8 @@ export function KnowledgePanel({ brandId, onChanged }: { brandId: string; onChan
       {archived.length > 0 ? (
         <div>
           <SectionTitle
-            title="Archived sources"
-            description="No longer used by the Brand Brain. Kept for provenance."
+            title="Removed"
+            description="No longer used. Kept so you can see what was once added."
           />
           <ul className="mt-3 space-y-2">
             {archived.map((source) => (
@@ -369,8 +367,7 @@ function AddSourceCard({
               onChange={(e) => setUrl(e.target.value)}
             />
             <p className="mt-1.5 text-xs text-muted-foreground">
-              Scaleezy fetches this public page only when you choose Read with AI, then shows facts
-              for your review.
+              Scaleezy reads this page when you ask it to, then shows you what it found.
             </p>
           </div>
         ) : null}
@@ -514,7 +511,7 @@ function SourceCard({
                 {busy || ["QUEUED", "PROCESSING"].includes(source.status) ? (
                   <Loader2 className="size-3.5 animate-spin" />
                 ) : null}
-                {source.status === "FAILED" ? "Retry AI reading" : "Read with AI"}
+                {source.status === "FAILED" ? "Try again" : "Read it"}
               </Button>
             ) : null}
             {confirmArchive ? (
@@ -587,7 +584,7 @@ function MemoryList({
 
   if (loading) return <Loading rows={1} />;
   if (memories.length === 0) {
-    return <p className="text-sm text-muted-foreground">No facts captured yet.</p>;
+    return <p className="text-sm text-muted-foreground">Nothing yet.</p>;
   }
 
   return (

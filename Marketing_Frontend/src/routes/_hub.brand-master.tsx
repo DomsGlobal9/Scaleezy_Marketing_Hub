@@ -236,7 +236,7 @@ function RulesTab({ brandId, onChanged }: { brandId: string; onChanged: () => vo
     <div className="space-y-8">
       <Card>
         <CardContent className="space-y-3 pt-6">
-          <Label className="text-xs tracking-wide uppercase">State a brand rule</Label>
+          <Label className="text-xs tracking-wide uppercase">Add a rule in your own words</Label>
           <Input
             placeholder='e.g. "Never mention discounts in the headline."'
             value={text}
@@ -249,7 +249,7 @@ function RulesTab({ brandId, onChanged }: { brandId: string; onChanged: () => vo
               variant={hardness === "HARD" ? "default" : "outline"}
               onClick={() => setHardness("HARD")}
             >
-              Must never break
+              Always
             </Button>
             <Button
               size="sm"
@@ -257,10 +257,10 @@ function RulesTab({ brandId, onChanged }: { brandId: string; onChanged: () => vo
               variant={hardness === "SOFT" ? "default" : "outline"}
               onClick={() => setHardness("SOFT")}
             >
-              Strong preference
+              Prefer
             </Button>
             <span className="text-xs text-muted-foreground">
-              Stated rules outrank everything Scaleezy learns on its own.
+              Your rules always win over anything Scaleezy picks up by itself.
             </span>
           </div>
           <InlineError message={error} />
@@ -281,12 +281,9 @@ function RulesTab({ brandId, onChanged }: { brandId: string; onChanged: () => vo
       <LearningUsagePanel brandId={brandId} />
 
       <div>
-        <SectionTitle
-          title="Your brand rules"
-          description="Stated by a person. Scaleezy treats these as instructions."
-        />
+        <SectionTitle title="Your rules" description="Written by you. Scaleezy follows them." />
         {explicit.length === 0 ? (
-          <p className="mt-3 text-sm text-muted-foreground">None stated yet.</p>
+          <p className="mt-3 text-sm text-muted-foreground">None yet.</p>
         ) : (
           <ul className="mt-3 space-y-2">
             {explicit.map((rule) => (
@@ -316,11 +313,11 @@ function RulesTab({ brandId, onChanged }: { brandId: string; onChanged: () => vo
 
       <div>
         <SectionTitle
-          title="Learned guidance"
-          description="Inferred from your decisions. Guidance, not instruction — Scaleezy will not treat these as absolute, and they can never become hard rules on their own."
+          title="What Scaleezy has picked up"
+          description="Patterns from your approvals and edits. Treated as preferences, never as rules — you can retire any of them."
         />
         {learned.length === 0 ? (
-          <p className="mt-3 text-sm text-muted-foreground">Nothing inferred yet.</p>
+          <p className="mt-3 text-sm text-muted-foreground">Nothing yet.</p>
         ) : (
           <ul className="mt-3 space-y-2">
             {learned.map((rule) => (
@@ -352,19 +349,19 @@ function RulesTab({ brandId, onChanged }: { brandId: string; onChanged: () => vo
 
       {activePrefs.length === 0 ? (
         <Empty
-          title="No learned preferences yet"
-          hint="Calibration builds preferences over time. Corrective review guidance appears under Learned guidance immediately after the first tagged issue."
+          title="Nothing picked up yet"
+          hint="Approve, edit and reject a few posts and Scaleezy starts learning what you like."
         />
       ) : (
         groups.map(([label, rows]) =>
           rows.length === 0 ? null : (
             <div key={label}>
               <SectionTitle
-                title={`${label} preferences`}
+                title={label === "Established" ? "Sure about these" : "Starting to notice"}
                 description={
                   label === "Established"
-                    ? "Seen enough times that Scaleezy will act on it."
-                    : "Noticed once. Not yet acted on strongly."
+                    ? "Seen often enough that Scaleezy acts on it."
+                    : "Seen once or twice. Not acted on strongly yet."
                 }
               />
               <ul className="mt-3 space-y-2">
@@ -404,7 +401,7 @@ function RulesTab({ brandId, onChanged }: { brandId: string; onChanged: () => vo
       <div>
         <SectionTitle
           title="Recent decisions"
-          description="The evidence Scaleezy learns from, newest first."
+          description="What Scaleezy learned from, newest first."
         />
         {events.loading && !events.data ? (
           <Loading rows={2} />
@@ -1152,18 +1149,12 @@ function BrandMasterPage() {
               ) : null}
               <NlNoteBox brandId={brandId} onChanged={refresh} />
               <section id="knowledge" className="space-y-6">
-                <SectionTitle
-                  title="Documents, links and facts"
-                  description="Anything true about the business. Scaleezy reads it and proposes facts for you to confirm."
-                />
+                <SectionTitle title="Documents, links and facts" />
                 <EnrichFromWebsite brandId={brandId} onChanged={refresh} />
                 <KnowledgePanel brandId={brandId} onChanged={refresh} />
               </section>
               <section id="inspirations" className="space-y-6">
-                <SectionTitle
-                  title="Work you like"
-                  description="Posts, reels, ads, screenshots — and what you like about each."
-                />
+                <SectionTitle title="Work you like" />
                 <InspirationsPanel key={adoptedNonce} brandId={brandId} onChanged={refresh} />
                 <details className="rounded-xl border border-border p-4">
                   <summary className="cursor-pointer list-none text-sm font-semibold text-foreground">
@@ -1193,10 +1184,7 @@ function BrandMasterPage() {
                 </details>
               </section>
               <section id="templates">
-                <SectionTitle
-                  title="Your poster templates"
-                  description="Designs you already use. Pick one in Create Studio and generations match it."
-                />
+                <SectionTitle title="Your poster templates" />
                 <div className="mt-4">
                   <TemplatesPanel brandId={brandId} onChanged={refresh} />
                 </div>
