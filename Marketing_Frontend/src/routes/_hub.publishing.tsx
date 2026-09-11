@@ -502,7 +502,7 @@ function PublishingPage() {
     payload: Record<string, unknown>;
     inspiration: InspirationGenerationOptions | undefined;
     contentType: ContentType;
-    creativeMode: CreativeMode;
+    creativeMode: CreativeMode | null;
     campaignName: string;
     slides: CarouselSlide[];
   } | null>(null);
@@ -689,6 +689,23 @@ function PublishingPage() {
       setCreativeMode("AI_ORIGINAL");
     }
   }, [brandTemplates, creativeMode]);
+
+  const optionsSummary = [
+    CONTENT_TYPES.find((ct) => ct.id === contentType)?.label ?? contentType,
+    contentType === "poster" ? POSTER_PLATFORMS.find((p) => p.id === posterPlatform)?.label : null,
+    creativeMode === "AI_ORIGINAL"
+      ? "AI original"
+      : creativeMode === "BRAND_TEMPLATE"
+        ? "Your template"
+        : creativeMode === "REFERENCE"
+          ? "From inspiration"
+          : "Scaleezy picks the direction",
+    contentType === "poster"
+      ? (CAPTION_LANGUAGES.find((l) => l.id === captionLanguage)?.label ?? captionLanguage)
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   const chooseCreativeMode = (next: CreativeMode) => {
     setCreativeMode(next);
@@ -1384,13 +1401,12 @@ function PublishingPage() {
     if (pending) inspiration = pending.inspiration;
     const requestedContentType: ContentType =
       pending?.contentType ?? (inspiration ? "poster" : contentType);
-    const requestedMode: CreativeMode =
-      pending?.creativeMode ?? (inspiration ? "REFERENCE" : creativeMode!);
+    // Unset means "Scaleezy decides": the request carries no creativeMode and
+    // the backend applies the brand default (templates when uploaded,
+    // otherwise an original design).
+    const requestedMode: CreativeMode | null =
+      pending?.creativeMode ?? (inspiration ? "REFERENCE" : creativeMode);
     if (!inspiration && !pending) {
-      if (!creativeMode) {
-        toast.error("Choose how Scaleezy should design this content.");
-        return;
-      }
       if (creativeMode === "BRAND_TEMPLATE" && !creativeTemplateId) {
         toast.error("Choose one of your templates before generation.");
         return;
@@ -1474,7 +1490,7 @@ function PublishingPage() {
             // inspiration selection: REFERENCE mode plus one PRIMARY/USE
             // BRAND selection, analysed before generation if needed. The
             // backend never learns a separate template mode.
-            creativeMode: requestedMode === "BRAND_TEMPLATE" ? "REFERENCE" : requestedMode,
+            creativeMode: requestedMode === "BRAND_TEMPLATE" ? "REFERENCE" : (requestedMode ?? ""),
             campaignName,
             product,
             audience,
@@ -2080,10 +2096,10 @@ function PublishingPage() {
                 </div>
                 <div>
                   <h2 className="text-2xl font-semibold tracking-tight text-foreground">
-                    CREATE SOMETHING GREAT
+                    What are we posting?
                   </h2>
-                  <p className="mt-1 text-xs font-semibold tracking-widest text-muted-foreground uppercase">
-                    YOU CHOOSE THE DIRECTION · SCALEEZY DOES THE WORK
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Say it in a sentence. Scaleezy fills the rest from Brand Master.
                   </p>
                 </div>
               </div>
@@ -2121,75 +2137,6 @@ function PublishingPage() {
                 </div>
               )}
 
-              {/* WHAT TO GENERATE */}
-              <div className="mb-8">
-                <Label className="text-xs tracking-wide uppercase">What should we create?</Label>
-                <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                  {CONTENT_TYPES.map((ct) => {
-                    const active = contentType === ct.id;
-                    return (
-                      <button
-                        key={ct.id}
-                        type="button"
-                        onClick={() => setContentType(ct.id)}
-                        aria-pressed={active}
-                        className={cn(
-                          "flex items-center gap-3 rounded-xl border p-4 text-left transition-colors",
-                          active
-                            ? "border-primary bg-primary/6"
-                            : "border-border hover:bg-secondary/60",
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "grid size-10 shrink-0 place-items-center rounded-lg",
-                            active
-                              ? "bg-primary text-primary-foreground"
-                              : "bg-secondary text-muted-foreground",
-                          )}
-                        >
-                          <ct.icon className="size-5" />
-                        </span>
-                        <span className="min-w-0">
-                          <span className="block text-sm font-semibold text-foreground">
-                            {ct.label}
-                          </span>
-                          <span className="block text-xs text-muted-foreground">{ct.hint}</span>
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {contentType === "poster" ? (
-                <div className="mb-8">
-                  <Label className="text-xs tracking-wide uppercase">Where will it run?</Label>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Sets the shape and the caption's manners. Every other size still exports from
-                    the result.
-                  </p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {POSTER_PLATFORMS.map((p) => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        aria-pressed={posterPlatform === p.id}
-                        onClick={() => setPosterPlatform(p.id)}
-                        className={cn(
-                          "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                          posterPlatform === p.id
-                            ? "border-primary bg-black text-white"
-                            : "border-border bg-background text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        {p.label} <span className="opacity-60">· {p.hint}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
               <div className="mb-8 space-y-2">
                 <Label htmlFor="creative-brief">What should Scaleezy create?</Label>
                 <Textarea
@@ -2204,8 +2151,8 @@ function PublishingPage() {
                 />
                 <div className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
                   <p>
-                    Audience, location, tone and product are filled from Brand Master when
-                    available.
+                    Audience, location, tone and product come from Brand Master. Open Options below
+                    only to change format, platform or creative direction.
                   </p>
                   <span className="shrink-0 tabular-nums" aria-live="polite">
                     {creativeBrief.length}/{MAX_CREATIVE_BRIEF_CHARS}
@@ -2213,823 +2160,921 @@ function PublishingPage() {
                 </div>
               </div>
 
-              <div className="mb-8">
-                <Label className="text-xs tracking-wide uppercase">
-                  Choose the creative direction
-                </Label>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Nothing is selected automatically. This choice applies only to this content.
-                </p>
-                <div className="mt-3 grid gap-3 md:grid-cols-3">
-                  {CREATIVE_SOURCES.map((source) => {
-                    const templatesEmpty =
-                      brandTemplates !== null &&
-                      brandTemplates.length === 0 &&
-                      !brandTemplatesError;
-                    const disabled =
-                      source.id === "BRAND_TEMPLATE" &&
-                      (contentType !== "poster" || templatesEmpty);
-                    const disabledHint =
-                      contentType !== "poster"
-                        ? "Templates are available for posters."
-                        : "No templates uploaded yet — add them in Brand Master → Templates.";
-                    const active = creativeMode === source.id;
-                    return (
-                      <button
-                        key={source.id}
-                        type="button"
-                        disabled={disabled}
-                        aria-pressed={active}
-                        onClick={() => chooseCreativeMode(source.id)}
-                        // One horizontal row per card: comfortable to thumb
-                        // through on a phone, still a tidy 3-up grid on
-                        // desktop.
-                        className={cn(
-                          "flex items-center gap-3 rounded-xl border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45 md:p-4",
-                          active
-                            ? "border-primary bg-black text-white ring-1 ring-primary"
-                            : "border-border bg-background hover:border-primary",
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "grid size-10 shrink-0 place-items-center rounded-lg",
-                            active ? "bg-primary text-black" : "bg-secondary text-foreground",
-                          )}
-                        >
-                          <source.icon className="size-5" />
-                        </span>
-                        <span className="min-w-0">
-                          <span className="block text-sm font-semibold">{source.label}</span>
-                          <span
+              {/* Everything that is not the brief is a choice with a sensible default:
+                  the brand template rotation (or AI original), the remembered platform,
+                  quality and language. Collapsed so the first thing on the page is the
+                  one thing only the person can supply. */}
+              <details className="mb-8 rounded-xl border border-border">
+                <summary className="cursor-pointer list-none px-4 py-3 text-sm marker:hidden">
+                  <span className="font-semibold text-foreground">Options</span>
+                  <span className="ml-2 text-muted-foreground">{optionsSummary}</span>
+                </summary>
+                <div className="border-t border-border p-4 sm:p-6">
+                  {/* WHAT TO GENERATE */}
+                  <div className="mb-8">
+                    <Label className="text-xs tracking-wide uppercase">
+                      What should we create?
+                    </Label>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                      {CONTENT_TYPES.map((ct) => {
+                        const active = contentType === ct.id;
+                        return (
+                          <button
+                            key={ct.id}
+                            type="button"
+                            onClick={() => setContentType(ct.id)}
+                            aria-pressed={active}
                             className={cn(
-                              "mt-0.5 block text-xs",
-                              active ? "text-white/65" : "text-muted-foreground",
+                              "flex items-center gap-3 rounded-xl border p-4 text-left transition-colors",
+                              active
+                                ? "border-primary bg-primary/6"
+                                : "border-border hover:bg-secondary/60",
                             )}
                           >
-                            {disabled ? disabledHint : source.hint}
-                          </span>
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-                {creativeMode === "BRAND_TEMPLATE" ? (
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-medium text-muted-foreground">How closely?</span>
-                    {(
-                      [
-                        ["EXACT", "Match it exactly"],
-                        ["INSPIRED", "Just take inspiration"],
-                      ] as const
-                    ).map(([value, label]) => (
-                      <button
-                        key={value}
-                        type="button"
-                        aria-pressed={templateFidelity === value}
-                        onClick={() => setTemplateFidelity(value)}
-                        className={cn(
-                          "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-                          templateFidelity === value
-                            ? "border-primary bg-primary text-black"
-                            : "border-border bg-background text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                    <span className="text-[0.6875rem] text-muted-foreground">
-                      {templateFidelity === "EXACT"
-                        ? "Same layout, new content."
-                        : "Its colours, type and mood — a fresh layout every time."}
-                    </span>
+                            <span
+                              className={cn(
+                                "grid size-10 shrink-0 place-items-center rounded-lg",
+                                active
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-secondary text-muted-foreground",
+                              )}
+                            >
+                              <ct.icon className="size-5" />
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block text-sm font-semibold text-foreground">
+                                {ct.label}
+                              </span>
+                              <span className="block text-xs text-muted-foreground">{ct.hint}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setUploadIntention("final");
-                    fileInputRef.current?.click();
-                  }}
-                  className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-foreground underline decoration-primary decoration-2 underline-offset-4"
-                >
-                  <Upload className="size-4" /> I already have finished media
-                </button>
-              </div>
 
-              {contentType === "poster" ? (
-                <div className="mb-8">
-                  <Label className="text-xs tracking-wide uppercase">Image quality</Label>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {QUALITY_TIERS.map((tier) => (
-                      <button
-                        key={tier.id}
-                        type="button"
-                        aria-pressed={imageQuality === tier.id}
-                        onClick={() => setImageQuality(tier.id)}
-                        className={cn(
-                          "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                          imageQuality === tier.id
-                            ? "border-primary bg-black text-white"
-                            : "border-border bg-background text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        {tier.label} <span className="opacity-60">· {tier.hint}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
-                    Better quality uses more of your plan: Ultra counts as 2 generation units and
-                    takes a little longer. Standard and High count as 1.
-                  </p>
-                  <Label className="mt-4 block text-xs tracking-wide uppercase">
-                    Caption language
-                  </Label>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {CAPTION_LANGUAGES.map((lang) => (
-                      <button
-                        key={lang.id}
-                        type="button"
-                        aria-pressed={captionLanguage === lang.id}
-                        onClick={() => setCaptionLanguage(lang.id)}
-                        className={cn(
-                          "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                          captionLanguage === lang.id
-                            ? "border-primary bg-black text-white"
-                            : "border-border bg-background text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        {lang.label}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
-                    The caption and a few hashtags speak this language. The headline on the poster
-                    stays in English.
-                  </p>
-                  <div className="mt-4 flex items-start gap-2">
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={abVariants}
-                      onClick={() => setAbVariants((v) => !v)}
-                      className={cn(
-                        "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                        abVariants
-                          ? "border-primary bg-black text-white"
-                          : "border-border bg-background text-muted-foreground hover:text-foreground",
-                      )}
-                    >
-                      A/B: two variants
-                    </button>
-                    <p className="pt-1.5 text-[0.6875rem] text-muted-foreground">
-                      Two deliberately different designs of this brief, so you pick the winner. Uses
-                      double the generation units.
+                  {contentType === "poster" ? (
+                    <div className="mb-8">
+                      <Label className="text-xs tracking-wide uppercase">Where will it run?</Label>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Sets the shape and the caption's manners. Every other size still exports
+                        from the result.
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {POSTER_PLATFORMS.map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            aria-pressed={posterPlatform === p.id}
+                            onClick={() => setPosterPlatform(p.id)}
+                            className={cn(
+                              "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                              posterPlatform === p.id
+                                ? "border-primary bg-black text-white"
+                                : "border-border bg-background text-muted-foreground hover:text-foreground",
+                            )}
+                          >
+                            {p.label} <span className="opacity-60">· {p.hint}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="mb-8">
+                    <Label className="text-xs tracking-wide uppercase">
+                      Choose the creative direction
+                    </Label>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Leave it and Scaleezy uses your uploaded templates when you have them, an
+                      original design when you do not. This choice applies only to this content.
                     </p>
-                  </div>
-                </div>
-              ) : null}
-
-              {/* MODEL, PRODUCT & LOGO — the brand assets that ride the
-                  poster, as live controls rather than settings buried
-                  elsewhere. */}
-              <div className="mb-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                <div className="rounded-xl border border-border p-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <Images className="size-4 shrink-0 text-primary" />
-                      <h3 className="truncate text-sm font-semibold text-foreground">
-                        Your product
-                      </h3>
+                    <div className="mt-3 grid gap-3 md:grid-cols-3">
+                      {CREATIVE_SOURCES.map((source) => {
+                        const templatesEmpty =
+                          brandTemplates !== null &&
+                          brandTemplates.length === 0 &&
+                          !brandTemplatesError;
+                        const disabled =
+                          source.id === "BRAND_TEMPLATE" &&
+                          (contentType !== "poster" || templatesEmpty);
+                        const disabledHint =
+                          contentType !== "poster"
+                            ? "Templates are available for posters."
+                            : "No templates uploaded yet — add them in Brand Master → Templates.";
+                        const active = creativeMode === source.id;
+                        return (
+                          <button
+                            key={source.id}
+                            type="button"
+                            disabled={disabled}
+                            aria-pressed={active}
+                            onClick={() => chooseCreativeMode(source.id)}
+                            // One horizontal row per card: comfortable to thumb
+                            // through on a phone, still a tidy 3-up grid on
+                            // desktop.
+                            className={cn(
+                              "flex items-center gap-3 rounded-xl border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45 md:p-4",
+                              active
+                                ? "border-primary bg-black text-white ring-1 ring-primary"
+                                : "border-border bg-background hover:border-primary",
+                            )}
+                          >
+                            <span
+                              className={cn(
+                                "grid size-10 shrink-0 place-items-center rounded-lg",
+                                active ? "bg-primary text-black" : "bg-secondary text-foreground",
+                              )}
+                            >
+                              <source.icon className="size-5" />
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block text-sm font-semibold">{source.label}</span>
+                              <span
+                                className={cn(
+                                  "mt-0.5 block text-xs",
+                                  active ? "text-white/65" : "text-muted-foreground",
+                                )}
+                              >
+                                {disabled ? disabledHint : source.hint}
+                              </span>
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
-                    {productImageId ? (
-                      <button
-                        type="button"
-                        onClick={() => setProductImageId("")}
-                        className="shrink-0 rounded-full border border-primary bg-primary px-3 py-1 text-xs font-semibold text-black"
-                      >
-                        In this creative
-                      </button>
+                    {creativeMode === "BRAND_TEMPLATE" ? (
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-medium text-muted-foreground">
+                          How closely?
+                        </span>
+                        {(
+                          [
+                            ["EXACT", "Match it exactly"],
+                            ["INSPIRED", "Just take inspiration"],
+                          ] as const
+                        ).map(([value, label]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            aria-pressed={templateFidelity === value}
+                            onClick={() => setTemplateFidelity(value)}
+                            className={cn(
+                              "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                              templateFidelity === value
+                                ? "border-primary bg-primary text-black"
+                                : "border-border bg-background text-muted-foreground hover:text-foreground",
+                            )}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                        <span className="text-[0.6875rem] text-muted-foreground">
+                          {templateFidelity === "EXACT"
+                            ? "Same layout, new content."
+                            : "Its colours, type and mood — a fresh layout every time."}
+                        </span>
+                      </div>
                     ) : null}
-                  </div>
-                  <div className="mt-3 flex items-center gap-2 overflow-x-auto pb-1">
-                    {(productPhotos ?? []).map((row) => (
-                      <button
-                        key={row.id}
-                        type="button"
-                        title={row.title}
-                        aria-pressed={productImageId === row.id}
-                        onClick={() => setProductImageId(productImageId === row.id ? "" : row.id)}
-                        className="shrink-0"
-                      >
-                        <img
-                          src={row.file_url ?? ""}
-                          alt={row.title}
-                          className={cn(
-                            "size-12 rounded-lg border-2 object-cover",
-                            productImageId === row.id
-                              ? "border-primary"
-                              : "border-border opacity-70 hover:opacity-100",
-                          )}
-                        />
-                      </button>
-                    ))}
                     <button
                       type="button"
-                      disabled={productUploading || !brandId}
-                      onClick={() => productInputRef.current?.click()}
-                      className="grid size-12 shrink-0 place-items-center rounded-lg border-2 border-dashed border-border text-muted-foreground transition-colors hover:border-primary hover:text-foreground disabled:opacity-50"
-                      aria-label="Add a product photo"
-                    >
-                      {productUploading ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <Plus className="size-4" />
-                      )}
-                    </button>
-                    <input
-                      ref={productInputRef}
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        e.target.value = "";
-                        if (!file || !brandId) return;
-                        setProductUploading(true);
-                        uploadBrandProduct(brandId, file)
-                          .then((row) => {
-                            const added = row as Inspiration;
-                            setProductPhotos((prev) => [added, ...(prev ?? [])]);
-                            setProductImageId(added.id);
-                            toast.success("Product photo added and selected.");
-                          })
-                          .catch((err: unknown) =>
-                            toast.error(
-                              err instanceof Error ? err.message : "The photo could not be saved.",
-                            ),
-                          )
-                          .finally(() => setProductUploading(false));
+                      onClick={() => {
+                        setUploadIntention("final");
+                        fileInputRef.current?.click();
                       }}
-                    />
-                  </div>
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    {productImageId
-                      ? "The creative features this exact item — customers see what they can buy."
-                      : "Tap a photo to feature the real product in this creative. None selected = AI composes the scene."}
-                  </p>
-                </div>
-                <div className="rounded-xl border border-border p-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <UserRound className="size-4 shrink-0 text-primary" />
-                      <h3 className="truncate text-sm font-semibold text-foreground">Your model</h3>
-                    </div>
-                    {(ambassadors?.length ?? 0) > 0 ? (
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={featureModel}
-                        onClick={() => setFeatureModel((v) => !v)}
-                        className={cn(
-                          "shrink-0 rounded-full border px-3 py-1 text-xs font-semibold transition-colors",
-                          featureModel
-                            ? "border-primary bg-primary text-black"
-                            : "border-border text-muted-foreground",
-                        )}
-                      >
-                        {featureModel ? "In this creative" : "Off"}
-                      </button>
-                    ) : null}
-                  </div>
-                  <div className="mt-3 flex items-center gap-2 overflow-x-auto pb-1">
-                    {(ambassadors ?? []).map((row) => (
-                      <img
-                        key={row.id}
-                        src={row.file_url ?? ""}
-                        alt={row.title}
-                        title={row.title}
-                        className={cn(
-                          "size-12 shrink-0 rounded-full border-2 object-cover",
-                          featureModel ? "border-primary" : "border-border opacity-50",
-                        )}
-                      />
-                    ))}
-                    <button
-                      type="button"
-                      disabled={ambassadorUploading || !brandId}
-                      onClick={() => ambassadorInputRef.current?.click()}
-                      className="grid size-12 shrink-0 place-items-center rounded-full border-2 border-dashed border-border text-muted-foreground transition-colors hover:border-primary hover:text-foreground disabled:opacity-50"
-                      aria-label="Add a model photo"
+                      className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-foreground underline decoration-primary decoration-2 underline-offset-4"
                     >
-                      {ambassadorUploading ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <Plus className="size-4" />
-                      )}
+                      <Upload className="size-4" /> I already have finished media
                     </button>
-                    <input
-                      ref={ambassadorInputRef}
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        e.target.value = "";
-                        if (!file || !brandId) return;
-                        setAmbassadorUploading(true);
-                        uploadBrandAmbassador(brandId, file)
-                          .then((row) => {
-                            setAmbassadors((prev) => [row as Inspiration, ...(prev ?? [])]);
-                            setFeatureModel(true);
-                            toast.success("Model photo added — they'll front your creatives.");
-                          })
-                          .catch((err: unknown) =>
-                            toast.error(
-                              err instanceof Error ? err.message : "The photo could not be saved.",
-                            ),
-                          )
-                          .finally(() => setAmbassadorUploading(false));
-                      }}
-                    />
                   </div>
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    {(ambassadors?.length ?? 0) > 0
-                      ? "The same face fronts every creative. The newest photo is the one used."
-                      : "Add your model or brand ambassador once — every poster features them."}
-                  </p>
-                </div>
 
-                <div className="rounded-xl border border-border p-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      {brandKit.logoUrl ? (
-                        <img
-                          src={brandKit.logoUrl}
-                          alt="Brand logo"
-                          className="size-6 shrink-0 rounded object-contain"
-                        />
-                      ) : (
-                        <ImageIcon className="size-4 shrink-0 text-primary" />
-                      )}
-                      <h3 className="truncate text-sm font-semibold text-foreground">Logo</h3>
-                    </div>
-                    {brandKit.logoUrl ? (
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={brandKit.showLogoOnPosters}
-                        disabled={brandKitLoading}
-                        onClick={() =>
-                          updateBrandKit(
-                            { showLogoOnPosters: !brandKit.showLogoOnPosters },
-                            { immediate: true },
-                          )
-                        }
-                        className={cn(
-                          "shrink-0 rounded-full border px-3 py-1 text-xs font-semibold transition-colors",
-                          brandKit.showLogoOnPosters
-                            ? "border-primary bg-primary text-black"
-                            : "border-border text-muted-foreground",
-                        )}
-                      >
-                        {brandKit.showLogoOnPosters ? "On posters" : "Off"}
-                      </button>
-                    ) : null}
-                  </div>
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    {brandKit.logoUrl ? (
-                      "Saved with your brand kit — this switch is the same one Brand Master uses. Templates keep their own logo placement."
-                    ) : (
-                      <>
-                        No logo uploaded yet.{" "}
-                        <Link
-                          to="/brand-master"
-                          className="font-medium text-foreground underline underline-offset-2"
-                        >
-                          Add it in Brand Master
-                        </Link>{" "}
-                        and it appears here.
-                      </>
-                    )}
-                  </p>
-                </div>
-              </div>
-
-              {/* CAMPAIGN DETAILS — tap-first: the common occasions and offers
-                  are chips, the long tail stays typable. */}
-              <div className="mb-2 rounded-xl border border-border bg-secondary/20 p-4">
-                <h3 className="text-sm font-semibold text-foreground">Campaign details</h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Optional — tap what fits, type what doesn't. Anything left blank is filled from
-                  Brand Master.
-                </p>
-                {briefHints.requestedHeadline || briefHints.cta ? (
-                  <p className="mt-2 text-xs text-foreground" aria-live="polite">
-                    {briefHints.requestedHeadline ? (
-                      <>
-                        Headline requested:{" "}
-                        <span className="font-medium">{briefHints.requestedHeadline}</span>
-                      </>
-                    ) : null}
-                    {briefHints.requestedHeadline && briefHints.cta ? " · " : null}
-                    {briefHints.cta ? (
-                      <>
-                        CTA: <span className="font-medium">{briefHints.cta}</span>
-                      </>
-                    ) : null}
-                  </p>
-                ) : null}
-                <div className="mt-4 space-y-4">
-                  <div className="space-y-2">
-                    <Label
-                      htmlFor={briefFieldId("occasion")}
-                      className="text-xs tracking-wide uppercase"
-                    >
-                      Occasion
-                    </Label>
-                    <div className="flex flex-wrap gap-1.5">
-                      {[
-                        "Diwali",
-                        "Wedding season",
-                        "New arrival",
-                        "Weekend sale",
-                        "Festive offer",
-                        "Anniversary",
-                      ].map((chip) => (
+                  {contentType === "poster" ? (
+                    <div className="mb-8">
+                      <Label className="text-xs tracking-wide uppercase">Image quality</Label>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {QUALITY_TIERS.map((tier) => (
+                          <button
+                            key={tier.id}
+                            type="button"
+                            aria-pressed={imageQuality === tier.id}
+                            onClick={() => setImageQuality(tier.id)}
+                            className={cn(
+                              "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                              imageQuality === tier.id
+                                ? "border-primary bg-black text-white"
+                                : "border-border bg-background text-muted-foreground hover:text-foreground",
+                            )}
+                          >
+                            {tier.label} <span className="opacity-60">· {tier.hint}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
+                        Better quality uses more of your plan: Ultra counts as 2 generation units
+                        and takes a little longer. Standard and High count as 1.
+                      </p>
+                      <Label className="mt-4 block text-xs tracking-wide uppercase">
+                        Caption language
+                      </Label>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {CAPTION_LANGUAGES.map((lang) => (
+                          <button
+                            key={lang.id}
+                            type="button"
+                            aria-pressed={captionLanguage === lang.id}
+                            onClick={() => setCaptionLanguage(lang.id)}
+                            className={cn(
+                              "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                              captionLanguage === lang.id
+                                ? "border-primary bg-black text-white"
+                                : "border-border bg-background text-muted-foreground hover:text-foreground",
+                            )}
+                          >
+                            {lang.label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
+                        The caption and a few hashtags speak this language. The headline on the
+                        poster stays in English.
+                      </p>
+                      <div className="mt-4 flex items-start gap-2">
                         <button
-                          key={chip}
                           type="button"
-                          aria-pressed={occasion === chip}
-                          onClick={() => setOccasion(occasion === chip ? "" : chip)}
+                          role="switch"
+                          aria-checked={abVariants}
+                          onClick={() => setAbVariants((v) => !v)}
                           className={cn(
                             "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                            occasion === chip
-                              ? "border-primary bg-primary text-black"
+                            abVariants
+                              ? "border-primary bg-black text-white"
                               : "border-border bg-background text-muted-foreground hover:text-foreground",
                           )}
                         >
-                          {chip}
+                          A/B: two variants
                         </button>
-                      ))}
+                        <p className="pt-1.5 text-[0.6875rem] text-muted-foreground">
+                          Two deliberately different designs of this brief, so you pick the winner.
+                          Uses double the generation units.
+                        </p>
+                      </div>
                     </div>
-                    <Input
-                      {...briefFieldProps("occasion", occasion)}
-                      value={occasion}
-                      onChange={(e) => setOccasion(e.target.value)}
-                      placeholder="…or type your own occasion"
-                    />
-                    {fromBrief("occasion", occasion)}
-                  </div>
-                  <div className="space-y-2">
-                    <Label
-                      htmlFor={briefFieldId("offer")}
-                      className="text-xs tracking-wide uppercase"
-                    >
-                      Offer
-                    </Label>
-                    <div className="flex flex-wrap gap-1.5">
-                      {["10% off", "20% off", "Buy 1 Get 1", "Free styling session"].map((chip) => (
+                  ) : null}
+
+                  {/* MODEL, PRODUCT & LOGO — the brand assets that ride the
+                      poster, as live controls rather than settings buried
+                      elsewhere. */}
+                  <div className="mb-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    <div className="rounded-xl border border-border p-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Images className="size-4 shrink-0 text-primary" />
+                          <h3 className="truncate text-sm font-semibold text-foreground">
+                            Your product
+                          </h3>
+                        </div>
+                        {productImageId ? (
+                          <button
+                            type="button"
+                            onClick={() => setProductImageId("")}
+                            className="shrink-0 rounded-full border border-primary bg-primary px-3 py-1 text-xs font-semibold text-black"
+                          >
+                            In this creative
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="mt-3 flex items-center gap-2 overflow-x-auto pb-1">
+                        {(productPhotos ?? []).map((row) => (
+                          <button
+                            key={row.id}
+                            type="button"
+                            title={row.title}
+                            aria-pressed={productImageId === row.id}
+                            onClick={() =>
+                              setProductImageId(productImageId === row.id ? "" : row.id)
+                            }
+                            className="shrink-0"
+                          >
+                            <img
+                              src={row.file_url ?? ""}
+                              alt={row.title}
+                              className={cn(
+                                "size-12 rounded-lg border-2 object-cover",
+                                productImageId === row.id
+                                  ? "border-primary"
+                                  : "border-border opacity-70 hover:opacity-100",
+                              )}
+                            />
+                          </button>
+                        ))}
                         <button
-                          key={chip}
                           type="button"
-                          aria-pressed={offer === chip}
-                          onClick={() => setOffer(offer === chip ? "" : chip)}
-                          className={cn(
-                            "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                            offer === chip
-                              ? "border-primary bg-primary text-black"
-                              : "border-border bg-background text-muted-foreground hover:text-foreground",
-                          )}
+                          disabled={productUploading || !brandId}
+                          onClick={() => productInputRef.current?.click()}
+                          className="grid size-12 shrink-0 place-items-center rounded-lg border-2 border-dashed border-border text-muted-foreground transition-colors hover:border-primary hover:text-foreground disabled:opacity-50"
+                          aria-label="Add a product photo"
                         >
-                          {chip}
+                          {productUploading ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            <Plus className="size-4" />
+                          )}
                         </button>
-                      ))}
-                    </div>
-                    <Input
-                      {...briefFieldProps("offer", offer)}
-                      value={offer}
-                      onChange={(e) => setOffer(e.target.value)}
-                      placeholder="…or type the exact offer"
-                    />
-                    {fromBrief("offer", offer)}
-                  </div>
-                  <details
-                    open={moreDetailsOpen}
-                    onToggle={(event) => setMoreDetailsOpen(event.currentTarget.open)}
-                  >
-                    <summary className="cursor-pointer text-xs font-semibold text-muted-foreground hover:text-foreground">
-                      More details — campaign name, product, audience, location, tone
-                    </summary>
-                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label htmlFor={briefFieldId("campaignName")}>
-                          Campaign / promotion name
-                        </Label>
-                        <Input
-                          {...briefFieldProps("campaignName", campaignName)}
-                          value={campaignName}
-                          onChange={(e) => setCampaignName(e.target.value)}
+                        <input
+                          ref={productInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            e.target.value = "";
+                            if (!file || !brandId) return;
+                            setProductUploading(true);
+                            uploadBrandProduct(brandId, file)
+                              .then((row) => {
+                                const added = row as Inspiration;
+                                setProductPhotos((prev) => [added, ...(prev ?? [])]);
+                                setProductImageId(added.id);
+                                toast.success("Product photo added and selected.");
+                              })
+                              .catch((err: unknown) =>
+                                toast.error(
+                                  err instanceof Error
+                                    ? err.message
+                                    : "The photo could not be saved.",
+                                ),
+                              )
+                              .finally(() => setProductUploading(false));
+                          }}
                         />
-                        {fromBrief("campaignName", campaignName)}
                       </div>
-                      <div className="space-y-2">
-                        <Label htmlFor={briefFieldId("product")}>Product or collection</Label>
-                        <Input
-                          {...briefFieldProps("product", product)}
-                          value={product}
-                          onChange={(e) => setProduct(e.target.value)}
-                        />
-                        {fromBrief("product", product)}
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor={briefFieldId("audience")}>Target audience</Label>
-                        <Input
-                          {...briefFieldProps("audience", audience)}
-                          value={audience}
-                          onChange={(e) => setAudience(e.target.value)}
-                        />
-                        {fromBrief("audience", audience)}
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor={briefFieldId("location")}>Location</Label>
-                        <Input
-                          {...briefFieldProps("location", location)}
-                          value={location}
-                          onChange={(e) => setLocation(e.target.value)}
-                        />
-                        {fromBrief("location", location)}
-                      </div>
-                      <div className="space-y-2 sm:col-span-2">
-                        <Label htmlFor={briefFieldId("brandTone")}>Brand tone</Label>
-                        <Input
-                          {...briefFieldProps("brandTone", brandTone)}
-                          value={brandTone}
-                          onChange={(e) => setBrandTone(e.target.value)}
-                        />
-                        {fromBrief("brandTone", brandTone)}
-                      </div>
-                    </div>
-                  </details>
-                </div>
-              </div>
-
-              {/* VIDEO-ONLY FIELDS */}
-              {contentType === "video" && (
-                <div className="mt-8 rounded-xl border border-border p-5">
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <Video className="size-4 text-primary" />
-                      <h3 className="text-sm font-semibold text-foreground">Video settings</h3>
-                    </div>
-                    <span className="shrink-0 rounded-full border border-border bg-secondary/60 px-2.5 py-0.5 text-xs text-muted-foreground">
-                      Uses your VIDEO route
-                    </span>
-                  </div>
-
-                  <div className="mt-4 grid gap-5 sm:grid-cols-3">
-                    <div className="space-y-2">
-                      <Label>Duration</Label>
-                      <Select value={videoDuration} onValueChange={setVideoDuration}>
-                        <SelectTrigger className="w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {VIDEO_DURATIONS.map((d) => (
-                            <SelectItem key={d} value={d}>
-                              {d}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Aspect ratio</Label>
-                      <Select value={videoAspect} onValueChange={setVideoAspect}>
-                        <SelectTrigger className="w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {VIDEO_ASPECTS.map((a) => (
-                            <SelectItem key={a} value={a}>
-                              {a}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Style</Label>
-                      <Select value={videoStyle} onValueChange={setVideoStyle}>
-                        <SelectTrigger className="w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {VIDEO_STYLES.map((s) => (
-                            <SelectItem key={s} value={s}>
-                              {s}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-
-                  <div className="mt-5 space-y-2">
-                    <Label>Script / voiceover notes (optional)</Label>
-                    <Textarea
-                      rows={3}
-                      placeholder="What should be said or shown, scene by scene."
-                      value={videoScript}
-                      onChange={(e) => setVideoScript(e.target.value)}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* CAROUSEL-ONLY FIELDS */}
-              {contentType === "carousel" && (
-                <div className="mt-8 rounded-xl border border-border p-5">
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <Images className="size-4 text-primary" />
-                        <h3 className="text-sm font-semibold text-foreground">Carousel slides</h3>
-                      </div>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Describe what belongs in each position. Slides are generated and saved in
-                        this order.
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {productImageId
+                          ? "The creative features this exact item — customers see what they can buy."
+                          : "Tap a photo to feature the real product in this creative. None selected = AI composes the scene."}
                       </p>
                     </div>
-                    <span className="shrink-0 rounded-full border border-border bg-secondary/60 px-2.5 py-0.5 text-xs text-muted-foreground">
-                      {slides.length} slide{slides.length === 1 ? "" : "s"}
-                    </span>
+                    <div className="rounded-xl border border-border p-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <UserRound className="size-4 shrink-0 text-primary" />
+                          <h3 className="truncate text-sm font-semibold text-foreground">
+                            Your model
+                          </h3>
+                        </div>
+                        {(ambassadors?.length ?? 0) > 0 ? (
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={featureModel}
+                            onClick={() => setFeatureModel((v) => !v)}
+                            className={cn(
+                              "shrink-0 rounded-full border px-3 py-1 text-xs font-semibold transition-colors",
+                              featureModel
+                                ? "border-primary bg-primary text-black"
+                                : "border-border text-muted-foreground",
+                            )}
+                          >
+                            {featureModel ? "In this creative" : "Off"}
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="mt-3 flex items-center gap-2 overflow-x-auto pb-1">
+                        {(ambassadors ?? []).map((row) => (
+                          <img
+                            key={row.id}
+                            src={row.file_url ?? ""}
+                            alt={row.title}
+                            title={row.title}
+                            className={cn(
+                              "size-12 shrink-0 rounded-full border-2 object-cover",
+                              featureModel ? "border-primary" : "border-border opacity-50",
+                            )}
+                          />
+                        ))}
+                        <button
+                          type="button"
+                          disabled={ambassadorUploading || !brandId}
+                          onClick={() => ambassadorInputRef.current?.click()}
+                          className="grid size-12 shrink-0 place-items-center rounded-full border-2 border-dashed border-border text-muted-foreground transition-colors hover:border-primary hover:text-foreground disabled:opacity-50"
+                          aria-label="Add a model photo"
+                        >
+                          {ambassadorUploading ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            <Plus className="size-4" />
+                          )}
+                        </button>
+                        <input
+                          ref={ambassadorInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            e.target.value = "";
+                            if (!file || !brandId) return;
+                            setAmbassadorUploading(true);
+                            uploadBrandAmbassador(brandId, file)
+                              .then((row) => {
+                                setAmbassadors((prev) => [row as Inspiration, ...(prev ?? [])]);
+                                setFeatureModel(true);
+                                toast.success("Model photo added — they'll front your creatives.");
+                              })
+                              .catch((err: unknown) =>
+                                toast.error(
+                                  err instanceof Error
+                                    ? err.message
+                                    : "The photo could not be saved.",
+                                ),
+                              )
+                              .finally(() => setAmbassadorUploading(false));
+                          }}
+                        />
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {(ambassadors?.length ?? 0) > 0
+                          ? "The same face fronts every creative. The newest photo is the one used."
+                          : "Add your model or brand ambassador once — every poster features them."}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-border p-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex min-w-0 items-center gap-2">
+                          {brandKit.logoUrl ? (
+                            <img
+                              src={brandKit.logoUrl}
+                              alt="Brand logo"
+                              className="size-6 shrink-0 rounded object-contain"
+                            />
+                          ) : (
+                            <ImageIcon className="size-4 shrink-0 text-primary" />
+                          )}
+                          <h3 className="truncate text-sm font-semibold text-foreground">Logo</h3>
+                        </div>
+                        {brandKit.logoUrl ? (
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={brandKit.showLogoOnPosters}
+                            disabled={brandKitLoading}
+                            onClick={() =>
+                              updateBrandKit(
+                                { showLogoOnPosters: !brandKit.showLogoOnPosters },
+                                { immediate: true },
+                              )
+                            }
+                            className={cn(
+                              "shrink-0 rounded-full border px-3 py-1 text-xs font-semibold transition-colors",
+                              brandKit.showLogoOnPosters
+                                ? "border-primary bg-primary text-black"
+                                : "border-border text-muted-foreground",
+                            )}
+                          >
+                            {brandKit.showLogoOnPosters ? "On posters" : "Off"}
+                          </button>
+                        ) : null}
+                      </div>
+                      <p className="mt-3 text-xs text-muted-foreground">
+                        {brandKit.logoUrl ? (
+                          "Saved with your brand kit — this switch is the same one Brand Master uses. Templates keep their own logo placement."
+                        ) : (
+                          <>
+                            No logo uploaded yet.{" "}
+                            <Link
+                              to="/brand-master"
+                              className="font-medium text-foreground underline underline-offset-2"
+                            >
+                              Add it in Brand Master
+                            </Link>{" "}
+                            and it appears here.
+                          </>
+                        )}
+                      </p>
+                    </div>
                   </div>
 
-                  <div className="mt-4 space-y-3">
-                    {slides.map((slide, i) => (
-                      <div
-                        key={slide.id}
-                        className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3 rounded-xl border border-border bg-secondary/20 p-3"
-                      >
-                        {/* No drag handle here: reordering is the Move buttons
-                            below, and a grip icon only invited a gesture the
-                            list has never supported. */}
-                        <div className="flex flex-col items-center gap-1 pt-1">
-                          <span className="grid size-7 place-items-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
-                            {i + 1}
-                          </span>
+                  {/* CAMPAIGN DETAILS — tap-first: the common occasions and offers
+                      are chips, the long tail stays typable. */}
+                  <div className="mb-2 rounded-xl border border-border bg-secondary/20 p-4">
+                    <h3 className="text-sm font-semibold text-foreground">Campaign details</h3>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Optional — tap what fits, type what doesn't. Anything left blank is filled
+                      from Brand Master.
+                    </p>
+                    {briefHints.requestedHeadline || briefHints.cta ? (
+                      <p className="mt-2 text-xs text-foreground" aria-live="polite">
+                        {briefHints.requestedHeadline ? (
+                          <>
+                            Headline requested:{" "}
+                            <span className="font-medium">{briefHints.requestedHeadline}</span>
+                          </>
+                        ) : null}
+                        {briefHints.requestedHeadline && briefHints.cta ? " · " : null}
+                        {briefHints.cta ? (
+                          <>
+                            CTA: <span className="font-medium">{briefHints.cta}</span>
+                          </>
+                        ) : null}
+                      </p>
+                    ) : null}
+                    <div className="mt-4 space-y-4">
+                      <div className="space-y-2">
+                        <Label
+                          htmlFor={briefFieldId("occasion")}
+                          className="text-xs tracking-wide uppercase"
+                        >
+                          Occasion
+                        </Label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {[
+                            "Diwali",
+                            "Wedding season",
+                            "New arrival",
+                            "Weekend sale",
+                            "Festive offer",
+                            "Anniversary",
+                          ].map((chip) => (
+                            <button
+                              key={chip}
+                              type="button"
+                              aria-pressed={occasion === chip}
+                              onClick={() => setOccasion(occasion === chip ? "" : chip)}
+                              className={cn(
+                                "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                                occasion === chip
+                                  ? "border-primary bg-primary text-black"
+                                  : "border-border bg-background text-muted-foreground hover:text-foreground",
+                              )}
+                            >
+                              {chip}
+                            </button>
+                          ))}
                         </div>
-
-                        <div className="min-w-0">
-                          <Textarea
-                            rows={2}
-                            placeholder={slidePlaceholder(i)}
-                            value={slide.description}
-                            onChange={(e) => updateSlide(slide.id, e.target.value)}
-                          />
-                          <div className="mt-2 flex flex-wrap items-center gap-1">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              disabled={i === 0}
-                              onClick={() => moveSlide(i, -1)}
-                            >
-                              Move up
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              disabled={i === slides.length - 1}
-                              onClick={() => moveSlide(i, 1)}
-                            >
-                              Move down
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="text-destructive hover:text-destructive"
-                              disabled={slides.length <= 1}
-                              onClick={() => removeSlide(slide.id)}
-                            >
-                              <Trash2 className="size-4" /> Remove
-                            </Button>
+                        <Input
+                          {...briefFieldProps("occasion", occasion)}
+                          value={occasion}
+                          onChange={(e) => setOccasion(e.target.value)}
+                          placeholder="…or type your own occasion"
+                        />
+                        {fromBrief("occasion", occasion)}
+                      </div>
+                      <div className="space-y-2">
+                        <Label
+                          htmlFor={briefFieldId("offer")}
+                          className="text-xs tracking-wide uppercase"
+                        >
+                          Offer
+                        </Label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {["10% off", "20% off", "Buy 1 Get 1", "Free styling session"].map(
+                            (chip) => (
+                              <button
+                                key={chip}
+                                type="button"
+                                aria-pressed={offer === chip}
+                                onClick={() => setOffer(offer === chip ? "" : chip)}
+                                className={cn(
+                                  "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                                  offer === chip
+                                    ? "border-primary bg-primary text-black"
+                                    : "border-border bg-background text-muted-foreground hover:text-foreground",
+                                )}
+                              >
+                                {chip}
+                              </button>
+                            ),
+                          )}
+                        </div>
+                        <Input
+                          {...briefFieldProps("offer", offer)}
+                          value={offer}
+                          onChange={(e) => setOffer(e.target.value)}
+                          placeholder="…or type the exact offer"
+                        />
+                        {fromBrief("offer", offer)}
+                      </div>
+                      <details
+                        open={moreDetailsOpen}
+                        onToggle={(event) => setMoreDetailsOpen(event.currentTarget.open)}
+                      >
+                        <summary className="cursor-pointer text-xs font-semibold text-muted-foreground hover:text-foreground">
+                          More details — campaign name, product, audience, location, tone
+                        </summary>
+                        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label htmlFor={briefFieldId("campaignName")}>
+                              Campaign / promotion name
+                            </Label>
+                            <Input
+                              {...briefFieldProps("campaignName", campaignName)}
+                              value={campaignName}
+                              onChange={(e) => setCampaignName(e.target.value)}
+                            />
+                            {fromBrief("campaignName", campaignName)}
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor={briefFieldId("product")}>Product or collection</Label>
+                            <Input
+                              {...briefFieldProps("product", product)}
+                              value={product}
+                              onChange={(e) => setProduct(e.target.value)}
+                            />
+                            {fromBrief("product", product)}
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor={briefFieldId("audience")}>Target audience</Label>
+                            <Input
+                              {...briefFieldProps("audience", audience)}
+                              value={audience}
+                              onChange={(e) => setAudience(e.target.value)}
+                            />
+                            {fromBrief("audience", audience)}
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor={briefFieldId("location")}>Location</Label>
+                            <Input
+                              {...briefFieldProps("location", location)}
+                              value={location}
+                              onChange={(e) => setLocation(e.target.value)}
+                            />
+                            {fromBrief("location", location)}
+                          </div>
+                          <div className="space-y-2 sm:col-span-2">
+                            <Label htmlFor={briefFieldId("brandTone")}>Brand tone</Label>
+                            <Input
+                              {...briefFieldProps("brandTone", brandTone)}
+                              value={brandTone}
+                              onChange={(e) => setBrandTone(e.target.value)}
+                            />
+                            {fromBrief("brandTone", brandTone)}
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      </details>
+                    </div>
                   </div>
 
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="mt-4"
-                    onClick={addSlide}
-                  >
-                    <Plus className="size-4" /> Add slide
-                  </Button>
-                </div>
-              )}
+                  {/* VIDEO-ONLY FIELDS */}
+                  {contentType === "video" && (
+                    <div className="mt-8 rounded-xl border border-border p-5">
+                      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Video className="size-4 text-primary" />
+                          <h3 className="text-sm font-semibold text-foreground">Video settings</h3>
+                        </div>
+                        <span className="shrink-0 rounded-full border border-border bg-secondary/60 px-2.5 py-0.5 text-xs text-muted-foreground">
+                          Uses your VIDEO route
+                        </span>
+                      </div>
 
-              {creativeMode === "REFERENCE" ? (
-                <div className="mt-8 rounded-xl border border-dashed border-primary/50 bg-primary/5 p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-foreground">
-                        Bring your own reference
-                      </p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {contentType === "poster"
-                          ? "Upload an image, paste a public URL, or choose any number of saved references below."
-                          : "Upload an image now or choose any number of saved references below."}
-                      </p>
+                      <div className="mt-4 grid gap-5 sm:grid-cols-3">
+                        <div className="space-y-2">
+                          <Label>Duration</Label>
+                          <Select value={videoDuration} onValueChange={setVideoDuration}>
+                            <SelectTrigger className="w-full">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {VIDEO_DURATIONS.map((d) => (
+                                <SelectItem key={d} value={d}>
+                                  {d}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Aspect ratio</Label>
+                          <Select value={videoAspect} onValueChange={setVideoAspect}>
+                            <SelectTrigger className="w-full">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {VIDEO_ASPECTS.map((a) => (
+                                <SelectItem key={a} value={a}>
+                                  {a}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Style</Label>
+                          <Select value={videoStyle} onValueChange={setVideoStyle}>
+                            <SelectTrigger className="w-full">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {VIDEO_STYLES.map((s) => (
+                                <SelectItem key={s} value={s}>
+                                  {s}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <div className="mt-5 space-y-2">
+                        <Label>Script / voiceover notes (optional)</Label>
+                        <Textarea
+                          rows={3}
+                          placeholder="What should be said or shown, scene by scene."
+                          value={videoScript}
+                          onChange={(e) => setVideoScript(e.target.value)}
+                        />
+                      </div>
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                  )}
+
+                  {/* CAROUSEL-ONLY FIELDS */}
+                  {contentType === "carousel" && (
+                    <div className="mt-8 rounded-xl border border-border p-5">
+                      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <Images className="size-4 text-primary" />
+                            <h3 className="text-sm font-semibold text-foreground">
+                              Carousel slides
+                            </h3>
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Describe what belongs in each position. Slides are generated and saved
+                            in this order.
+                          </p>
+                        </div>
+                        <span className="shrink-0 rounded-full border border-border bg-secondary/60 px-2.5 py-0.5 text-xs text-muted-foreground">
+                          {slides.length} slide{slides.length === 1 ? "" : "s"}
+                        </span>
+                      </div>
+
+                      <div className="mt-4 space-y-3">
+                        {slides.map((slide, i) => (
+                          <div
+                            key={slide.id}
+                            className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3 rounded-xl border border-border bg-secondary/20 p-3"
+                          >
+                            {/* No drag handle here: reordering is the Move buttons
+                                below, and a grip icon only invited a gesture the
+                                list has never supported. */}
+                            <div className="flex flex-col items-center gap-1 pt-1">
+                              <span className="grid size-7 place-items-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
+                                {i + 1}
+                              </span>
+                            </div>
+
+                            <div className="min-w-0">
+                              <Textarea
+                                rows={2}
+                                placeholder={slidePlaceholder(i)}
+                                value={slide.description}
+                                onChange={(e) => updateSlide(slide.id, e.target.value)}
+                              />
+                              <div className="mt-2 flex flex-wrap items-center gap-1">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={i === 0}
+                                  onClick={() => moveSlide(i, -1)}
+                                >
+                                  Move up
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={i === slides.length - 1}
+                                  onClick={() => moveSlide(i, 1)}
+                                >
+                                  Move down
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-destructive hover:text-destructive"
+                                  disabled={slides.length <= 1}
+                                  onClick={() => removeSlide(slide.id)}
+                                >
+                                  <Trash2 className="size-4" /> Remove
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => {
-                          setUploadIntention("reference");
-                          fileInputRef.current?.click();
-                        }}
+                        size="sm"
+                        className="mt-4"
+                        onClick={addSlide}
                       >
-                        <Upload className="size-4" /> Use image now
+                        <Plus className="size-4" /> Add slide
                       </Button>
-                      {contentType === "poster" ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={() => {
-                            setInspirationFlowError(null);
-                            setStep("inspiration_form");
-                          }}
-                        >
-                          <ExternalLink className="size-4" /> Save reference &amp; create poster
-                        </Button>
-                      ) : null}
                     </div>
-                  </div>
-                </div>
-              ) : null}
+                  )}
 
-              {creativeMode === "BRAND_TEMPLATE" &&
-              brandTemplatesError &&
-              !brandTemplates?.length ? (
-                <div
-                  role="alert"
-                  className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
-                >
-                  <span>{brandTemplatesError}</span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setTemplatesAttempt((current) => current + 1)}
-                  >
-                    Retry templates
-                  </Button>
+                  {creativeMode === "REFERENCE" ? (
+                    <div className="mt-8 rounded-xl border border-dashed border-primary/50 bg-primary/5 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground">
+                            Bring your own reference
+                          </p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {contentType === "poster"
+                              ? "Upload an image, paste a public URL, or choose any number of saved references below."
+                              : "Upload an image now or choose any number of saved references below."}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => {
+                              setUploadIntention("reference");
+                              fileInputRef.current?.click();
+                            }}
+                          >
+                            <Upload className="size-4" /> Use image now
+                          </Button>
+                          {contentType === "poster" ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => {
+                                setInspirationFlowError(null);
+                                setStep("inspiration_form");
+                              }}
+                            >
+                              <ExternalLink className="size-4" /> Save reference &amp; create poster
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {creativeMode === "BRAND_TEMPLATE" &&
+                  brandTemplatesError &&
+                  !brandTemplates?.length ? (
+                    <div
+                      role="alert"
+                      className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+                    >
+                      <span>{brandTemplatesError}</span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setTemplatesAttempt((current) => current + 1)}
+                      >
+                        Retry templates
+                      </Button>
+                    </div>
+                  ) : creativeMode === "BRAND_TEMPLATE" && brandTemplates === null ? (
+                    <div
+                      role="status"
+                      className="mt-5 flex items-center gap-2 rounded-xl border border-border p-4 text-sm text-muted-foreground"
+                    >
+                      <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Loading your
+                      templates…
+                    </div>
+                  ) : creativeMode === "BRAND_TEMPLATE" &&
+                    brandTemplates !== null &&
+                    brandTemplates.length === 0 ? (
+                    <div
+                      role="status"
+                      className="mt-5 rounded-xl border border-border p-4 text-sm text-muted-foreground"
+                    >
+                      No templates uploaded yet. Add your poster designs under{" "}
+                      <Link
+                        to="/brand-master"
+                        search={{ tab: "templates" }}
+                        className="font-medium text-foreground underline underline-offset-2"
+                      >
+                        Brand Master → Show &amp; tell
+                      </Link>
+                      , or choose “AI original”.
+                    </div>
+                  ) : creativeMode === "BRAND_TEMPLATE" || creativeMode === "REFERENCE" ? (
+                    <CreativeCommand
+                      brandId={brandId}
+                      selections={creativeSelections}
+                      onSelectionsChange={setCreativeSelections}
+                      templates={brandTemplates ?? []}
+                      templateId={creativeTemplateId}
+                      onTemplateChange={setCreativeTemplateId}
+                      showTemplates={creativeMode === "BRAND_TEMPLATE"}
+                      showReferences={creativeMode === "REFERENCE"}
+                    />
+                  ) : null}
                 </div>
-              ) : creativeMode === "BRAND_TEMPLATE" && brandTemplates === null ? (
-                <div
-                  role="status"
-                  className="mt-5 flex items-center gap-2 rounded-xl border border-border p-4 text-sm text-muted-foreground"
-                >
-                  <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Loading your
-                  templates…
-                </div>
-              ) : creativeMode === "BRAND_TEMPLATE" &&
-                brandTemplates !== null &&
-                brandTemplates.length === 0 ? (
-                <div
-                  role="status"
-                  className="mt-5 rounded-xl border border-border p-4 text-sm text-muted-foreground"
-                >
-                  No templates uploaded yet. Add your poster designs under{" "}
-                  <Link
-                    to="/brand-master"
-                    search={{ tab: "templates" }}
-                    className="font-medium text-foreground underline underline-offset-2"
-                  >
-                    Brand Master → Show &amp; tell
-                  </Link>
-                  , or choose “AI original”.
-                </div>
-              ) : creativeMode === "BRAND_TEMPLATE" || creativeMode === "REFERENCE" ? (
-                <CreativeCommand
-                  brandId={brandId}
-                  selections={creativeSelections}
-                  onSelectionsChange={setCreativeSelections}
-                  templates={brandTemplates ?? []}
-                  templateId={creativeTemplateId}
-                  onTemplateChange={setCreativeTemplateId}
-                  showTemplates={creativeMode === "BRAND_TEMPLATE"}
-                  showReferences={creativeMode === "REFERENCE"}
-                />
-              ) : null}
+              </details>
 
               {awaitingApproval ? (
                 <div

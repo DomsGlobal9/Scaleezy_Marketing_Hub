@@ -30,6 +30,7 @@ export function hasSavedGenerationImage(result: {
 export function canCreateGeneration(input: {
   awaitingApproval: boolean;
   pending: boolean;
+  /** null = no stated direction; the backend applies the brand default. */
   mode: string | null;
   brief: string[];
   hasReference: boolean;
@@ -38,8 +39,7 @@ export function canCreateGeneration(input: {
 }): boolean {
   // Resuming accepted work is a read, not a new generation or template choice.
   if (input.pending) return true;
-  if (input.awaitingApproval || !input.mode || !input.brief.some((text) => text.trim()))
-    return false;
+  if (input.awaitingApproval || !input.brief.some((text) => text.trim())) return false;
   if (input.mode === "REFERENCE" && !input.hasReference) return false;
   if (input.mode === "BRAND_TEMPLATE" && !input.templateId) return false;
   return true;

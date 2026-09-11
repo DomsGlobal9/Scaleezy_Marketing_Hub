@@ -70,8 +70,8 @@ test("only terminal request outcomes end polling", () => {
   assert.equal(generationDecision({ status: "GENERATING" }), "wait");
 });
 
-test("blank brief and unselected direction cannot enable generation", () => {
-  assert.equal(canCreateGeneration({ ...brief, mode: null }), false);
+test("blank brief cannot enable generation; no stated direction is the brand default", () => {
+  assert.equal(canCreateGeneration({ ...brief, mode: null }), true);
   assert.equal(canCreateGeneration({ ...brief, brief: [" ", ""] }), false);
   assert.equal(canCreateGeneration(brief), true);
 });
