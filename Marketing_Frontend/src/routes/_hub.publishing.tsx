@@ -3683,155 +3683,158 @@ function PublishingPage() {
       {/* PUBLISHING HISTORY — deferred past first paint: below the fold, and
           its two tables were a third of the page's initial mount cost. */}
       <MountWhenIdle>
-      <section className="mt-12">
-        <SectionTitle title="RECENT PUBLISHING ACTIVITY" />
-        <div className="surface-card overflow-hidden mt-4">
-          <div className="hidden overflow-x-auto lg:block">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-left text-xs tracking-wide text-muted-foreground uppercase">
-                  {[
-                    "Content",
-                    "Platform",
-                    "Account",
-                    "Published/Scheduled At",
-                    "Status",
-                    "Post ID",
-                    "Error",
-                    "",
-                  ].map((h) => (
-                    <th key={h} className="px-4 py-3 font-medium whitespace-nowrap">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {historyLoading || publishingHistory.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                      {historyLoading
-                        ? "Loading recent activity…"
-                        : historyError
-                          ? "Could not load your publishing activity. Refresh to try again."
-                          : "Nothing published yet. Your posts will be listed here."}
-                    </td>
+        <section className="mt-12">
+          <SectionTitle title="RECENT PUBLISHING ACTIVITY" />
+          <div className="surface-card overflow-hidden mt-4">
+            <div className="hidden overflow-x-auto lg:block">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs tracking-wide text-muted-foreground uppercase">
+                    {[
+                      "Content",
+                      "Platform",
+                      "Account",
+                      "Published/Scheduled At",
+                      "Status",
+                      "Post ID",
+                      "Error",
+                      "",
+                    ].map((h) => (
+                      <th key={h} className="px-4 py-3 font-medium whitespace-nowrap">
+                        {h}
+                      </th>
+                    ))}
                   </tr>
-                ) : null}
-                {publishingHistory.map((row, i) => (
-                  <tr key={i} className="border-b border-border/70 last:border-0">
-                    <td className="max-w-[240px] px-4 py-3 font-medium">
-                      <span className="flex items-center gap-2">
-                        {row.previewUrl ? (
-                          <img
-                            src={row.previewUrl}
-                            alt=""
-                            loading="lazy"
-                            className="size-8 shrink-0 rounded border border-border object-cover"
-                          />
-                        ) : null}
-                        <span className="truncate">{row.content}</span>
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">{row.platform}</td>
-                    <td className="px-4 py-3">{row.account}</td>
-                    <td className="px-4 py-3 whitespace-nowrap">{row.date}</td>
-                    <td className="px-4 py-3">
-                      <StatusBadge
-                        status={row.status}
-                        tone={
-                          row.status === "Published"
-                            ? "success"
-                            : row.status === "Failed"
-                              ? "danger"
-                              : "neutral"
-                        }
-                      />
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{row.postId}</td>
-                    <td className="max-w-[220px] truncate px-4 py-3 text-muted-foreground">
-                      {row.error}
-                    </td>
-                    <td className="px-4 py-3 text-right whitespace-nowrap">
-                      {row.status === "Failed" ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={retrying === row.id}
-                          onClick={() => retryItem(row.id)}
-                        >
-                          <RotateCcw className="size-4" />
-                          {retrying === row.id ? "Retrying…" : "Retry"}
-                        </Button>
-                      ) : row.status === "Published" && row.url ? (
-                        <Button size="sm" variant="ghost" asChild>
-                          <a href={row.url} target="_blank" rel="noreferrer">
-                            <ExternalLink className="size-4" /> View
-                          </a>
-                        </Button>
-                      ) : row.status === "Published" ? (
-                        <span className="text-xs text-muted-foreground">Published</span>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">
-                          <Clock className="mr-1 inline size-3" /> Waiting
+                </thead>
+                <tbody>
+                  {historyLoading || publishingHistory.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={8}
+                        className="px-4 py-8 text-center text-sm text-muted-foreground"
+                      >
+                        {historyLoading
+                          ? "Loading recent activity…"
+                          : historyError
+                            ? "Could not load your publishing activity. Refresh to try again."
+                            : "Nothing published yet. Your posts will be listed here."}
+                      </td>
+                    </tr>
+                  ) : null}
+                  {publishingHistory.map((row, i) => (
+                    <tr key={i} className="border-b border-border/70 last:border-0">
+                      <td className="max-w-[240px] px-4 py-3 font-medium">
+                        <span className="flex items-center gap-2">
+                          {row.previewUrl ? (
+                            <img
+                              src={row.previewUrl}
+                              alt=""
+                              loading="lazy"
+                              className="size-8 shrink-0 rounded border border-border object-cover"
+                            />
+                          ) : null}
+                          <span className="truncate">{row.content}</span>
                         </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="divide-y divide-border lg:hidden">
-            {historyLoading || publishingHistory.length === 0 ? (
-              <p className="p-6 text-center text-sm text-muted-foreground">
-                {historyLoading
-                  ? "Loading recent activity…"
-                  : historyError
-                    ? "Could not load your publishing activity. Refresh to try again."
-                    : "Nothing published yet. Your posts will be listed here."}
-              </p>
-            ) : null}
-            {publishingHistory.map((row, i) => (
-              <div key={i} className="p-4">
-                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-                  <p className="min-w-0 truncate text-sm font-medium text-foreground">
-                    {row.content}
-                  </p>
-                  <StatusBadge
-                    status={row.status}
-                    tone={
-                      row.status === "Published"
-                        ? "success"
-                        : row.status === "Failed"
-                          ? "danger"
-                          : "neutral"
-                    }
-                  />
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {row.platform} · {row.account} · {row.date}
-                </p>
-                {/* error_message is null on everything that did not fail, and
-                    null !== "—" put an empty red line on every card. */}
-                {row.error ? <p className="mt-2 text-xs text-destructive">{row.error}</p> : null}
-              </div>
-            ))}
-          </div>
-          {historyHasMore ? (
-            <div className="border-t border-border p-3 text-center">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={historyLoadingMore}
-                onClick={() => void loadMoreHistory()}
-              >
-                {historyLoadingMore ? "Loading…" : "Load more"}
-              </Button>
+                      </td>
+                      <td className="px-4 py-3">{row.platform}</td>
+                      <td className="px-4 py-3">{row.account}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{row.date}</td>
+                      <td className="px-4 py-3">
+                        <StatusBadge
+                          status={row.status}
+                          tone={
+                            row.status === "Published"
+                              ? "success"
+                              : row.status === "Failed"
+                                ? "danger"
+                                : "neutral"
+                          }
+                        />
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{row.postId}</td>
+                      <td className="max-w-[220px] truncate px-4 py-3 text-muted-foreground">
+                        {row.error}
+                      </td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                        {row.status === "Failed" ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={retrying === row.id}
+                            onClick={() => retryItem(row.id)}
+                          >
+                            <RotateCcw className="size-4" />
+                            {retrying === row.id ? "Retrying…" : "Retry"}
+                          </Button>
+                        ) : row.status === "Published" && row.url ? (
+                          <Button size="sm" variant="ghost" asChild>
+                            <a href={row.url} target="_blank" rel="noreferrer">
+                              <ExternalLink className="size-4" /> View
+                            </a>
+                          </Button>
+                        ) : row.status === "Published" ? (
+                          <span className="text-xs text-muted-foreground">Published</span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            <Clock className="mr-1 inline size-3" /> Waiting
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ) : null}
-        </div>
-      </section>
+            <div className="divide-y divide-border lg:hidden">
+              {historyLoading || publishingHistory.length === 0 ? (
+                <p className="p-6 text-center text-sm text-muted-foreground">
+                  {historyLoading
+                    ? "Loading recent activity…"
+                    : historyError
+                      ? "Could not load your publishing activity. Refresh to try again."
+                      : "Nothing published yet. Your posts will be listed here."}
+                </p>
+              ) : null}
+              {publishingHistory.map((row, i) => (
+                <div key={i} className="p-4">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+                    <p className="min-w-0 truncate text-sm font-medium text-foreground">
+                      {row.content}
+                    </p>
+                    <StatusBadge
+                      status={row.status}
+                      tone={
+                        row.status === "Published"
+                          ? "success"
+                          : row.status === "Failed"
+                            ? "danger"
+                            : "neutral"
+                      }
+                    />
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {row.platform} · {row.account} · {row.date}
+                  </p>
+                  {/* error_message is null on everything that did not fail, and
+                    null !== "—" put an empty red line on every card. */}
+                  {row.error ? <p className="mt-2 text-xs text-destructive">{row.error}</p> : null}
+                </div>
+              ))}
+            </div>
+            {historyHasMore ? (
+              <div className="border-t border-border p-3 text-center">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={historyLoadingMore}
+                  onClick={() => void loadMoreHistory()}
+                >
+                  {historyLoadingMore ? "Loading…" : "Load more"}
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        </section>
       </MountWhenIdle>
 
       {/* Hidden file input always available globally */}
