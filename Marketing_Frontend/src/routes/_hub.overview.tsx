@@ -27,7 +27,7 @@ import {
   READINESS_COPY,
   fetchBrandMasterBootstrap,
   tabForReadinessKey,
-  type BrandMasterTab,
+  type BrandMasterSection,
   type ReadinessLevel,
 } from "@/lib/brand-master";
 import { readSelectedWorkspaceId } from "@/lib/workspace";
@@ -140,7 +140,7 @@ function OverviewPage() {
 
   const readinessTarget = overview
     ? tabForReadinessKey(overview.readiness.recommended_next_action.key)
-    : "overview";
+    : "basics";
   const awaitingReview = kpiValue(kpis, "awaiting_review");
   const approved = kpiValue(kpis, "approved");
   const scheduled = kpiValue(kpis, "scheduled");
@@ -349,7 +349,7 @@ function ActionRow({
   detail: string;
   action: string;
   to: "/publishing" | "/review" | "/brand-master";
-  search?: { tab: BrandMasterTab };
+  search?: { tab: BrandMasterSection };
   primary?: boolean;
 }) {
   const content = (

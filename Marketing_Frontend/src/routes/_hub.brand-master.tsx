@@ -1,28 +1,18 @@
 /**
- * Brand Master — the single home for everything Scaleezy understands about a
- * brand, and the place it is taught.
+ * Brand Master — everything Scaleezy understands about a brand, in three tabs.
  *
- * Teach → Understand → Create → Review → Learn → Improve. Every number on
- * this page comes from a backend that owns it; every card opens the tab that
- * owns the work; nothing is filled in optimistically. If a layer is empty the
- * tab says so plainly.
+ *   About the brand   the first-party record, and what the brain compiled from it
+ *   Show & tell       anything you give Scaleezy to learn from: notes, documents,
+ *                     references, templates — and the suggestions awaiting a decision
+ *   Rules             what must never happen, and what Scaleezy has learned to prefer
+ *
+ * Every number comes from a backend that owns it; nothing is filled in
+ * optimistically. Deep links address sections (`?tab=knowledge`), and the
+ * page opens the owning tab and scrolls there.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import {
-  AlertTriangle,
-  BookOpen,
-  Brain,
-  Check,
-  GraduationCap,
-  IdCard,
-  Image as ImageIcon,
-  LayoutTemplate,
-  Lightbulb,
-  Loader2,
-  Scale,
-  Sparkles,
-} from "lucide-react";
+import { AlertTriangle, Brain, IdCard, Lightbulb, Loader2, Scale, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -51,11 +41,8 @@ import { LibraryGallery } from "@/components/marketing/library-gallery";
 import { EnrichFromWebsite, NlNoteBox } from "@/components/marketing/nl-note-box";
 import { PageHeader, SectionTitle } from "@/components/marketing/primitives";
 import { BrandProfilePanel } from "@/components/marketing/products-audience-panel";
-import { TeachScaleezy } from "@/components/marketing/teach-scaleezy";
 import { TemplatesPanel } from "@/components/marketing/templates-panel";
 import {
-  BRAND_MASTER_TABS,
-  LEGACY_TAB_ALIASES,
   READINESS_COPY,
   createRule,
   deactivateRule,
@@ -72,11 +59,13 @@ import {
   humanize,
   rejectMemory,
   rejectSignal,
+  resolveBrandMasterTarget,
   retirePreference,
   tabForReadinessKey,
   type BrandBrain,
   type BrandConflict,
   type BrandMasterOverview,
+  type BrandMasterSection,
   type BrandMasterTab,
   type BrandPreferenceRow,
   type BrandRuleRow,
@@ -86,12 +75,13 @@ import {
 import { useBrandSettings, type BrandDto } from "@/lib/brand-settings";
 
 export const Route = createFileRoute("/_hub/brand-master")({
-  validateSearch: (search: Record<string, unknown>): { tab?: BrandMasterTab } => {
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { tab?: BrandMasterTab | BrandMasterSection } => {
     const raw = search["tab"];
     if (typeof raw !== "string") return {};
-    // Old deep links to merged-away tabs land on the tab that absorbed them.
-    const tab = LEGACY_TAB_ALIASES[raw] ?? raw;
-    return (BRAND_MASTER_TABS as string[]).includes(tab) ? { tab: tab as BrandMasterTab } : {};
+    const target = resolveBrandMasterTarget(raw);
+    return target ? { tab: target.section ?? target.tab } : {};
   },
   head: () => ({
     meta: [
@@ -106,253 +96,52 @@ export const Route = createFileRoute("/_hub/brand-master")({
   component: BrandMasterPage,
 });
 
-/* ---------------------------------------------------------------- overview */
+/* --------------------------------------------------------------- readiness */
 
-function ReadinessCard({
+function ReadinessStrip({
   overview,
-  onGoToTab,
+  onGoTo,
 }: {
   overview: BrandMasterOverview;
-  onGoToTab: (tab: BrandMasterTab) => void;
+  onGoTo: (section: BrandMasterSection) => void;
 }) {
   const { readiness } = overview;
   const copy = READINESS_COPY[readiness.readiness_level];
   const target = tabForReadinessKey(readiness.recommended_next_action.key);
-
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center justify-between text-base">
-          <span>Brand readiness</span>
-          <Badge variant="secondary">{copy.label}</Badge>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-5">
-        <div>
-          <div className="flex items-baseline gap-2">
-            <span className="font-display text-4xl leading-none font-semibold">
-              {readiness.readiness_score}
-            </span>
-            <span className="text-sm text-muted-foreground">/ 100</span>
-          </div>
-          <Progress value={readiness.readiness_score} className="mt-3" />
-          <p className="mt-2 text-sm text-muted-foreground">{copy.blurb}</p>
-        </div>
-
-        <div className="space-y-2">
-          {readiness.dimensions.map((dimension) => (
-            <button
-              type="button"
-              key={dimension.key}
-              aria-label={`${dimension.label}: ${Math.round(dimension.score * 100)}%. ${dimension.hint}`}
-              onClick={() => {
-                const t = tabForReadinessKey(dimension.key);
-                if (t !== "create") onGoToTab(t);
-              }}
-              className="flex min-h-11 w-full items-center gap-3 rounded-md px-1 text-left hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              title={dimension.hint}
-            >
-              <span className="w-44 shrink-0 truncate text-sm text-muted-foreground">
-                {dimension.label}
-              </span>
-              <Progress value={dimension.score * 100} className="h-1.5 flex-1" />
-              <span className="w-10 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-                {Math.round(dimension.score * 100)}%
-              </span>
-            </button>
-          ))}
-        </div>
-
-        <div className="rounded-xl border bg-muted/40 p-4">
-          <p className="label-eyebrow mb-1">Do this next</p>
-          <p className="text-sm font-medium text-foreground">
-            {readiness.recommended_next_action.label}
-          </p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {readiness.recommended_next_action.detail}
-          </p>
-          {target === "create" ? (
-            <Button asChild size="sm" className="mt-3">
-              <Link to="/publishing">Create content</Link>
-            </Button>
-          ) : (
-            <Button size="sm" variant="outline" className="mt-3" onClick={() => onGoToTab(target)}>
-              Go there
-            </Button>
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function CountTile({
-  label,
-  value,
-  onClick,
-}: {
-  label: string;
-  value: number;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="rounded-xl border p-4 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <p className="font-display text-2xl leading-none font-semibold">{value}</p>
-      <p className="mt-1 text-xs text-muted-foreground">{label}</p>
-    </button>
-  );
-}
-
-function OverviewTab({
-  overview,
-  onGoToTab,
-}: {
-  overview: BrandMasterOverview;
-  onGoToTab: (tab: BrandMasterTab) => void;
-}) {
-  const { brand, brain, readiness } = overview;
-  return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
-      <div className="space-y-6">
-        <Card>
-          <CardContent className="flex flex-wrap items-start gap-5 pt-6">
-            {brand.logo_url ? (
-              <img
-                src={brand.logo_url}
-                alt=""
-                className="size-16 shrink-0 rounded-xl border object-contain"
-              />
-            ) : (
-              <button
-                type="button"
-                onClick={() => onGoToTab("basics")}
-                className="grid size-16 shrink-0 place-items-center rounded-xl border border-dashed text-muted-foreground"
-                title="Add a logo"
-                aria-label="Add a logo in Brand profile"
-              >
-                <ImageIcon className="size-5" />
-              </button>
-            )}
-            <div className="min-w-0 flex-1">
-              <h2 className="font-display text-2xl font-semibold tracking-tight">{brand.name}</h2>
-              <p className="text-sm text-muted-foreground">{brand.industry || "No industry set"}</p>
-              {brand.tagline ? (
-                <p className="mt-2 text-sm text-foreground">{brand.tagline}</p>
-              ) : null}
-              {brand.brand_tone ? (
-                <p className="mt-1 text-sm text-muted-foreground">Tone: {brand.brand_tone}</p>
-              ) : null}
-              <Button
-                variant="link"
-                size="sm"
-                className="mt-1 h-auto px-0"
-                onClick={() => onGoToTab("basics")}
-              >
-                Edit brand profile
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        <div>
-          <SectionTitle
-            title="What Scaleezy is working from"
-            description="Each count opens the layer it comes from."
-          />
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <CountTile
-              label="Knowledge sources"
-              value={readiness.counts.sources}
-              onClick={() => onGoToTab("knowledge")}
-            />
-            <CountTile
-              label="Confirmed facts"
-              value={readiness.counts.memories}
-              onClick={() => onGoToTab("knowledge")}
-            />
-            <CountTile
-              label="Inspirations"
-              value={readiness.counts.inspirations}
-              onClick={() => onGoToTab("inspirations")}
-            />
-            <CountTile
-              label="Learned preferences"
-              value={readiness.counts.preferences}
-              onClick={() => onGoToTab("rules")}
-            />
-            <CountTile
-              label="Active rules"
-              value={readiness.counts.rules}
-              onClick={() => onGoToTab("rules")}
-            />
-            <CountTile
-              label="Needs your decision"
-              value={readiness.counts.unresolved_conflicts}
-              onClick={() => onGoToTab("attention")}
-            />
-          </div>
-        </div>
+    <div className="surface-card flex flex-wrap items-center gap-x-6 gap-y-3 p-4">
+      <div className="flex items-center gap-3">
+        <span className="font-display text-3xl leading-none font-semibold">
+          {readiness.readiness_score}
+        </span>
+        <span className="text-sm text-muted-foreground">
+          / 100
+          <Badge variant="secondary" className="ml-2">
+            {copy.label}
+          </Badge>
+        </span>
       </div>
-
-      <div className="space-y-6">
-        <ReadinessCard overview={overview} onGoToTab={onGoToTab} />
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">What Scaleezy uses</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            {brain.compiled ? (
-              <>
-                <Row
-                  label="State"
-                  value={
-                    brain.unresolved_conflict_count
-                      ? `${brain.unresolved_conflict_count} unresolved`
-                      : "Consistent"
-                  }
-                />
-                <Row label="Version" value={brain.brain_version.slice(0, 12)} mono />
-                <Row
-                  label="Last compiled"
-                  value={brain.compiled_at ? new Date(brain.compiled_at).toLocaleString() : "—"}
-                />
-              </>
-            ) : (
-              <p className="text-muted-foreground">
-                Not compiled yet. It compiles automatically as you teach.
-              </p>
-            )}
-            <div className="flex">
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full"
-                onClick={() => onGoToTab("brain")}
-              >
-                <Brain className="size-4" /> Open
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+      <Progress value={readiness.readiness_score} className="h-1.5 w-full sm:w-40" />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium text-foreground">
+          Next: {readiness.recommended_next_action.label}
+        </p>
+        <p className="truncate text-xs text-muted-foreground">
+          {readiness.recommended_next_action.detail}
+        </p>
       </div>
+      {target === "create" ? (
+        <Button asChild size="sm">
+          <Link to="/publishing">Create content</Link>
+        </Button>
+      ) : (
+        <Button size="sm" variant="outline" onClick={() => onGoTo(target)}>
+          Go there
+        </Button>
+      )}
     </div>
   );
 }
-
-function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="text-muted-foreground">{label}</span>
-      <span className={mono ? "font-mono text-xs" : ""}>{value}</span>
-    </div>
-  );
-}
-
-/* --------------------------------------------------------- rules & learning */
 
 const EVENT_COPY: Record<string, string> = {
   APPROVED: "Approved a generation",
@@ -686,8 +475,8 @@ function BrainCorrection({
   onGoToTab,
 }: {
   label: string;
-  tab: BrandMasterTab;
-  onGoToTab: (tab: BrandMasterTab) => void;
+  tab: BrandMasterSection;
+  onGoToTab: (section: BrandMasterSection) => void;
 }) {
   return (
     <Button variant="ghost" size="sm" onClick={() => onGoToTab(tab)}>
@@ -704,8 +493,8 @@ function BrainSection({
 }: {
   title: string;
   items: string[];
-  correction?: { label: string; tab: BrandMasterTab };
-  onGoToTab: (tab: BrandMasterTab) => void;
+  correction?: { label: string; tab: BrandMasterSection };
+  onGoToTab: (section: BrandMasterSection) => void;
 }) {
   if (!items.length) return null;
   return (
@@ -730,7 +519,7 @@ function BrainTab({
   onGoToTab,
 }: {
   brandId: string;
-  onGoToTab: (tab: BrandMasterTab) => void;
+  onGoToTab: (section: BrandMasterSection) => void;
 }) {
   const slice = useSlice<BrandBrain>(() => fetchBrain(brandId), true);
 
@@ -763,8 +552,8 @@ function BrainTab({
           title="The brain is nearly empty"
           hint="It compiles from brand basics, knowledge, inspirations and what Scaleezy has learned. Add any of those and it fills in."
           action={
-            <Button variant="outline" onClick={() => onGoToTab("teach")}>
-              Teach Scaleezy
+            <Button variant="outline" onClick={() => onGoToTab("knowledge")}>
+              Show Scaleezy something
             </Button>
           }
         />
@@ -945,7 +734,7 @@ function AttentionTab({
 }: {
   brandId: string;
   overview: BrandMasterOverview;
-  onGoToTab: (tab: BrandMasterTab) => void;
+  onGoToTab: (section: BrandMasterSection) => void;
   onChanged: () => void;
 }) {
   const sources = useSlice<KnowledgeSource[]>(() => fetchKnowledge(brandId), true);
@@ -1178,20 +967,47 @@ function AttentionTab({
 
 /* -------------------------------------------------------------------- page */
 
+/**
+ * The attention panel is only mounted when there is something to decide —
+ * its own loading and empty states would otherwise be the first thing on the
+ * Show & tell tab for a brand that has nothing waiting.
+ */
+function attentionCount(overview: BrandMasterOverview): number {
+  const { readiness, brain } = overview;
+  return readiness.counts.unresolved_conflicts + (brain.compiled && !brain.needs_refresh ? 0 : 1);
+}
+
 function BrandMasterPage() {
   const navigate = useNavigate();
   const search = Route.useSearch();
-  const tab: BrandMasterTab = search.tab ?? "overview";
+  const target = search.tab ? resolveBrandMasterTarget(search.tab) : null;
+  const tab: BrandMasterTab = target?.tab ?? "about";
   const setTab = useCallback(
     (next: BrandMasterTab) => {
       void navigate({
         to: "/brand-master",
-        search: next === "overview" ? {} : { tab: next },
+        search: next === "about" ? {} : { tab: next },
         replace: true,
       });
     },
     [navigate],
   );
+  // Switch to the owning tab, then scroll once its content has rendered.
+  const goTo = useCallback(
+    (section: BrandMasterSection) => {
+      void navigate({ to: "/brand-master", search: { tab: section }, replace: true });
+    },
+    [navigate],
+  );
+  const section = target?.section;
+  useEffect(() => {
+    // The first section of a tab is already in view once the tab opens.
+    if (!section || section === "basics" || section === "rules") return;
+    const timer = window.setTimeout(() => {
+      document.getElementById(section)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [section]);
 
   const [brandId, setBrandId] = useState<string | null>(null);
   const [initialBrand, setInitialBrand] = useState<BrandDto | null>(null);
@@ -1232,49 +1048,26 @@ function BrandMasterPage() {
   }, [brandId, loadOverview]);
   const [adoptedNonce, setAdoptedNonce] = useState(0);
   const brandEditor = useBrandSettings({ brandId, initialBrand, onSaved: refresh });
-
-  const conflictCount = overview?.brain.unresolved_conflict_count ?? 0;
-  const low =
-    overview?.readiness.readiness_level === "STARTING" ||
-    overview?.readiness.readiness_level === "LEARNING";
-
-  const headerActions = useMemo(() => {
-    if (!overview) return null;
-    return low ? (
-      <>
-        <Button variant="outline" asChild>
-          <Link to="/publishing">Create content</Link>
-        </Button>
-        <Button onClick={() => setTab("teach")}>
-          <GraduationCap className="size-4" /> Continue teaching Scaleezy
-        </Button>
-      </>
-    ) : (
-      <>
-        <Button variant="outline" onClick={() => setTab("teach")}>
-          <GraduationCap className="size-4" /> Teach Scaleezy more
-        </Button>
-        <Button asChild>
-          <Link to="/publishing">
-            <Sparkles className="size-4" /> Create content
-          </Link>
-        </Button>
-      </>
-    );
-  }, [low, overview, setTab]);
+  const pending = overview ? attentionCount(overview) : 0;
 
   return (
     <div className="space-y-8">
       <PageHeader
         eyebrow="Brand Master"
         title="What Scaleezy knows"
-        subtitle="Every fact, reference, preference and rule behind your brand's work — where each one came from, and where to teach it more."
-        actions={headerActions}
+        subtitle="Your brand, what you have shown Scaleezy, and the rules it works to."
+        actions={
+          <Button asChild>
+            <Link to="/publishing">
+              <Sparkles className="size-4" /> Create content
+            </Link>
+          </Button>
+        }
       />
 
       {loading ? (
         <div className="space-y-4">
-          <Skeleton className="h-40 w-full rounded-xl" />
+          <Skeleton className="h-20 w-full rounded-xl" />
           <Loading rows={4} />
         </div>
       ) : error ? (
@@ -1285,115 +1078,139 @@ function BrandMasterPage() {
           hint="Every client gets a brand. Run the guided setup and this page fills in as you go."
           action={
             <Button asChild>
-              <Link to="/onboarding">Start client setup</Link>
+              <Link to="/setup" search={{}}>
+                Start setup
+              </Link>
             </Button>
           }
         />
       ) : (
-        <Tabs
-          value={tab}
-          onValueChange={(value) => setTab(value as BrandMasterTab)}
-          className="space-y-6"
-        >
-          {/* Wrapping, not horizontally scrolling: a hidden-scrollbar strip is
-              unreachable with a mouse, so overflowing tabs simply vanished. */}
-          <TabsList
-            aria-label="Brand Master sections"
-            className="flex h-auto w-full flex-wrap justify-start gap-1"
+        <>
+          <ReadinessStrip overview={overview} onGoTo={goTo} />
+          <Tabs
+            value={tab}
+            onValueChange={(value) => setTab(value as BrandMasterTab)}
+            className="space-y-6"
           >
-            <TabsTrigger value="overview" className="min-h-11 shrink-0 gap-1.5">
-              <Sparkles className="size-3.5" /> Summary
-            </TabsTrigger>
-            <TabsTrigger value="basics" className="min-h-11 shrink-0 gap-1.5">
-              <IdCard className="size-3.5" /> Brand profile
-            </TabsTrigger>
-            <TabsTrigger value="knowledge" className="min-h-11 shrink-0 gap-1.5">
-              <BookOpen className="size-3.5" /> Knowledge &amp; facts
-            </TabsTrigger>
-            <TabsTrigger value="inspirations" className="min-h-11 shrink-0 gap-1.5">
-              <Lightbulb className="size-3.5" /> Brand inspirations
-            </TabsTrigger>
-            <TabsTrigger value="templates" className="min-h-11 shrink-0 gap-1.5">
-              <LayoutTemplate className="size-3.5" /> Templates
-            </TabsTrigger>
-            <TabsTrigger value="rules" className="min-h-11 shrink-0 gap-1.5">
-              <Scale className="size-3.5" /> Rules &amp; preferences
-            </TabsTrigger>
-            <TabsTrigger value="brain" className="min-h-11 shrink-0 gap-1.5">
-              <Brain className="size-3.5" /> What Scaleezy uses
-            </TabsTrigger>
-            <TabsTrigger value="attention" className="min-h-11 shrink-0 gap-1.5">
-              {conflictCount > 0 ? (
-                <AlertTriangle className="size-3.5 text-amber-600" />
-              ) : (
-                <Check className="size-3.5" />
-              )}
-              Needs review
-              {conflictCount > 0 ? (
-                <Badge variant="secondary" className="ml-1">
-                  {conflictCount}
-                </Badge>
-              ) : null}
-            </TabsTrigger>
-            <TabsTrigger value="teach" className="min-h-11 shrink-0 gap-1.5">
-              <GraduationCap className="size-3.5" /> Teach Scaleezy
-            </TabsTrigger>
-          </TabsList>
+            <TabsList
+              aria-label="Brand Master sections"
+              className="flex h-auto w-full flex-wrap justify-start gap-1"
+            >
+              <TabsTrigger value="about" className="min-h-11 shrink-0 gap-1.5">
+                <IdCard className="size-3.5" /> About the brand
+              </TabsTrigger>
+              <TabsTrigger value="show" className="min-h-11 shrink-0 gap-1.5">
+                <Lightbulb className="size-3.5" /> Show &amp; tell
+                {pending > 0 ? (
+                  <Badge variant="secondary" className="ml-1">
+                    {pending}
+                  </Badge>
+                ) : null}
+              </TabsTrigger>
+              <TabsTrigger value="rules" className="min-h-11 shrink-0 gap-1.5">
+                <Scale className="size-3.5" /> Rules
+              </TabsTrigger>
+            </TabsList>
 
-          <TabsContent value="overview">
-            <OverviewTab overview={overview} onGoToTab={setTab} />
-          </TabsContent>
-          <TabsContent value="basics" forceMount className="data-[state=inactive]:hidden">
-            <BrandProfilePanel editor={brandEditor} />
-          </TabsContent>
-          <TabsContent value="knowledge" className="space-y-6">
-            <EnrichFromWebsite brandId={brandId} onChanged={refresh} />
-            <KnowledgePanel brandId={brandId} onChanged={refresh} />
-          </TabsContent>
-          <TabsContent value="inspirations" className="space-y-10">
-            {/* Adopting from research or the library writes into this brand's
-                own inspirations, so the panel remounts (and re-reads) on adopt. */}
-            <InspirationsPanel key={adoptedNonce} brandId={brandId} onChanged={refresh} />
-            {initialBrand ? (
-              <CreativeResearchPanel
-                brand={initialBrand}
-                onAdopted={() => {
-                  setAdoptedNonce((n) => n + 1);
-                  refresh();
-                }}
-              />
-            ) : null}
-            <LibraryGallery
-              brandId={brandId}
-              onChanged={() => {
-                setAdoptedNonce((n) => n + 1);
-                refresh();
-              }}
-            />
-          </TabsContent>
-          <TabsContent value="templates">
-            <TemplatesPanel brandId={brandId} onChanged={refresh} />
-          </TabsContent>
-          <TabsContent value="rules" className="space-y-6">
-            <HardRulesPanel brandId={brandId} />
-            <RulesTab brandId={brandId} onChanged={refresh} />
-          </TabsContent>
-          <TabsContent value="brain">
-            <BrainTab brandId={brandId} onGoToTab={setTab} />
-          </TabsContent>
-          <TabsContent value="attention">
-            <AttentionTab
-              brandId={brandId}
-              overview={overview}
-              onGoToTab={setTab}
-              onChanged={refresh}
-            />
-          </TabsContent>
-          <TabsContent value="teach" className="space-y-6">
-            <NlNoteBox brandId={brandId} onChanged={refresh} />
-            <TeachScaleezy brandId={brandId} onGoToTab={setTab} onChanged={refresh} />
-          </TabsContent>
-        </Tabs>
+            <TabsContent
+              value="about"
+              forceMount
+              className="space-y-10 data-[state=inactive]:hidden"
+            >
+              <div id="basics">
+                <BrandProfilePanel editor={brandEditor} />
+              </div>
+              <details id="brain" className="group rounded-xl border border-border p-4">
+                <summary className="cursor-pointer list-none text-sm font-semibold text-foreground">
+                  <Brain className="mr-1.5 inline size-4" /> What Scaleezy is working from
+                  <span className="ml-2 font-normal text-muted-foreground">
+                    — the compiled view every generation reads
+                  </span>
+                </summary>
+                <div className="mt-4">
+                  {tab === "about" ? <BrainTab brandId={brandId} onGoToTab={goTo} /> : null}
+                </div>
+              </details>
+            </TabsContent>
+
+            <TabsContent value="show" className="space-y-10">
+              {pending > 0 ? (
+                <section id="attention">
+                  <SectionTitle
+                    title="Needs your decision"
+                    description="Suggestions and conflicts Scaleezy will not act on until you say so."
+                  />
+                  <div className="mt-4">
+                    <AttentionTab
+                      brandId={brandId}
+                      overview={overview}
+                      onGoToTab={goTo}
+                      onChanged={refresh}
+                    />
+                  </div>
+                </section>
+              ) : null}
+              <NlNoteBox brandId={brandId} onChanged={refresh} />
+              <section id="knowledge" className="space-y-6">
+                <SectionTitle
+                  title="Documents, links and facts"
+                  description="Anything true about the business. Scaleezy reads it and proposes facts for you to confirm."
+                />
+                <EnrichFromWebsite brandId={brandId} onChanged={refresh} />
+                <KnowledgePanel brandId={brandId} onChanged={refresh} />
+              </section>
+              <section id="inspirations" className="space-y-6">
+                <SectionTitle
+                  title="Work you like"
+                  description="Posts, reels, ads, screenshots — and what you like about each."
+                />
+                <InspirationsPanel key={adoptedNonce} brandId={brandId} onChanged={refresh} />
+                <details className="rounded-xl border border-border p-4">
+                  <summary className="cursor-pointer list-none text-sm font-semibold text-foreground">
+                    Find more references
+                    <span className="ml-2 font-normal text-muted-foreground">
+                      — web research and the Scaleezy library
+                    </span>
+                  </summary>
+                  <div className="mt-6 space-y-10">
+                    {initialBrand ? (
+                      <CreativeResearchPanel
+                        brand={initialBrand}
+                        onAdopted={() => {
+                          setAdoptedNonce((n) => n + 1);
+                          refresh();
+                        }}
+                      />
+                    ) : null}
+                    <LibraryGallery
+                      brandId={brandId}
+                      onChanged={() => {
+                        setAdoptedNonce((n) => n + 1);
+                        refresh();
+                      }}
+                    />
+                  </div>
+                </details>
+              </section>
+              <section id="templates">
+                <SectionTitle
+                  title="Your poster templates"
+                  description="Designs you already use. Pick one in Create Studio and generations match it."
+                />
+                <div className="mt-4">
+                  <TemplatesPanel brandId={brandId} onChanged={refresh} />
+                </div>
+              </section>
+            </TabsContent>
+
+            <TabsContent value="rules" className="space-y-6">
+              <div id="rules" className="space-y-6">
+                <HardRulesPanel brandId={brandId} />
+                <RulesTab brandId={brandId} onChanged={refresh} />
+              </div>
+            </TabsContent>
+          </Tabs>
+        </>
       )}
     </div>
   );

@@ -276,7 +276,8 @@ function SignupPage() {
    * hub's both run fresh on arrival and read the session this page just wrote.
    */
   const enterHub = async () => {
-    await navigate({ to: "/brand-master", search: { tab: "teach" }, replace: true });
+    // The hub sends a brand-new client to the setup wizard from here.
+    await navigate({ to: "/overview", replace: true });
   };
 
   if (created) {

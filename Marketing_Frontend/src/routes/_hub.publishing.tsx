@@ -3014,7 +3014,7 @@ function PublishingPage() {
                     search={{ tab: "templates" }}
                     className="font-medium text-foreground underline underline-offset-2"
                   >
-                    Brand Master → Templates
+                    Brand Master → Show &amp; tell
                   </Link>
                   , or choose “AI original”.
                 </div>
