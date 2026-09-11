@@ -2,9 +2,7 @@ import { createFileRoute, Link, Outlet, redirect, useNavigate } from "@tanstack/
 import {
   BarChart3,
   Brain,
-  Check,
   CheckCircle2,
-  ChevronsUpDown,
   LayoutDashboard,
   LogOut,
   MessagesSquare,
@@ -16,16 +14,8 @@ import {
   Share2,
   Sparkles,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -33,7 +23,8 @@ import { ScaleezyLogo } from "@/components/marketing/brand-logo";
 import { SiteFooter } from "@/components/marketing/site-footer";
 import { apiPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { clearWorkspaces, loadWorkspaces, selectWorkspace, useWorkspaces } from "@/lib/workspace";
+import { fetchMe, type Me } from "@/lib/platform";
+import { clearWorkspaces, loadWorkspaces, useWorkspaces } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_hub")({
   // The guard below reads localStorage, which does not exist during SSR.
@@ -90,105 +81,47 @@ function Brand() {
   );
 }
 
-function workspaceLabel(state: ReturnType<typeof useWorkspaces>): string {
-  const current = state.workspaces.find((w) => w.id === state.selectedId);
-  if (current) return current.name;
-  if (state.status === "loading" || state.status === "idle") return "Loading clients…";
-  if (state.status === "error") return "Clients unavailable";
-  return "No client yet";
-}
-
-function WorkspaceSwitcher({
-  onNavigate,
-  dark = false,
-}: {
-  onNavigate?: () => void;
-  dark?: boolean;
-}) {
-  const state = useWorkspaces();
-
+/**
+ * Who is signed in. The client is implied — a person has one workspace — so
+ * the top bar names the person, not the tenant.
+ */
+function SignedInAs({ dark = false }: { dark?: boolean }) {
+  const [me, setMe] = useState<Me | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchMe().then((value) => {
+      if (!cancelled) setMe(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const name = me ? [me.first_name, me.last_name].filter(Boolean).join(" ") || me.username : "…";
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={`Switch client. Current client: ${workspaceLabel(state)}`}
-          disabled={state.switching}
+    <span className="flex min-w-0 items-center gap-3">
+      <span
+        className={cn(
+          "grid size-9 shrink-0 place-items-center rounded-full text-sm font-semibold",
+          dark ? "bg-primary/20 text-primary" : "bg-primary/10 text-primary",
+        )}
+        aria-hidden
+      >
+        {name.charAt(0).toUpperCase()}
+      </span>
+      <span className="min-w-0">
+        <span
           className={cn(
-            "flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-60",
-            dark
-              ? "border-white/15 bg-white/5 text-white hover:border-primary/60 hover:bg-white/10"
-              : "border-border bg-background text-foreground hover:border-foreground",
+            "block text-[0.625rem] font-semibold tracking-[0.14em] uppercase",
+            dark ? "text-white/45" : "text-muted-foreground",
           )}
         >
-          <span className="min-w-0 flex-1">
-            <span
-              className={cn(
-                "block text-[0.625rem] font-semibold tracking-[0.14em] uppercase",
-                dark ? "text-white/45" : "text-muted-foreground",
-              )}
-            >
-              Client
-            </span>
-            <span
-              className={cn("mt-0.5 block truncate text-sm font-semibold", dark && "text-white")}
-            >
-              {workspaceLabel(state)}
-            </span>
-          </span>
-          <ChevronsUpDown
-            className={cn("size-4 shrink-0", dark ? "text-primary" : "text-muted-foreground")}
-            strokeWidth={1.75}
-            aria-hidden
-          />
-        </button>
-      </DropdownMenuTrigger>
-
-      <DropdownMenuContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
-        <DropdownMenuLabel>Switch client</DropdownMenuLabel>
-        {state.workspaces.length === 0 ? (
-          <DropdownMenuItem disabled>
-            {state.status === "error" ? "Clients unavailable" : "No clients yet"}
-          </DropdownMenuItem>
-        ) : (
-          state.workspaces.map((workspace) => (
-            <DropdownMenuItem
-              key={workspace.id}
-              onSelect={() => {
-                onNavigate?.();
-                selectWorkspace(workspace.id);
-              }}
-            >
-              <Check
-                className={workspace.id === state.selectedId ? "text-gold" : "invisible"}
-                aria-hidden
-              />
-              <span className="truncate">{workspace.name}</span>
-            </DropdownMenuItem>
-          ))
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-/**
- * Covers the page opaquely between committing a switch and the document being
- * replaced, so the outgoing client's rows cannot be read or clicked while the
- * new tenant loads.
- */
-function WorkspaceSwitchOverlay() {
-  const { switching } = useWorkspaces();
-  if (!switching) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-background"
-      role="status"
-      aria-live="polite"
-    >
-      <p className="text-sm text-muted-foreground">Switching client…</p>
-    </div>
+          Signed in as
+        </span>
+        <span className={cn("block truncate text-sm font-semibold", dark && "text-white")}>
+          {name}
+        </span>
+      </span>
+    </span>
   );
 }
 
@@ -331,12 +264,7 @@ function SignOutButton({ onDone, dark = false }: { onDone?: () => void; dark?: b
 function DesktopTopBar() {
   return (
     <header className="sticky top-0 z-30 hidden h-[82px] items-center gap-6 border-b border-white/10 bg-brand-dark px-8 text-white lg:flex xl:px-12">
-      <div className="w-full max-w-[18rem]">
-        <WorkspaceSwitcher dark />
-      </div>
-      <span className="flex items-center gap-2 text-xs font-medium text-white/55">
-        <span className="size-2 rounded-full bg-primary" aria-hidden /> Active workspace
-      </span>
+      <SignedInAs dark />
       <div className="ml-auto">
         <Button asChild size="lg" className="h-11">
           <Link to="/publishing">
@@ -393,7 +321,7 @@ function HubLayout() {
             <SheetTitle className="sr-only">Marketing Hub navigation</SheetTitle>
             <Brand />
             <div className="mt-6">
-              <WorkspaceSwitcher onNavigate={() => setOpen(false)} dark />
+              <SignedInAs dark />
             </div>
             <div className="mt-6">
               <NavList isAdmin={isAdmin} onNavigate={() => setOpen(false)} />
@@ -419,8 +347,6 @@ function HubLayout() {
         </div>
         <SiteFooter />
       </main>
-
-      <WorkspaceSwitchOverlay />
     </div>
   );
 }
