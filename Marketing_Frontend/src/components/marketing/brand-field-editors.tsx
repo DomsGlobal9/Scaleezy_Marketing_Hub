@@ -384,9 +384,7 @@ export function ProductsEditor({
   return (
     <div className="space-y-3">
       {value.length === 0 ? (
-        <NothingYet>
-          Nothing listed yet. Add what this brand actually sells — every generation reads it.
-        </NothingYet>
+        <NothingYet>Nothing yet. Add a product or service and every post can name it.</NothingYet>
       ) : (
         <ul className="space-y-3">
           {value.map((row, index) => (

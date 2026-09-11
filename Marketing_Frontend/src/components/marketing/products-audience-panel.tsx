@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Textarea } from "@/components/ui/textarea";
 import {
+  AdminDetailsSection,
   BrandError,
   BrandSaveControl,
   ClientBasicsSection,
@@ -99,8 +100,8 @@ export function ProductsAudienceSection({
     <div className="space-y-8">
       <section>
         <SectionTitle
-          title="What this brand is"
-          description="A plain description in your own words. Every generation reads it, whatever the task."
+          title="What you sell, and to whom"
+          description="In your own words. Every post starts from this."
           action={<SavingHint saving={saving} />}
         />
         <div className="mt-4">
@@ -116,8 +117,8 @@ export function ProductsAudienceSection({
 
       <section>
         <SectionTitle
-          title="Who it is for"
-          description="Stated audience. Kept beside the pains and objections Scaleezy infers from your knowledge — it never overwrites them."
+          title="Who buys from you"
+          description="Optional, but it sharpens every caption."
         />
         <div className="mt-4">
           <Textarea
@@ -132,11 +133,11 @@ export function ProductsAudienceSection({
 
       <section>
         <SectionTitle
-          title="Products & services"
-          description="What is actually for sale. Named things generation can be specific about instead of writing around."
+          title="What is on sale"
+          description="Name the products or services so posts can be specific."
         />
         <div className="mt-4">
-          <Field label="Catalogue">
+          <Field label="Products and services">
             <ProductsEditor value={products} disabled={loading} onChange={onProducts} />
           </Field>
         </div>
@@ -167,12 +168,25 @@ export function BrandProfilePanel({ editor }: { editor: BrandEditor }) {
       />
       <BrandError error={editor.error} />
       <ClientBasicsSection editor={editor} />
-      <VoiceSection editor={editor} />
+      <ProductsAudienceSection editor={editor} onDraftStateChange={onDraftStateChange} />
       <LogoSection editor={editor} />
       <VisualIdentitySection editor={editor} />
-      <MarketSection editor={editor} />
-      <PosterDefaultsSection editor={editor} />
-      <ProductsAudienceSection editor={editor} onDraftStateChange={onDraftStateChange} />
+      <VoiceSection editor={editor} />
+      {/* Records and fine-tuning. Nothing here is needed for a good first
+          poster, so it stays folded until someone wants it. */}
+      <details className="rounded-xl border border-border p-4">
+        <summary className="cursor-pointer list-none text-sm font-semibold text-foreground">
+          More details
+          <span className="ml-2 font-normal text-muted-foreground">
+            — business records, competitors, links, poster extras
+          </span>
+        </summary>
+        <div className="mt-6 space-y-8">
+          <AdminDetailsSection editor={editor} />
+          <MarketSection editor={editor} />
+          <PosterDefaultsSection editor={editor} />
+        </div>
+      </details>
     </div>
   );
 }
