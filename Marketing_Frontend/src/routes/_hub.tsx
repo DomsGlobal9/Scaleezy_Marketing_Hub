@@ -78,7 +78,7 @@ export const Route = createFileRoute("/_hub")({
 const NAV = [
   { to: "/overview", label: "Overview", icon: LayoutDashboard, adminOnly: false },
   { to: "/brand-master", label: "Brand Master", icon: Brain, adminOnly: false },
-  { to: "/accounts", label: "Social Media Accounts", icon: Share2, adminOnly: false },
+  { to: "/accounts", label: "Accounts", icon: Share2, adminOnly: false },
   { to: "/publishing", label: "Create", icon: Sparkles, adminOnly: false },
   // Named for the object, not for one stage of its lifecycle: this is where
   // every piece of work lives, whatever state it is in.
@@ -191,14 +191,7 @@ function NavList({ isAdmin, onNavigate }: { isAdmin: boolean; onNavigate?: () =>
             className="size-5 shrink-0 group-data-[status=active]:text-primary"
             strokeWidth={1.75}
           />
-          <span
-            className={cn(
-              "min-w-0 leading-snug",
-              item.to === "/accounts" ? "whitespace-normal" : "truncate",
-            )}
-          >
-            {item.label}
-          </span>
+          <span className="min-w-0 truncate leading-snug">{item.label}</span>
         </Link>
       ))}
     </nav>
